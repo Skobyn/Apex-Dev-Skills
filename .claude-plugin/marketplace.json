@@ -1,0 +1,30 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "apex-dev-skills",
+  "description": "Apex Insights development skills and plugins for Claude Code.",
+  "owner": {
+    "name": "Apex Insights",
+    "url": "https://getapexinsights.com"
+  },
+  "plugins": [
+    {
+      "name": "apex-plan-loop",
+      "description": "Decide -> plan -> loop: SPARC-shaped ADR + phased plan authoring, with autonomous /loop + /schedule execution and per-phase swarm dispatch.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-plan-loop",
+      "keywords": [
+        "adr",
+        "sparc",
+        "planning",
+        "loop",
+        "swarm",
+        "orchestration",
+        "apex"
+      ]
+    }
+  ]
+}
