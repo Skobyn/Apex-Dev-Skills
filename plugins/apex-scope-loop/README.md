@@ -13,7 +13,7 @@ It does that through five phases that spell **SCOPE**:
 | **C**ompose | A SPARC-shaped ADR + plan stub are scaffolded from your answers | seeing your words on the page immediately |
 | **O**ptimize | You and the agent refine the ADR section-by-section until every Open Question is a Decision | signing off on each section |
 | **P**lan | The resolved ADR compiles into a phased checklist with per-phase swarm directives + gates | reviewing runnable acceptance criteria |
-| **E**xecute | The plan is promoted into an autonomous `/loop` that dispatches swarms and advances on green | choosing auto / human / partner gates |
+| **E**xecute | The plan is promoted into an autonomous `/loop` that dispatches swarms inside an isolated worktree and advances on green | choosing auto / human / partner gates |
 
 The result is a system that **thinks alongside you**: it watches reality, persists knowledge, and adjusts strategy across days and weeks — not just a single chat.
 
@@ -24,6 +24,7 @@ The result is a system that **thinks alongside you**: it watches reality, persis
 - **Guardrails by default.** Phases close behind runnable checks or explicit human/partner approval. Bad work can't quietly cascade into the next phase.
 - **Autonomy you can trust.** `/loop` drives active sessions; `/schedule` runs nightly audits and weekly architecture reviews so progress continues while you sleep.
 - **Right-sized compute.** Each phase declares its own swarm — a single agent for trivial work, a full hierarchical-mesh for the heavy lifting.
+- **Isolated by default.** The whole plan runs in a dedicated git worktree on its own branch. `main` stays clean until the final gate passes and the branch is landed — a half-finished or abandoned plan never leaks partial code into your base branch.
 
 ## Prerequisites
 
@@ -61,11 +62,14 @@ Then `/reload-plugins` (or restart Claude Code) to activate.
 # Produces: .claude/tasks/my-feature-adr.md + .claude/plans/my-feature-plan.md
 # Promotes to apex-execute state if validation passes
 
-# 2. Execute the plan one phase at a time
+# 2. Execute the plan one phase at a time (all work happens in an isolated worktree)
 /apex-scope-loop:iterate .claude/plans/my-feature-plan.md
 
 # …or hand it to /loop for self-paced, autonomous execution:
 /loop /apex-scope-loop:iterate .claude/plans/my-feature-plan.md
+
+# 3. When the final gate passes, land the worktree branch onto main:
+.claude/skills/apex-execute/scripts/land.sh .claude/plans/my-feature-plan.md
 ```
 
 ## What you get
@@ -87,11 +91,15 @@ apex-plan  (authoring — the five phases spell SCOPE)
                                           │
                                           │  init.sh + checkpoint.json
                                           ▼
-apex-execute  (execution — the loop)
+apex-execute  (execution — the loop, inside an isolated worktree)
 
-   /loop next task → swarm dispatch → acceptance check → advance / halt
-        ▲
-        └── /schedule audit.sh, architecture-review.sh
+   init.sh ──► git worktree add apex-scope-loop/<slug>  (forked from main)
+
+   /loop next task → swarm dispatch (in worktree) → acceptance check → advance / halt
+        ▲                                                                │
+        └── /schedule audit.sh, architecture-review.sh                   ▼
+                                              final gate passed → land.sh
+                                              (merge branch → main, remove worktree)
 ```
 
 ## Compatibility

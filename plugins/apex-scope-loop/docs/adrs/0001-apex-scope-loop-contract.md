@@ -41,6 +41,16 @@ Both SKILL.md files use lowercase kebab-case `name:` matching their directory (`
 - **2 slash commands** — `/apex-scope-loop:start`, `/apex-scope-loop:iterate`
 - **1 agent** — `plan-author` (Sonnet, single-purpose, delegated from main thread)
 
+### Worktree-bound execution
+
+The execution stage (`apex-execute`) is **worktree-bound by contract**. `init.sh` provisions a single git worktree at `.dev-plan-state/<plan-hash>/worktree` on a dedicated branch `apex-scope-loop/<slug>`, forked from a base branch (`APEX_BASE_BRANCH`, default `main` → `master` → current HEAD). The whole plan — every phase — runs inside that one worktree; no phase work touches the base branch's working tree. The checkpoint records `worktree_path`, `worktree_branch`, `base_branch`, and `landed`.
+
+- `iterate.sh` emits `WORKTREE:` / `BRANCH:` on every brief and refuses to proceed (`STATUS: ERROR`) if the recorded worktree has gone missing.
+- The orchestrator dispatches all swarm agents scoped to the worktree path.
+- When the final gate passes (plan fully checked), `land.sh` merges `apex-scope-loop/<slug>` into the base branch with `--no-ff` and removes the worktree. That merge is the only point at which generated code reaches the base branch.
+
+`.dev-plan-state/` is gitignored, so the worktree lives outside tracked content. An escape hatch (`APEX_NO_WORKTREE=1`) runs execution in the base checkout for environments without git, but it is off the supported path.
+
 ### Compatibility
 
 - Claude Code: 2.0+
@@ -100,3 +110,4 @@ The smoke script exits non-zero on any failing check and names the first failure
 - 2026-05-22 — Proposed (initial scaffold)
 - 2026-05-29 — Renamed plugin `apex-plan-loop` → `apex-scope-loop`; relabeled the authoring stages to spell **SCOPE** (Scope, Compose, Optimize, Plan, Execute).
 - 2026-05-29 — Renamed the two skills: `decide-plan-loop` → `apex-plan`, `dev-plan-loop` → `apex-execute` (directories, frontmatter `name:`, the execution memory namespace, and all cross-references). The `promote-to-loop.sh` handoff mechanism is unchanged.
+- 2026-05-29 — Made execution worktree-bound: `init.sh` provisions an isolated worktree + branch per plan, `iterate.sh` reports/enforces it, and new `land.sh` merges the branch into the base branch after the final gate. Added `worktree_path`/`worktree_branch`/`base_branch`/`landed` to the checkpoint schema.

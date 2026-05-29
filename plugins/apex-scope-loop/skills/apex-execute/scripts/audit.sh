@@ -12,6 +12,7 @@ PLAN="${1:?usage: audit.sh PLAN.md}"
 PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
 PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
 STATE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.dev-plan-state/$PLAN_HASH"
+CHECKPOINT="$STATE_DIR/checkpoint.json"
 mkdir -p "$STATE_DIR/audits"
 
 NOW="$(date -u +%FT%TZ)"
@@ -22,8 +23,17 @@ THIS_AUDIT="$STATE_DIR/audits/$TODAY.json"
 DONE=$(awk '/^- \[x\]/{c++} END{print c+0}' "$PLAN")
 TOTAL=$(awk '/^- \[[ x]\]/{c++} END{print c+0}' "$PLAN")
 
-# Recently completed (last 24h via git log on the plan file)
-RECENT_COMMITS=$(git -C "$(dirname "$PLAN_ABS")" log --since='24 hours ago' --pretty=format:'%h %s' -- "$PLAN_ABS" 2>/dev/null | head -20 || echo "")
+# Worktree the plan executes in (commits land on its branch, not the plan file).
+WT_BRANCH=""
+[[ -f "$CHECKPOINT" ]] && WT_BRANCH="$(grep -o '"worktree_branch": "[^"]*"' "$CHECKPOINT" | head -1 | sed 's/.*: "//; s/"$//')"
+
+# Recently completed (last 24h). Prefer the worktree branch where code lands;
+# fall back to the plan file's history if no worktree branch is recorded.
+if [[ -n "$WT_BRANCH" ]] && git -C "$(dirname "$PLAN_ABS")" show-ref --verify --quiet "refs/heads/$WT_BRANCH"; then
+  RECENT_COMMITS=$(git -C "$(dirname "$PLAN_ABS")" log "$WT_BRANCH" --since='24 hours ago' --pretty=format:'%h %s' 2>/dev/null | head -20 || echo "")
+else
+  RECENT_COMMITS=$(git -C "$(dirname "$PLAN_ABS")" log --since='24 hours ago' --pretty=format:'%h %s' -- "$PLAN_ABS" 2>/dev/null | head -20 || echo "")
+fi
 
 cat > "$THIS_AUDIT" <<EOF
 {

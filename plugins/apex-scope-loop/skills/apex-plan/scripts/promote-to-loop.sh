@@ -142,9 +142,17 @@ echo
 "$DPL_INIT" "$PLAN_PATH"
 
 echo
+echo "Execution is worktree-bound: init.sh created an isolated git worktree and"
+echo "branch for this plan. ALL phase work happens there; nothing touches the base"
+echo "branch until the final gate passes and you land it."
+echo
 echo "READY. Start execution with:"
 echo
 echo "    /loop iterate the next phase of $PLAN_PATH"
+echo
+echo "When the final gate passes, land the worktree into the base branch:"
+echo
+echo "    .claude/skills/apex-execute/scripts/land.sh $PLAN_PATH"
 echo
 echo "Optionally schedule continuity layer:"
 echo
