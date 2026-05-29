@@ -1,0 +1,76 @@
+# apex-guardrails — B2 PolicyAsCode
+# Declarative org guardrail ruleset. This is the SOURCE OF TRUTH for what the
+# PreToolUse hooks enforce. Edit this, then run:
+#
+#   bash scripts/compile-policy.sh resources/policy.example.yaml hooks/hooks.json
+#
+# …to compile it into the hooks matcher config so the rules are ENFORCED at
+# runtime (a denied tool call never executes), not merely documented.
+#
+# Schema:
+#   version:        policy schema version (string)
+#   sensitive_paths: glob patterns that Write/Edit/MultiEdit/NotebookEdit may NOT touch
+#   destructive_bash: regex fragments matched against the Bash `command` string → deny
+#   secret_patterns:  regex fragments matched against tool input content → deny
+#   allow:            explicit carve-outs that override a deny (placeholders, fixtures)
+
+version: "1"
+
+# B1 — paths that are hard-blocked from edits.
+sensitive_paths:
+  - "**/.env"
+  - "**/.env.*"
+  - "**/secrets/**"
+  - "**/*credential*"
+  - "**/*credentials*"
+  - "**/id_rsa"
+  - "**/id_ed25519"
+  - "**/*.pem"
+  - "**/*.key"
+  - "**/*.pfx"
+  - "**/*.p12"
+  - "**/infra/prod/**"
+  - "**/*.prod.tfvars"
+  - "**/terraform.tfstate"
+  - "**/overlays/prod/**"
+
+# B1 — destructive Bash commands that are denied before execution.
+destructive_bash:
+  - "rm -rf /"
+  - "rm -rf ~"
+  - "rm -rf $HOME"
+  - "git push --force ... main|master"
+  - "git push -f ... main|master"
+  - "git reset --hard main|master"
+  - "curl ... | sh"
+  - "wget ... | bash"
+
+# B3 — credential patterns scanned in Write/Edit content and Bash commands.
+secret_patterns:
+  - name: aws-access-key-id
+    description: "AWS access key id (AKIA/ASIA/...)"
+  - name: pem-private-key
+    description: "PEM PRIVATE KEY block"
+  - name: github-token
+    description: "GitHub PAT / OAuth token (ghp_, github_pat_, ...)"
+  - name: slack-token
+    description: "Slack token (xoxb-/xoxp-/...)"
+  - name: inline-secret-assignment
+    description: "password=/secret=/api_key= with a real value"
+
+# Carve-outs: substrings that mark a match as a placeholder, not a real secret.
+allow:
+  placeholders:
+    - "your_"
+    - "xxx"
+    - "placeholder"
+    - "example"
+    - "changeme"
+    - "${"
+    - "process.env"
+    - "env."
+
+# Per-rule severity. `deny` rules block; `warn` rules are advisory only.
+# The shipped hooks treat every B1/B3 rule as `deny` (fail closed).
+defaults:
+  severity: deny
