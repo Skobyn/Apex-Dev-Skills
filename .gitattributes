@@ -1,0 +1,6 @@
+# Shell scripts must use LF so they run on macOS/Linux (CRLF breaks `set -o pipefail`).
+*.sh text eol=lf
+
+# Normalize line endings for text sources; keep plugin artifacts LF.
+*.md text eol=lf
+*.json text eol=lf
