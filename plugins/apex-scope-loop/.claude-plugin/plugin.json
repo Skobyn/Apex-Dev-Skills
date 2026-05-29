@@ -1,5 +1,5 @@
 {
-  "name": "apex-plan-loop",
+  "name": "apex-scope-loop",
   "description": "Decide → plan → loop: SPARC-shaped ADR + phased plan authoring, with autonomous /loop + /schedule execution and per-phase swarm dispatch.",
   "version": "0.1.0",
   "author": {

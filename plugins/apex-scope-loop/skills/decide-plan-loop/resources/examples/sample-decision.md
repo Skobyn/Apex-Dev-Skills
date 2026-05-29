@@ -4,7 +4,7 @@ A walkthrough of the `decide-plan-loop` skill end-to-end for a small but non-tri
 
 ## Session transcript (abbreviated)
 
-### Stage 1: DISCOVER (six rounds)
+### Stage 1: SCOPE (six rounds)
 
 **Round 1 — Scope**:
 - User picks "Standard v1" — "Core flow + obvious extensions"
@@ -33,7 +33,7 @@ A walkthrough of the `decide-plan-loop` skill end-to-end for a small but non-tri
 - Partner gate: 4→5 (Chris before ship)
 - Human gate: 5→done (user types `approve ship`)
 
-### Stage 2: DRAFT
+### Stage 2: COMPOSE
 
 ```bash
 .claude/skills/decide-plan-loop/scripts/start.sh per-venue-rate-limit "Per-Venue Rate Limiting"
@@ -43,7 +43,7 @@ A walkthrough of the `decide-plan-loop` skill end-to-end for a small but non-tri
 
 ADR sections seeded with Stage 1 answers. Plan template stub created.
 
-### Stage 3: REFINE
+### Stage 3: OPTIMIZE
 
 Walked the user through each ADR section:
 
@@ -68,7 +68,7 @@ Plan generated with five SPARC phases. Highlights:
 - **Gate 4→5**: `[gate:partner:chris@getapexinsights.com]` — writes inbox item, halts
 - **Gate 5→done**: `[gate:human]` — user types `approve ship`
 
-### Stage 5: PROMOTE
+### Stage 5: EXECUTE
 
 ```bash
 .claude/skills/decide-plan-loop/scripts/promote-to-loop.sh per-venue-rate-limit
@@ -115,10 +115,10 @@ When the loop reaches Gate 5→done, it halts and prompts the user. User types `
 
 ## Total elapsed time
 
-- Stage 1 (DISCOVER): ~5 min (six AskUserQuestion rounds)
-- Stage 2 (DRAFT): ~30 sec (script runs)
-- Stage 3 (REFINE): ~20 min (walking ADR sections with user)
+- Stage 1 (SCOPE): ~5 min (six AskUserQuestion rounds)
+- Stage 2 (COMPOSE): ~30 sec (script runs)
+- Stage 3 (OPTIMIZE): ~20 min (walking ADR sections with user)
 - Stage 4 (PLAN): ~5 min (auto-generated from ADR; user reviews)
-- Stage 5 (PROMOTE): ~30 sec (validation + init.sh)
+- Stage 5 (EXECUTE): ~30 sec (validation + init.sh)
 
 **Total**: ~30 min of human attention to produce a co-authored ADR + plan that an agent swarm can execute autonomously over hours/days.

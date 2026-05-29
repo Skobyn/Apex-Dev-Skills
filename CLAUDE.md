@@ -27,10 +27,10 @@ Surfaces are discovered by directory convention, not declaration:
 
 ## Verification
 
-Each plugin ships a structural smoke test that encodes its contract (see `plugins/apex-plan-loop/scripts/smoke.sh` as the reference pattern). Run it after any change to a plugin:
+Each plugin ships a structural smoke test that encodes its contract (see `plugins/apex-scope-loop/scripts/smoke.sh` as the reference pattern). Run it after any change to a plugin:
 
 ```bash
-bash plugins/apex-plan-loop/scripts/smoke.sh
+bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
 It checks manifest keys, kebab-case skill names, no wildcard tools, command/agent frontmatter, required README sections, ADR status, and script executability — exiting non-zero on the first failure with a named reason. When adding a new plugin, give it its own `scripts/smoke.sh` following the same 10-check shape.
@@ -53,6 +53,6 @@ Then `/reload-plugins` (or restart Claude Code) to activate changes without rein
 
 ## Conventions
 
-- **Memory/AgentDB namespaces** follow kebab-case `<plugin-stem>-<intent>` and are claimed in the plugin's ADR-0001. A new plugin reading/writing another's keys must claim a non-overlapping prefix and reference the owning ADR (see `plugins/apex-plan-loop/README.md` → "Namespace coordination").
+- **Memory/AgentDB namespaces** follow kebab-case `<plugin-stem>-<intent>` and are claimed in the plugin's ADR-0001. A new plugin reading/writing another's keys must claim a non-overlapping prefix and reference the owning ADR (see `plugins/apex-scope-loop/README.md` → "Namespace coordination").
 - **ADR-driven contracts**: a plugin's public surface, compatibility matrix, and smoke contract live in `docs/adrs/0001-*.md`. Treat the ADR as the spec the smoke test enforces.
 - Plugin `README.md` files must contain `## Compatibility`, `## Namespace coordination`, `## Verification`, and `## Architecture Decisions` sections (the smoke test asserts these).

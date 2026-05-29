@@ -43,27 +43,27 @@ Do NOT use this skill for:
 
 If a partner must sign off, prefer `architecture-decision-propose` first, then return here to build the plan after merge.
 
-## The five-stage flow
+## The five-stage flow (SCOPE)
 
 ```
-1. DISCOVER  — 4–6 AskUserQuestion rounds: scope, constraints, success criteria, partners,
+1. SCOPE     — 4–6 AskUserQuestion rounds: scope, constraints, success criteria, partners,
               swarm preferences, gate preferences
    ↓
-2. DRAFT     — Write ADR (SPARC sections) + plan stub from templates
+2. COMPOSE   — Write ADR (SPARC sections) + plan stub from templates
    ↓
-3. REFINE    — Walk the user through each ADR section, capture inline edits,
+3. OPTIMIZE  — Walk the user through each ADR section, capture inline edits,
               resolve every "Open Question" to a concrete decision
    ↓
 4. PLAN      — Convert resolved ADR into phased plan: per-phase swarm directive,
               acceptance criteria, blocked-by graph, and a gate task between phases
    ↓
-5. PROMOTE   — Run `scripts/promote-to-loop.sh <slug>` to initialize dev-plan-loop
+5. EXECUTE   — Run `scripts/promote-to-loop.sh <slug>` to promote into dev-plan-loop
               state; print the `/loop` command for the user to start
 ```
 
 Stages 1–4 are interactive. Stage 5 hands off to dev-plan-loop.
 
-## Stage 1: DISCOVER
+## Stage 1: SCOPE
 
 Use `AskUserQuestion` to surface scope and constraints **before drafting anything**. Round-by-round, ask:
 
@@ -76,7 +76,7 @@ Use `AskUserQuestion` to surface scope and constraints **before drafting anythin
 
 Capture answers in working memory; surface them back to the user in Stage 2 as the ADR draft so they see their words on the page.
 
-## Stage 2: DRAFT
+## Stage 2: COMPOSE
 
 Create both docs from the templates:
 
@@ -99,7 +99,7 @@ The ADR template has SPARC-shaped sections — see [resources/templates/adr-temp
 
 The plan template (see [resources/templates/plan-template.md](resources/templates/plan-template.md)) maps SPARC phases to dev-plan-loop format with per-phase swarm directives and inter-phase gates.
 
-## Stage 3: REFINE
+## Stage 3: OPTIMIZE
 
 Walk the ADR section-by-section. For each section:
 
@@ -165,7 +165,7 @@ Use `scripts/gate.sh <plan-path> <gate-id>` for explicit gate evaluation outside
 
 See [resources/templates/plan-template.md](resources/templates/plan-template.md) for the full structure with all SPARC phases and example gates.
 
-## Stage 5: PROMOTE
+## Stage 5: EXECUTE
 
 Once the user confirms the plan:
 
@@ -225,12 +225,12 @@ Before promoting, the skill verifies:
 
 - `resources/templates/adr-template.md` — SPARC-shaped ADR with spec + pseudocode + architecture sections
 - `resources/templates/plan-template.md` — Phased plan with per-phase Swarm directives and inter-phase gates
-- `resources/templates/feedback-interview.md` — The 4–6 question prompts for Stage 1 (DISCOVER)
+- `resources/templates/feedback-interview.md` — The 4–6 question prompts for Stage 1 (SCOPE)
 - `resources/examples/sample-decision.md` — Worked example: a small feature decision + plan end-to-end
 
 ## Anti-patterns
 
-1. **Drafting before discovering.** If you write the ADR before asking the user questions, you've made the decisions for them. Stage 1 is non-negotiable.
+1. **Composing before scoping.** If you write the ADR before asking the user questions, you've made the decisions for them. Stage 1 (SCOPE) is non-negotiable.
 2. **Vague acceptance criteria.** "Improve UX" is not runnable. Either it's a check (`pytest`, `curl`, `grep -q`) or it's a human-gate with a literal approval phrase the user will say.
 3. **Skipping the surface parity check.** This project's `CLAUDE.md` is explicit: most features live on multiple surfaces. The ADR template asks for it; don't delete the section because "it doesn't apply" without verifying.
 4. **One mega-phase.** If a phase has > 6 tasks or > 1 day of work, split it. Gates between small phases are cheaper than rollbacks of giant phases.

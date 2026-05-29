@@ -8,14 +8,14 @@
   },
   "plugins": [
     {
-      "name": "apex-plan-loop",
+      "name": "apex-scope-loop",
       "description": "Decide -> plan -> loop: SPARC-shaped ADR + phased plan authoring, with autonomous /loop + /schedule execution and per-phase swarm dispatch.",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"
       },
       "category": "development",
-      "source": "./plugins/apex-plan-loop",
+      "source": "./plugins/apex-scope-loop",
       "keywords": [
         "adr",
         "sparc",

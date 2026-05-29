@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# apex-plan-loop structural smoke test
+# apex-scope-loop structural smoke test
 # Verifies the plugin contract from ADR-0001. Exits non-zero on first failure.
 set -euo pipefail
 
@@ -69,7 +69,7 @@ done
 ok "README has Compatibility/Namespace/Verification/ADR sections"
 
 # 9. ADR-0001 exists with Status: Proposed
-ADR="$PLUGIN_ROOT/docs/adrs/0001-apex-plan-loop-contract.md"
+ADR="$PLUGIN_ROOT/docs/adrs/0001-apex-scope-loop-contract.md"
 [ -f "$ADR" ] || fail "missing ADR-0001"
 grep -qE "^- \*\*Status:\*\* Proposed" "$ADR" || fail "ADR-0001 not in Proposed status"
 ok "ADR-0001 exists with Status: Proposed"

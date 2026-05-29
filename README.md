@@ -20,7 +20,7 @@ Run `/reload-plugins` (or restart Claude Code) to activate.
 
 | Name | Description |
 |---|---|
-| [apex-plan-loop](plugins/apex-plan-loop) | Decide → plan → loop. SPARC-shaped ADR + phased plan authoring with autonomous `/loop` + `/schedule` execution and per-phase swarm dispatch. |
+| [apex-scope-loop](plugins/apex-scope-loop) | **Plan it once, ship it for days.** The **SCOPE** workflow — Scope → Compose → Optimize → Plan → Execute — turns a fuzzy idea into a co-authored ADR + phased plan, then drives it to done with autonomous `/loop` + `/schedule` swarms. Requires the [ruflo](https://github.com/ruvnet/ruflo) plugin suite (for memory + swarm MCP tools). |
 
 ## Layout
 

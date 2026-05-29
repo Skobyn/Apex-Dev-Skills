@@ -1,4 +1,4 @@
-# DISCOVER interview — feedback prompt library
+# SCOPE interview — feedback prompt library
 
 Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (one per round) so the user can answer iteratively. Don't batch everything into one giant question — that loses signal.
 

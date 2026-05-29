@@ -1,9 +1,9 @@
-# ADR-0001: apex-plan-loop plugin contract
+# ADR-0001: apex-scope-loop plugin contract
 
 - **Status:** Proposed
 - **Date:** 2026-05-22
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-plan-loop v0.1.0
+- **Plugin:** apex-scope-loop v0.1.0
 
 ## Context
 
@@ -11,23 +11,23 @@ The apex repo already had two tightly-coupled skills at `.claude/skills/decide-p
 
 ## Decision
 
-Bundle both skills into a single plugin `apex-plan-loop` with this contract:
+Bundle both skills into a single plugin `apex-scope-loop` with this contract:
 
 ### Layout
 
 ```
-plugins/apex-plan-loop/
+plugins/apex-scope-loop/
 ├── .claude-plugin/plugin.json           # name, version, description, author
 ├── skills/
 │   ├── decide-plan-loop/SKILL.md        # ADR + plan authoring (5-stage flow)
 │   └── dev-plan-loop/SKILL.md           # /loop iteration over phased plans
 ├── commands/
-│   ├── start.md                         # /apex-plan-loop:start <slug>
-│   └── iterate.md                       # /apex-plan-loop:iterate <plan>
+│   ├── start.md                         # /apex-scope-loop:start <slug>
+│   └── iterate.md                       # /apex-scope-loop:iterate <plan>
 ├── agents/
-│   └── plan-author.md                   # Sonnet subagent for DISCOVER/DRAFT/REFINE
+│   └── plan-author.md                   # Sonnet subagent for SCOPE/COMPOSE/OPTIMIZE
 ├── scripts/smoke.sh                     # structural contract checks
-├── docs/adrs/0001-apex-plan-loop-contract.md
+├── docs/adrs/0001-apex-scope-loop-contract.md
 └── README.md
 ```
 
@@ -38,7 +38,7 @@ Both SKILL.md files use lowercase kebab-case `name:` matching their directory (`
 ### Surface
 
 - **2 skills** — auto-discovered from `skills/` subtree, not enumerated in plugin.json
-- **2 slash commands** — `/apex-plan-loop:start`, `/apex-plan-loop:iterate`
+- **2 slash commands** — `/apex-scope-loop:start`, `/apex-scope-loop:iterate`
 - **1 agent** — `plan-author` (Sonnet, single-purpose, delegated from main thread)
 
 ### Compatibility
@@ -49,11 +49,11 @@ Both SKILL.md files use lowercase kebab-case `name:` matching their directory (`
 
 ### Namespace coordination
 
-The plugin reserves a single AgentDB / memory namespace: **`apex-plan-loop`**. Sub-keys:
+The plugin reserves a single AgentDB / memory namespace: **`apex-scope-loop`**. Sub-keys:
 
-- `apex-plan-loop:adrs/<slug>` — ADR metadata + status
-- `apex-plan-loop:plans/<slug>` — plan checkpoint + completion %
-- `apex-plan-loop:outcomes/<slug>/<phase>` — per-phase verdict + trajectory pattern
+- `apex-scope-loop:adrs/<slug>` — ADR metadata + status
+- `apex-scope-loop:plans/<slug>` — plan checkpoint + completion %
+- `apex-scope-loop:outcomes/<slug>/<phase>` — per-phase verdict + trajectory pattern
 
 This follows the namespace convention from ruflo-agentdb ADR-0001 §"Namespace convention" (kebab-case `<plugin-stem>-<intent>`, scoped sub-keys with colons). Coordination expectation: any future plugin that wants to read/write these keys must claim a non-overlapping prefix and reference this ADR.
 
@@ -84,11 +84,11 @@ The smoke script exits non-zero on any failing check and names the first failure
 
 - Two cohesive skills now travel together — no risk of one shipping without the other, no surface-parity drift between the ADR template and the plan parser
 - Versioned: bump `plugin.json` `version:` field to coordinate breaking changes (e.g., new gate types in the plan parser)
-- Discoverable via `claude --plugin-dir ./plugins/apex-plan-loop` for testing, and via marketplace publish for distribution
+- Discoverable via `claude --plugin-dir ./plugins/apex-scope-loop` for testing, and via marketplace publish for distribution
 
 ### Negative
 
-- Two copies of the skill content exist: `.claude/skills/<name>/` and `plugins/apex-plan-loop/skills/<name>/`. Until the originals are removed, drift is possible. **Mitigation:** remove `.claude/skills/decide-plan-loop` and `.claude/skills/dev-plan-loop` once the plugin is verified to work (and document this in the README's "Migration" section).
+- Two copies of the skill content exist: `.claude/skills/<name>/` and `plugins/apex-scope-loop/skills/<name>/`. Until the originals are removed, drift is possible. **Mitigation:** remove `.claude/skills/decide-plan-loop` and `.claude/skills/dev-plan-loop` once the plugin is verified to work (and document this in the README's "Migration" section).
 - The plugin assumes the host has `/loop`, `/schedule`, and either claude-flow or the host's built-in swarm machinery. Documented in Compatibility but not enforced at install time.
 
 ### Neutral
@@ -98,3 +98,4 @@ The smoke script exits non-zero on any failing check and names the first failure
 ## Status changes
 
 - 2026-05-22 — Proposed (initial scaffold)
+- 2026-05-29 — Renamed `apex-plan-loop` → `apex-scope-loop`; the decide-plan-loop authoring stages were relabeled to spell **SCOPE** (Scope, Compose, Optimize, Plan, Execute). Inner skill names (`decide-plan-loop`, `dev-plan-loop`) and the `promote-to-loop.sh` mechanism are unchanged.
