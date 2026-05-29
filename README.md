@@ -1,6 +1,6 @@
 # Apex-Dev-Skills
 
-A Claude Code plugin marketplace for Apex Insights development skills and plugins.
+A Claude Code plugin marketplace for Get Apex Insights development skills and plugins.
 
 ## Install the marketplace
 
