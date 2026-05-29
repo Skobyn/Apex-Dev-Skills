@@ -1,0 +1,2 @@
+{"id": "q001", "question": "How does the auth middleware refresh tokens?", "relevant_doc_ids": ["src/auth/middleware.py", "docs/auth.md#refresh"], "notes": "seeded from src/auth/middleware.py"}
+{"id": "q002", "question": "What env vars configure the embedding model?", "relevant_doc_ids": ["config/settings.py"], "notes": "seeded from config/settings.py"}

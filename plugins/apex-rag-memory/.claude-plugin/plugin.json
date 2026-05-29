@@ -1,0 +1,21 @@
+{
+  "name": "apex-rag-memory",
+  "description": "Diagnose RAG/embedding/memory lifecycle health: audit chunking, detect embedding-model drift, find stale vectors, and regression-test retrieval recall with a golden Q/A harness. Not a vendor connector — it diagnoses retrieval quality.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Apex Insights",
+    "url": "https://getapexinsights.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "rag",
+    "embeddings",
+    "memory",
+    "retrieval",
+    "vector-search",
+    "evaluation",
+    "recall",
+    "lifecycle",
+    "apex"
+  ]
+}
