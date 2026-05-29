@@ -1,7 +1,7 @@
 {
   "plan_path": "/abs/path/to/plan.md",
   "plan_hash": "12-char-sha256-prefix",
-  "namespace": "dev-plan-loop",
+  "namespace": "apex-execute",
   "initialized_at": "ISO-8601",
   "total_tasks": 0,
   "completed_tasks": 0,

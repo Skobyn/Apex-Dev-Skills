@@ -59,7 +59,7 @@ Then `/reload-plugins` (or restart Claude Code) to activate.
 
 # Walks you through: scope → constraints → success criteria → ownership → swarm pref → gate pref
 # Produces: .claude/tasks/my-feature-adr.md + .claude/plans/my-feature-plan.md
-# Promotes to dev-plan-loop state if validation passes
+# Promotes to apex-execute state if validation passes
 
 # 2. Execute the plan one phase at a time
 /apex-scope-loop:iterate .claude/plans/my-feature-plan.md
@@ -72,8 +72,8 @@ Then `/reload-plugins` (or restart Claude Code) to activate.
 
 | Surface | Name | Trigger |
 |---|---|---|
-| Skill | `decide-plan-loop` | Auto-triggered on "decide and plan", "design this with me", "let's plan together" |
-| Skill | `dev-plan-loop` | Auto-triggered on "iterate plan", "autonomous loop", `/loop` invocations referencing a plan |
+| Skill | `apex-plan` | Auto-triggered on "decide and plan", "design this with me", "let's plan together" |
+| Skill | `apex-execute` | Auto-triggered on "iterate plan", "autonomous loop", `/loop` invocations referencing a plan |
 | Command | `/apex-scope-loop:start <slug>` | Begin a new SCOPE authoring session |
 | Command | `/apex-scope-loop:iterate <plan>` | Run one phase of a promoted plan |
 | Agent | `plan-author` | Delegate the SCOPE/COMPOSE/OPTIMIZE rounds to a Sonnet subagent (saves main-thread context) |
@@ -81,13 +81,13 @@ Then `/reload-plugins` (or restart Claude Code) to activate.
 ## How the two skills compose
 
 ```
-decide-plan-loop  (authoring — the five phases spell SCOPE)
+apex-plan  (authoring — the five phases spell SCOPE)
 
    SCOPE → COMPOSE → OPTIMIZE → PLAN → EXECUTE
                                           │
                                           │  init.sh + checkpoint.json
                                           ▼
-dev-plan-loop  (execution — the loop)
+apex-execute  (execution — the loop)
 
    /loop next task → swarm dispatch → acceptance check → advance / halt
         ▲
@@ -127,12 +127,12 @@ The smoke script runs 10 structural checks (frontmatter, namespace declaration, 
 
 ## Migration from `.claude/skills/`
 
-This plugin was extracted from `.claude/skills/decide-plan-loop/` and `.claude/skills/dev-plan-loop/`. Both source skills are still present in the apex repo for backwards compatibility, but the plugin is the canonical version.
+This plugin was extracted from `.claude/skills/apex-plan/` and `.claude/skills/apex-execute/`. Both source skills are still present in the apex repo for backwards compatibility, but the plugin is the canonical version.
 
 To remove the duplicate skill copies once you've verified the plugin works:
 
 ```bash
-rm -rf .claude/skills/decide-plan-loop .claude/skills/dev-plan-loop
+rm -rf .claude/skills/apex-plan .claude/skills/apex-execute
 ```
 
 After that, the only source of truth lives under `plugins/apex-scope-loop/skills/`.
@@ -141,7 +141,7 @@ After that, the only source of truth lives under `plugins/apex-scope-loop/skills
 
 The skills' own SKILL.md files document anti-patterns at length. The most important ones, in plugin terms:
 
-1. **Composing before scoping.** Stage 1 (SCOPE) of decide-plan-loop is non-negotiable.
+1. **Composing before scoping.** Stage 1 (SCOPE) of apex-plan is non-negotiable.
 2. **Vague acceptance criteria.** "Improve UX" is not a runnable check. Either it's `pytest`/`curl`/`grep` or it's an explicit `[gate:human]` with a literal approval phrase.
 3. **Skipping surface parity.** When the work is user-facing, enumerate every surface in the ADR — don't let it default to "obvious."
 4. **One mega-phase.** > 6 tasks or > 1 day of work in one phase → split it. Gates between small phases are cheaper than rollbacks of giant ones.

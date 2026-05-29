@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # architecture-review.sh — Weekly architecture drift check (called by /schedule).
 # Surfaces a brief for the model to spawn a reviewer/architect swarm and
-# write findings to dev-plan-loop memory.
+# write findings to apex-execute memory.
 #
 # Usage: ./architecture-review.sh path/to/plan.md
 set -euo pipefail
@@ -47,6 +47,6 @@ $(echo "$COMMITS" | head -20 | sed 's/^/  /')
 
 OUTPUT:
 - Write findings to $REVIEW_FILE (one bullet per finding, tagged S/I/R)
-- Store summary in memory namespace dev-plan-loop, key=arch-review-$WEEK_TAG
+- Store summary in memory namespace apex-execute, key=arch-review-$WEEK_TAG
 - If any RISK findings: append to MEMORY.md as a project memory
 EOF

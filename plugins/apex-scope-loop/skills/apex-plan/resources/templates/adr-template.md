@@ -257,7 +257,7 @@ If decision crosses an ownership boundary or affects compose-ability of multiple
 When this ADR's status flips to **Accepted**:
 
 1. The companion plan is the source of truth for execution
-2. `promote-to-loop.sh {{SLUG}}` initializes dev-plan-loop state
+2. `promote-to-loop.sh {{SLUG}}` initializes apex-execute state
 3. `/loop iterate the next phase of .claude/plans/{{SLUG}}-plan.md` starts execution
 
 If reviewed by a partner, see [`architecture-decision-approve`](../../architecture-decision-approve/SKILL.md) for the merge flow that signals the implementor via the cross-session inbox.
@@ -266,4 +266,4 @@ If reviewed by a partner, see [`architecture-decision-approve`](../../architectu
 
 ## Changelog
 
-- {{DATE}} — Drafted by {{AUTHOR_EMAIL}} via `decide-plan-loop` skill
+- {{DATE}} — Drafted by {{AUTHOR_EMAIL}} via `apex-plan` skill

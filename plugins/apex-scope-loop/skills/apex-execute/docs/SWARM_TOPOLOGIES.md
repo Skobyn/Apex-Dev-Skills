@@ -17,17 +17,17 @@ npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --
 
 | Tag(s) | Coordinator | Workers | Memory namespace |
 |--------|-------------|---------|------------------|
-| `[backend]` | hierarchical-coordinator | coder, reviewer, tester | `dev-plan-loop` |
-| `[frontend]` | hierarchical-coordinator | coder, reviewer, tester | `dev-plan-loop` |
-| `[backend][security]` | hierarchical-coordinator | coder, security-architect, security-auditor, reviewer, tester | `dev-plan-loop`, `security` |
+| `[backend]` | hierarchical-coordinator | coder, reviewer, tester | `apex-execute` |
+| `[frontend]` | hierarchical-coordinator | coder, reviewer, tester | `apex-execute` |
+| `[backend][security]` | hierarchical-coordinator | coder, security-architect, security-auditor, reviewer, tester | `apex-execute`, `security` |
 | `[security]` | hierarchical-coordinator | security-architect, security-auditor, reviewer | `security` |
-| `[perf]` | hierarchical-coordinator | performance-engineer, perf-analyzer, tester | `dev-plan-loop`, `performance` |
+| `[perf]` | hierarchical-coordinator | performance-engineer, perf-analyzer, tester | `apex-execute`, `performance` |
 | `[ml-serving]` | hierarchical-coordinator | ml-developer, performance-engineer, tester | `ml-serving` |
-| `[infra]` | hierarchical-coordinator | cicd-engineer, system-architect, reviewer | `dev-plan-loop` |
-| `[research]` | mesh-coordinator | researcher (×2), analyst, reviewer | `dev-plan-loop` |
-| `[docs]` | (no swarm — single Agent) | api-docs OR base-template-generator | `dev-plan-loop` |
-| `[tests]` | hierarchical-coordinator | tester, tdd-london-swarm, reviewer | `dev-plan-loop` |
-| `[refactor]` | hierarchical-coordinator | coder, reviewer, code-analyzer, tester | `dev-plan-loop` |
+| `[infra]` | hierarchical-coordinator | cicd-engineer, system-architect, reviewer | `apex-execute` |
+| `[research]` | mesh-coordinator | researcher (×2), analyst, reviewer | `apex-execute` |
+| `[docs]` | (no swarm — single Agent) | api-docs OR base-template-generator | `apex-execute` |
+| `[tests]` | hierarchical-coordinator | tester, tdd-london-swarm, reviewer | `apex-execute` |
+| `[refactor]` | hierarchical-coordinator | coder, reviewer, code-analyzer, tester | `apex-execute` |
 
 Multiple tags → union of rosters (capped at 8 workers per CLAUDE.md).
 
@@ -49,8 +49,8 @@ Brief should include:
 - The plan path and the specific task line
 - The acceptance criteria (verbatim)
 - Any blocked-by dependencies (already-complete predecessors)
-- Memory namespace to read for prior patterns: dev-plan-loop
-- Memory namespace to write outcome to: dev-plan-loop
+- Memory namespace to read for prior patterns: apex-execute
+- Memory namespace to write outcome to: apex-execute
 - Bound: complete in 30 minutes; report verdict + trajectory
 - Constraint: do NOT modify the plan file itself; orchestrator handles that via checkpoint.sh
 ```

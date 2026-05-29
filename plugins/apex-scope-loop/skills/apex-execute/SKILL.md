@@ -1,10 +1,10 @@
 ---
-name: dev-plan-loop
+name: apex-execute
 description: Iterate over a multi-phase development plan using /loop (sense layer), /schedule (continuity layer), and advanced hierarchical-mesh swarms. Use when executing long-running dev plans, automating phase-by-phase implementation, monitoring continuous tasks, or building self-directed agent workflows that persist across sessions. Combines bounded reasoning, memory accumulation, and guardrails for autonomous development cycles.
 allowed-tools: Bash Read Write Edit Glob Grep ScheduleWakeup Agent
 ---
 
-# Dev Plan Loop Orchestrator
+# apex-execute — Phased Plan Execution Loop
 
 ## What This Skill Does
 
@@ -21,24 +21,24 @@ The result is a system that thinks alongside you: it watches reality, persists k
 - Claude Code 2.0+ with `/loop` and `/schedule` skills enabled
 - RuFlo / claude-flow CLI installed (`npx @claude-flow/cli@latest doctor --fix`)
 - A development plan in markdown checklist format (see `resources/templates/dev-plan.md`)
-- Project-level memory namespace configured (default: `dev-plan-loop`)
+- Project-level memory namespace configured (default: `apex-execute`)
 
 ## Quick Start
 
 ```bash
 # 1. Author your dev plan from the template
-cp .claude/skills/dev-plan-loop/resources/templates/dev-plan.md docs/plans/my-plan.md
+cp .claude/skills/apex-execute/resources/templates/dev-plan.md docs/plans/my-plan.md
 $EDITOR docs/plans/my-plan.md
 
 # 2. Initialize state and the orchestrator swarm
-./.claude/skills/dev-plan-loop/scripts/init.sh docs/plans/my-plan.md
+./.claude/skills/apex-execute/scripts/init.sh docs/plans/my-plan.md
 
 # 3. Start the active sense loop (self-paced)
-/loop ./.claude/skills/dev-plan-loop/scripts/iterate.sh docs/plans/my-plan.md
+/loop ./.claude/skills/apex-execute/scripts/iterate.sh docs/plans/my-plan.md
 
 # 4. (Separately) schedule the continuity layer
-/schedule "nightly @ 02:00" ./.claude/skills/dev-plan-loop/scripts/audit.sh docs/plans/my-plan.md
-/schedule "weekly @ Mon 09:00" ./.claude/skills/dev-plan-loop/scripts/architecture-review.sh docs/plans/my-plan.md
+/schedule "nightly @ 02:00" ./.claude/skills/apex-execute/scripts/audit.sh docs/plans/my-plan.md
+/schedule "weekly @ Mon 09:00" ./.claude/skills/apex-execute/scripts/architecture-review.sh docs/plans/my-plan.md
 ```
 
 Inside an active session, prefer the slash form so the model self-paces with `ScheduleWakeup`:
@@ -85,7 +85,7 @@ Each plan phase is dispatched to a fresh hierarchical-mesh swarm (queen-led, 6�
 2. Selects swarm topology + agent roles based on task tags (e.g., `[security]` → security-architect + security-auditor)
 3. Spawns all agents in **one message** with `run_in_background: true`
 4. Waits for verdicts; never polls
-5. Stores trajectory + outcome in AgentDB via `memory_store` with namespace `dev-plan-loop`
+5. Stores trajectory + outcome in AgentDB via `memory_store` with namespace `apex-execute`
 6. Marks the task complete in the plan; commits via hook
 
 See [docs/SWARM_TOPOLOGIES.md](docs/SWARM_TOPOLOGIES.md) for topology-per-phase mapping.
@@ -111,10 +111,10 @@ Example task line:
 ### 2. Initialize
 
 ```bash
-./.claude/skills/dev-plan-loop/scripts/init.sh docs/plans/my-plan.md
+./.claude/skills/apex-execute/scripts/init.sh docs/plans/my-plan.md
 ```
 
-This creates `.dev-plan-state/<plan-hash>/checkpoint.json` and seeds the `dev-plan-loop` memory namespace with plan metadata.
+This creates `.dev-plan-state/<plan-hash>/checkpoint.json` and seeds the `apex-execute` memory namespace with plan metadata.
 
 ### 3. Start the Sense Loop
 
@@ -139,10 +139,10 @@ In a separate command (one-time setup):
 
 ```bash
 # Nightly progress audit
-/schedule "0 2 * * *" ./.claude/skills/dev-plan-loop/scripts/audit.sh docs/plans/my-plan.md
+/schedule "0 2 * * *" ./.claude/skills/apex-execute/scripts/audit.sh docs/plans/my-plan.md
 
 # Weekly architecture review
-/schedule "0 9 * * 1" ./.claude/skills/dev-plan-loop/scripts/architecture-review.sh docs/plans/my-plan.md
+/schedule "0 9 * * 1" ./.claude/skills/apex-execute/scripts/architecture-review.sh docs/plans/my-plan.md
 ```
 
 These persist across sessions and write findings to the memory namespace.
@@ -150,7 +150,7 @@ These persist across sessions and write findings to the memory namespace.
 ### 5. Inspect State Anytime
 
 ```bash
-./.claude/skills/dev-plan-loop/scripts/status.sh docs/plans/my-plan.md
+./.claude/skills/apex-execute/scripts/status.sh docs/plans/my-plan.md
 ```
 
 Prints: completed phases, current phase, last verdict, next scheduled run, memory namespace size.
@@ -173,7 +173,7 @@ After each phase, the orchestrator stores:
 - **Trajectory**: which agents ran, what tools, what files changed
 - **Pattern**: distilled insight ("JWT rotation needed both server-side blacklist AND client cache invalidation")
 
-Stored via `memory_store` with namespace `dev-plan-loop` and embedded with ONNX vectors for `memory_search` recall on future related phases.
+Stored via `memory_store` with namespace `apex-execute` and embedded with ONNX vectors for `memory_search` recall on future related phases.
 
 ### Guardrails
 
@@ -221,7 +221,7 @@ See `resources/templates/hooks-snippet.json` for a starter config.
 
 ### Issue: Memory namespace grows unbounded
 **Cause**: No consolidation
-**Solution**: Schedule monthly: `/schedule "0 3 1 * *" memory consolidate --namespace dev-plan-loop`
+**Solution**: Schedule monthly: `/schedule "0 3 1 * *" memory consolidate --namespace apex-execute`
 
 ### Issue: `/loop` keeps running after plan complete
 **Cause**: ScheduleWakeup not omitted on completion

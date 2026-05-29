@@ -4,16 +4,16 @@ description: Iterate the next phase of a promoted plan via /loop — dispatches 
 argument-hint: "<path-to-plan.md>"
 ---
 
-You are iterating one phase of the dev-plan-loop for `$ARGUMENTS`.
+You are iterating one phase of the apex-execute for `$ARGUMENTS`.
 
-Invoke the `dev-plan-loop` skill and execute one iteration:
+Invoke the `apex-execute` skill and execute one iteration:
 
 1. Read `.dev-plan-state/<plan-hash>/checkpoint.json` to find the next unchecked, unblocked task in `$ARGUMENTS`.
 2. Parse the task's tags (`[backend]`, `[security]`, etc.) and `Swarm:` directive.
 3. Dispatch the appropriate swarm — Agent tool, all spawns in **one message**, `run_in_background: true` where applicable.
 4. Wait for verdicts; never poll. The harness notifies on completion.
 5. Run the task's `Acceptance:` check (a runnable command, file-exists test, regex match, or — for `[gate:human]` — wait for the user's literal approval phrase).
-6. On pass: check the box in `$ARGUMENTS`, write a one-paragraph summary to memory namespace `dev-plan-loop`, advance.
+6. On pass: check the box in `$ARGUMENTS`, write a one-paragraph summary to memory namespace `apex-execute`, advance.
 7. On fail: store the failure pattern, surface to the user with the blocking reason, halt.
 8. If the plan is complete (no unchecked tasks), write `COMPLETE` marker, exit, and do **not** call `ScheduleWakeup`.
 9. Otherwise, use `ScheduleWakeup` with delay matched to the next task's expected wait (1200–1800s for non-urgent work; 270s when actively polling external state).

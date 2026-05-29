@@ -7,7 +7,7 @@
 
 ## Context
 
-The apex repo already had two tightly-coupled skills at `.claude/skills/decide-plan-loop/` and `.claude/skills/dev-plan-loop/`. They form a single workflow: decide produces ADR + plan; dev iterates the plan via `/loop` with bounded swarms. Shipping them as project-only skills hides them from other consumers and couples the workflow to the repo's `.claude/` discovery path. Packaging both as a versioned plugin gives them a distributable, pin-able surface.
+The apex repo already had two tightly-coupled skills at `.claude/skills/apex-plan/` and `.claude/skills/apex-execute/`. They form a single workflow: decide produces ADR + plan; dev iterates the plan via `/loop` with bounded swarms. Shipping them as project-only skills hides them from other consumers and couples the workflow to the repo's `.claude/` discovery path. Packaging both as a versioned plugin gives them a distributable, pin-able surface.
 
 ## Decision
 
@@ -19,8 +19,8 @@ Bundle both skills into a single plugin `apex-scope-loop` with this contract:
 plugins/apex-scope-loop/
 ├── .claude-plugin/plugin.json           # name, version, description, author
 ├── skills/
-│   ├── decide-plan-loop/SKILL.md        # ADR + plan authoring (5-stage flow)
-│   └── dev-plan-loop/SKILL.md           # /loop iteration over phased plans
+│   ├── apex-plan/SKILL.md        # ADR + plan authoring (5-stage flow)
+│   └── apex-execute/SKILL.md           # /loop iteration over phased plans
 ├── commands/
 │   ├── start.md                         # /apex-scope-loop:start <slug>
 │   └── iterate.md                       # /apex-scope-loop:iterate <plan>
@@ -33,7 +33,7 @@ plugins/apex-scope-loop/
 
 ### Skill names
 
-Both SKILL.md files use lowercase kebab-case `name:` matching their directory (`decide-plan-loop`, `dev-plan-loop`). Original dev-plan-loop had `name: "Dev Plan Loop Orchestrator"` which is fixed here for plugin compatibility.
+Both SKILL.md files use lowercase kebab-case `name:` matching their directory (`apex-plan`, `apex-execute`). The skill now named `apex-execute` originally carried `name: "Dev Plan Loop Orchestrator"`, fixed to kebab-case here for plugin compatibility.
 
 ### Surface
 
@@ -44,8 +44,8 @@ Both SKILL.md files use lowercase kebab-case `name:` matching their directory (`
 ### Compatibility
 
 - Claude Code: 2.0+
-- Pins to `@claude-flow/cli` v3.6.major.minor when the dev-plan-loop iteration touches claude-flow swarm tools (`swarm_init`, `agent_spawn`, `swarm_status`). The plugin itself does not declare a `@claude-flow/cli` dependency in plugin.json (claude-flow is consumed via npx at runtime by `iterate.sh`).
-- Python 3.11+ (matches apex repo's overall toolchain — `decide-plan-loop` `start.sh` and `promote-to-loop.sh` shell out to scripts that may invoke `uv run` in apex contexts).
+- Pins to `@claude-flow/cli` v3.6.major.minor when the apex-execute iteration touches claude-flow swarm tools (`swarm_init`, `agent_spawn`, `swarm_status`). The plugin itself does not declare a `@claude-flow/cli` dependency in plugin.json (claude-flow is consumed via npx at runtime by `iterate.sh`).
+- Python 3.11+ (matches apex repo's overall toolchain — `apex-plan` `start.sh` and `promote-to-loop.sh` shell out to scripts that may invoke `uv run` in apex contexts).
 
 ### Namespace coordination
 
@@ -67,8 +67,8 @@ The plugin does **not** ship its own MCP server. All MCP usage flows through too
 
 1. `plugin.json` exists with `name`, `version`, `description`, `author`, `keywords`
 2. `plugin.json` does **not** enumerate `skills`/`commands`/`agents` arrays
-3. `skills/decide-plan-loop/SKILL.md` has valid frontmatter with kebab-case `name:`
-4. `skills/dev-plan-loop/SKILL.md` has valid frontmatter with kebab-case `name:`
+3. `skills/apex-plan/SKILL.md` has valid frontmatter with kebab-case `name:`
+4. `skills/apex-execute/SKILL.md` has valid frontmatter with kebab-case `name:`
 5. Neither SKILL.md uses wildcard tools (`*`, `mcp__*`)
 6. `commands/start.md` and `commands/iterate.md` exist with valid frontmatter
 7. `agents/plan-author.md` exists with valid frontmatter including `model: sonnet`
@@ -88,14 +88,15 @@ The smoke script exits non-zero on any failing check and names the first failure
 
 ### Negative
 
-- Two copies of the skill content exist: `.claude/skills/<name>/` and `plugins/apex-scope-loop/skills/<name>/`. Until the originals are removed, drift is possible. **Mitigation:** remove `.claude/skills/decide-plan-loop` and `.claude/skills/dev-plan-loop` once the plugin is verified to work (and document this in the README's "Migration" section).
+- Two copies of the skill content exist: `.claude/skills/<name>/` and `plugins/apex-scope-loop/skills/<name>/`. Until the originals are removed, drift is possible. **Mitigation:** remove `.claude/skills/apex-plan` and `.claude/skills/apex-execute` once the plugin is verified to work (and document this in the README's "Migration" section).
 - The plugin assumes the host has `/loop`, `/schedule`, and either claude-flow or the host's built-in swarm machinery. Documented in Compatibility but not enforced at install time.
 
 ### Neutral
 
-- `start.sh` in decide-plan-loop references paths like `.claude/tasks/` and `.claude/plans/` — those are project-level conventions that exist outside the plugin. The plugin is opinionated about where ADRs/plans live (apex's existing locations); a future ADR can parameterize this if other repos adopt the plugin.
+- `start.sh` in apex-plan references paths like `.claude/tasks/` and `.claude/plans/` — those are project-level conventions that exist outside the plugin. The plugin is opinionated about where ADRs/plans live (apex's existing locations); a future ADR can parameterize this if other repos adopt the plugin.
 
 ## Status changes
 
 - 2026-05-22 — Proposed (initial scaffold)
-- 2026-05-29 — Renamed `apex-plan-loop` → `apex-scope-loop`; the decide-plan-loop authoring stages were relabeled to spell **SCOPE** (Scope, Compose, Optimize, Plan, Execute). Inner skill names (`decide-plan-loop`, `dev-plan-loop`) and the `promote-to-loop.sh` mechanism are unchanged.
+- 2026-05-29 — Renamed plugin `apex-plan-loop` → `apex-scope-loop`; relabeled the authoring stages to spell **SCOPE** (Scope, Compose, Optimize, Plan, Execute).
+- 2026-05-29 — Renamed the two skills: `decide-plan-loop` → `apex-plan`, `dev-plan-loop` → `apex-execute` (directories, frontmatter `name:`, the execution memory namespace, and all cross-references). The `promote-to-loop.sh` handoff mechanism is unchanged.

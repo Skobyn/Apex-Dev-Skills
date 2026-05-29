@@ -9,7 +9,7 @@
 ## Design Intent
 
 Copy the ADR's "Architecture (SPARC)" + "Constraints" sections here so the weekly
-architecture-review swarm (run by `dev-plan-loop` continuity layer) can detect
+architecture-review swarm (run by `apex-execute` continuity layer) can detect
 drift between code and intent without having to read the full ADR.
 
 **Bounded contexts**: {{BOUNDED_CONTEXTS}}
@@ -51,7 +51,7 @@ Gates are checkbox tasks, just like phases. The line between Phase N and Phase N
 
 ## Phases
 
-> **Task format** (the dev-plan-loop `iterate.sh` parses these):
+> **Task format** (the apex-execute `iterate.sh` parses these):
 > ```
 > - [ ] **Phase X.Y** [tag1][tag2] Imperative task title
 >   - Acceptance: <runnable check>
@@ -59,7 +59,7 @@ Gates are checkbox tasks, just like phases. The line between Phase N and Phase N
 >   - Blocked-by: phase-X.Y         (optional)
 > ```
 >
-> **Tags route topology** (see `dev-plan-loop/docs/SWARM_TOPOLOGIES.md`):
+> **Tags route topology** (see `apex-execute/docs/SWARM_TOPOLOGIES.md`):
 > `[backend]` `[frontend]` `[security]` `[perf]` `[ml-serving]` `[infra]`
 > `[research]` `[docs]` `[tests]` `[refactor]` `[gate:auto]` `[gate:human]` `[gate:partner:<email>]`
 
@@ -208,7 +208,7 @@ Integration, deployment, monitoring, docs. The "make it real" phase.
 ## Open questions (escalations)
 
 > If anything during execution requires a human decision, write it here with `@OWNER` tag so the
-> nightly audit (`dev-plan-loop/scripts/audit.sh`) surfaces it.
+> nightly audit (`apex-execute/scripts/audit.sh`) surfaces it.
 
 - (none yet)
 
@@ -220,10 +220,10 @@ Run alongside `/loop`:
 
 ```bash
 # Nightly progress audit
-/schedule "0 2 * * *" .claude/skills/dev-plan-loop/scripts/audit.sh .claude/plans/{{SLUG}}-plan.md
+/schedule "0 2 * * *" .claude/skills/apex-execute/scripts/audit.sh .claude/plans/{{SLUG}}-plan.md
 
 # Weekly architecture drift review
-/schedule "0 9 * * 1" .claude/skills/dev-plan-loop/scripts/architecture-review.sh .claude/plans/{{SLUG}}-plan.md
+/schedule "0 9 * * 1" .claude/skills/apex-execute/scripts/architecture-review.sh .claude/plans/{{SLUG}}-plan.md
 ```
 
 ---
@@ -232,8 +232,8 @@ Run alongside `/loop`:
 
 ```bash
 # Current state
-.claude/skills/decide-plan-loop/scripts/status.sh {{SLUG}}
+.claude/skills/apex-plan/scripts/status.sh {{SLUG}}
 
 # Evaluate a single gate without /loop running
-.claude/skills/decide-plan-loop/scripts/gate.sh .claude/plans/{{SLUG}}-plan.md gate-3-4
+.claude/skills/apex-plan/scripts/gate.sh .claude/plans/{{SLUG}}-plan.md gate-3-4
 ```

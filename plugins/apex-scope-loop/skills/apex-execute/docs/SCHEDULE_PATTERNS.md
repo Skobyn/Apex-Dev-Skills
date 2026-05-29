@@ -27,10 +27,10 @@
 ### 1. Nightly progress audit (recurring)
 
 ```
-/schedule "0 2 * * *" run .claude/skills/dev-plan-loop/scripts/audit.sh docs/plans/my-plan.md and store the brief into AgentDB namespace dev-plan-loop
+/schedule "0 2 * * *" run .claude/skills/apex-execute/scripts/audit.sh docs/plans/my-plan.md and store the brief into AgentDB namespace apex-execute
 ```
 
-**Output**: `STATE_DIR/audits/$DATE.json` + memory entry `audit-$DATE` in namespace `dev-plan-loop`.
+**Output**: `STATE_DIR/audits/$DATE.json` + memory entry `audit-$DATE` in namespace `apex-execute`.
 **Why nightly**: Captures progress between sessions. Diff vs. previous audit surfaces stalls.
 
 ### 2. Daily summary (recurring, end-of-day)
@@ -44,7 +44,7 @@
 ### 3. Weekly architecture review (recurring)
 
 ```
-/schedule "0 9 * * 1" run .claude/skills/dev-plan-loop/scripts/architecture-review.sh docs/plans/my-plan.md, spawn a swarm with reviewer + system-architect + security-architect, write findings to STATE_DIR/architecture-reviews/$WEEK.md
+/schedule "0 9 * * 1" run .claude/skills/apex-execute/scripts/architecture-review.sh docs/plans/my-plan.md, spawn a swarm with reviewer + system-architect + security-architect, write findings to STATE_DIR/architecture-reviews/$WEEK.md
 ```
 
 **Why**: Detects drift between code and design intent before it ossifies.
@@ -52,7 +52,7 @@
 ### 4. Monthly retrospective (recurring)
 
 ```
-/schedule "0 3 1 * *" read all entries in AgentDB namespace dev-plan-loop from the last 30 days, distill into 3-5 patterns (what worked, what stalled, why), store as pattern entries with namespace dev-plan-loop-patterns
+/schedule "0 3 1 * *" read all entries in AgentDB namespace apex-execute from the last 30 days, distill into 3-5 patterns (what worked, what stalled, why), store as pattern entries with namespace apex-execute-patterns
 ```
 
 **Why**: Turns a month of ephemeral telemetry into durable judgment.

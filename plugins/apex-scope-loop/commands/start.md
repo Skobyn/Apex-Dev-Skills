@@ -1,16 +1,16 @@
 ---
 name: start
-description: Begin a new decide-plan-loop session — author an ADR + phased plan with the user via structured feedback rounds. Pass a slug as $ARGUMENTS.
+description: Begin a new apex-plan session — author an ADR + phased plan with the user via structured feedback rounds. Pass a slug as $ARGUMENTS.
 argument-hint: "<kebab-slug>"
 ---
 
-You are starting a `decide-plan-loop` session for slug `$ARGUMENTS`.
+You are starting an `apex-plan` session for slug `$ARGUMENTS`.
 
-Invoke the `decide-plan-loop` skill and run its five-stage flow:
+Invoke the `apex-plan` skill and run its five-stage flow:
 
-1. **SCOPE** — Use AskUserQuestion for the 6 feedback-interview rounds defined in `skills/decide-plan-loop/resources/templates/feedback-interview.md` (scope, constraints, success criteria, ownership, execution preference, gating preference). Capture each answer in working memory.
+1. **SCOPE** — Use AskUserQuestion for the 6 feedback-interview rounds defined in `skills/apex-plan/resources/templates/feedback-interview.md` (scope, constraints, success criteria, ownership, execution preference, gating preference). Capture each answer in working memory.
 
-2. **COMPOSE** — Run `skills/decide-plan-loop/scripts/start.sh $ARGUMENTS "<Title>"` to scaffold:
+2. **COMPOSE** — Run `skills/apex-plan/scripts/start.sh $ARGUMENTS "<Title>"` to scaffold:
    - `.claude/tasks/$ARGUMENTS-adr.md`
    - `.claude/plans/$ARGUMENTS-plan.md`
    Seed both with the Stage 1 answers.
@@ -19,7 +19,7 @@ Invoke the `decide-plan-loop` skill and run its five-stage flow:
 
 4. **PLAN** — Convert resolved ADR into the phased plan. Each task line must include: imperative title, `Acceptance:`, `Swarm:` directive, optional `Blocked-by:`. Place `[gate:auto]`, `[gate:human]`, or `[gate:partner:<email>]` checkboxes between phases.
 
-5. **EXECUTE** — Run `skills/decide-plan-loop/scripts/promote-to-loop.sh $ARGUMENTS` to promote the validated plan into the dev-plan-loop. On success, print the exact `/loop` command the user should run next (which corresponds to this plugin's `/apex-scope-loop:iterate` command).
+5. **EXECUTE** — Run `skills/apex-plan/scripts/promote-to-loop.sh $ARGUMENTS` to promote the validated plan into the apex-execute loop. On success, print the exact `/loop` command the user should run next (which corresponds to this plugin's `/apex-scope-loop:iterate` command).
 
 Refuse to promote if:
 - Any Open Question still shows `Default:` (not `Decision:`)

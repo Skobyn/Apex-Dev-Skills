@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# start.sh — Bootstrap a new decide-plan-loop ADR + plan from templates.
+# start.sh — Bootstrap a new apex-plan ADR + plan from templates.
 #
 # Usage:
 #   ./start.sh <kebab-slug> "<Title>"

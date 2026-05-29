@@ -15,7 +15,7 @@ TOTAL=$(awk '/^- \[[ x]\]/{c++} END{print c+0}' "$PLAN")
 DONE=$(awk '/^- \[x\]/{c++} END{print c+0}' "$PLAN")
 TODO=$((TOTAL - DONE))
 
-echo "==== dev-plan-loop status ===="
+echo "==== apex-execute status ===="
 echo "Plan       : $PLAN"
 echo "Hash       : $PLAN_HASH"
 echo "State      : $STATE_DIR"

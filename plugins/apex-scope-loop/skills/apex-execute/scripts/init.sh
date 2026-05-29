@@ -9,7 +9,7 @@ PLAN="${1:?usage: init.sh PATH_TO_PLAN.md}"
 PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
 PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
 STATE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.dev-plan-state/$PLAN_HASH"
-NAMESPACE="dev-plan-loop"
+NAMESPACE="apex-execute"
 
 mkdir -p "$STATE_DIR"
 

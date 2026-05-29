@@ -1,6 +1,6 @@
 # Worked example — Per-venue rate limiting
 
-A walkthrough of the `decide-plan-loop` skill end-to-end for a small but non-trivial feature: adding per-venue rate limits to the backend API.
+A walkthrough of the `apex-plan` skill end-to-end for a small but non-trivial feature: adding per-venue rate limits to the backend API.
 
 ## Session transcript (abbreviated)
 
@@ -36,7 +36,7 @@ A walkthrough of the `decide-plan-loop` skill end-to-end for a small but non-tri
 ### Stage 2: COMPOSE
 
 ```bash
-.claude/skills/decide-plan-loop/scripts/start.sh per-venue-rate-limit "Per-Venue Rate Limiting"
+.claude/skills/apex-plan/scripts/start.sh per-venue-rate-limit "Per-Venue Rate Limiting"
 # → wrote .claude/tasks/per-venue-rate-limit-adr.md
 # → wrote .claude/plans/per-venue-rate-limit-plan.md
 ```
@@ -71,7 +71,7 @@ Plan generated with five SPARC phases. Highlights:
 ### Stage 5: EXECUTE
 
 ```bash
-.claude/skills/decide-plan-loop/scripts/promote-to-loop.sh per-venue-rate-limit
+.claude/skills/apex-plan/scripts/promote-to-loop.sh per-venue-rate-limit
 
 # Validation checklist:
 # [x] ADR has every section filled
@@ -85,7 +85,7 @@ Plan generated with five SPARC phases. Highlights:
 # [x] Blocked-by graph: no cycles
 # [x] Per-phase Swarm directive present
 #
-# → Initialized dev-plan-loop state at .dev-plan-state/8a7c2d3e9f1b/
+# → Initialized apex-execute state at .dev-plan-state/8a7c2d3e9f1b/
 # → Ready: /loop iterate the next phase of .claude/plans/per-venue-rate-limit-plan.md
 ```
 
@@ -93,7 +93,7 @@ Plan generated with five SPARC phases. Highlights:
 
 - `.claude/tasks/per-venue-rate-limit-adr.md` — the ADR (durable; lives forever)
 - `.claude/plans/per-venue-rate-limit-plan.md` — the plan (consumed by `/loop`)
-- `.dev-plan-state/<hash>/checkpoint.json` — state managed by dev-plan-loop
+- `.dev-plan-state/<hash>/checkpoint.json` — state managed by apex-execute
 
 ## What happens next
 
@@ -103,7 +103,7 @@ User runs:
 /loop iterate the next phase of .claude/plans/per-venue-rate-limit-plan.md
 ```
 
-dev-plan-loop owns execution. When the loop reaches Gate 4→5, the orchestrator:
+apex-execute owns execution. When the loop reaches Gate 4→5, the orchestrator:
 
 1. Posts to `/api/agent-coordination/inbox` with `forUser: chris@getapexinsights.com`, `kind: phase-gate-approval`, `actionPrompt: "Review per-venue rate limiting before ship"`
 2. Sets `halted: true` in checkpoint with `halt_reason: "awaiting partner gate 4-5"`

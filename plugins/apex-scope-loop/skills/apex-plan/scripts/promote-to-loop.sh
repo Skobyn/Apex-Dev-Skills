@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # promote-to-loop.sh — Validate the ADR + plan are ready, then hand off to
-# dev-plan-loop by calling its init.sh on the plan.
+# apex-execute by calling its init.sh on the plan.
 #
 # Usage:
 #   ./promote-to-loop.sh <slug>
 #
 # Exit codes:
-#   0  — Promoted; dev-plan-loop state initialized
+#   0  — Promoted; apex-execute state initialized
 #   1  — Validation failed (error message names the first failing item)
 #   2  — Bad args or missing files
 #
@@ -19,7 +19,7 @@
 #   6. Plan has >= 1 unchecked phase task
 #   7. Every plan task has an Acceptance line
 #   8. Every gate task has a runnable Acceptance OR human-ack phrase
-#   9. dev-plan-loop's init.sh exists and is executable
+#   9. apex-execute's init.sh exists and is executable
 
 set -euo pipefail
 
@@ -32,7 +32,7 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 ADR_PATH="$REPO_ROOT/.claude/tasks/${SLUG}-adr.md"
 PLAN_PATH="$REPO_ROOT/.claude/plans/${SLUG}-plan.md"
-DPL_INIT="$REPO_ROOT/.claude/skills/dev-plan-loop/scripts/init.sh"
+DPL_INIT="$REPO_ROOT/.claude/skills/apex-execute/scripts/init.sh"
 
 fail() {
   echo "VALIDATION FAILED: $1" >&2
@@ -130,13 +130,13 @@ if errors:
 PY
 fi
 
-# 9. dev-plan-loop init.sh exists
-[[ -x "$DPL_INIT" ]] || fail "dev-plan-loop init.sh not found or not executable at $DPL_INIT"
+# 9. apex-execute init.sh exists
+[[ -x "$DPL_INIT" ]] || fail "apex-execute init.sh not found or not executable at $DPL_INIT"
 
 # All checks pass — hand off
 echo "Validation passed."
 echo
-echo "Handing off to dev-plan-loop..."
+echo "Handing off to apex-execute..."
 echo "  $ $DPL_INIT $PLAN_PATH"
 echo
 "$DPL_INIT" "$PLAN_PATH"
@@ -148,5 +148,5 @@ echo "    /loop iterate the next phase of $PLAN_PATH"
 echo
 echo "Optionally schedule continuity layer:"
 echo
-echo "    /schedule \"0 2 * * *\" .claude/skills/dev-plan-loop/scripts/audit.sh $PLAN_PATH"
-echo "    /schedule \"0 9 * * 1\" .claude/skills/dev-plan-loop/scripts/architecture-review.sh $PLAN_PATH"
+echo "    /schedule \"0 2 * * *\" .claude/skills/apex-execute/scripts/audit.sh $PLAN_PATH"
+echo "    /schedule \"0 9 * * 1\" .claude/skills/apex-execute/scripts/architecture-review.sh $PLAN_PATH"

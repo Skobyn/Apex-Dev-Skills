@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/skills/dev-plan-loop/scripts/guardrail-pre-edit.mjs",
+            "command": "node .claude/skills/apex-execute/scripts/guardrail-pre-edit.mjs",
             "_purpose": "Block writes to security-sensitive paths unless a security agent is in the active swarm"
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/skills/dev-plan-loop/scripts/status.sh ${DEV_PLAN_PATH:-docs/plans/active.md}",
+            "command": "bash .claude/skills/apex-execute/scripts/status.sh ${DEV_PLAN_PATH:-docs/plans/active.md}",
             "_purpose": "Print plan status before yielding back to the user"
           }
         ]

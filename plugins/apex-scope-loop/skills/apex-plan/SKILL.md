@@ -1,15 +1,15 @@
 ---
-name: decide-plan-loop
-description: Author an architecture decision (ADR) with SPARC-style spec + pseudocode, interactively refine it with the user via structured feedback rounds, then emit a phased development plan that's directly executable by the dev-plan-loop skill — with per-phase swarm directives (single agent, multi-agent, or full hierarchical-mesh swarm) and automated/human approval gates that close each phase before the next begins. Use when starting a non-trivial feature that needs both a durable decision record AND an actionable build plan, when the user expects to be involved in design choices ("design this with me," "let's plan this together," "decide and then build"), when the plan should launch agents at well-defined checkpoints, or when phasing + gating matters because work crosses ownership boundaries.
+name: apex-plan
+description: Author an architecture decision (ADR) with SPARC-style spec + pseudocode, interactively refine it with the user via structured feedback rounds, then emit a phased development plan that's directly executable by the apex-execute skill — with per-phase swarm directives (single agent, multi-agent, or full hierarchical-mesh swarm) and automated/human approval gates that close each phase before the next begins. Use when starting a non-trivial feature that needs both a durable decision record AND an actionable build plan, when the user expects to be involved in design choices ("design this with me," "let's plan this together," "decide and then build"), when the plan should launch agents at well-defined checkpoints, or when phasing + gating matters because work crosses ownership boundaries.
 allowed-tools: Bash Read Write Edit Glob Grep AskUserQuestion Agent
 ---
 
 # Decide → Plan → Loop
 
-This skill is the upstream bookend for [dev-plan-loop](../dev-plan-loop/SKILL.md). It turns a fuzzy "we should build X" into:
+This skill is the upstream bookend for [apex-execute](../apex-execute/SKILL.md). It turns a fuzzy "we should build X" into:
 
 1. A SPARC-shaped **ADR** at `.claude/tasks/<slug>-adr.md` (the durable rationale)
-2. A phased **plan** at `.claude/plans/<slug>-plan.md` (the executable checklist, dev-plan-loop compatible)
+2. A phased **plan** at `.claude/plans/<slug>-plan.md` (the executable checklist, apex-execute compatible)
 3. **Approval gates** between phases (auto-verifiable or human-required)
 
 Both docs are co-authored with the user through 4–6 structured feedback rounds, so by the time the plan is ready to `/loop`, the user has signed off on every meaningful choice.
@@ -35,10 +35,10 @@ Do NOT use this skill for:
 
 | Skill | Role |
 |---|---|
-| **decide-plan-loop** (this) | Produces ADR **+** dev-plan-loop-ready plan in one collaborative session |
+| **apex-plan** (this) | Produces ADR **+** apex-execute-ready plan in one collaborative session |
 | `architecture-decision-propose` | ADR only, opens a draft PR for partner review (use when a partner must sign off before any plan) |
 | `architecture-decision-approve` | Reviewer-side of the propose flow |
-| `dev-plan-loop` | Executes a plan; this skill emits plans for it |
+| `apex-execute` | Executes a plan; this skill emits plans for it |
 | `sparc-methodology` | The vocabulary for spec/pseudocode/architecture/refinement/completion sections inside the ADR |
 
 If a partner must sign off, prefer `architecture-decision-propose` first, then return here to build the plan after merge.
@@ -57,11 +57,11 @@ If a partner must sign off, prefer `architecture-decision-propose` first, then r
 4. PLAN      — Convert resolved ADR into phased plan: per-phase swarm directive,
               acceptance criteria, blocked-by graph, and a gate task between phases
    ↓
-5. EXECUTE   — Run `scripts/promote-to-loop.sh <slug>` to promote into dev-plan-loop
+5. EXECUTE   — Run `scripts/promote-to-loop.sh <slug>` to promote into apex-execute
               state; print the `/loop` command for the user to start
 ```
 
-Stages 1–4 are interactive. Stage 5 hands off to dev-plan-loop.
+Stages 1–4 are interactive. Stage 5 hands off to apex-execute.
 
 ## Stage 1: SCOPE
 
@@ -81,7 +81,7 @@ Capture answers in working memory; surface them back to the user in Stage 2 as t
 Create both docs from the templates:
 
 ```bash
-.claude/skills/decide-plan-loop/scripts/start.sh <kebab-slug> "<Title>"
+.claude/skills/apex-plan/scripts/start.sh <kebab-slug> "<Title>"
 # Creates:
 #   .claude/tasks/<slug>-adr.md   (from resources/templates/adr-template.md)
 #   .claude/plans/<slug>-plan.md  (from resources/templates/plan-template.md)
@@ -97,7 +97,7 @@ The ADR template has SPARC-shaped sections — see [resources/templates/adr-temp
 - **Risks & Mitigations**
 - **Consequences** — positive / negative / neutral
 
-The plan template (see [resources/templates/plan-template.md](resources/templates/plan-template.md)) maps SPARC phases to dev-plan-loop format with per-phase swarm directives and inter-phase gates.
+The plan template (see [resources/templates/plan-template.md](resources/templates/plan-template.md)) maps SPARC phases to apex-execute format with per-phase swarm directives and inter-phase gates.
 
 ## Stage 3: OPTIMIZE
 
@@ -124,7 +124,7 @@ Convert the resolved ADR into the phased plan. The plan template uses SPARC as t
 | Refinement | Phase 4+ | TDD cycle: red → green → refactor per feature slice |
 | Completion | Final phase | Integration, deployment, docs, monitoring |
 
-Each task line uses the dev-plan-loop format (parsed by `iterate.sh`):
+Each task line uses the apex-execute format (parsed by `iterate.sh`):
 
 ```markdown
 - [ ] **Phase X.Y** [tag1][tag2] Imperative task title
@@ -170,20 +170,20 @@ See [resources/templates/plan-template.md](resources/templates/plan-template.md)
 Once the user confirms the plan:
 
 ```bash
-.claude/skills/decide-plan-loop/scripts/promote-to-loop.sh <slug>
+.claude/skills/apex-plan/scripts/promote-to-loop.sh <slug>
 ```
 
 This:
 
 1. Validates ADR status is **Accepted** (not Proposed)
 2. Validates plan exists and has at least one unchecked task
-3. Calls `.claude/skills/dev-plan-loop/scripts/init.sh .claude/plans/<slug>-plan.md` to seed state
+3. Calls `.claude/skills/apex-execute/scripts/init.sh .claude/plans/<slug>-plan.md` to seed state
 4. Prints the `/loop` command the user should run next, e.g.:
    ```
    /loop iterate the next phase of .claude/plans/<slug>-plan.md
    ```
 
-From here on, dev-plan-loop owns execution. This skill's job is done.
+From here on, apex-execute owns execution. This skill's job is done.
 
 ## Surface-parity, debugging, and venue-specific guidance
 
@@ -217,7 +217,7 @@ Before promoting, the skill verifies:
 | Script | Purpose |
 |--------|---------|
 | `scripts/start.sh <slug> "<Title>"` | Bootstrap ADR + plan from templates with author/date/slug substitutions |
-| `scripts/promote-to-loop.sh <slug>` | Run validation checklist, hand off to dev-plan-loop's init.sh |
+| `scripts/promote-to-loop.sh <slug>` | Run validation checklist, hand off to apex-execute's init.sh |
 | `scripts/gate.sh <plan> <gate-id>` | Evaluate a single gate (auto/human/partner) outside the loop |
 | `scripts/status.sh <slug>` | Print ADR status, plan completion %, current gate, next phase |
 

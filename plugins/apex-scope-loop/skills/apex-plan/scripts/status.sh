@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# status.sh — Print a snapshot of a decide-plan-loop initiative.
+# status.sh — Print a snapshot of a apex-plan initiative.
 #
 # Usage:
 #   ./status.sh <slug>
@@ -9,7 +9,7 @@
 #   - Plan path + completion % (checked tasks / total tasks)
 #   - Current phase (next unchecked task)
 #   - Next gate (if any pending)
-#   - dev-plan-loop checkpoint state (if initialized)
+#   - apex-execute checkpoint state (if initialized)
 
 set -euo pipefail
 
@@ -25,7 +25,7 @@ PLAN="$REPO_ROOT/.claude/plans/${SLUG}-plan.md"
 
 print_line() { printf '  %-20s %s\n' "$1" "$2"; }
 
-echo "=== decide-plan-loop status: $SLUG ==="
+echo "=== apex-plan status: $SLUG ==="
 echo
 
 # ADR
@@ -67,7 +67,7 @@ else
   print_line "Plan:" "(not found — run start.sh)"
 fi
 
-# dev-plan-loop checkpoint
+# apex-execute checkpoint
 if [[ -f "$PLAN" ]]; then
   PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
   PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"

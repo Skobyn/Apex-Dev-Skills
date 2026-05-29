@@ -24,7 +24,7 @@ done
 ok "plugin.json does not enumerate skills/commands/agents"
 
 # 3 & 4. Both SKILL.md files have valid kebab-case name
-for skill in decide-plan-loop dev-plan-loop; do
+for skill in apex-plan apex-execute; do
   S="$PLUGIN_ROOT/skills/$skill/SKILL.md"
   [ -f "$S" ] || fail "missing skill: $S"
   # Extract name: line from frontmatter (must be unquoted kebab-case)

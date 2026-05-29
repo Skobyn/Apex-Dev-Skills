@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # audit.sh — Nightly progress audit (called by /schedule).
 # Diffs current plan state vs. previous run and emits a brief for the model
-# to write into the dev-plan-loop memory namespace and MEMORY.md.
+# to write into the apex-execute memory namespace and MEMORY.md.
 #
 # Usage: ./audit.sh path/to/plan.md
 set -euo pipefail
@@ -49,7 +49,7 @@ Plan       : $PLAN
 Progress   : $DONE / $TOTAL  (delta vs. last audit: +$DELTA)
 Recent     : $(echo "$RECENT_COMMITS" | wc -l | xargs) commits in last 24h
 
-Briefing for memory store (namespace=dev-plan-loop, key=audit-$TODAY):
+Briefing for memory store (namespace=apex-execute, key=audit-$TODAY):
 - $DELTA tasks completed since last audit
 - $((TOTAL - DONE)) tasks remaining
 - Recent commits touching plan: see $THIS_AUDIT
