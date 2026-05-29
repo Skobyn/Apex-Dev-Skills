@@ -1,0 +1,20 @@
+{
+  "name": "apex-agent-team",
+  "description": "Agent-team coordination tooling: TeamLint statically audits subagent/agent-team config before a run, and ContextBudget hooks warn before compaction silently drops critical state.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Apex Insights",
+    "url": "https://getapexinsights.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "subagents",
+    "agent-team",
+    "coordination",
+    "lint",
+    "context-budget",
+    "hooks",
+    "apex"
+  ]
+}
