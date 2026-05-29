@@ -8,3 +8,9 @@ node_modules/
 agentdb.rvf
 agentdb.rvf.lock
 ruvector.db
+
+# apex-execute local runtime state (machine-specific, not part of the marketplace)
+.dev-plan-state/
+
+# Local skill symlinks created by promote-to-loop (absolute paths, machine-specific)
+.claude/skills/

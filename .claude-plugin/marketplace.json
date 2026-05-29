@@ -25,6 +25,128 @@
         "orchestration",
         "apex"
       ]
+    },
+    {
+      "name": "apex-guardrails",
+      "description": "Deterministic runtime guardrails via PreToolUse hooks: hard-block edits to sensitive paths, deny destructive bash, scan tool inputs for secrets, and compile a declarative YAML policy into enforced matcher config.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-guardrails",
+      "keywords": [
+        "guardrails",
+        "hooks",
+        "security",
+        "policy-as-code",
+        "secret-scanning",
+        "enforcement",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-agent-team",
+      "description": "Agent-team coordination tooling: TeamLint statically audits subagent/agent-team config before a run, and ContextBudget hooks warn before compaction silently drops critical state.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-agent-team",
+      "keywords": [
+        "agents",
+        "subagents",
+        "agent-team",
+        "coordination",
+        "lint",
+        "context-budget",
+        "hooks",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-legacy-comprehension",
+      "description": "Understand and safely change legacy or AI-generated code: pin current behavior with characterization tests before refactoring, and build a living system map of an unfamiliar codebase in an isolated subagent context.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-legacy-comprehension",
+      "keywords": [
+        "legacy",
+        "characterization-tests",
+        "pinning-tests",
+        "refactoring",
+        "ai-generated-code",
+        "codebase-comprehension",
+        "system-map",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-contracts-reliability",
+      "description": "Tool-contract validation + runtime reliability: a PostToolUse ledger that infers per-tool schemas and flags contract drift, plus FlakeGuard detection of non-deterministic agent failures (retries, partial failures, flaky tools).",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-contracts-reliability",
+      "keywords": [
+        "contracts",
+        "reliability",
+        "tool-validation",
+        "schema-drift",
+        "flake-detection",
+        "hooks",
+        "observability",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-agent-observability",
+      "description": "Trace, replay, and cost-attribute multi-agent runs: hook-driven JSONL AgentTrace, deterministic OrchestrationReplay, and per-subagent TokenLens — pure artifacts, with an optional read-only MCP dashboard server.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-agent-observability",
+      "keywords": [
+        "observability",
+        "tracing",
+        "multi-agent",
+        "subagent",
+        "replay",
+        "tokens",
+        "cost",
+        "hooks",
+        "mcp",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-rag-memory",
+      "description": "Diagnose RAG/embedding/memory lifecycle health: audit chunking, detect embedding-model drift, find stale vectors, and regression-test retrieval recall with a golden Q/A harness. Not a vendor connector — it diagnoses retrieval quality.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-rag-memory",
+      "keywords": [
+        "rag",
+        "embeddings",
+        "memory",
+        "retrieval",
+        "vector-search",
+        "evaluation",
+        "recall",
+        "lifecycle",
+        "apex"
+      ]
     }
   ]
 }
