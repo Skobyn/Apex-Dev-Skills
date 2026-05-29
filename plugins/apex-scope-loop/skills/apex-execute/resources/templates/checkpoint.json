@@ -6,6 +6,10 @@
   "total_tasks": 0,
   "completed_tasks": 0,
   "current_phase": null,
+  "worktree_path": "/abs/path/.dev-plan-state/<hash>/worktree",
+  "worktree_branch": "apex-scope-loop/<slug>",
+  "base_branch": "main",
+  "landed": false,
   "last_verdict": {
     "line_no": 0,
     "result": "pass | fail",

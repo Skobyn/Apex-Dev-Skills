@@ -8,6 +8,8 @@
 #
 # Emits to stdout (machine-readable):
 #   STATE: <state-dir>
+#   WORKTREE: <abs-path>      # cwd the swarm MUST operate in (empty if opted out)
+#   BRANCH: <worktree-branch>
 #   PHASE: <phase-id>
 #   TAGS: <comma-separated>
 #   TASK: <task-line>
@@ -26,6 +28,18 @@ CHECKPOINT="$STATE_DIR/checkpoint.json"
 
 [[ -f "$CHECKPOINT" ]] || { echo "STATUS: ERROR not initialized — run init.sh first"; exit 1; }
 
+# Worktree the plan is bound to (recorded by init.sh).
+read_field() { grep -o "\"$1\": \"[^\"]*\"" "$CHECKPOINT" | head -1 | sed 's/.*: "//; s/"$//'; }
+WORKTREE="$(read_field worktree_path)"
+WT_BRANCH="$(read_field worktree_branch)"
+
+# Enforce worktree-bound execution: if a worktree was recorded, it must exist.
+if [[ -n "$WORKTREE" && ! -d "$WORKTREE" ]]; then
+  echo "STATE: $STATE_DIR"
+  echo "STATUS: ERROR worktree missing at $WORKTREE — re-run init.sh to recreate it"
+  exit 1
+fi
+
 # Halted?
 if grep -q '"halted": true' "$CHECKPOINT"; then
   echo "STATE: $STATE_DIR"
@@ -37,7 +51,10 @@ fi
 NEXT_LINE=$(grep -nE '^- \[ \]' "$PLAN" | head -1 || true)
 if [[ -z "$NEXT_LINE" ]]; then
   echo "STATE: $STATE_DIR"
+  echo "WORKTREE: $WORKTREE"
+  echo "BRANCH: $WT_BRANCH"
   echo "STATUS: COMPLETE"
+  echo "NEXT: final gate passed — land the worktree with land.sh $PLAN_ABS"
   touch "$STATE_DIR/COMPLETE"
   exit 0
 fi
@@ -82,6 +99,8 @@ if [[ -n "$BLOCKED_BY" ]]; then
 fi
 
 echo "STATE: $STATE_DIR"
+echo "WORKTREE: $WORKTREE"
+echo "BRANCH: $WT_BRANCH"
 echo "PHASE: $PHASE_ID"
 echo "TAGS: $TAGS"
 echo "TASK: $TASK_LINE"
