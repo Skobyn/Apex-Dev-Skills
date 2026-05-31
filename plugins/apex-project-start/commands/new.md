@@ -40,7 +40,8 @@ Now run the concrete setup interview with `AskUserQuestion`, informed by Phase 0
 
 1. **Project identity** — name, one-line purpose (you likely have these from Phase 0; confirm), public or private.
 2. **Stack** — TypeScript/JavaScript, Python, Go, or Rust (one primary; note polyglot if real). Propose the stack your research suggests and let them override. Load only the matching stack reference later.
-3. **Project type** — application, library/package, service (long-running, deployed), or CLI. Gates observability and Dockerfile inclusion.
+3. **Project type** — application, library/package, service (long-running, deployed), or CLI. Gates the directory skeleton (services get `docs/runbooks` + `infra/`; libraries don't), observability, and Dockerfile inclusion.
+   - **Repo structure** — single-package (default) or **monorepo** (apps/ + packages/, Turborepo/Nx or Cargo workspace). Default monorepo only for tightly-coupled multi-package or polyglot work. Picks the skeleton in directory-skeletons.md.
 4. **Audience** — solo/personal vs team/org. Team adds CODEOWNERS, CONTRIBUTING, branch-protection guidance, stricter review gates.
 5. **Governance level** — confirm Full paved-road (default) or let them drop layers (community-health files, pre-commit + **pre-push** hooks, CI security scans, ADRs, changelog/release tooling, **periodic maintenance** = dead-code sweep + last-run tracking + >3-day reminder, **GitHub hardening** = rulesets/OIDC/merge-queue/SHA-pinned actions, **sin-bin** quarantine dir, optional **SonarQube Cloud** quality gate). Maintenance + GitHub hardening (team) default on; sin-bin and SonarQube default off (offer SonarQube as the recommended governance gate).
 6. **License** — if public: MIT (reach) / Apache-2.0 (patent grant, SDKs) / AGPL-3.0 (copyleft/SaaS) / BSL-1.1 (commercial). If private: proprietary/none.
@@ -58,6 +59,7 @@ Produce a concise, reviewable plan listing **exactly** what will be created and 
 
 ```
 Apex Project Start plan for <name> (TypeScript library, team, MIT, full governance)
+ Skeleton:         src/ tests/ docs/{adr,architecture} scripts/ .github/  (single-package)
  Universal:        .gitignore .gitattributes .editorconfig README.md LICENSE
  Community health: CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md .github/CODEOWNERS
                    .github/ISSUE_TEMPLATE/* PULL_REQUEST_TEMPLATE.md

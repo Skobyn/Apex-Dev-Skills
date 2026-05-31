@@ -57,7 +57,7 @@ apex-project-start/
 ├── commands/
 │   └── new.md                 # /apex-project-start:new — the interview-first orchestrator
 ├── skills/
-│   ├── repo-scaffold/         # governed file set + per-stack references
+│   ├── repo-scaffold/         # directory skeletons + governed file set + per-stack refs
 │   ├── steering-docs/         # AGENTS.md / CLAUDE.md / ADR authoring
 │   └── dev-environment/       # ruflo + Apex-Dev-Skills provisioning (idempotent)
 ├── agents/

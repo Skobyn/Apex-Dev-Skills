@@ -11,6 +11,7 @@ Generates a fully-governed greenfield repository. You receive resolved choices f
 
 Load only what the project needs:
 
+- **Always (first):** [references/directory-skeletons.md](references/directory-skeletons.md) — the canonical directory tree: single-service skeleton, per-stack `src/` layout (Python src / Go cmd+internal / Rust crate-or-workspace / TS library-or-FSD), monorepo layout (apps+packages, Turborepo/Nx, Cargo workspace), and Copier for cross-repo template reuse. Build the tree before populating it.
 - **Always:** [references/universal-and-community.md](references/universal-and-community.md) — `.gitignore`, `.gitattributes`, `.editorconfig`, README structure, LICENSE selection, and (if team/public) CONTRIBUTING / CODE_OF_CONDUCT / SECURITY / CODEOWNERS / issue & PR templates.
 - **One stack file**, by chosen stack:
   - [references/stack-typescript.md](references/stack-typescript.md) — pnpm + strict tsconfig + Biome + Vitest
@@ -22,13 +23,14 @@ Load only what the project needs:
 
 ## Ordering
 
-1. Universal hygiene files (always).
-2. Community-health files (team/public only — gate on audience).
-3. Stack scaffolding (manifest, config, `src/` + `tests/`, one passing example test).
-4. Quality gates (hooks, commit convention, release tooling) — if enabled.
-5. CI/CD workflows — if enabled.
-6. `CHANGELOG.md` (Keep a Changelog) and `docs/` — if enabled.
-7. Maintenance & hygiene (if enabled): `.apex/maintenance.json`, `scripts/dead-code-sweep.sh`, whitelist/config, warnings-as-errors wiring, and the optional `sandbox/` sin-bin. The AGENTS.md **Maintenance** section itself is authored by `steering-docs`.
+1. Directory skeleton (always — per directory-skeletons.md; single-service or monorepo; `.gitkeep` empty dirs; emit only what the project needs).
+2. Universal hygiene files (always).
+3. Community-health files (team/public only — gate on audience).
+4. Stack scaffolding (manifest, config, `src/` + `tests/` in the skeleton layout, one passing example test).
+5. Quality gates (hooks incl. pre-push, commit convention, release tooling) — if enabled.
+6. CI/CD workflows + GitHub hardening + optional SonarQube — if enabled.
+7. `CHANGELOG.md` (Keep a Changelog) and `docs/` — if enabled.
+8. Maintenance & hygiene (if enabled): `.apex/maintenance.json`, `scripts/dead-code-sweep.sh`, whitelist/config, warnings-as-errors wiring, and the optional `sandbox/` sin-bin. The AGENTS.md **Maintenance** section itself is authored by `steering-docs`.
 
 Steering docs (AGENTS.md / CLAUDE.md / ADRs) are handled by the separate `apex-project-start:steering-docs` skill — don't author them here.
 
