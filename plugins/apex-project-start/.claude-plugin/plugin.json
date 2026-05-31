@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "apex-project-start",
+  "displayName": "Apex Project Start",
+  "version": "0.1.0",
+  "description": "Interview-first greenfield project initializer. Bootstraps a new, fully-governed repo (paved-road defaults) from a short interview, then verifies it before the first commit. Supports TypeScript/JavaScript, Python, Go, and Rust.",
+  "author": {
+    "name": "skobyn",
+    "email": "skobyn@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "scaffold",
+    "bootstrap",
+    "init",
+    "greenfield",
+    "paved-road",
+    "project-setup",
+    "governance"
+  ]
+}
