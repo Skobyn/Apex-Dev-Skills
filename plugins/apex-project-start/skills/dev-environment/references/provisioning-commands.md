@@ -43,6 +43,38 @@ claude mcp list                                            # confirm claude-flow
 ```
 `init` scaffolds `.claude/` + `.claude-flow/` and **appends** a hooks/routing block to `CLAUDE.md` (expected; doesn't clobber the `@AGENTS.md` bridge). **Provisioning isn't done until the MCP server is live.**
 
+### Approve the MCP server (the step `init` forgets)
+
+After registering, the server is **⏸ Pending approval** until `claude-flow` is in `enabledMcpjsonServers`. ruflo's settings template declares this key, but `init` doesn't write it into the project — so approve it explicitly. **Don't** use `enableAllProjectMcpServers: true` (approves every project MCP — too broad).
+
+Project scope — `.claude/settings.json` (the file the running session reads; primary fix), merge-preserving + backup:
+```bash
+[ -f .claude/settings.json ] && cp .claude/settings.json .claude/settings.json.bak
+node -e '
+const fs=require("fs"), p=".claude/settings.json";
+const s=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};
+const set=new Set(s.enabledMcpjsonServers||[]); set.add("claude-flow");
+s.enabledMcpjsonServers=[...set];
+fs.writeFileSync(p, JSON.stringify(s,null,2)+"\n");
+console.log("enabledMcpjsonServers:", s.enabledMcpjsonServers);
+'
+```
+User scope (belt-and-suspenders) — this project's entry in `~/.claude.json` (where the interactive trust prompt records approval), merge-preserving + backup:
+```bash
+cp ~/.claude.json ~/.claude.json.bak-preapprove
+node -e '
+const fs=require("fs"), os=require("os"), p=os.homedir()+"/.claude.json";
+const j=JSON.parse(fs.readFileSync(p,"utf8"));
+const key=process.cwd();
+j.projects=j.projects||{}; j.projects[key]=j.projects[key]||{};
+const set=new Set(j.projects[key].enabledMcpjsonServers||[]); set.add("claude-flow");
+j.projects[key].enabledMcpjsonServers=[...set];
+fs.writeFileSync(p, JSON.stringify(j,null,2)+"\n");
+console.log("approved for", key, "->", j.projects[key].enabledMcpjsonServers);
+'
+```
+Then `claude mcp list` (or restart / `/reload`) — `claude-flow` should be approved, not pending. `claude mcp get claude-flow` is an interactive-trust reader and may still show "pending"; the settings-based approval is applied by the app at startup, so trust the settings files + a reconnect.
+
 ### Already initialized (idempotent update)
 ```bash
 npx @claude-flow/cli@latest upgrade            # update helpers, preserve memory/data
@@ -97,6 +129,7 @@ rm -rf /tmp/ruflo-ref
 [ ] cd project && npx @claude-flow/cli@latest init --preset full
 [ ] npx @claude-flow/cli@latest daemon start
 [ ] claude mcp add claude-flow -- npx -y @claude-flow/cli@latest ; claude mcp list
+[ ] approve MCP: add "claude-flow" to enabledMcpjsonServers in .claude/settings.json (+ ~/.claude.json)
 [ ] npx @claude-flow/cli@latest doctor --fix
 [ ] ls .claude/agents/core/   -> MUST show 5 files
 [ ] parity diff agents/commands/skills vs pinned clone
