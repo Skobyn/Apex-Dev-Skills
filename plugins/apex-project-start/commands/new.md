@@ -89,7 +89,7 @@ Once approved:
 
 If provisioning was enabled in the plan, invoke the **`apex-project-start:dev-environment`** skill. It installs/configures, idempotently, from the project root:
 
-- **ruflo** (`ruvnet/ruflo`): preflight Node 20+, `npx ruflo@latest init --yes`, `claude mcp add ruflo -- npx ruflo@latest mcp start`, `ruflo doctor`. It augments `CLAUDE.md` (expected); route `ANTHROPIC_API_KEY` through `.env`/`.env.example` (never a real key); add ruflo runtime artifacts to `.gitignore`.
+- **ruflo** (`ruvnet/ruflo`): two layers — (1) global `ruflo-*` plugins (marketplace `ruvnet/ruflo`, once per machine), and (2) per-project scaffold: preflight Node 20+, `npx @claude-flow/cli@latest init --preset full` (full preset, not minimal), `daemon start`, then **register and start the MCP server** (`claude mcp add claude-flow -- npx -y @claude-flow/cli@latest`; confirm via `claude mcp list`). Then **verify the scaffold**: `doctor --fix` + `ls .claude/agents/core/` **must show 5 files** (the common incomplete-scaffold bug) + sanity counts; **repair** with `rsync --ignore-existing` from a pinned clone if short. It augments `CLAUDE.md` (expected); route `ANTHROPIC_API_KEY` through `.env`/`.env.example` (never a real key); ignore ruflo runtime artifacts. Provisioning isn't done until the MCP is live and core/ = 5.
 - **Apex-Dev-Skills** (`Skobyn/Apex-Dev-Skills`, marketplace `apex-dev-skills`): `claude plugin marketplace add Skobyn/Apex-Dev-Skills` (or `update apex-dev-skills` if already present), install the 7 plugins, then `/reload-plugins`. Install ruflo first — `apex-scope-loop` depends on it.
 
 Respect the provisioning sub-choice (both / ruflo only / Apex only / skip). Report what was installed, updated, or skipped, with real errors if any step fails.

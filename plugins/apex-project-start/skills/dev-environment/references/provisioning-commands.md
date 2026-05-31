@@ -1,55 +1,114 @@
 # Provisioning commands (verified 2026-05-31)
 
-Exact commands for the two dev-environment must-haves. Run from the project root. Sources: [ruvnet/ruflo](https://github.com/ruvnet/ruflo) (README, USERGUIDE, install.sh, npm `ruflo@3.10.x`) and [Skobyn/Apex-Dev-Skills](https://github.com/Skobyn/Apex-Dev-Skills) (`.claude-plugin/marketplace.json`).
+Exact commands for the two dev-environment must-haves. Run from the project root. Sources: [ruvnet/ruflo](https://github.com/ruvnet/ruflo) (README, USERGUIDE, install.sh), the maintainer's full-installation guide (audit-derived), and [Skobyn/Apex-Dev-Skills](https://github.com/Skobyn/Apex-Dev-Skills) (`.claude-plugin/marketplace.json`).
 
 ---
 
 ## ruflo (ruvnet/ruflo)
 
-**What it is:** multi-agent orchestration layer for Claude Code (formerly claude-flow). Ships an MCP server (~300 tools), hooks/routing, vector+RAG memory, and many agents/skills/commands. npm package + CLI: `ruflo`.
+**What it is:** multi-agent orchestration layer for Claude Code. Ships an MCP server (~300 tools), hooks/routing, vector+RAG memory, and many agents/skills/commands.
 
-**Prereqs:** Node **>=20** (enforced by installer). Avoid Node 22/25 (install issue #1825 — prefer Node 20 LTS). `claude` CLI present.
+**Two install layers** (provision + verify both):
 
-### Fresh install + init (non-interactive)
+| Layer | What | Source | Lives | Reliability |
+|---|---|---|---|---|
+| 1. Plugins | the `ruflo-*` plugins | `ruvnet/ruflo` marketplace | `~/.claude/plugins/` (global) | installs reliably |
+| 2. Project scaffold | `.claude/` agents/commands/skills + `CLAUDE.md` + config + MCP | `@claude-flow/cli init` | `<project>/.claude/` (gitignored) | **can silently come up short — verify every time** |
+
+**Package names:** CLI = **`@claude-flow/cli`** (some versions also respond to `ruflo`); marketplace = **`ruvnet/ruflo`**; MCP server name = **`claude-flow`**.
+
+**Prereqs:** Node **>=20** (avoid 22/25, install issue #1825 — prefer Node 20 LTS). `claude` CLI present.
+
+### Layer 1 — plugins (once per machine)
 ```bash
-node --version                                   # confirm >= 20
-npx ruflo@latest init --yes                      # scaffolds .claude/ .claude-flow/ CLAUDE.md (augments)
-claude mcp add ruflo -- npx ruflo@latest mcp start   # register MCP server
-npx ruflo doctor                                 # health check
+claude plugin marketplace add ruvnet/ruflo
+claude plugin marketplace update ruflo
+# install core set (not all 33 needed):
+claude plugin install ruflo-core@ruflo
+claude plugin install ruflo-swarm@ruflo
+claude plugin install ruflo-testgen@ruflo
+claude plugin install ruflo-intelligence@ruflo
+claude plugin install ruflo-rag-memory@ruflo
+# or browse/install interactively with:  /plugin
 ```
-Optional global install (instead of npx): `npm install -g ruflo@latest`.
 
-One-line installer (macOS/Linux/WSL) that does Node-check + install + optional MCP setup:
+### Layer 2 — scaffold + daemon + MCP (per project)
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/ruvnet/ruflo@main/scripts/install.sh | bash
+node --version                                              # confirm >= 20
+npx @claude-flow/cli@latest init --preset full             # FULL preset — not standard/minimal
+npx @claude-flow/cli@latest daemon start                   # coordination daemon
+# register the MCP server if init didn't:
+claude mcp add claude-flow -- npx -y @claude-flow/cli@latest
+claude mcp list                                            # confirm claude-flow/ruflo is registered + starts
 ```
+`init` scaffolds `.claude/` + `.claude-flow/` and **appends** a hooks/routing block to `CLAUDE.md` (expected; doesn't clobber the `@AGENTS.md` bridge). **Provisioning isn't done until the MCP server is live.**
 
 ### Already initialized (idempotent update)
 ```bash
-npx ruflo@latest upgrade            # update helpers, preserve memory/data
-npx ruflo@latest init --add-missing # add newly-introduced skills/agents
+npx @claude-flow/cli@latest upgrade            # update helpers, preserve memory/data
+npx @claude-flow/cli@latest init --add-missing # add newly-introduced agents/skills
 ```
-Check MCP first: `claude mcp list` — if `ruflo` already listed, skip `claude mcp add`.
+Check MCP first with `claude mcp list`; if present, skip `claude mcp add`.
 
-### Useful flags
-- `--yes` / `--force` / `--non-interactive` — unattended.
-- `--full` — complete setup incl. MCP registration + diagnostics.
-- `--dry-run` — preview (verify with `init --help`).
-- `init wizard` — interactive variant (avoid in automation).
-- `--codex` / `--dual` — target Codex CLI / both instead of Claude Code only.
+### Verify the scaffold (the step that catches the bug)
+`doctor` checks versions/daemon/DB/keys — **not** agent/skill completeness. Run all of these after every `init`:
+```bash
+# 1. health check
+npx @claude-flow/cli@latest doctor --fix
 
-### What init writes
-- `.claude/` (agents, skills, slash commands, settings)
-- `.claude-flow/` (config + seeded memory store)
-- `CLAUDE.md` — appends the ruflo hooks/routing block ("auto-generated by ruflo init"). Appends; does not overwrite existing content.
-- helper files; `.env` / `claude-flow.config.json` referenced for further config.
+# 2. core agents MUST be FIVE, not one (this was the bug)
+ls .claude/agents/core/
+#    expect: coder.md  planner.md  researcher.md  reviewer.md  tester.md
+
+# 3. sanity counts (rough floors: agents 100+, commands 160+, skills 40+)
+for d in agents commands helpers skills; do
+  printf "%-9s %s\n" "$d" "$(find .claude/$d -type f 2>/dev/null | wc -l | tr -d ' ')"
+done
+```
+Rigorous parity check vs a pinned clone (compare **agents/ commands/ skills/ only**):
+```bash
+V=$(npx @claude-flow/cli@latest --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+git clone --depth 1 --branch "v$V" https://github.com/ruvnet/ruflo.git /tmp/ruflo-ref 2>/dev/null \
+  || git clone --depth 1 https://github.com/ruvnet/ruflo.git /tmp/ruflo-ref
+for sub in agents commands skills; do
+  echo "### missing in project ($sub):"
+  comm -23 <(cd /tmp/ruflo-ref/.claude/$sub && find . -type f|sort) \
+           <(cd .claude/$sub && find . -type f|sort)
+done
+rm -rf /tmp/ruflo-ref
+```
+> **Don't diff `helpers/`, `settings.json`, `mcp.json`, or `config/`** against the repo — its `.claude/` is the maintainers' dev tree with a different layout for those, producing false "missing" results. Only `agents/`, `commands/`, `skills/` are meaningful.
+
+### Repair gaps (if core/ is short or parity shows missing)
+```bash
+git clone --depth 1 https://github.com/ruvnet/ruflo.git /tmp/ruflo-ref
+for sub in agents commands skills; do
+  rsync -a --ignore-existing /tmp/ruflo-ref/.claude/$sub/ .claude/$sub/
+done
+rm -rf /tmp/ruflo-ref
+```
+`--ignore-existing` only **adds** missing files, never overwrites customizations. `.claude/` is gitignored, so this is safe and needs no commit. Re-run `doctor --fix` and `ls .claude/agents/core/` afterward. If core/ still isn't five, surface it loudly — don't claim success.
+
+### One-page checklist
+```
+[ ] claude plugin marketplace add ruvnet/ruflo
+[ ] claude plugin marketplace update ruflo
+[ ] install plugins via /plugin (or claude plugin install <name>@ruflo)
+[ ] cd project && npx @claude-flow/cli@latest init --preset full
+[ ] npx @claude-flow/cli@latest daemon start
+[ ] claude mcp add claude-flow -- npx -y @claude-flow/cli@latest ; claude mcp list
+[ ] npx @claude-flow/cli@latest doctor --fix
+[ ] ls .claude/agents/core/   -> MUST show 5 files
+[ ] parity diff agents/commands/skills vs pinned clone
+[ ] rsync --ignore-existing to fill any gaps
+```
 
 ### Credentials (runtime only — never write real keys)
 Agents need provider keys at run time, via env (put in gitignored `.env`):
 - `ANTHROPIC_API_KEY` (required for Claude models)
 - `OPENAI_API_KEY`, `GOOGLE_API_KEY` (optional)
 
-Add documented placeholders to `.env.example`:
+`.env.example`:
 ```dotenv
 # ruflo agent runtime (do not commit real values)
 ANTHROPIC_API_KEY=
@@ -63,16 +122,7 @@ ANTHROPIC_API_KEY=
 .claude-flow/
 *.ruflo.local
 ```
-(Commit shareable config; ignore machine-local memory/cache. Whether to commit `.claude/` is a team choice — commit agent/skill defs you want shared, ignore local settings.)
-
-### Lightweight alternative (slash commands/agents only — no MCP, no hooks)
-```bash
-claude plugin marketplace add ruvnet/ruflo
-claude plugin install ruflo-core@ruflo
-claude plugin install ruflo-swarm@ruflo
-claude plugin install ruflo-rag-memory@ruflo
-```
-Use this only if the user explicitly wants the plugin path instead of the full MCP/hooks install.
+(Commit shareable config; ignore machine-local memory/cache. Whether to commit `.claude/` is a team choice.)
 
 ---
 
