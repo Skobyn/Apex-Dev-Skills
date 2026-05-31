@@ -27,7 +27,7 @@ It combines the two things the research says actually work:
 | Go | modules · golangci-lint · gofumpt |
 | Rust | cargo · clippy · rustfmt · pinned toolchain |
 
-Governance is **full paved-road by default and toggleable down**: community-health files, Lefthook hooks, Conventional Commits, CI (lint/typecheck/test/build matrix + Dependabot + CodeQL + secret scanning), warnings-as-errors, ADRs, Keep-a-Changelog, AGENTS.md/CLAUDE.md, and a periodic **maintenance** layer. Optional **sin-bin** quarantine dir.
+Governance is **full paved-road by default and toggleable down**: community-health files, Lefthook hooks (pre-commit + pre-push, mirrored by CI as the real gate), Conventional Commits, CI (lint/typecheck/test/build matrix + Dependabot + CodeQL + secret scanning), **GitHub hardening** (rulesets, OIDC, merge queue, SHA-pinned least-privilege actions, environments, GitHub Apps), warnings-as-errors, ADRs, Keep-a-Changelog, AGENTS.md/CLAUDE.md, and a periodic **maintenance** layer. Optional **sin-bin** quarantine dir and **SonarQube Cloud** quality gate (Clean-as-You-Code).
 
 ## Periodic maintenance (dead-code sweep)
 

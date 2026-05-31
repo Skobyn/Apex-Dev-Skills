@@ -42,7 +42,7 @@ Now run the concrete setup interview with `AskUserQuestion`, informed by Phase 0
 2. **Stack** — TypeScript/JavaScript, Python, Go, or Rust (one primary; note polyglot if real). Propose the stack your research suggests and let them override. Load only the matching stack reference later.
 3. **Project type** — application, library/package, service (long-running, deployed), or CLI. Gates observability and Dockerfile inclusion.
 4. **Audience** — solo/personal vs team/org. Team adds CODEOWNERS, CONTRIBUTING, branch-protection guidance, stricter review gates.
-5. **Governance level** — confirm Full paved-road (default) or let them drop layers (community-health files, pre-commit hooks, CI security scans, ADRs, changelog/release tooling, **periodic maintenance** = dead-code sweep + last-run tracking + >3-day reminder, **sin-bin** quarantine dir). Maintenance defaults on; sin-bin defaults off.
+5. **Governance level** — confirm Full paved-road (default) or let them drop layers (community-health files, pre-commit + **pre-push** hooks, CI security scans, ADRs, changelog/release tooling, **periodic maintenance** = dead-code sweep + last-run tracking + >3-day reminder, **GitHub hardening** = rulesets/OIDC/merge-queue/SHA-pinned actions, **sin-bin** quarantine dir, optional **SonarQube Cloud** quality gate). Maintenance + GitHub hardening (team) default on; sin-bin and SonarQube default off (offer SonarQube as the recommended governance gate).
 6. **License** — if public: MIT (reach) / Apache-2.0 (patent grant, SDKs) / AGPL-3.0 (copyleft/SaaS) / BSL-1.1 (commercial). If private: proprietary/none.
 7. **Dev-environment provisioning** — confirm whether to install the standard must-haves after scaffolding: **ruflo** (orchestration/MCP/memory) and the **Apex-Dev-Skills** plugin suite. Default: both. Options: both / ruflo only / Apex skills only / skip.
 
@@ -62,8 +62,10 @@ Apex Project Start plan for <name> (TypeScript library, team, MIT, full governan
  Community health: CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md .github/CODEOWNERS
                    .github/ISSUE_TEMPLATE/* PULL_REQUEST_TEMPLATE.md
  Stack:            package.json tsconfig.json biome.json vitest.config.ts src/ tests/
- Quality gates:    lefthook.yml commitlint.config.js .changeset/
+ Quality gates:    lefthook.yml (pre-commit + pre-push) commitlint.config.js .changeset/
  CI/CD:            .github/workflows/ci.yml dependabot.yml codeql.yml
+ GitHub hardening: ruleset.json (or checklist) · least-priv + SHA-pinned actions · OIDC · merge-queue
+ SonarQube (opt):  sonar-project.properties .github/workflows/sonar.yml + SONAR_TOKEN next-steps
  Steering:         AGENTS.md CLAUDE.md docs/adr/0001-record-architecture-decisions.md
  Docs:             CHANGELOG.md docs/
  Maintenance:      .apex/maintenance.json scripts/dead-code-sweep.sh vulture_whitelist.py

@@ -17,7 +17,7 @@ Load only what the project needs:
   - [references/stack-python.md](references/stack-python.md) — uv + Ruff + pyright + pytest + src layout
   - [references/stack-go.md](references/stack-go.md) — modules + golangci-lint + gofumpt
   - [references/stack-rust.md](references/stack-rust.md) — cargo + clippy + rustfmt
-- **If quality gates / CI enabled:** [references/quality-and-ci.md](references/quality-and-ci.md) — Lefthook, Conventional Commits/commitlint, Changesets, GitHub Actions, Dependabot, CodeQL, secret scanning, mise tool-pinning.
+- **If quality gates / CI enabled:** [references/quality-and-ci.md](references/quality-and-ci.md) — Lefthook (with `pre-push` tests + the local-hooks-aren't-a-gate framing), Conventional Commits/commitlint, Changesets, GitHub Actions, Dependabot, CodeQL, secret scanning, mise tool-pinning, **GitHub hardening** (rulesets/OIDC/merge queue/SHA-pinned actions/environments/GitHub Apps), and the **optional SonarQube Cloud** quality gate.
 - **If maintenance toggle on (default):** [references/maintenance-and-hygiene.md](references/maintenance-and-hygiene.md) — periodic dead-code sweep (vulture/knip/deadcode/udeps) with last-run tracking + >3-day reminder, dependency hygiene, the optional sin-bin quarantine, and consistent warnings-as-errors.
 
 ## Ordering

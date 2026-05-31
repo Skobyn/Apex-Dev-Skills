@@ -164,4 +164,6 @@ Map paths → reviewers; pairs with branch protection to require expert review.
 ---
 
 ## Branch-protection guidance (team — output as guidance, not a file)
+
+> Prefer **rulesets** over legacy branch protection. See quality-and-ci.md 'GitHub hardening' for the full rulesets / OIDC / merge-queue / identity setup.
 Apex Project Start can't set GitHub branch protection via files, so include this as a "next steps" note for `main`: require PR reviews (≥1) + CODEOWNERS review, require status checks (CI) to pass, dismiss stale approvals on new commits, require conversation resolution, require signed commits, enforce linear history, restrict direct pushes. Optionally provide a `gh` command snippet or a ruleset JSON.

@@ -25,6 +25,16 @@ commit-msg:
 ```
 Per stack, the `pre-commit` runner becomes: Python → `uv run ruff check {staged_files}`; Go → `golangci-lint run`; Rust → `cargo fmt --check && cargo clippy`.
 
+Add a `pre-push` stage that runs the (slower) test suite before code leaves the machine:
+```yaml
+pre-push:
+  commands:
+    test:
+      run: <stack test cmd>   # pnpm test · uv run pytest · go test ./... · cargo test
+```
+
+**Local hooks are fast feedback, NOT a security boundary.** They're bypassable (`git commit --no-verify`) and not everyone installs them. So **every check a hook runs MUST also run in CI**, where it's the real, unbypassable gate (enforced via the ruleset's required status checks, below). Mirror, don't duplicate-and-diverge: the hook and the CI job run the same command. Auto-fix + re-stage in the hook rather than only failing.
+
 Install note (next-steps): `lefthook install`.
 
 ---
@@ -149,6 +159,80 @@ Enable GitHub secret scanning + **push protection** in repo settings (next-steps
 # in CI
 - uses: gitleaks/gitleaks-action@v2
 ```
+
+---
+
+## GitHub hardening (rulesets, OIDC, merge queue, identity)
+
+Generate this when the GitHub-hardening toggle is on (default on for team/org; opt-in for solo). These are mostly **settings + guidance**, not files — emit a "GitHub setup" checklist in the README/next-steps, plus a committed ruleset JSON if the user wants it.
+
+**Rulesets, not legacy branch protection.** Rulesets are layerable, can be org-wide, and have an **"Evaluate" dry-run** mode. On `main` require: PR before merge + **Code Owners** review, **required status checks** (CI jobs + the SonarQube gate below), **linear history**, block force-push, restrict deletions, and **require signed commits**. Can be authored in the UI or committed as JSON and applied via API/`gh`.
+
+**Least-privilege Actions + SHA-pinning.** Set a top-level `permissions: { contents: read }` baseline in every workflow and widen per-job only as needed. **Pin third-party actions to a full commit SHA** (not a moving tag) — Dependabot's `github-actions` ecosystem keeps the SHAs updated. First-party `actions/*` may stay on major tags if you prefer.
+```yaml
+permissions:
+  contents: read          # baseline; widen per-job
+# example pinned third-party action:
+# - uses: SonarSource/sonarqube-scan-action@<full-sha>  # v4.x
+```
+
+**OIDC over stored cloud keys.** For deploys, use short-lived OIDC tokens with a cloud trust policy scoped to `repo` + `environment` instead of long-lived secrets:
+```yaml
+permissions: { id-token: write, contents: read }
+# then aws-actions/configure-aws-credentials (or gcp/azure) with role-to-assume, no stored keys
+```
+
+**Merge queue.** Once multiple authors land several PRs/day, enable a merge queue so CI runs against the actual post-merge state. The CI workflow must also trigger on the queue:
+```yaml
+on:
+  pull_request:
+  merge_group:            # required for merge-queue checks
+```
+
+**Environments** gate production: required reviewers, wait timers, branch restrictions, environment-scoped secrets.
+
+**Identity:** use **GitHub Apps** for automation (short-lived tokens, own identity, fine-grained perms). Fine-grained PATs for personal scripts only. **Never classic PATs.**
+
+---
+
+## Quality gate — SonarQube Cloud (optional)
+
+Sits *above* the linters: bugs, SAST/security hotspots, code smells, duplication, and **coverage tracking**, behind a **Quality Gate** wired as a required PR status check. (It's "SonarQube" — the 2024 rebrand; "SonarCloud" is now **SonarQube Cloud**.) Generate when the SonarQube toggle is on.
+
+- **"Clean as You Code"** — the gate enforces thresholds only on **new/changed** code, which is ideal greenfield (no legacy-debt wall on day one).
+- It **ingests** coverage, it does not generate it — run tests with coverage first and point Sonar at the report.
+- **Edition:** self-hosted Community Build analyzes only `main` (no PR decoration) — for **PR gating use SonarQube Cloud free tier** (free for public repos; free under 50k LOC private).
+- Sonar is **weak on dependency CVEs** — keep Dependabot/CodeQL (and optionally Snyk) for that. Sonar complements, doesn't replace them.
+
+`sonar-project.properties`:
+```properties
+sonar.organization=<org>
+sonar.projectKey=<org>_<repo>
+sonar.sources=src
+sonar.tests=tests
+# coverage report path (per stack — produce it in the test step):
+sonar.javascript.lcov.reportPaths=coverage/lcov.info
+sonar.python.coverage.reportPaths=coverage.xml
+```
+`.github/workflows/sonar.yml`:
+```yaml
+name: SonarQube Cloud
+on:
+  push: { branches: [main] }
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  sonar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }       # full history → accurate new-code detection
+      - # run the stack's tests WITH coverage here, producing the report path above
+      - uses: SonarSource/sonarqube-scan-action@v4
+        env: { SONAR_TOKEN: "${{ secrets.SONAR_TOKEN }}" }
+```
+Next-steps to surface: create the project in SonarQube Cloud, add `SONAR_TOKEN` as a repo secret, set the org/projectKey, and add the **SonarQube Code Analysis** check to the `main` ruleset's required status checks.
 
 ---
 
