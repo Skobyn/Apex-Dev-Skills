@@ -41,6 +41,17 @@ Apex/ruflo toolchain wired up. For any non-trivial feature, work *within* those 
 3. Follow this file's conventions, keep CI green, add tests, and write an ADR in `docs/adr/` for significant decisions.
 4. One-file/trivial fixes skip the ceremony. (ruflo provides the memory + swarm MCP tools these commands use.)
 
+## Maintenance (periodic, tracked in `.apex/maintenance.json`)
+Some hygiene runs on a cadence, not per-PR. Last-run dates live in `.apex/maintenance.json`.
+- **Dead-code sweep** (~every 3 days): `scripts/dead-code-sweep.sh` runs `<vulture/knip/deadcode>`.
+  Triage the ranked list by hand — delete dead code (don't comment it out), whitelist false
+  positives, commit, then stamp with `scripts/dead-code-sweep.sh --done`.
+- **Agents:** at the start of a working session, read `.apex/maintenance.json`. If a task's
+  `last_run` is null or older than its `cadence_days`, **tell the user it's N days overdue and
+  ask whether you should run it now.** If yes: run the sweep, present the ranked list, propose
+  deletions for approval (never delete without confirmation), update the whitelist, then stamp
+  the run. If no, leave it.
+
 ## Gotchas
 - <real footgun you'd warn a new contributor about — omit the section if none yet>
 

@@ -32,14 +32,16 @@ Modern defaults (2025–2026): **pnpm** + **strict tsconfig** + **Biome** + **Vi
     "test:coverage": "vitest run --coverage",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "deadcode": "knip"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.0",
     "typescript": "^5.7.0",
     "tsup": "^8.3.0",
     "vitest": "^2.1.0",
-    "@vitest/coverage-v8": "^2.1.0"
+    "@vitest/coverage-v8": "^2.1.0",
+    "knip": "^5.30.0"
   }
 }
 ```
@@ -139,3 +141,6 @@ pnpm install
 pnpm test
 pnpm lint
 ```
+Warnings-as-errors: `biome check` fails CI on any diagnostic (no flag needed); if you swap in ESLint, run `eslint --max-warnings 0`.
+
+Periodic (not at init, not in CI): `pnpm deadcode` → `knip` reports unused files, exports, and dependencies. Add a minimal `knip.json` (`{"entry": ["src/index.ts"], "project": ["src/**"]}`). See [maintenance-and-hygiene.md](maintenance-and-hygiene.md).

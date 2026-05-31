@@ -33,6 +33,8 @@ dev = [
   "pytest-cov>=6.0",
   "ruff>=0.8",
   "pyright>=1.1.390",
+  "vulture>=2.14",   # periodic dead-code sweep (not a CI gate)
+  "deptry>=0.21",    # periodic unused-dependency audit
 ]
 
 [build-system]
@@ -50,11 +52,20 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 addopts = "--cov=<package_name> --cov-report=term-missing --cov-fail-under=80"
 testpaths = ["tests"]
 pythonpath = ["src"]
+filterwarnings = ["error"]   # warnings-as-errors: a runtime warning fails the test
 
 [tool.pyright]
 include = ["src", "tests"]
 typeCheckingMode = "strict"
+
+[tool.vulture]
+paths = ["src", "vulture_whitelist.py"]
+min_confidence = 80
+sort_by_size = true
 ```
+Dead-code sweep is **periodic, not a CI gate** (vulture is heuristic). See
+[maintenance-and-hygiene.md](maintenance-and-hygiene.md) for the sweep script, the
+`vulture_whitelist.py` workflow, and the last-run tracking that reminds you after 3 days.
 Replace `<package_name>` with the import package (snake_case of project name).
 
 ### `.python-version`
@@ -105,3 +116,4 @@ uv run pytest
 uv run ruff check .
 uv run pyright
 ```
+Periodic (not at init, not in CI): `scripts/dead-code-sweep.sh` → `uv run vulture src/ --min-confidence 80 --sort-by-size`. Also create an empty `vulture_whitelist.py` at init so the command runs clean.

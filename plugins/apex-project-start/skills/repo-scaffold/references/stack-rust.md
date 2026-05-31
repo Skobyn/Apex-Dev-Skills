@@ -90,3 +90,4 @@ cargo test
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
+Dead code: with `-D warnings` (`.cargo/config.toml`) the compiler's `dead_code` lint already fails the build, so Rust needs little periodic code sweeping. For unused **dependencies**, periodically run `cargo +nightly udeps` (`cargo install cargo-udeps`). See [maintenance-and-hygiene.md](maintenance-and-hygiene.md).

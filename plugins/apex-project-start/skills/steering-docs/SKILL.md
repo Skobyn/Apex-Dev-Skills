@@ -39,6 +39,10 @@ ruflo provides the memory + swarm MCP tools these commands rely on.
 
 Keep it tight; do not balloon it. If only ruflo (not the Apex suite) was provisioned, reference ruflo orchestration instead of the apex-scope-loop commands.
 
+### Required "Maintenance" section (when the maintenance toggle is on)
+
+If `repo-scaffold` generated `.apex/maintenance.json` + the sweep script, AGENTS.md MUST include a **Maintenance** section so future agents proactively surface the periodic dead-code sweep. Use the template in [references/agents-and-claude-md.md](references/agents-and-claude-md.md): it tells agents to read `.apex/maintenance.json` at session start and, if `dead-code-sweep.last_run` is null or >3 days old, **remind the user and ask whether to run the sweep** (triage → propose deletions for approval → whitelist → stamp). Adapt the sweep command to the stack (vulture/knip/deadcode/udeps). Omit the section if the maintenance toggle was off.
+
 ## Core rules
 
 - **One source of truth.** AGENTS.md holds the real content; CLAUDE.md points to it via `@AGENTS.md`. Cursor/Windsurf rule files (only if the team uses them) likewise point to AGENTS.md — never maintain N copies.

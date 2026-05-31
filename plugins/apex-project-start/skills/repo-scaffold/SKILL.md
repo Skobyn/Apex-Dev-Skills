@@ -18,6 +18,7 @@ Load only what the project needs:
   - [references/stack-go.md](references/stack-go.md) — modules + golangci-lint + gofumpt
   - [references/stack-rust.md](references/stack-rust.md) — cargo + clippy + rustfmt
 - **If quality gates / CI enabled:** [references/quality-and-ci.md](references/quality-and-ci.md) — Lefthook, Conventional Commits/commitlint, Changesets, GitHub Actions, Dependabot, CodeQL, secret scanning, mise tool-pinning.
+- **If maintenance toggle on (default):** [references/maintenance-and-hygiene.md](references/maintenance-and-hygiene.md) — periodic dead-code sweep (vulture/knip/deadcode/udeps) with last-run tracking + >3-day reminder, dependency hygiene, the optional sin-bin quarantine, and consistent warnings-as-errors.
 
 ## Ordering
 
@@ -27,6 +28,7 @@ Load only what the project needs:
 4. Quality gates (hooks, commit convention, release tooling) — if enabled.
 5. CI/CD workflows — if enabled.
 6. `CHANGELOG.md` (Keep a Changelog) and `docs/` — if enabled.
+7. Maintenance & hygiene (if enabled): `.apex/maintenance.json`, `scripts/dead-code-sweep.sh`, whitelist/config, warnings-as-errors wiring, and the optional `sandbox/` sin-bin. The AGENTS.md **Maintenance** section itself is authored by `steering-docs`.
 
 Steering docs (AGENTS.md / CLAUDE.md / ADRs) are handled by the separate `apex-project-start:steering-docs` skill — don't author them here.
 
@@ -37,6 +39,7 @@ Steering docs (AGENTS.md / CLAUDE.md / ADRs) are handled by the separate `apex-p
 - **Substitute, don't templatize-and-leave.** Replace project name, purpose, author (`skobyn <skobyn@gmail.com>` unless told otherwise), and current year everywhere. Leave no `{{placeholder}}` behind.
 - **Respect the toggles.** If the user dropped a governance layer in the plan, skip it — don't silently re-add it.
 - **Pin tool versions.** Use a `mise.toml` (or `.nvmrc`/`rust-toolchain.toml`/`go.mod` go directive) so the runtime is reproducible.
+- **Warnings are errors.** Configure linters/type-checkers/compilers/tests to fail, not warn (see maintenance-and-hygiene §5). Don't swallow non-zero exits in CI.
 - **Default branch is `main`.** Conventional Commits throughout.
 
 When done, report the exact file list created so the orchestrator can pass it to the auditor.

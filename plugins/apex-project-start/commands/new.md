@@ -42,7 +42,7 @@ Now run the concrete setup interview with `AskUserQuestion`, informed by Phase 0
 2. **Stack** — TypeScript/JavaScript, Python, Go, or Rust (one primary; note polyglot if real). Propose the stack your research suggests and let them override. Load only the matching stack reference later.
 3. **Project type** — application, library/package, service (long-running, deployed), or CLI. Gates observability and Dockerfile inclusion.
 4. **Audience** — solo/personal vs team/org. Team adds CODEOWNERS, CONTRIBUTING, branch-protection guidance, stricter review gates.
-5. **Governance level** — confirm Full paved-road (default) or let them drop layers (community-health files, pre-commit hooks, CI security scans, ADRs, changelog/release tooling).
+5. **Governance level** — confirm Full paved-road (default) or let them drop layers (community-health files, pre-commit hooks, CI security scans, ADRs, changelog/release tooling, **periodic maintenance** = dead-code sweep + last-run tracking + >3-day reminder, **sin-bin** quarantine dir). Maintenance defaults on; sin-bin defaults off.
 6. **License** — if public: MIT (reach) / Apache-2.0 (patent grant, SDKs) / AGPL-3.0 (copyleft/SaaS) / BSL-1.1 (commercial). If private: proprietary/none.
 7. **Dev-environment provisioning** — confirm whether to install the standard must-haves after scaffolding: **ruflo** (orchestration/MCP/memory) and the **Apex-Dev-Skills** plugin suite. Default: both. Options: both / ruflo only / Apex skills only / skip.
 
@@ -66,6 +66,8 @@ Apex Project Start plan for <name> (TypeScript library, team, MIT, full governan
  CI/CD:            .github/workflows/ci.yml dependabot.yml codeql.yml
  Steering:         AGENTS.md CLAUDE.md docs/adr/0001-record-architecture-decisions.md
  Docs:             CHANGELOG.md docs/
+ Maintenance:      .apex/maintenance.json scripts/dead-code-sweep.sh vulture_whitelist.py
+                   (periodic vulture sweep, last-run tracked, >3-day reminder in AGENTS.md)
  Dev environment:  ruflo (init + MCP) · Apex-Dev-Skills suite (7 plugins)
  Finalize:         git init, install deps, run tests, first commit
 ```
@@ -77,7 +79,7 @@ Then **stop and ask the user to approve, adjust, or cancel.** This gate is manda
 Once approved:
 
 1. Invoke the **`apex-project-start:repo-scaffold`** skill to generate the governed file set. Pass the resolved choices; it holds the stack-specific templates and loads only the relevant references. Write real, working content — substitute name/purpose/author/year everywhere, generate one passing example test so CI is green from commit #1, never leave a `<placeholder>`.
-2. Invoke the **`apex-project-start:steering-docs`** skill to author `AGENTS.md` (canonical), `CLAUDE.md` (a short `@AGENTS.md` bridge), and `docs/adr/0001-record-architecture-decisions.md` (if ADRs enabled; add ADR-0002 for a non-obvious stack choice).
+2. Invoke the **`apex-project-start:steering-docs`** skill to author `AGENTS.md` (canonical), `CLAUDE.md` (a short `@AGENTS.md` bridge), and `docs/adr/0001-record-architecture-decisions.md` (if ADRs enabled; add ADR-0002 for a non-obvious stack choice). When the maintenance toggle is on, AGENTS.md must include the **Maintenance** section that points future agents at `.apex/maintenance.json` and the >3-day dead-code-sweep reminder.
 
 ## Phase 5 — Dev environment provisioning
 

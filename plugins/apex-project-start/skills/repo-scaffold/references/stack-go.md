@@ -105,3 +105,4 @@ go mod tidy
 go test -race -cover ./...
 golangci-lint run
 ```
+Periodic dead-code sweep (not a CI gate): `go run golang.org/x/tools/cmd/deadcode@latest ./...` (staticcheck `U1000` in golangci-lint also flags unused unexported code). `go mod tidy` is the dependency audit. See [maintenance-and-hygiene.md](maintenance-and-hygiene.md).

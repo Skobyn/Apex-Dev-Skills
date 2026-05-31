@@ -27,7 +27,17 @@ It combines the two things the research says actually work:
 | Go | modules · golangci-lint · gofumpt |
 | Rust | cargo · clippy · rustfmt · pinned toolchain |
 
-Governance is **full paved-road by default and toggleable down**: community-health files, Lefthook hooks, Conventional Commits, CI (lint/typecheck/test/build matrix + Dependabot + CodeQL + secret scanning), ADRs, Keep-a-Changelog, AGENTS.md/CLAUDE.md.
+Governance is **full paved-road by default and toggleable down**: community-health files, Lefthook hooks, Conventional Commits, CI (lint/typecheck/test/build matrix + Dependabot + CodeQL + secret scanning), warnings-as-errors, ADRs, Keep-a-Changelog, AGENTS.md/CLAUDE.md, and a periodic **maintenance** layer. Optional **sin-bin** quarantine dir.
+
+## Periodic maintenance (dead-code sweep)
+
+Dead-code tools are heuristic, so they're set up as a **periodic, human-triaged sweep — not a per-PR gate**. Each new project gets:
+
+- a tracked `.apex/maintenance.json` (last-run dates per task),
+- a non-destructive `scripts/dead-code-sweep.sh` (Python: `vulture src/ --min-confidence 80 --sort-by-size`; TS: `knip`; Go: `deadcode`; Rust: compiler `-D warnings` + `cargo udeps`), and
+- a **Maintenance** section in `AGENTS.md` that tells future agents to check the last-run on session start and, if the dead-code sweep is **>3 days** stale, remind you and offer to run it (triage → propose deletions for approval → whitelist false positives → stamp the run).
+
+So the sweep stays reliable without depending on a cron that may never fire.
 
 ## Dev-environment provisioning
 
