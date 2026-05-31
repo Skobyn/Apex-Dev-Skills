@@ -3,11 +3,12 @@
   "name": "apex-project-start",
   "displayName": "Apex Project Start",
   "version": "0.1.0",
-  "description": "Interview-first greenfield project initializer. Bootstraps a new, fully-governed repo (paved-road defaults) from a short interview, then verifies it before the first commit. Supports TypeScript/JavaScript, Python, Go, and Rust.",
+  "description": "Interview-first greenfield project initializer. Opens with 'what are you trying to build?', researches the context, then scaffolds a fully-governed repo (paved-road defaults), provisions ruflo + the Apex-Dev-Skills suite, and verifies it before the first commit. Generated projects are steered to build features via apex-plan/apex-loop. Supports TypeScript/JavaScript, Python, Go, and Rust.",
   "author": {
-    "name": "skobyn",
-    "email": "skobyn@gmail.com"
+    "name": "Apex Insights",
+    "url": "https://getapexinsights.com"
   },
+  "homepage": "https://github.com/Skobyn/Apex-Dev-Skills",
   "license": "MIT",
   "keywords": [
     "scaffold",

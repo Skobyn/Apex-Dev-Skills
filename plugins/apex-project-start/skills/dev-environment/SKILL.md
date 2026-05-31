@@ -1,6 +1,6 @@
 ---
 name: dev-environment
-description: Install and configure the standard dev-environment must-haves after a new project is scaffolded — the ruflo multi-agent orchestration layer (ruvnet/ruflo) and the Apex-Dev-Skills Claude Code plugin suite (Skobyn/Apex-Dev-Skills). Invoked by /apex-project-start:new during provisioning; can also be used directly to (re)provision these tools on an existing project or machine. Idempotent: updates if already present.
+description: Install and configure the standard dev-environment must-haves after a new project is scaffolded — the ruflo multi-agent orchestration layer (ruvnet/ruflo) and the Apex-Dev-Skills Claude Code plugin suite (Skobyn/Apex-Dev-Skills). Invoked by /apex-project-start:new during provisioning; can also be used directly to (re)provision these tools on an existing project or machine. idempotent — updates if already present.
 ---
 
 # dev-environment
