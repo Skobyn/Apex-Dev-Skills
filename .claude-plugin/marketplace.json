@@ -8,6 +8,25 @@
   },
   "plugins": [
     {
+      "name": "apex-project-start",
+      "description": "Interview-first greenfield project initializer: opens with 'what are you trying to build?', researches the context, then scaffolds a fully-governed repo (paved-road defaults), provisions ruflo + the Apex-Dev-Skills suite, and verifies it before the first commit. Generated projects are steered to build features via apex-plan/apex-loop. Supports TypeScript/JavaScript, Python, Go, and Rust.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-project-start",
+      "keywords": [
+        "scaffold",
+        "bootstrap",
+        "greenfield",
+        "init",
+        "governance",
+        "paved-road",
+        "apex"
+      ]
+    },
+    {
       "name": "apex-scope-loop",
       "description": "Decide -> plan -> loop: SPARC-shaped ADR + phased plan authoring, with autonomous /loop + /schedule execution and per-phase swarm dispatch.",
       "author": {
