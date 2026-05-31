@@ -17,13 +17,37 @@ See [references/provisioning-commands.md](references/provisioning-commands.md) f
 
 ## Step 1 — ruflo (ruvnet/ruflo)
 
-1. Initialize in the project (non-interactive): `npx ruflo@latest init --yes`.
-   - This creates `.claude/`, `.claude-flow/`, and **augments `CLAUDE.md`** with ruflo's hooks/routing block. That augmentation of the Apex Project Start-written `CLAUDE.md` is **expected and fine** — it appends, it doesn't clobber the `@AGENTS.md` bridge.
-   - If ruflo was already initialized here, run `npx ruflo@latest upgrade` (preserves memory/data) and `npx ruflo@latest init --add-missing` instead of a fresh init.
-2. Register the MCP server: `claude mcp add ruflo -- npx ruflo@latest mcp start`. Skip with a note if a `ruflo` MCP server is already registered (`claude mcp list`).
-3. Health check: `npx ruflo doctor` (or `ruflo doctor`). Report the result.
-4. **Credentials note (don't block):** ruflo agents need `ANTHROPIC_API_KEY` at runtime. Add it to the project `.env` (already gitignored) via `.env.example` — do NOT prompt for or write a real key.
-5. **gitignore:** ensure ruflo's local runtime/memory artifacts are ignored (e.g. `.claude-flow/` memory store, caches). Commit shareable config; ignore machine-local state.
+Ruflo installs in **two independent layers** — provision and verify **both**:
+
+- **Layer 1 — plugins (global, once per machine):** the `ruflo-*` plugins from the `ruvnet/ruflo` marketplace, installed into `~/.claude/plugins/`. These install reliably.
+- **Layer 2 — project scaffold (per project):** `.claude/` agents/commands/skills + `CLAUDE.md` + config + the MCP server, written by `init` into the project (gitignored). **This is the layer that silently comes up short** — so verify it every time.
+
+> Package-name note: the CLI is published as **`@claude-flow/cli`**; some versions also respond to **`ruflo`**. Commands below use `@claude-flow/cli`; if a command isn't found, retry with `npx ruflo@latest …` and the same flags. The marketplace is always `ruvnet/ruflo`.
+
+### Layer 1 — plugins (skip if already present on this machine)
+
+1. `claude plugin marketplace add ruvnet/ruflo`, then `claude plugin marketplace update ruflo`. Skip the add if already listed (`claude plugin marketplace list`).
+2. Install the core plugins (you don't need all 33): **`ruflo-core`, `ruflo-swarm`, `ruflo-testgen`, `ruflo-intelligence`, `ruflo-rag-memory`** cover most workflows — `claude plugin install <name>@ruflo`. Add domain plugins (`ruflo-neural-trader`, `ruflo-iot-cognitum`, …) only if the project uses them.
+
+### Layer 2 — project scaffold + MCP (per project, from the project root)
+
+1. **Scaffold with the full preset** (non-interactive): `npx @claude-flow/cli@latest init --preset full`. **Use `full`, not `standard`/`minimal`** — a partial preset is the documented incomplete-scaffold bug: it lays down only **one** core agent instead of five and a fraction of the agents/commands/skills. This creates `.claude/`, `.claude-flow/`, and **appends** a hooks/routing block to `CLAUDE.md` (expected — it doesn't clobber the `@AGENTS.md` bridge).
+   - Already initialized here? Run `npx @claude-flow/cli@latest upgrade` (preserves memory/data) + `init --add-missing` instead of a fresh init.
+2. **Start the coordination daemon:** `npx @claude-flow/cli@latest daemon start`.
+3. **Register AND start the MCP server — provisioning is not done until ruflo's MCP is live.** If `init` didn't register it, add it: `claude mcp add claude-flow -- npx -y @claude-flow/cli@latest`. Then confirm with `claude mcp list` (look for `claude-flow`/`ruflo`); the server starts when Claude Code connects to it. Skip the add if already registered. Report the MCP server as running, or surface the failure — do not report success while the MCP is absent.
+4. **Verify the scaffold actually completed** (highest-value step — never skip). `doctor` only checks versions/daemon/DB/keys, **NOT agent completeness** — that's why b–d exist. Report each result:
+   1. **Doctor:** `npx @claude-flow/cli@latest doctor --fix`.
+   2. **Core agents MUST be five** (the common failure): `ls .claude/agents/core/` → expect `coder.md planner.md researcher.md reviewer.md tester.md`. One file (or a missing dir) = broken scaffold → repair (step 5) before continuing.
+   3. **Sanity counts** (rough floors: agents 100+, commands 160+, skills 40+):
+      ```bash
+      for d in agents commands helpers skills; do
+        printf "%-9s %s\n" "$d" "$(find .claude/$d -type f 2>/dev/null | wc -l | tr -d ' ')"
+      done
+      ```
+   4. **Rigorous parity diff** (optional, when counts look short) vs a pinned clone of the installed version — compare **only `agents/ commands/ skills/`** (NEVER `helpers/`, `settings.json`, `mcp.json`, or `config/` — the repo's dev tree uses a different layout and produces false "missing" results). Exact diff in [references/provisioning-commands.md](references/provisioning-commands.md).
+5. **Repair gaps if verification fails.** Fill missing files from a pinned clone with `rsync -a --ignore-existing` over `agents/ commands/ skills/` only — it adds missing files, never overwrites customizations, and since `.claude/` is gitignored it needs no commit. Re-run doctor + the core-agent check. If core/ still isn't five, **surface it loudly** in the final report rather than claiming success. Exact commands in the reference.
+6. **Credentials note (don't block):** ruflo agents need `ANTHROPIC_API_KEY` at runtime. Add it to the project `.env` (already gitignored) via `.env.example` — do NOT prompt for or write a real key.
+7. **gitignore:** ensure ruflo's local runtime/memory artifacts are ignored (e.g. `.claude-flow/` memory store, caches). Commit shareable config; ignore machine-local state.
 
 ## Step 2 — Apex-Dev-Skills (Skobyn/Apex-Dev-Skills)
 
@@ -40,8 +64,9 @@ Marketplace name is **`apex-dev-skills`** (not the repo slug). Use non-interacti
 ## Rules
 
 - **Idempotent always.** Detect-then-act: update/upgrade if present, install if absent. Never double-add a marketplace or MCP server.
+- **Verify, don't assume.** ruflo Layer 2 can report "done" while incomplete — the `ls .claude/agents/core/` → 5-files check is mandatory, and the MCP server must be confirmed running.
 - **No secrets.** Never write a real API key; route credentials through `.env` / `.env.example`.
 - **Respect the toggle.** Only run this if dev-environment provisioning was enabled in the plan. Let the user pick "ruflo only", "Apex skills only", or "both" if they asked.
-- **Report outcomes faithfully.** If a step fails (e.g. Node version, network), say so with the actual error and continue with the rest where safe — don't claim success on a failed install.
+- **Report outcomes faithfully.** If a step fails (Node version, network, short scaffold, MCP not running), say so with the actual error — don't claim success on a failed or partial install.
 
-After running, report exactly what was installed/updated/skipped and any follow-ups (e.g. "add ANTHROPIC_API_KEY to .env", "restart Claude Code to load plugins").
+After running, report exactly what was installed/updated/skipped/repaired, the **core-agent count (must be 5)** and whether the **MCP server is live**, plus any follow-ups (e.g. "add ANTHROPIC_API_KEY to .env", "restart Claude Code to load plugins").
