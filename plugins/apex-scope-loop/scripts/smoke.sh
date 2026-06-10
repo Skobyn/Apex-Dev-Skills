@@ -81,5 +81,36 @@ if [ -n "$non_exec" ]; then
 fi
 ok "all .sh scripts are executable"
 
+# 11. Tier routing (ADR-0002): three phase-worker agents exist with parseable frontmatter
+for worker in phase-worker-light phase-worker-standard phase-worker-heavy; do
+  W="$PLUGIN_ROOT/agents/$worker.md"
+  [ -f "$W" ] || fail "missing tier agent: $W"
+  name_line=$(awk '/^---$/{c++; next} c==1 && /^name:/{print; exit}' "$W")
+  echo "$name_line" | grep -qE "^name:[[:space:]]+$worker[[:space:]]*$" \
+    || fail "$worker frontmatter name: must be '$worker' (got: $name_line)"
+  awk '/^---$/{c++; next} c==1 && /^model:/{found=1} END{exit !found}' "$W" \
+    || fail "$worker frontmatter missing model: binding"
+done
+ok "three phase-worker tier agents present with valid frontmatter"
+
+# 12. Every Phase task in the plan template + sample plan names one of the three tiers
+for plan in "$PLUGIN_ROOT/skills/apex-plan/resources/templates/plan-template.md" \
+            "$PLUGIN_ROOT/skills/apex-execute/resources/examples/sample-plan.md"; do
+  [ -f "$plan" ] || fail "missing plan file: $plan"
+  awk '
+    /^- \[[ x]\] \*\*Phase / { if (pending) { print pending; bad=1 }; pending=FILENAME ": " $0; next }
+    /^- \[[ x]\]/            { if (pending) { print pending; bad=1 }; pending=""; next }
+    /- Tier: phase-worker-(light|standard|heavy)$/ { pending="" }
+    END { if (pending) { print pending; bad=1 }; exit bad }
+  ' "$plan" || fail "phase task without a valid Tier: line (printed above)"
+done
+ok "every Phase task in plan template + sample plan carries a valid tier"
+
+# 13. No plugin script sets CLAUDE_CODE_SUBAGENT_MODEL (it would flatten tier routing)
+if grep -RnE 'CLAUDE_CODE_SUBAGENT_MODEL[=]' "$PLUGIN_ROOT/skills" "$PLUGIN_ROOT/scripts" --include="*.sh" 2>/dev/null; then
+  fail "a script assigns CLAUDE_CODE_SUBAGENT_MODEL (flattens tier routing — ADR-0002)"
+fi
+ok "no script sets CLAUDE_CODE_SUBAGENT_MODEL"
+
 echo ""
-echo "smoke passed: 10/10 checks"
+echo "smoke passed: 13/13 checks"

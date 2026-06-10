@@ -12,7 +12,7 @@ This skill is the upstream bookend for [apex-execute](../apex-execute/SKILL.md).
 2. A phased **plan** at `.claude/plans/<slug>-plan.md` (the executable checklist, apex-execute compatible)
 3. **Approval gates** between phases (auto-verifiable or human-required)
 
-Both docs are co-authored with the user through 4–6 structured feedback rounds, so by the time the plan is ready to `/loop`, the user has signed off on every meaningful choice.
+Both docs are co-authored with the user through 4–7 structured feedback rounds, so by the time the plan is ready to `/loop`, the user has signed off on every meaningful choice.
 
 ## When to use this skill
 
@@ -46,8 +46,8 @@ If a partner must sign off, prefer `architecture-decision-propose` first, then r
 ## The five-stage flow (SCOPE)
 
 ```
-1. SCOPE     — 4–6 AskUserQuestion rounds: scope, constraints, success criteria, partners,
-              swarm preferences, gate preferences
+1. SCOPE     — 4–7 AskUserQuestion rounds: scope, constraints, success criteria, partners,
+              swarm preferences, gate preferences, default tier
    ↓
 2. COMPOSE   — Write ADR (SPARC sections) + plan stub from templates
    ↓
@@ -73,6 +73,7 @@ Use `AskUserQuestion` to surface scope and constraints **before drafting anythin
 4. **Ownership** — who reviews, who implements, which partners are affected
 5. **Execution preference** — should phases dispatch a single agent, multiple parallel agents, or a full hierarchical-mesh swarm? Default is hierarchical-mesh for substantial phases, single agent for trivial ones
 6. **Gating preference** — for each phase boundary: auto-gate (runnable check), human-gate (user types "approved phase N"), or partner-gate (inbox item to a specific email)
+7. **Default tier** — light / standard / heavy: which phase-worker subagent should phases route to unless overridden? (Seeds the ADR's "Compute Tiers per Phase" Decision; standard is the safe default)
 
 Capture answers in working memory; surface them back to the user in Stage 2 as the ADR draft so they see their words on the page.
 
@@ -110,6 +111,8 @@ Walk the ADR section-by-section. For each section:
 
 **Every "Open Question" must resolve to a decision before promoting.** Default proposals are starting points, not endings. The user (or partner, if cross-boundary) signs off on each. Replace the `Default:` line with `Decision:` once resolved.
 
+**Model Tier Routing is a mandatory section, same status as Open Questions.** The ADR's "Decision: Compute Tiers per Phase" block (see the template) must end OPTIMIZE with every phase assigned one of `light` / `standard` / `heavy`, and every `heavy` row carrying a one-line rationale. The tiers map to the plugin's `phase-worker-*` subagents, which own the model bindings — the ADR and plan never name models. An `escalate` verdict during execution reopens this section; it never auto-bumps a tier mid-loop.
+
 **Surface parity check** (per the project's `CLAUDE.md`): if the feature touches user-facing UI, explicitly enumerate the surfaces (admin desktop/mobile, portal desktop/mobile, roles) in the ADR's "What changes / What stays" section. Don't let this default to "obvious" — write it down.
 
 ## Stage 4: PLAN
@@ -129,9 +132,12 @@ Each task line uses the apex-execute format (parsed by `iterate.sh`):
 ```markdown
 - [ ] **Phase X.Y** [tag1][tag2] Imperative task title
   - Acceptance: <runnable check the swarm verdicts against>
+  - Tier: phase-worker-<light|standard|heavy>   (required on Phase tasks)
   - Swarm: <topology> <count> [<agent-types>]
   - Blocked-by: phase-X.Y   (optional)
 ```
+
+The **Tier:** line comes from the ADR's "Compute Tiers per Phase" table and names the phase-worker subagent that executes the task (the subagent file owns the model binding, so a model upgrade is a one-file change). Gates carry no tier. `promote-to-loop.sh` refuses promotion if a phase task lacks a tier, or if a `phase-worker-heavy` task has no rationale row in the ADR table.
 
 The **Swarm:** line is read by the orchestrator (the model running `/loop`) when dispatching agents. Three modes:
 
@@ -209,6 +215,8 @@ Before promoting, the skill verifies:
 - [ ] Surface parity section enumerates affected surfaces (if user-facing)
 - [ ] Blocked-by graph has no cycles
 - [ ] Per-phase Swarm directive is present (or default hierarchical-mesh is acceptable)
+- [ ] Every Phase task has a `Tier:` line naming one of the three `phase-worker-*` subagents
+- [ ] Every `phase-worker-heavy` task has a Rationale row in the ADR's tier table
 
 `scripts/promote-to-loop.sh` runs this checklist and refuses to initialize state if it fails. The error message names the first failing item.
 
@@ -225,7 +233,7 @@ Before promoting, the skill verifies:
 
 - `resources/templates/adr-template.md` — SPARC-shaped ADR with spec + pseudocode + architecture sections
 - `resources/templates/plan-template.md` — Phased plan with per-phase Swarm directives and inter-phase gates
-- `resources/templates/feedback-interview.md` — The 4–6 question prompts for Stage 1 (SCOPE)
+- `resources/templates/feedback-interview.md` — The 4–7 question prompts for Stage 1 (SCOPE)
 - `resources/examples/sample-decision.md` — Worked example: a small feature decision + plan end-to-end
 
 ## Anti-patterns

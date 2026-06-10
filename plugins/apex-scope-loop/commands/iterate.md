@@ -9,15 +9,16 @@ You are iterating one phase of the apex-execute for `$ARGUMENTS`.
 Invoke the `apex-execute` skill and execute one iteration:
 
 1. Read `.dev-plan-state/<plan-hash>/checkpoint.json` to find the next unchecked, unblocked task in `$ARGUMENTS`, and note the `worktree_path` / `worktree_branch`.
-2. Parse the task's tags (`[backend]`, `[security]`, etc.) and `Swarm:` directive.
+2. Parse the task's tags (`[backend]`, `[security]`, etc.), `Tier:` line, and `Swarm:` directive. The brief's `TIER:` names the phase-worker subagent (`phase-worker-light` / `phase-worker-standard` / `phase-worker-heavy`) that executes the task — pass it as the Agent `subagent_type` (or the claude-flow swarm's worker config). The subagent owns the model binding; never set `CLAUDE_CODE_SUBAGENT_MODEL` (iterate.sh exits fatally if it is set).
 3. **Execution is worktree-bound.** The whole plan runs inside the worktree from the brief's `WORKTREE:` line (branch `BRANCH:`). Every agent must `cd` into that worktree and make ALL code edits there — never in the base checkout. Pass the worktree path explicitly in each Agent prompt. If `WORKTREE:` is empty, init.sh was run with `APEX_NO_WORKTREE=1`; only then operate in the base checkout.
 4. Dispatch the appropriate swarm — Agent tool, all spawns in **one message**, `run_in_background: true` where applicable, each scoped to the worktree path.
 5. Wait for verdicts; never poll. The harness notifies on completion.
 6. Run the task's `Acceptance:` check inside the worktree (a runnable command, file-exists test, regex match, or — for `[gate:human]` — wait for the user's literal approval phrase).
-7. On pass: check the box in `$ARGUMENTS`, write a one-paragraph summary to memory namespace `apex-execute`, advance.
+7. On pass: check the box in `$ARGUMENTS`, write a one-paragraph summary to memory namespace `apex-execute`, write the outcome file `.dev-plan-state/<plan-hash>/outcomes/<phase>.json` (`{"phase", "tier", "verdict", "tokens"}`), advance.
 8. On fail: store the failure pattern, surface to the user with the blocking reason, halt.
-9. If the plan is complete (no unchecked tasks), the final gate has passed: write `COMPLETE`, then **land the worktree** by running `.claude/skills/apex-execute/scripts/land.sh $ARGUMENTS` — this merges `worktree_branch` into the base branch and removes the worktree. Exit, and do **not** call `ScheduleWakeup`.
-10. Otherwise, use `ScheduleWakeup` with delay matched to the next task's expected wait (1200–1800s for non-urgent work; 270s when actively polling external state).
+9. On an `escalate` verdict from a worker (`escalate: needs <tier>` or `escalate: ADR conflict`): write the verdict to `apex-scope-loop:outcomes/<slug>/<phase>` and the outcome file, run `checkpoint.sh $ARGUMENTS halt "escalate: <reason>"`, and stop. Escalation reopens the ADR's "Compute Tiers per Phase" Decision with the user — do NOT retry the task at a higher tier yourself.
+10. If the plan is complete (no unchecked tasks), the final gate has passed: write `COMPLETE`, then **land the worktree** by running `.claude/skills/apex-execute/scripts/land.sh $ARGUMENTS` — this merges `worktree_branch` into the base branch and removes the worktree. Exit, and do **not** call `ScheduleWakeup`.
+11. Otherwise, use `ScheduleWakeup` with delay matched to the next task's expected wait (1200–1800s for non-urgent work; 270s when actively polling external state).
 
 Respect the gates:
 - `[gate:auto]` — run the Acceptance check, advance on pass.

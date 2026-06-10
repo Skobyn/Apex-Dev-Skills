@@ -14,9 +14,17 @@
 #   TAGS: <comma-separated>
 #   TASK: <task-line>
 #   ACCEPTANCE: <criteria-line>
+#   TIER: <phase-worker-light|phase-worker-standard|phase-worker-heavy>
 #   BLOCKED_BY: <phase-or-empty>
 #   STATUS: READY | BLOCKED | COMPLETE | HALTED
 set -euo pipefail
+
+# Tier routing guard (ADR-0002): CLAUDE_CODE_SUBAGENT_MODEL silently overrides
+# every subagent's model field, flattening tier routing to one model.
+if [ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]; then
+  echo "FATAL: CLAUDE_CODE_SUBAGENT_MODEL set; tier routing void" >&2
+  exit 1
+fi
 
 PLAN="${1:?usage: iterate.sh PATH_TO_PLAN.md}"
 [[ -f "$PLAN" ]] || { echo "STATUS: ERROR plan not found"; exit 1; }
@@ -44,6 +52,7 @@ fi
 if grep -q '"halted": true' "$CHECKPOINT"; then
   echo "STATE: $STATE_DIR"
   echo "STATUS: HALTED"
+  echo "HALT_REASON: $(read_field halt_reason)"
   exit 0
 fi
 
@@ -68,21 +77,41 @@ PHASE_ID=$(echo "$TASK_LINE" | grep -oE 'Phase [0-9]+(\.[0-9]+)*' | head -1 || e
 # Extract tags ([backend][security] -> backend,security)
 TAGS=$(echo "$TASK_LINE" | grep -oE '\[[a-z-]+\]' | tr -d '[]' | grep -vE '^(x| )$' | paste -sd, - 2>/dev/null || echo "")
 
-# Look ahead for Acceptance: and Blocked-by: lines
+# Look ahead for Acceptance:, Tier:, and Blocked-by: lines
 ACCEPTANCE=""
+TIER=""
 BLOCKED_BY=""
 NEXT=$((LINE_NO + 1))
-END=$((LINE_NO + 6))
+END=$((LINE_NO + 7))
 while [[ $NEXT -le $END ]]; do
   L=$(sed -n "${NEXT}p" "$PLAN" 2>/dev/null || echo "")
   [[ -z "$L" ]] && break
   case "$L" in
     *"Acceptance:"*) ACCEPTANCE="${L#*Acceptance:}"; ACCEPTANCE="${ACCEPTANCE# }" ;;
+    *"Tier:"*)       TIER="${L#*Tier:}"; TIER="$(echo "$TIER" | xargs)" ;;
     *"Blocked-by:"*) BLOCKED_BY="${L#*Blocked-by:}"; BLOCKED_BY="${BLOCKED_BY# }" ;;
     "- ["*) break ;;  # next task
   esac
   NEXT=$((NEXT + 1))
 done
+
+# Tier routing (ADR-0002): the tier names the subagent that executes the task.
+# Gates carry no tier (the orchestrator evaluates them itself); phase tasks
+# default to phase-worker-standard when the line is missing.
+if [[ -z "$TIER" ]] && ! echo "$TASK_LINE" | grep -q '\[gate:'; then
+  TIER="phase-worker-standard"
+fi
+if [[ -n "$TIER" ]]; then
+  case "$TIER" in
+    phase-worker-light|phase-worker-standard|phase-worker-heavy) ;;
+    *)
+      echo "STATE: $STATE_DIR"
+      echo "PHASE: $PHASE_ID"
+      echo "STATUS: ERROR unknown tier '$TIER' — must be phase-worker-light|standard|heavy"
+      exit 1
+      ;;
+  esac
+fi
 
 # Resolve blocked-by against current plan state
 if [[ -n "$BLOCKED_BY" ]]; then
@@ -105,6 +134,7 @@ echo "PHASE: $PHASE_ID"
 echo "TAGS: $TAGS"
 echo "TASK: $TASK_LINE"
 echo "ACCEPTANCE: $ACCEPTANCE"
+echo "TIER: $TIER"
 echo "BLOCKED_BY: $BLOCKED_BY"
 echo "LINE_NO: $LINE_NO"
 echo "STATUS: READY"

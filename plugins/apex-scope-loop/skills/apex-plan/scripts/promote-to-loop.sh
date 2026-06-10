@@ -20,8 +20,16 @@
 #   7. Every plan task has an Acceptance line
 #   8. Every gate task has a runnable Acceptance OR human-ack phrase
 #   9. apex-execute's init.sh exists and is executable
+#  10. Every Phase task has a Tier: line naming a phase-worker subagent (ADR-0002)
+#  11. Every heavy-tier task has a Rationale row in the ADR's tier table
 
 set -euo pipefail
+
+# Tier routing guard (ADR-0002)
+if [ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]; then
+  echo "FATAL: CLAUDE_CODE_SUBAGENT_MODEL set; tier routing void" >&2
+  exit 1
+fi
 
 SLUG="${1:-}"
 if [[ -z "$SLUG" ]]; then
@@ -129,6 +137,53 @@ if errors:
     sys.exit(1)
 PY
 fi
+
+# 10 & 11. Tier routing (ADR-0002): every Phase task carries a valid Tier line
+# (gates are exempt — the orchestrator evaluates those itself), and every
+# heavy-tier task is backed by a Rationale row in the ADR's tier table.
+# No tier, no promotion — same class of check as "no Default: lines."
+python3 - "$PLAN_PATH" "$ADR_PATH" <<'PY' || fail "Tier routing validation failed (see python output above)"
+import re, sys, pathlib
+plan = pathlib.Path(sys.argv[1]).read_text().splitlines()
+adr  = pathlib.Path(sys.argv[2]).read_text()
+VALID = {"phase-worker-light", "phase-worker-standard", "phase-worker-heavy"}
+errors, heavy_tasks = [], []
+for i, line in enumerate(plan):
+    m = re.match(r'^- \[[ x]\] \*\*(Phase [0-9.]+)\*\*', line)
+    if not m:
+        continue
+    window = []
+    for l in plan[i+1:i+9]:
+        if re.match(r'^- \[', l):          # next task — stop before its lines
+            break
+        window.append(l)
+    tier_line = next((l for l in window if re.match(r'\s*- Tier:', l)), None)
+    if tier_line is None:
+        errors.append(f"  line {i+1}: {m.group(1)} has no Tier: line")
+        continue
+    tier = tier_line.split('Tier:', 1)[1].strip()
+    if tier not in VALID:
+        errors.append(f"  line {i+1}: {m.group(1)} has unknown tier '{tier}'")
+    elif tier == "phase-worker-heavy":
+        heavy_tasks.append((i + 1, m.group(1)))
+if heavy_tasks:
+    # ADR tier table rows: | <phase> | heavy | <rationale> |
+    rows = {}
+    for rm in re.finditer(r'^\|\s*([0-9.]+)\s*\|\s*heavy\s*\|\s*([^|]*)\|', adr, re.M):
+        rows[rm.group(1)] = rm.group(2).strip()
+    for line_no, phase in heavy_tasks:
+        num = phase.split()[1]                # "3.1"
+        rationale = rows.get(num) or rows.get(num.split('.')[0])
+        if not rationale or 'TODO' in rationale:
+            errors.append(
+                f"  line {line_no}: {phase} is phase-worker-heavy but the ADR tier "
+                f"table has no Rationale row for phase {num} (heavy requires a rationale)")
+if errors:
+    print("Tier routing issues:", file=sys.stderr)
+    for e in errors:
+        print(e, file=sys.stderr)
+    sys.exit(1)
+PY
 
 # 9. apex-execute init.sh exists
 [[ -x "$DPL_INIT" ]] || fail "apex-execute init.sh not found or not executable at $DPL_INIT"

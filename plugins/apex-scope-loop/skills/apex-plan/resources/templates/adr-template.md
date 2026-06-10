@@ -59,6 +59,53 @@ How we'll know this shipped correctly. Each criterion should be runnable (a test
 
 ---
 
+## Decision: Compute Tiers per Phase
+
+> **Mandatory section** (ADR-0002 — tier routing via named subagents). Resolve it during
+> OPTIMIZE like any other Open Question. The plan compiler reads the phase table below
+> to emit per-phase `Tier:` lines; `promote-to-loop.sh` refuses to promote without them.
+
+### Context
+
+Phases in this plan vary in complexity from single-file edits to multi-hour autonomous
+runs. Model cost varies roughly 30x between tiers. Routing every phase to the heavy tier
+wastes budget; routing heavy phases to light tiers produces failed gates and rework.
+
+### Decision
+
+Each phase declares exactly one tier. The tier maps to a named subagent shipped by the
+apex-scope-loop plugin, which owns the model binding. Plans reference subagents by name,
+never model strings, so a model upgrade is a one-file change.
+
+| Tier     | Subagent              | Use when                                            |
+|----------|-----------------------|-----------------------------------------------------|
+| light    | phase-worker-light    | Bounded, mechanical, <=2 files, no judgment         |
+| standard | phase-worker-standard | Feature work within one module (DEFAULT)            |
+| heavy    | phase-worker-heavy    | Cross-module, migrations, autonomous /loop sessions |
+
+**Default tier for this project** (from SCOPE round 7): [ TODO — light / standard / heavy ]
+
+Phase assignment for this plan:
+
+| Phase | Tier     | Rationale                  |
+|-------|----------|----------------------------|
+| 1     | [ TODO ] | [ TODO — one line ]        |
+| 2     | [ TODO ] | [ TODO — one line ]        |
+
+### Constraints
+
+1. `CLAUDE_CODE_SUBAGENT_MODEL` must NOT be set in any execution environment
+   (`iterate.sh`, `audit.sh`, `architecture-review.sh`, or a `/schedule` env).
+   It silently overrides every subagent model field and flattens tier routing
+   to one model. The scripts guard against it and exit fatally if it is set.
+2. **Heavy requires a rationale.** A phase tiered `heavy` must have an explicit
+   Rationale line in the table above. No rationale, no promotion — same class
+   of check as "no `Default:` lines."
+3. An `escalate` verdict from a worker reopens THIS section; it never
+   auto-bumps the tier mid-loop.
+
+---
+
 ## Decision
 
 ### Pseudocode (SPARC)

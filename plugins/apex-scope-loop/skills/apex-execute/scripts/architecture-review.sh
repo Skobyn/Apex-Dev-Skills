@@ -6,6 +6,13 @@
 # Usage: ./architecture-review.sh path/to/plan.md
 set -euo pipefail
 
+# Tier routing guard (ADR-0002): a /schedule env that sets this would flatten
+# tier routing for the review swarm spawned off this briefing.
+if [ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]; then
+  echo "FATAL: CLAUDE_CODE_SUBAGENT_MODEL set; tier routing void" >&2
+  exit 1
+fi
+
 PLAN="${1:?usage: architecture-review.sh PLAN.md}"
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found"; exit 1; }
 

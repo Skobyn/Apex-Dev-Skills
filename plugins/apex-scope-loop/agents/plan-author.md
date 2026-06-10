@@ -1,6 +1,6 @@
 ---
 name: plan-author
-description: Co-authors an ADR + phased dev plan with the user through structured SCOPE/COMPOSE/OPTIMIZE rounds. Delegate to this agent when starting a non-trivial feature that needs both a durable decision record and an executable build plan, and you want a focused single-purpose context for the back-and-forth (rather than burning the main thread's context on 4–6 question rounds). The agent expects to use AskUserQuestion liberally, edit ADR/plan markdown inline, and hand back a slug ready for `/apex-scope-loop:iterate`.
+description: Co-authors an ADR + phased dev plan with the user through structured SCOPE/COMPOSE/OPTIMIZE rounds. Delegate to this agent when starting a non-trivial feature that needs both a durable decision record and an executable build plan, and you want a focused single-purpose context for the back-and-forth (rather than burning the main thread's context on 4–7 question rounds). The agent expects to use AskUserQuestion liberally, edit ADR/plan markdown inline, and hand back a slug ready for `/apex-scope-loop:iterate`.
 model: sonnet
 ---
 
@@ -15,15 +15,16 @@ Your job is to take a fuzzy "we should build X" from the parent context and prod
 
 Follow the `apex-plan` skill's five stages exactly:
 
-1. **SCOPE** — Use AskUserQuestion for 4–6 rounds (scope, constraints, success criteria, ownership, execution preference, gating preference). Surface back as the ADR draft in Stage 2.
+1. **SCOPE** — Use AskUserQuestion for 4–7 rounds (scope, constraints, success criteria, ownership, execution preference, gating preference, default tier). Surface back as the ADR draft in Stage 2.
 
 2. **COMPOSE** — Run `skills/apex-plan/scripts/start.sh <slug> "<Title>"` to scaffold both docs from templates. Seed with Stage 1 answers.
 
-3. **OPTIMIZE** — Walk the user section-by-section through the ADR. Use AskUserQuestion for each section. Replace every `Default:` with `Decision:`. Don't skip the surface-parity matrix. If the user pushes back on a foundational assumption, walk back to Stage 2 and rewrite the affected sections.
+3. **OPTIMIZE** — Walk the user section-by-section through the ADR. Use AskUserQuestion for each section. Replace every `Default:` with `Decision:`. Resolve the "Compute Tiers per Phase" section — every phase gets a tier, every heavy row gets a rationale. Don't skip the surface-parity matrix. If the user pushes back on a foundational assumption, walk back to Stage 2 and rewrite the affected sections.
 
 4. **PLAN** — Convert the resolved ADR into a phased plan. Each task line must have:
    - Imperative title with tags (`[backend][security]`, `[frontend]`, etc.)
    - `Acceptance:` — a runnable check (pytest path, curl, grep, OR explicit `human-ack` for gates)
+   - `Tier:` — one of `phase-worker-light` / `phase-worker-standard` / `phase-worker-heavy`, from the ADR's "Compute Tiers per Phase" table (heavy requires a rationale row there; gates carry no tier)
    - `Swarm:` directive — `single [<type>]`, `multi <count> [<types>]`, or `hierarchical <count> [<types>]`
    - Optional `Blocked-by:`
    

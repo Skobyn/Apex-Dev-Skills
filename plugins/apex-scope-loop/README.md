@@ -9,7 +9,7 @@ It does that through five phases that spell **SCOPE**:
 
 | Phase | What happens | You stay in control by… |
 |---|---|---|
-| **S**cope | 4–6 sharp `AskUserQuestion` rounds pin down scope, constraints, success criteria, ownership | answering, not prompt-wrangling |
+| **S**cope | 4–7 sharp `AskUserQuestion` rounds pin down scope, constraints, success criteria, ownership, default tier | answering, not prompt-wrangling |
 | **C**ompose | A SPARC-shaped ADR + plan stub are scaffolded from your answers | seeing your words on the page immediately |
 | **O**ptimize | You and the agent refine the ADR section-by-section until every Open Question is a Decision | signing off on each section |
 | **P**lan | The resolved ADR compiles into a phased checklist with per-phase swarm directives + gates | reviewing runnable acceptance criteria |
@@ -23,7 +23,7 @@ The result is a system that **thinks alongside you**: it watches reality, persis
 - **Decisions survive the session.** Every choice is captured as an ADR with rationale, so future-you (and your teammates) inherit the *why*, not just the *what*.
 - **Guardrails by default.** Phases close behind runnable checks or explicit human/partner approval. Bad work can't quietly cascade into the next phase.
 - **Autonomy you can trust.** `/loop` drives active sessions; `/schedule` runs nightly audits and weekly architecture reviews so progress continues while you sleep.
-- **Right-sized compute.** Each phase declares its own swarm — a single agent for trivial work, a full hierarchical-mesh for the heavy lifting.
+- **Right-sized compute.** Each phase declares its own swarm — a single agent for trivial work, a full hierarchical-mesh for the heavy lifting — and its own **tier**: a `Tier:` line routes the phase to `phase-worker-light` / `-standard` / `-heavy`, the named subagent that owns the model binding. Price it once at planning time; route it forever (ADR-0002).
 - **Isolated by default.** The whole plan runs in a dedicated git worktree on its own branch. `main` stays clean until the final gate passes and the branch is landed — a half-finished or abandoned plan never leaks partial code into your base branch.
 
 ## Prerequisites
@@ -58,7 +58,7 @@ Then `/reload-plugins` (or restart Claude Code) to activate.
 # 1. Author the ADR + plan with the user (the S-C-O-P phases)
 /apex-scope-loop:start my-feature
 
-# Walks you through: scope → constraints → success criteria → ownership → swarm pref → gate pref
+# Walks you through: scope → constraints → success criteria → ownership → swarm pref → gate pref → default tier
 # Produces: .claude/tasks/my-feature-adr.md + .claude/plans/my-feature-plan.md
 # Promotes to apex-execute state if validation passes
 
@@ -81,6 +81,9 @@ Then `/reload-plugins` (or restart Claude Code) to activate.
 | Command | `/apex-scope-loop:start <slug>` | Begin a new SCOPE authoring session |
 | Command | `/apex-scope-loop:iterate <plan>` | Run one phase of a promoted plan |
 | Agent | `plan-author` | Delegate the SCOPE/COMPOSE/OPTIMIZE rounds to a Sonnet subagent (saves main-thread context) |
+| Agent | `phase-worker-light` | Light-tier executor (haiku) for bounded, mechanical phase tasks |
+| Agent | `phase-worker-standard` | Standard-tier executor (sonnet) — the default for feature work within one module |
+| Agent | `phase-worker-heavy` | Heavy-tier executor for cross-module work, migrations, and long autonomous phases — requires a rationale row in the ADR tier table |
 
 ## How the two skills compose
 
@@ -117,7 +120,7 @@ This plugin claims the AgentDB / memory namespace **`apex-scope-loop`**, followi
 |---|---|
 | `apex-scope-loop:adrs/<slug>` | ADR metadata + status |
 | `apex-scope-loop:plans/<slug>` | Plan checkpoint + completion % |
-| `apex-scope-loop:outcomes/<slug>/<phase>` | Per-phase verdict + trajectory pattern |
+| `apex-scope-loop:outcomes/<slug>/<phase>` | Per-phase verdict + trajectory pattern; since ADR-0002 also `tier`, `tokens`, and the `escalate` verdict variant |
 
 Any future plugin that wants to read/write these keys must claim a non-overlapping prefix and reference this plugin's ADR-0001.
 
@@ -127,11 +130,12 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 10 structural checks (frontmatter, namespace declaration, ADR status, script executability, README sections). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 13 structural checks (frontmatter, namespace declaration, ADR status, script executability, README sections, tier-agent presence, per-task tiers, and the `CLAUDE_CODE_SUBAGENT_MODEL` ban). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 
 - [ADR-0001 — apex-scope-loop plugin contract](docs/adrs/0001-apex-scope-loop-contract.md) — Status: **Proposed**. Defines surface, namespace, compatibility, and smoke contract.
+- [ADR-0002 — Tier routing via named subagents](docs/adrs/0002-tier-routing-via-named-subagents.md) — Status: **Proposed**. Per-phase compute tiers (`phase-worker-light`/`-standard`/`-heavy`), the `escalate` halt type, the nightly cost line, and smoke checks 11–13.
 
 ## Migration from `.claude/skills/`
 

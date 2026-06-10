@@ -92,10 +92,13 @@ Each plan phase is dispatched to a fresh hierarchical-mesh swarm (queen-led, 6�
 
 1. Reads the next unchecked task from the plan
 2. Selects swarm topology + agent roles based on task tags (e.g., `[security]` → security-architect + security-auditor)
-3. Spawns all agents in **one message** with `run_in_background: true`, each scoped to the plan's worktree (`cd` into `worktree_path`)
-4. Waits for verdicts; never polls
-5. Stores trajectory + outcome in AgentDB via `memory_store` with namespace `apex-execute`
-6. Marks the task complete in the plan; commits the code to the worktree branch via hook (the base branch is untouched until `land.sh`)
+3. Routes compute by the brief's `TIER:` line (ADR-0002): dispatches the named `phase-worker-light` / `phase-worker-standard` / `phase-worker-heavy` subagent, which owns the model binding — never set `CLAUDE_CODE_SUBAGENT_MODEL` (the scripts guard against it; it would flatten every tier to one model)
+4. Spawns all agents in **one message** with `run_in_background: true`, each scoped to the plan's worktree (`cd` into `worktree_path`)
+5. Waits for verdicts; never polls
+6. Stores trajectory + outcome in AgentDB via `memory_store` with namespace `apex-execute`, and writes the per-phase outcome file `$STATE_DIR/outcomes/<phase>.json` (`{"phase", "tier", "verdict", "tokens"}`) that the nightly audit aggregates into per-tier cost
+7. Marks the task complete in the plan; commits the code to the worktree branch via hook (the base branch is untouched until `land.sh`)
+
+**The `escalate` verdict is a halt, not a retry.** A worker that finds the task above its tier reports `escalate: needs <tier>` (or `escalate: ADR conflict`). The orchestrator writes the verdict to `apex-scope-loop:outcomes/<slug>/<phase>` and the outcomes file, sets `halted: true` with `halt_reason: "escalate: ..."` via `checkpoint.sh`, and stops the loop. Escalation reopens the ADR's "Compute Tiers per Phase" Decision with the user — it never auto-bumps the tier mid-loop.
 
 See [docs/SWARM_TOPOLOGIES.md](docs/SWARM_TOPOLOGIES.md) for topology-per-phase mapping.
 
