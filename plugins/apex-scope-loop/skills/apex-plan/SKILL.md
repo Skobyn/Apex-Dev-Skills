@@ -43,6 +43,48 @@ Do NOT use this skill for:
 
 If a partner must sign off, prefer `architecture-decision-propose` first, then return here to build the plan after merge.
 
+## Product-council issue lifecycle wiring (when the session originates from a `[council]` issue)
+
+If this apex-plan session was kicked off **from a GitHub issue created by the product council** — the issue is labeled `council` and titled `[council] …` (e.g. the args reference a GitHub issue number, or the source is a council suggestion `SUG-…`) — then wire the council disposition lifecycle into the flow so the council's learning loop tracks the work end-to-end. Use the **`council-triage`** skill (`bash .claude/skills/council-triage/triage.sh <issue#> <decision> [reason]`), which writes the issue state+labels the council reads.
+
+**First, confirm the council origin** before doing any of this: `gh issue view <issue#> --json labels -q '.labels[].name' | grep -qx council`. If the issue is **not** council-labeled, skip this whole section — the lifecycle wiring applies only to council-sourced work.
+
+Disposition vocabulary is **`accept | in-flight | ship`** (note: the "in progress" state is spelled **`in-flight`** — there is no "in process"). Map the apex-plan/apex-execute lifecycle onto it:
+
+| Lifecycle moment | Council disposition | When / where |
+|---|---|---|
+| **Plan accepted** (ADR flips to `Accepted`, Stage 3→5) | `accept` | Run during promotion (Stage 5), before/after `promote-to-loop.sh`. Issue stays open, `council:accepted`. |
+| **Execute starts** (first `/loop` iteration) | `in-flight` | A `[coordination]` task you inject as the **first** task of Phase 1, so the loop dispositions it `in-flight` on its first iteration. |
+| **Build ships** (ADR `Implemented`, all gates green) | `ship` | A `[coordination]` task you inject as the **last** task of the final phase, blocked-by the docs/ADR-Implemented task. Closes the issue `completed`. |
+
+**Concretely, when the origin is a council issue:**
+
+1. **Stage 5 (promote):** disposition `accept` —
+   ```bash
+   bash .claude/skills/council-triage/triage.sh <issue#> accept "<slug> planned — ADR accepted"
+   ```
+   (Often already done at triage time; re-applying is an idempotent no-op.)
+
+2. **Stage 4 (PLAN) — inject two coordination tasks into the generated plan:**
+   - As the **first** Phase 1 task (the loop runs it first → marks in-flight at execute start):
+     ```markdown
+     - [ ] **Phase 1.0** [coordination] Mark council issue #<n> in-flight (execute started)
+       - Acceptance: `bash .claude/skills/council-triage/triage.sh <n> in-flight "<slug> build started" && gh issue view <n> -R <owner>/<repo> --json labels -q '[.labels[].name]' | grep -q 'council:in-flight'`
+       - Swarm: single [reviewer]
+     ```
+   - As the **last** task of the final phase, blocked-by the "flip ADR to Implemented" task:
+     ```markdown
+     - [ ] **Phase N.last** [coordination] Disposition council issue #<n> as shipped
+       - Acceptance: `bash .claude/skills/council-triage/triage.sh <n> ship "<slug> shipped — ADR Implemented" && gh issue view <n> -R <owner>/<repo> --json state,stateReason -q '.state + " " + .stateReason' | grep -qi "CLOSED completed"`
+       - Swarm: single [reviewer]
+       - Blocked-by: phase-<docs-task>
+     ```
+   - Extend the **closing gate's** Acceptance to also assert the issue is closed: `… && gh issue view <n> … --json state -q .state | grep -qi CLOSED` — so the loop cannot call the work "done" until the council issue is actually shipped.
+
+3. Record the issue number in the ADR header (a `**Source**: GitHub issue #<n>` line) so the linkage is durable.
+
+This keeps the council's board honest automatically: `accepted` at plan time → `in-flight` the moment execution begins → `shipped` only when the build is verified-complete. Don't hand-disposition `ship` early; let the final-phase gate earn it.
+
 ## The five-stage flow (SCOPE)
 
 ```
@@ -62,6 +104,8 @@ If a partner must sign off, prefer `architecture-decision-propose` first, then r
 ```
 
 Stages 1–4 are interactive. Stage 5 hands off to apex-execute.
+
+> **Council-sourced sessions:** if the work originates from a `[council]` GitHub issue, also apply the **Product-council issue lifecycle wiring** (above) — `accept` at plan, inject an `in-flight` task at execute-start, inject a `ship` task at the final phase. Skip if the issue isn't `council`-labeled.
 
 ## Stage 1: SCOPE
 
