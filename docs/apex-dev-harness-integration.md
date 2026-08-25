@@ -16,7 +16,17 @@ nothing in the transcript announces it happened.
 
 Before you do anything else:
 
-1. `npm i -D apex-dev-harness` inside the `apex-app` checkout.
+1. **Install the engine.** The package is not yet published to npm, so install it from a local
+   tarball built out of this repo:
+
+   ```bash
+   cd /path/to/Apex-Dev-Skills/harnesses/apex-dev-harness
+   npm install && npm run build && npm pack          # produces apex-dev-harness-0.1.0.tgz
+   cd /path/to/apex-app
+   npm i -D /path/to/Apex-Dev-Skills/harnesses/apex-dev-harness/apex-dev-harness-0.1.0.tgz
+   ```
+
+   Once `apex-dev-harness` is published, this becomes `npm i -D apex-dev-harness`.
 2. Run `apex doctor`. Confirm its `hooks` section prints
    `ok    apex-dev-harness resolves from the project — the hook can load
    the engine`. If it instead warns that the package is NOT installed, stop
@@ -152,9 +162,9 @@ and this integration does not touch it.
    outside the five buckets; **85 table rows** total)". But
    `apex-dev-harness`'s parser — which reads every `|`-delimited row under
    every `## ` section, not just the ones a human last recounted — finds
-   **106** rows against that header claim of **85**. `apex doctor`
+   **110** rows against that header claim of **85**. `apex doctor`
    reports the parsed count every time it runs
-   (`surface ledger — 106 rows parsed (...)` in the scratch-install run
+   (`surface ledger — 110 rows parsed (...)` in the scratch-install run
    below), so the drift is visible on every run rather than only on the day
    someone happens to recount by hand. Fixing the header is an owner edit,
    not something the harness does — the harness does not write to the
@@ -180,7 +190,7 @@ and this integration does not touch it.
 ## Open questions from the spec, for the owner to rule on
 
 1. **Is the ledger's stated tally worth fixing?** Its header says 85 rows;
-   the parser finds 106 (see Finding 1 above). The harness can report the
+   the parser finds 110 (see Finding 1 above). The harness can report the
    drift on every run; correcting the document itself is an owner edit.
 2. **Should `apex gate` run in CI, or stay a local pre-done check?** The
    commands it wraps already have their own CI gates (e.g.
@@ -197,7 +207,7 @@ and this integration does not touch it.
 
 ## Verification performed before writing this document
 
-- `npm test` passes 135/135, identically with and without
+- `npm test` passes 146/146, identically with and without
   `APEX_REPO_ROOT` set to the apex-app checkout.
 - A packed tarball (`npm pack`) installed into a clean scratch project and
   run via `npx` against the real apex-app checkout: `apex doctor` reports

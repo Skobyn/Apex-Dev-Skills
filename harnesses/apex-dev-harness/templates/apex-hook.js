@@ -102,8 +102,11 @@ async function main() {
       // generator check and the capability-manifest freshness check after an
       // edit. Advisory only — stderr, never blocking, and only when relevant.
       const { execSync } = await import('node:child_process');
+      // Keep well under the host's per-hook timeout (60s in Claude Code). If the
+      // platform kills us first we emit NOTHING, and empty stdout is the failure
+      // this whole file is written to avoid. These checks cost ~30ms and ~3s.
       const runQuiet = (cmd) => {
-        try { execSync(cmd, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000 }); return null; }
+        try { execSync(cmd, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 }); return null; }
         catch (e) { return String((e && (e.stdout || e.stderr)) || (e && e.message) || 'failed').trim(); }
       };
       if (/^ui\/src\/.*\.(js|jsx|css)$/.test(rel)) {
@@ -119,7 +122,12 @@ async function main() {
       ];
       if (CAPABILITY_SURFACES.includes(rel) || rel.startsWith('backend/app/routes/studio_adapters/')) {
         const out = runQuiet('cd backend && python -m scripts.gen_studio_capability_manifest --check');
-        if (out) process.stderr.write('[apex] capability manifest is STALE — regenerate it before you call this done.\n');
+        if (out) {
+          const couldNotRun = /not found|No module named|command not found|ENOENT/i.test(out);
+          process.stderr.write(couldNotRun
+            ? `[apex] could not run the capability-manifest check (not a staleness result):\n${out.slice(0, 500)}\n`
+            : `[apex] capability manifest is STALE — regenerate it before you call this done.\n`);
+        }
       }
     } catch { /* advisory only */ }
     return emit();
