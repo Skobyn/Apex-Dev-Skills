@@ -9,3 +9,7 @@ dist/
 # harness runtime artifacts
 .harness/audit.log
 .harness/memory.jsonl
+
+# runtime artifacts the harness appends to on every run
+.claude/traces/*.jsonl
+.claude/contracts-reliability/*.jsonl

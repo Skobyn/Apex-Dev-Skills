@@ -16,7 +16,7 @@ plugin is sufficient on its own — **no `.claude/settings.json` edit and no
 `apex init` are needed for plugin users.**
 
 Everything below this section — the manual `.claude/settings.json` diff,
-the npm-tarball install, deleting the `.ps1`/`.cmd` files — is the *manual*
+the engine install, deleting the `.ps1`/`.cmd` files — is the *manual*
 path. It stays fully documented and supported for CI, Cursor, pre-commit
 hooks, or any other context that isn't Claude Code loading the plugin.
 The manual path's safety ordering is unchanged and must still be followed
@@ -37,17 +37,12 @@ nothing in the transcript announces it happened.
 
 Before you do anything else:
 
-1. **Install the engine.** The package is not yet published to npm, so install it from a local
-   tarball built out of this repo:
+1. **Install the engine** from npm, inside the `apex-app` checkout:
 
    ```bash
-   cd /path/to/Apex-Dev-Skills/harnesses/apex-dev-harness
-   npm install && npm run build && npm pack          # produces apex-dev-harness-0.1.0.tgz
    cd /path/to/apex-app
-   npm i -D /path/to/Apex-Dev-Skills/harnesses/apex-dev-harness/apex-dev-harness-0.1.0.tgz
+   npm i -D apex-dev-harness
    ```
-
-   Once `apex-dev-harness` is published, this becomes `npm i -D apex-dev-harness`.
 2. Run `apex doctor`. Confirm its `hooks` section prints
    `ok    apex-dev-harness resolves from the project — the hook can load
    the engine`. If it instead warns that the package is NOT installed, stop
