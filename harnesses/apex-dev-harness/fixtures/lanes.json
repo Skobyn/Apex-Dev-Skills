@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "updated": "2026-08-17",
+  "adr": ".claude/tasks/platform-legibility-lanes.md",
+  "laneDefs": {
+    "production": "Load-bearing today. Build here per the surface ledger's per-surface routing.",
+    "legacy": "Works today; do NOT build new features here. 'replacement' names where new work goes. Existing importers are grandfathered in importGuards allowlists (shrink-only).",
+    "experimental": "In active build; not yet load-bearing. May change or vanish without migration.",
+    "retired": "Dead. Zero importers enforced; delete-on-sight candidates."
+  },
+  "governedRoots": [
+    "backend/app",
+    "backend/agentic",
+    "ui/src",
+    "website-edge-service/app",
+    "tools"
+  ],
+  "modules": [
+    {
+      "path": "backend/app/funnel_builder/",
+      "lane": "legacy",
+      "owner": "chris@getapexinsights.com",
+      "replacement": "Funnel/landing authoring happens inside the site builder Campaigns section + Apex Studio (funnel-builder / landing-page-builder skills); FUNNEL_BUILDER Firestore namespace and published funnels stay live.",
+      "canonicalDoc": ".claude/tasks/going-full-studio.md",
+      "since": "2026-07-06",
+      "notes": "Routes still served (blueprint registration grandfathered); edge service serves published funnels; 'funnel_builder' also remains a live PRODUCT KEY in config/products.py - the product outlives the editor module."
+    },
+    {
+      "path": "backend/app/routes/",
+      "lane": "production",
+      "notes": "REST API + Studio chat (studio_chat.py), resolvers, adapters, capability manifest."
+    },
+    {
+      "path": "ui/src/apexDocs/",
+      "lane": "experimental",
+      "notes": "Apex Docs viewer v1 at /docs (md-as-source pipeline, 17036544/2f522a6d); row added by the PR #369 lane-guard fix - reflip when load-bearing."
+    },
+    {
+      "path": "ui/src/apexStudio/",
+      "lane": "production",
+      "notes": "Apex Studio: canvas app + SSE chat engine (ADR-002: THE one agent loop). Surface-ledger STUDIO rows live here."
+    },
+    {
+      "path": "ui/src/menuDesigner/",
+      "lane": "legacy",
+      "owner": "chris@getapexinsights.com",
+      "replacement": "Studio MenuPrintWorkspace is the print path (owner ruling 2026-07-18); /menu-designer redirects to /menu-manager.",
+      "canonicalDoc": ".claude/tasks/apex-studio-surface-ledger.md",
+      "since": "2026-07-18",
+      "notes": "Route retired 2026-07-18; module + backend menu_designer routes retained (saved designs/custom types still served) pending a later deletion sweep - flip to retired when pages/MenuDesignerPage.jsx goes too (zero-importer enforcement)."
+    },
+    {
+      "path": "ui/src/quizBuilder/",
+      "lane": "legacy",
+      "owner": "chris@getapexinsights.com",
+      "replacement": "Marketing - Forms list (legacy /quizzes editor routes redirect); quiz data model stays live.",
+      "canonicalDoc": ".claude/tasks/going-full-studio.md",
+      "since": "2026-07-06",
+      "notes": "api/ still consumed by marketing zone + CMS forms manager (grandfathered importers)."
+    }
+  ],
+  "importGuards": [
+    {
+      "id": "be-funnel-builder",
+      "namespace": "backend/app/funnel_builder",
+      "language": "python",
+      "internalExempt": [
+        "backend/app/funnel_builder/",
+        "backend/app/quiz_builder/"
+      ],
+      "allow": [
+        {
+          "file": "backend/app/__init__.py",
+          "reason": "Blueprint registration - the legacy routes are still served in prod."
+        },
+        {
+          "file": "backend/app/routes/apex_studio_artifacts.py",
+          "reason": "Studio campaign surface reads funnels via funnels_repository (read-only bridge)."
+        },
+        {
+          "file": "backend/app/routes/studio_adapters/funnel.py",
+          "reason": "Studio campaigns adapter drives funnel CRUD through the legacy write core - the bridge that keeps ONE write path."
+        },
+        {
+          "file": "backend/app/routes/tests/test_studio_adapters_artifacts.py",
+          "reason": "Adapter tests exercise the same bridge."
+        },
+        {
+          "file": "backend/app/routes/website_builder_studio.py",
+          "reason": "Publish pipeline republishes funnel step pages via the legacy publisher."
+        }
+      ]
+    },
+    {
+      "id": "be-quiz-builder",
+      "namespace": "backend/app/quiz_builder",
+      "language": "python",
+      "internalExempt": [
+        "backend/app/funnel_builder/",
+        "backend/app/quiz_builder/"
+      ],
+      "allow": [
+        {
+          "file": "backend/app/__init__.py",
+          "reason": "Blueprint registration - the legacy routes are still served in prod."
+        },
+        {
+          "file": "backend/app/routes/apex_studio_campaign.py",
+          "reason": "Studio campaign surface lists quizzes via repository (read-only bridge)."
+        },
+        {
+          "file": "backend/app/routes/website_builder_studio.py",
+          "reason": "Publish pipeline hydrates quiz embeds in funnel step pages via the legacy repo."
+        }
+      ]
+    },
+    {
+      "id": "fe-quiz-builder",
+      "namespace": "ui/src/quizBuilder",
+      "language": "javascript",
+      "internalExempt": [
+        "ui/src/quizBuilder/"
+      ],
+      "allow": [
+        {
+          "file": "ui/src/marketing/MarketingHomePage.jsx",
+          "reason": "listQuizzes via quizBuilder/api - quiz DATA stays live; api/ is the read client."
+        },
+        {
+          "file": "ui/src/marketing/CampaignCockpit.jsx",
+          "reason": "listQuizzes via quizBuilder/api."
+        },
+        {
+          "file": "ui/src/components/cms/CMSFormsManager.js",
+          "reason": "Forms manager CRUDs quizzes via quizBuilder/api - the canonical Forms surface today."
+        }
+      ]
+    }
+  ]
+}
