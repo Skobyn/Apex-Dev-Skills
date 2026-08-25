@@ -171,6 +171,22 @@ unchanged.** It writes `.claude/handoff/<session_id>.md` on the `Stop` event
 and has nothing to do with routing, lanes, or gating — it is not superseded
 and this integration does not touch it.
 
+### A feedback channel this supersession does not preserve
+
+`quality-style-check` and `studio-manifest-check` both exited `2` on
+failure. In Claude Code, a `PostToolUse` hook that exits `2` feeds its
+failure text back into the agent's own loop as a tool result, so the agent
+sees the problem immediately and can self-correct in the same turn.
+
+`apex-hook.js`'s `post-tool-use` is deliberately **stderr-advisory and never
+blocks** — it always exits 0 and reports the same failures on stderr. That
+is a considered design choice (see the binding rule above: a false block is
+the worst failure this shim can produce), but it means this supersession is
+**not** like-for-like: anyone relying on the exit-2 behavior to get failures
+reflected back into the agent loop should know that channel is gone. The
+place those checks become blocking again is `apex gate`, which runs before
+merge — that is the intended enforcement point, not the PostToolUse hook.
+
 ## Findings from the build (for the reviewer)
 
 1. **The surface ledger's own header tally is stale.** The ledger's header

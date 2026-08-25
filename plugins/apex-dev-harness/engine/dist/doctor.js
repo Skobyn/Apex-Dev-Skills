@@ -58,10 +58,14 @@ export async function doctor(root) {
     }
     lines.push('');
     lines.push('hooks');
-    if (existsSync(join(root, '.claude', 'hooks', 'apex-hook.js')))
+    const hookInstalled = existsSync(join(root, '.claude', 'hooks', 'apex-hook.js'));
+    if (hookInstalled)
         pass('.claude/hooks/apex-hook.js installed');
     else
         warn('.claude/hooks/apex-hook.js not installed — run `apex init`');
+    if (hookInstalled && !existsSync(join(root, '.claude', 'hooks', 'package.json'))) {
+        warn('.claude/hooks/package.json missing — every hook run will print a MODULE_TYPELESS_PACKAGE_JSON warning. Re-run `apex init`.');
+    }
     // The hook resolves the engine by package specifier. Checking only that the
     // hook FILE exists proved nothing: if the package is not installed the hook
     // fails open and every guardrail is silently off. Probe it the same way.

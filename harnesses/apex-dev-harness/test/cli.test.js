@@ -86,3 +86,23 @@ test('an unknown command exits 2', () => {
     return true;
   });
 });
+
+test('init writes .claude/hooks/package.json so the hook stays quiet on module-type warnings', () => {
+  const dir = repo();
+  try {
+    const env = { ...process.env, APEX_REPO_ROOT: dir };
+    run(['init'], { env });
+    assert.ok(existsSync(join(dir, '.claude', 'hooks', 'package.json')));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('doctor warns when .claude/hooks/package.json is missing', () => {
+  const dir = repo();
+  try {
+    const env = { ...process.env, APEX_REPO_ROOT: dir };
+    mkdirSync(join(dir, '.claude', 'hooks'), { recursive: true });
+    writeFileSync(join(dir, '.claude', 'hooks', 'apex-hook.js'), '// stub');
+    const out = run(['doctor'], { env });
+    assert.match(out, /MODULE_TYPELESS_PACKAGE_JSON/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

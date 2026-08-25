@@ -5,6 +5,8 @@
       "source": ".agents/rules/boundaries.md" },
     { "id": "BOUND-002", "tier": "block", "scope": "repo", "check": "no-credential-literals",
       "source": ".agents/rules/boundaries.md" },
+    { "id": "GUARD-SENSITIVE-FILE", "tier": "block", "scope": "repo", "check": "no-sensitive-file-edit",
+      "source": ".claude/hooks/block-sensitive-files.ps1 (superseded)" },
     { "id": "LANE-RETIRED", "tier": "block", "scope": "repo", "check": "no-retired-lane-edit",
       "source": "tools/repo-lanes/lanes.json" },
     { "id": "LANE-IMPORT", "tier": "block", "scope": "repo", "check": "no-new-legacy-import",

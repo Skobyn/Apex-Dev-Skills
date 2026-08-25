@@ -8,6 +8,11 @@ const TEMPLATES = join(HERE, '..', 'templates');
 const FILES = [
     ['apex-hook.js', join('.claude', 'hooks', 'apex-hook.js')],
     ['policy.json', join('.harness', 'policy.json')],
+    // Node resolves a file's module type from the nearest package.json. Scoping
+    // "type": "module" to .claude/hooks/ silences MODULE_TYPELESS_PACKAGE_JSON
+    // on every hook run without touching the consuming repo's root
+    // package.json, which may drive CommonJS code elsewhere (e.g. backend/express).
+    ['hooks-package.json', join('.claude', 'hooks', 'package.json')],
 ];
 const SETTINGS_SNIPPET = `
 Apply these entries to .claude/settings.json (they replace the .ps1/.cmd pairs):
