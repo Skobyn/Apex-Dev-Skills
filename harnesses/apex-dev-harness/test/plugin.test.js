@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(HERE, '..', '..', '..');
 const PLUGIN = join(ROOT, 'plugins', 'apex-dev-harness');
-const HARNESS = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 test('plugin.json is valid and names the plugin', () => {
   const p = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf-8'));
@@ -74,10 +74,12 @@ test('the apex-done-gate skill exists with name and description frontmatter', ()
   assert.match(s, /description:/);
 });
 
-test('staleness guard: the bundled engine is byte-identical to the built dist', () => {
-  const bundled = readFileSync(join(PLUGIN, 'engine', 'dist', 'route.js'));
-  const built = readFileSync(join(HARNESS, 'dist', 'route.js'));
-  assert.ok(bundled.equals(built), 'engine/dist/route.js is stale — run `npm run build` (which re-bundles) or `npm run bundle:plugin`');
+test('the committed plugin engine bundle is current', () => {
+  // Not a byte-compare against dist/: `npm run build` re-bundles before tests
+  // run, so that comparison can never fail. The real risk is a commit whose
+  // src/ changed but whose engine/ was not regenerated and committed.
+  const r = spawnSync(process.execPath, [join(HERE, '..', 'scripts', 'verify-bundle.js')], { encoding: 'utf-8' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
 });
 
 test('end-to-end: the bundled hook denies a .env write with BOUND-005 and no APEX_ENGINE_DIST set', () => {
