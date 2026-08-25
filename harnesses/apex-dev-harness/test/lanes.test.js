@@ -107,3 +107,22 @@ test('malformed JSON warns rather than throwing', () => {
     assert.match(truth.warning, /pars/i);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a sibling directory sharing a module name prefix does not inherit its lane', () => {
+  const dir = repoWith(JSON.stringify({
+    governedRoots: ['ui/src'],
+    modules: [
+      { path: 'ui/src/quizBuilder', lane: 'legacy' },
+      { path: 'ui/src/', lane: 'production' },
+    ],
+    importGuards: [],
+  }));
+  try {
+    const truth = loadLanes(dir);
+    // No trailing slash on the legacy entry — the boundary check must still
+    // keep the sibling out of it.
+    assert.equal(laneFor(truth, 'ui/src/quizBuilderExtra/x.js').lane, 'production');
+    assert.equal(laneFor(truth, 'ui/src/quizBuilder/api.js').lane, 'legacy');
+    assert.equal(laneFor(truth, 'ui/src/quizBuilder').lane, 'legacy');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

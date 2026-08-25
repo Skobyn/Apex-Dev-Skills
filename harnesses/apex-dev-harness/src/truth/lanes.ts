@@ -43,7 +43,8 @@ export function laneFor(truth: LanesTruth, relPath: string): { lane: Lane; entry
   let best: LaneEntry | null = null;
   for (const m of truth.modules) {
     const prefix = normalize(m.path);
-    if (p === prefix || p.startsWith(prefix)) {
+    const boundary = prefix.endsWith('/') ? prefix : prefix + '/';
+    if (p === prefix || p.startsWith(boundary)) {
       if (!best || prefix.length > normalize(best.path).length) best = m;
     }
   }
