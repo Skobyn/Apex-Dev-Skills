@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: MIT
+// Report what the harness can actually see, and say plainly what it cannot.
+
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { loadLanes } from './truth/lanes.js';
+import { loadLedger } from './truth/ledger.js';
+import { loadPolicy } from './truth/policy.js';
+
+export function doctor(root: string | null): { ok: boolean; lines: string[] } {
+  const lines: string[] = ['apex-dev-harness doctor', ''];
+  let ok = true;
+  const pass = (m: string) => lines.push(`  ok    ${m}`);
+  const warn = (m: string) => lines.push(`  warn  ${m}`);
+  const fail = (m: string) => { ok = false; lines.push(`  FAIL  ${m}`); };
+
+  if (!root) {
+    fail('no apex-app checkout found (looked for tools/repo-lanes/lanes.json above the cwd)');
+    lines.push('', 'result: FAILED');
+    return { ok, lines };
+  }
+  lines.push(`repo: ${root}`, '');
+
+  lines.push('truth files');
+  const lanes = loadLanes(root);
+  if (lanes.ok) pass(`lanes.json — ${lanes.modules.length} modules, ${lanes.importGuards.length} import guards`);
+  else warn(lanes.warning!);
+
+  const ledger = loadLedger(root);
+  if (ledger.ok) {
+    const by: Record<string, number> = {};
+    for (const r of ledger.rows) by[r.status] = (by[r.status] ?? 0) + 1;
+    pass(`surface ledger — ${ledger.rows.length} rows parsed (${Object.entries(by).map(([k, v]) => `${k}:${v}`).join(' ')})`);
+    if (ledger.rowsWithoutRoutes > 0) {
+      warn(`${ledger.rowsWithoutRoutes} ledger rows have no route pattern — those are name-matchable only`);
+    }
+  } else warn(ledger.warning!);
+
+  const policy = loadPolicy(root);
+  if (policy.warning) warn(policy.warning);
+  else pass(`policy.json — ${policy.rules.length} rules, ${policy.obligations.length} obligations`);
+  lines.push('');
+
+  lines.push('wrapped commands');
+  const wrapped: Array<[string, string]> = [
+    ['capability manifest', 'backend/scripts/gen_studio_capability_manifest.py'],
+    ['stack map', 'tools/stack-map/extract_capability.py'],
+    ['ui style generators', 'ui/scripts/check-style-generators.js'],
+    ['lane import guards', 'tools/repo-lanes/tests'],
+  ];
+  for (const [label, rel] of wrapped) {
+    if (existsSync(join(root, rel))) pass(`${label} — ${rel}`);
+    else warn(`${label} MISSING — ${rel} (its obligation will fail if it fires)`);
+  }
+  lines.push('');
+
+  lines.push('hooks');
+  if (existsSync(join(root, '.claude', 'hooks', 'apex-hook.js'))) pass('.claude/hooks/apex-hook.js installed');
+  else warn('.claude/hooks/apex-hook.js not installed — run `apex init`');
+  lines.push('');
+
+  lines.push(ok ? 'result: ok' : 'result: FAILED');
+  return { ok, lines };
+}
