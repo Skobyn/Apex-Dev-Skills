@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "rules": [
+    { "id": "BOUND-005", "tier": "block", "scope": "repo", "check": "no-dotenv-files",
+      "source": ".agents/rules/boundaries.md" },
+    { "id": "BOUND-002", "tier": "block", "scope": "repo", "check": "no-credential-literals",
+      "source": ".agents/rules/boundaries.md" },
+    { "id": "LANE-RETIRED", "tier": "block", "scope": "repo", "check": "no-retired-lane-edit",
+      "source": "tools/repo-lanes/lanes.json" },
+    { "id": "LANE-IMPORT", "tier": "block", "scope": "repo", "check": "no-new-legacy-import",
+      "source": "tools/repo-lanes/lanes.json" },
+    { "id": "CONV-PROJECTDATA", "tier": "block", "scope": "repo", "check": "no-project-data-json",
+      "source": "CLAUDE.md Key Conventions" },
+    { "id": "BOUND-004", "tier": "block", "scope": "backend/agentic/", "check": "no-provider-sdk-import",
+      "source": ".agents/rules/boundaries.md" },
+    { "id": "ARCH-003", "tier": "warn", "scope": "backend/agentic/", "check": "no-mutable-venue-scope",
+      "source": ".agents/rules/architecture.md" },
+    { "id": "ARCH-005", "tier": "warn", "scope": "backend/agentic/", "check": "no-untrusted-venue-header",
+      "source": ".agents/rules/architecture.md" },
+    { "id": "BOUND-001", "tier": "historical", "scope": "backend/agentic/",
+      "source": ".agents/rules/boundaries.md",
+      "note": "The repo-wide isolation clause governed the AgentLoop framework deleted 2026-07-05 (ADR-002). The UI agentic directory it protected no longer exists. Enforcing it repo-wide would block nearly all work, so it is recorded, not enforced." }
+  ],
+  "obligations": [
+    {
+      "id": "studio-capability-manifest",
+      "reason": "diff touches a Studio capability surface",
+      "when": { "anyPathMatches": [
+        "backend/app/routes/studio_chat.py",
+        "backend/agentic/core/mutations/registry.py",
+        "backend/app/routes/studio_adapters/**",
+        "backend/app/routes/studio_rest_write_exceptions.py",
+        "ui/src/apexStudio/views/registry.js",
+        "ui/src/apexStudio/rail/navDirective.js"
+      ] },
+      "run": [
+        "cd backend && python -m scripts.gen_studio_capability_manifest --check",
+        "cd backend && python -m pytest app/routes/tests/test_studio_capability_manifest.py app/routes/tests/test_studio_write_read_parity.py app/routes/tests/test_studio_resolver_tenancy.py -q"
+      ]
+    },
+    {
+      "id": "stack-map",
+      "reason": "diff touches the capability manifest, the stack map, or the entity tree",
+      "when": { "anyPathMatches": [
+        "backend/app/routes/studio_capability_manifest.json",
+        "tools/stack-map/**",
+        "ui/src/apexStudio/docs/07-entity-tree.md"
+      ] },
+      "run": [
+        "python tools/stack-map/extract_capability.py --check",
+        "python -m pytest tools/stack-map/tests/ -q"
+      ]
+    },
+    {
+      "id": "ui-style-generators",
+      "reason": "diff touches ui/src styles",
+      "when": { "anyPathMatches": ["ui/src/**/*.js", "ui/src/**/*.jsx", "ui/src/**/*.css"] },
+      "run": ["cd ui && node scripts/check-style-generators.js"]
+    },
+    {
+      "id": "lane-import-guards",
+      "reason": "diff touches a governed root, so import guards must still pass",
+      "when": { "anyPathMatches": ["backend/**", "ui/src/**", "tools/repo-lanes/**"] },
+      "run": ["python -m pytest tools/repo-lanes/tests/ -q"]
+    }
+  ],
+  "watchlist": [
+    "quick win", "quick fix", "fallback", "workaround", "bandaid", "band-aid",
+    "temporary", "interim", "simplified version", "for now", "good enough",
+    "sufficient for now", "small change", "minor tweak", "for consistency",
+    "just using", "tests coming later", "will add tests"
+  ],
+  "mwgTargets": [
+    { "match": "ui/src/**", "target": "Baseline Newly Available (apex-app SaaS surface)" },
+    { "match": "backend/app/config/site_builder_kits/**", "target": "Baseline Widely Available (guest-facing venue site)" },
+    { "match": "website-edge-service/**", "target": "Baseline Widely Available (guest-facing funnel/landing)" }
+  ],
+  "skillRules": [
+    { "match": "ui/src/**", "skills": ["awesome-design (before AND after)", "modern-web-guidance"] },
+    { "match": "backend/app/routes/website_builder_studio.py", "skills": ["apex-globals-pipeline", "apex-publishing-pipeline"] },
+    { "match": "backend/app/config/site_builder_kits/**", "skills": ["awesome-design", "modern-web-guidance", "apex-starter-pages"] },
+    { "match": "ui/src/apexStudio/**", "skills": ["awesome-design", "modern-web-guidance"] }
+  ],
+  "parityRules": [
+    { "match": "ui/src/pages/HouseGuideAdminPage.jsx", "surfaces": ["ui/src/portal/PortalHouseGuidePage.jsx (staff view)"] },
+    { "match": "ui/src/**", "surfaces": ["desktop layout vs mobile branch (search isMobile)", "roles: super admin, org, venue manager, staff"] }
+  ]
+}
