@@ -1,6 +1,6 @@
 {
   "name": "apex-dev-harness",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Routing and gate engine for apex-app: lanes, surface ledger, guardrails, and computed done-obligations.",
   "type": "module",
   "bin": {

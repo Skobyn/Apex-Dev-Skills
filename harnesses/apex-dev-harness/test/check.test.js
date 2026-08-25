@@ -278,3 +278,51 @@ test('a genuine trailing line comment is still stripped', () => {
     assert.equal(check(dir, 'backend/agentic/svc.py', 'x = 1  // import anthropic\n').allow, true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// --- GUARD-SENSITIVE-FILE: restores the deny categories block-sensitive-files.ps1
+// covered beyond .env* (BOUND-005). Reported by the apex-app session, 2026-08-25.
+
+test('a lock file is denied', () => {
+  const dir = repo();
+  try {
+    for (const f of ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'poetry.lock', 'Pipfile.lock']) {
+      const d = check(dir, f, '{}');
+      assert.equal(d.allow, false, `${f} must be denied`);
+      assert.equal(d.ruleId, 'GUARD-SENSITIVE-FILE');
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('credentials.json is denied', () => {
+  const dir = repo();
+  try {
+    const d = check(dir, 'credentials.json', '{}');
+    assert.equal(d.allow, false);
+    assert.equal(d.ruleId, 'GUARD-SENSITIVE-FILE');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('secrets.yaml is denied', () => {
+  const dir = repo();
+  try {
+    const d = check(dir, 'secrets.yaml', 'x: 1');
+    assert.equal(d.allow, false);
+    assert.equal(d.ruleId, 'GUARD-SENSITIVE-FILE');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('.mcp.json is denied', () => {
+  const dir = repo();
+  try {
+    const d = check(dir, '.mcp.json', '{}');
+    assert.equal(d.allow, false);
+    assert.equal(d.ruleId, 'GUARD-SENSITIVE-FILE');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an ordinary config.json is still allowed — guards against over-matching', () => {
+  const dir = repo();
+  try {
+    assert.equal(check(dir, 'config.json', '{}').allow, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

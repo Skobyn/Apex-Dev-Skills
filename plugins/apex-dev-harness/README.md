@@ -31,6 +31,24 @@ The bundled engine excludes `dist/mcp/` (it is the only part that needs the
 | `/apex:build <ask>` | Orient, decide, execute, gate, done |
 | `/apex:status` | Read-only orientation |
 
+## Policy overlay (0.3.0+)
+
+`apex init` writes `.harness/policy.json` as a minimal **overlay**, not a
+copy of the built-in policy — anything the file omits is inherited from the
+engine's built-in rules and hints at read time, so updates to
+`apex-dev-harness` reach an already-`init`-ed repo automatically. Turning a
+rule or hint off requires the file's `disabled` block (with a `reason`);
+simply deleting it from `policy.json` no longer works, since omission means
+inherit, not remove. A repo whose `policy.json` predates 0.3.0 is a full
+snapshot and is silently missing every rule/hint shipped since — run `apex
+policy prune` to strip it down to genuinely local config (`apex doctor`
+flags this on its own). See `docs/apex-dev-harness-integration.md` for the
+full merge semantics.
+
+Surface hints (`surfaceHints`) are curated and partial: they cover
+route-mounted page files only, not components, hooks, services, or backend
+code.
+
 ## Relationship to apex-scope-loop
 
 `/apex:build` step 2 hands non-trivial work to `apex-plan`, and step 3 executes it with

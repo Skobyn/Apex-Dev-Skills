@@ -37,17 +37,22 @@ test('historical rules are never returned as in-scope', () => {
   assert.equal(ids.includes('BOUND-001'), false);
 });
 
-test('a project policy overrides the default', () => {
+test('a non-empty project watchlist MERGES with the built-in (union), not overrides it', () => {
+  // 0.3.0: apex init writes a delta overlay, and loadPolicy MERGES it with
+  // the built-in — a project addition must not blot out the built-in
+  // vocabulary, or the defect this release fixes (a snapshot silently
+  // freezing a repo out of engine updates) just comes back in a new shape.
   const dir = mkdtempSync(join(tmpdir(), 'apex-policy-'));
   try {
     mkdirSync(join(dir, '.harness'), { recursive: true });
     writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({
-      version: 1, rules: [], obligations: [], watchlist: ['bespoke'],
-      mwgTargets: [], skillRules: [], parityRules: [],
+      version: 1, watchlist: ['bespoke'],
     }));
     const p = loadPolicy(dir);
     assert.equal(p.ok, true);
-    assert.deepEqual(p.watchlist, ['bespoke']);
+    assert.ok(p.watchlist.includes('bespoke'));
+    assert.ok(p.watchlist.includes('quick win'), 'built-in terms must survive the merge');
+    assert.equal(p.watchlist.length, DEFAULT_POLICY.watchlist.length + 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -100,5 +105,100 @@ test('an explicitly empty section is preserved, not replaced by the default', ()
     const p = loadPolicy(dir);
     assert.deepEqual(p.rules, []);
     assert.deepEqual(p.watchlist, []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── Delta overlay model (0.3.0) ──────────────────────────────────────────
+
+test('an omitted section inherits the full built-in — this IS the fix', () => {
+  // The actual field defect: a repo whose policy.json was a full snapshot
+  // never saw new rules. The overlay model's entire point is that omitting
+  // a section (e.g. never mentioning GUARD-SENSITIVE-FILE) still yields it.
+  const dir = mkdtempSync(join(tmpdir(), 'apex-omitted-'));
+  try {
+    mkdirSync(join(dir, '.harness'), { recursive: true });
+    writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({ version: 1 }));
+    const p = loadPolicy(dir);
+    assert.ok(p.rules.some((r) => r.id === 'GUARD-SENSITIVE-FILE'));
+    assert.deepEqual(p.rules, DEFAULT_POLICY.rules);
+    assert.deepEqual(p.surfaceHints, DEFAULT_POLICY.surfaceHints);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a non-empty project rules array MERGES by id with the built-in, project winning on collision', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apex-mergerules-'));
+  try {
+    mkdirSync(join(dir, '.harness'), { recursive: true });
+    writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({
+      version: 1,
+      rules: [
+        { id: 'BOUND-005', tier: 'warn', scope: 'repo', source: 'local override' }, // collides — project wins
+        { id: 'LOCAL-001', tier: 'block', scope: 'repo', source: 'local' }, // new
+      ],
+    }));
+    const p = loadPolicy(dir);
+    const b005 = p.rules.find((r) => r.id === 'BOUND-005');
+    assert.equal(b005.tier, 'warn');
+    assert.equal(b005.source, 'local override');
+    assert.ok(p.rules.some((r) => r.id === 'LOCAL-001'));
+    // every OTHER built-in rule survived the merge untouched
+    assert.ok(p.rules.some((r) => r.id === 'GUARD-SENSITIVE-FILE'));
+    assert.equal(p.rules.length, DEFAULT_POLICY.rules.length + 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a non-empty project surfaceHints array MERGES by match, adding new hints without dropping built-in ones', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apex-mergehints-'));
+  try {
+    mkdirSync(join(dir, '.harness'), { recursive: true });
+    writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({
+      version: 1,
+      surfaceHints: [{ match: 'ui/src/local/X.jsx', surface: 'Local surface' }],
+    }));
+    const p = loadPolicy(dir);
+    assert.ok(p.surfaceHints.some((h) => h.match === 'ui/src/local/X.jsx'));
+    assert.equal(p.surfaceHints.length, DEFAULT_POLICY.surfaceHints.length + 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('disabled.rules drops a rule by id after merging, even a built-in one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apex-disabled-rule-'));
+  try {
+    mkdirSync(join(dir, '.harness'), { recursive: true });
+    writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({
+      version: 1,
+      disabled: { rules: [{ id: 'ARCH-003', reason: 'not applicable to this repo' }], surfaceHints: [] },
+    }));
+    const p = loadPolicy(dir);
+    assert.equal(p.rules.some((r) => r.id === 'ARCH-003'), false);
+    // everything else still present
+    assert.ok(p.rules.some((r) => r.id === 'GUARD-SENSITIVE-FILE'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('disabled.surfaceHints drops a hint by match after merging', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apex-disabled-hint-'));
+  try {
+    mkdirSync(join(dir, '.harness'), { recursive: true });
+    const someHint = DEFAULT_POLICY.surfaceHints[0].match;
+    writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({
+      version: 1,
+      disabled: { rules: [], surfaceHints: [{ match: someHint, reason: 'noisy in this repo' }] },
+    }));
+    const p = loadPolicy(dir);
+    assert.equal(p.surfaceHints.some((h) => h.match === someHint), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a bare-string disabled entry is accepted (doctor warns separately, loadPolicy still applies it)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apex-disabled-bare-'));
+  try {
+    mkdirSync(join(dir, '.harness'), { recursive: true });
+    writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({
+      version: 1,
+      disabled: { rules: ['ARCH-003'], surfaceHints: [] },
+    }));
+    const p = loadPolicy(dir);
+    assert.equal(p.rules.some((r) => r.id === 'ARCH-003'), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

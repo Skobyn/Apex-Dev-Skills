@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "_readme": "Anything omitted here is inherited from apex-dev-harness's built-in policy, so new rules and hints reach this repo automatically as the engine updates. Add only what THIS repo changes. To turn something off, list it under `disabled` — omission means inherit, never remove.",
+  "disabled": { "rules": [], "surfaceHints": [] }
+}

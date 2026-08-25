@@ -12,6 +12,9 @@ const USAGE = `apex — routing and gate engine for apex-app
   apex watchlist <file|->          BOUND-006 vocabulary scan
   apex doctor                      What the harness can see
   apex init [--force]              Install the hook shim + policy into apex-app
+  apex policy prune                Drop project-policy entries identical to the built-in
+                                   (migration for repos whose policy.json is an old full
+                                   snapshot, not a delta overlay)
   apex mcp start                   Run the MCP server on stdio
 
   --json                           Machine-readable output (route, gate, check)
@@ -101,6 +104,14 @@ async function main(argv) {
       const r = scaffold(needRoot(), { force: args.includes('--force') });
       for (const l of r.lines) console.log(l);
       return 0;
+    }
+    case 'policy': {
+      const sub = args[0];
+      if (sub !== 'prune') { console.error('usage: apex policy prune'); return 2; }
+      const { prunePolicy } = await import('../dist/policyPrune.js');
+      const r = prunePolicy(needRoot());
+      for (const l of r.lines) console.log(l);
+      return r.ok ? 0 : 1;
     }
     case 'mcp': {
       if ((args[0] ?? 'start') !== 'start') { console.error('usage: apex mcp start'); return 2; }

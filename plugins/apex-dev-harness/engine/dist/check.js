@@ -62,6 +62,22 @@ export function check(root, relPath, content) {
     if (dotenv && !isEnvTemplate && /^\.env(\..+)?$/.test(base)) {
         return deny(dotenv, `${p} is a dotenv file. Credentials belong in Google Secret Manager.`);
     }
+    // GUARD-SENSITIVE-FILE — restores the three deny categories of the .ps1
+    // hook this shim supersedes, beyond .env* which BOUND-005 already covers.
+    // Path-only: no content needed.
+    const sensitive = rule('GUARD-SENSITIVE-FILE');
+    if (sensitive) {
+        const b = base.toLowerCase();
+        if (/^(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|pipfile\.lock)$/.test(b)) {
+            return deny(sensitive, `${b} is a lock file — it should change only via the package manager (npm install / pip install), never a direct edit.`);
+        }
+        if (/^(credentials\.json|secrets\.ya?ml)$/.test(b)) {
+            return deny(sensitive, `${b} is a secret file — a human should edit it by hand.`);
+        }
+        if (b === '.mcp.json') {
+            return deny(sensitive, '.mcp.json can hold a live API key — a human should edit it by hand so the key is not echoed into the transcript.');
+        }
+    }
     // LANE-RETIRED — a retired module is delete-on-sight, not edit-on-sight.
     const retired = rule('LANE-RETIRED');
     if (retired) {

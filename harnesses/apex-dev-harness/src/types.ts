@@ -93,6 +93,33 @@ export interface SurfaceHint {
   match: string;
   /** EXACT surface name as it appears in the ledger's Surface column. */
   surface: string;
+  /**
+   * This file IS the canonical implementation of that surface — suppress
+   * the legacy-twin advisory for it regardless of its path (e.g. it doesn't
+   * live under ui/src/apexStudio). Unset/false means the default path-based
+   * check (apexStudio) governs whether the advisory fires.
+   */
+  canonical?: boolean;
+}
+
+/** A file that must never carry a surface hint — it serves multiple surfaces
+ *  with different statuses, so any single hint would be misleading. */
+export interface ExcludedFile {
+  match: string;
+  reason: string;
+}
+
+/**
+ * A rule id / hint match explicitly turned off by the project overlay.
+ * Bare-string form is allowed but `doctor` warns on it — the object form's
+ * `reason` is required so a disablement is reviewable later.
+ */
+export type DisabledRuleEntry = string | { id: string; reason: string };
+export type DisabledHintEntry = string | { match: string; reason: string };
+
+export interface DisabledBlock {
+  rules: DisabledRuleEntry[];
+  surfaceHints: DisabledHintEntry[];
 }
 
 export interface Policy {
@@ -106,6 +133,8 @@ export interface Policy {
   skillRules: SkillRule[];
   parityRules: ParityRule[];
   surfaceHints: SurfaceHint[];
+  excludedFiles: ExcludedFile[];
+  disabled: DisabledBlock;
 }
 
 export interface RouteVerdict {
