@@ -27,7 +27,23 @@ export function route(root: string, query: string): RouteVerdict {
 
   const q = normalize(query);
   const { lane, entry } = laneFor(lanes, q);
-  const surface = surfaceFor(ledger, q);
+  let surface = surfaceFor(ledger, q);
+  if (!surface) {
+    // The ledger keys on ROUTE paths and contains no source-file paths, so a
+    // file query cannot match one directly. surfaceHints is a curated
+    // file-glob -> surface-NAME map; an unmatched file still reports no-row,
+    // and a hint naming a surface the ledger lacks also still reports no-row.
+    // Curated data, never a guess.
+    let bestHint: string | null = null;
+    let bestLen = -1;
+    for (const hint of policy.surfaceHints) {
+      if (matchesGlob(hint.match, q) && hint.match.length > bestLen) {
+        bestHint = hint.surface;
+        bestLen = hint.match.length;
+      }
+    }
+    if (bestHint) surface = surfaceFor(ledger, bestHint);
+  }
 
   const mwg = policy.mwgTargets.find((m) => matchesGlob(m.match, q))?.target ?? null;
 

@@ -84,5 +84,13 @@
   "parityRules": [
     { "match": "ui/src/pages/HouseGuideAdminPage.jsx", "surfaces": ["ui/src/portal/PortalHouseGuidePage.jsx (staff view)"] },
     { "match": "ui/src/**", "surfaces": ["desktop layout vs mobile branch (search isMobile)", "roles: super admin, org, venue manager, staff"] }
+  ],
+  "surfaceHints": [
+    { "match": "ui/src/marketing/**", "surface": "Campaigns (portfolio + Campaign Home)" },
+    { "match": "ui/src/menuDesigner/**", "surface": "Menu designer (Konva)" },
+    { "match": "ui/src/pages/HouseGuideAdminPage.jsx", "surface": "House Guide admin" },
+    { "match": "ui/src/components/home/**", "surface": "Home dashboard" },
+    { "match": "ui/src/pages/MenuManagerPage.jsx", "surface": "Menu Manager core (items / recipes / ingredients / online menu / event packages)" },
+    { "match": "ui/src/pages/BrandPage.jsx", "surface": "Brand book (tokens)" }
   ]
 }

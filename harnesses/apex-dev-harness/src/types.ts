@@ -88,6 +88,13 @@ export interface ParityRule {
   surfaces: string[];
 }
 
+export interface SurfaceHint {
+  /** File glob, e.g. 'ui/src/marketing/**'. */
+  match: string;
+  /** EXACT surface name as it appears in the ledger's Surface column. */
+  surface: string;
+}
+
 export interface Policy {
   ok: boolean;
   warning?: string;
@@ -98,6 +105,7 @@ export interface Policy {
   mwgTargets: MwgTarget[];
   skillRules: SkillRule[];
   parityRules: ParityRule[];
+  surfaceHints: SurfaceHint[];
 }
 
 export interface RouteVerdict {

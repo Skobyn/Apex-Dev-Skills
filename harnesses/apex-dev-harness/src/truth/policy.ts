@@ -40,6 +40,7 @@ export function loadPolicy(root: string): Policy {
       mwgTargets: parsed.mwgTargets ?? DEFAULT_POLICY.mwgTargets,
       skillRules: parsed.skillRules ?? DEFAULT_POLICY.skillRules,
       parityRules: parsed.parityRules ?? DEFAULT_POLICY.parityRules,
+      surfaceHints: parsed.surfaceHints ?? DEFAULT_POLICY.surfaceHints,
     };
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);

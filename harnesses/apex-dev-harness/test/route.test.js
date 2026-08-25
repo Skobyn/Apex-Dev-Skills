@@ -96,3 +96,41 @@ test('missing truth files degrade to warnings, not an exception', () => {
     assert.ok(formatRoute(v).length > 0);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a file path resolves its surface through a curated hint', () => {
+  const dir = repo();
+  try {
+    mkdirSync(join(dir, '.harness'), { recursive: true });
+    writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({
+      version: 1, rules: [], obligations: [], watchlist: [],
+      mwgTargets: [], skillRules: [], parityRules: [],
+      surfaceHints: [{ match: 'ui/src/marketing/**', surface: 'Campaigns' }],
+    }));
+    const v = route(dir, 'ui/src/marketing/CampaignCockpit.jsx');
+    assert.equal(v.surfaceVerdict, 'row');
+    assert.equal(v.surface.status, 'DUAL');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a hint naming a surface the ledger lacks still reports no-row', () => {
+  const dir = repo();
+  try {
+    mkdirSync(join(dir, '.harness'), { recursive: true });
+    writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({
+      version: 1, rules: [], obligations: [], watchlist: [],
+      mwgTargets: [], skillRules: [], parityRules: [],
+      surfaceHints: [{ match: 'ui/src/**', surface: 'No Such Surface' }],
+    }));
+    const v = route(dir, 'ui/src/anything.jsx');
+    assert.equal(v.surfaceVerdict, 'no-row');
+    assert.equal(v.surface, null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an unhinted file path still reports no-row rather than guessing', () => {
+  const dir = repo();
+  try {
+    const v = route(dir, 'ui/src/somewhere/Unmapped.jsx');
+    assert.equal(v.surfaceVerdict, 'no-row');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
