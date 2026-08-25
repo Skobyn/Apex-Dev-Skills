@@ -16,6 +16,26 @@ function repo() {
   return dir;
 }
 
+/**
+ * Set APEX_REPO_ROOT for the duration of `fn` (awaited), restoring whatever
+ * was there before — including "not set at all". Deleting unconditionally
+ * would destroy a value the developer or CI supplied, making the suite
+ * environment-dependent. Async because every caller in this file awaits a
+ * tool's `run(...)`.
+ */
+async function withRepoRoot(value, fn) {
+  const had = Object.prototype.hasOwnProperty.call(process.env, 'APEX_REPO_ROOT');
+  const prev = process.env.APEX_REPO_ROOT;
+  if (value === undefined) delete process.env.APEX_REPO_ROOT;
+  else process.env.APEX_REPO_ROOT = value;
+  try {
+    return await fn();
+  } finally {
+    if (had) process.env.APEX_REPO_ROOT = prev;
+    else delete process.env.APEX_REPO_ROOT;
+  }
+}
+
 test('every tool declares name, description and an object schema', () => {
   assert.ok(TOOLS.length >= 4);
   for (const t of TOOLS) {
@@ -28,23 +48,32 @@ test('every tool declares name, description and an object schema', () => {
 test('apex_route returns a verdict', async () => {
   const dir = repo();
   try {
-    process.env.APEX_REPO_ROOT = dir;
-    const tool = TOOLS.find((t) => t.name === 'apex_route');
-    assert.equal((await tool.run({ query: 'ui/src/menuDesigner/x.jsx' })).lane, 'retired');
-  } finally { delete process.env.APEX_REPO_ROOT; rmSync(dir, { recursive: true, force: true }); }
+    await withRepoRoot(dir, async () => {
+      const tool = TOOLS.find((t) => t.name === 'apex_route');
+      assert.equal((await tool.run({ query: 'ui/src/menuDesigner/x.jsx' })).lane, 'retired');
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('apex_check refuses a blocked edit', async () => {
   const dir = repo();
   try {
-    process.env.APEX_REPO_ROOT = dir;
-    const tool = TOOLS.find((t) => t.name === 'apex_check');
-    assert.equal((await tool.run({ path: '.env', content: 'placeholder' })).allow, false);
-  } finally { delete process.env.APEX_REPO_ROOT; rmSync(dir, { recursive: true, force: true }); }
+    await withRepoRoot(dir, async () => {
+      const tool = TOOLS.find((t) => t.name === 'apex_check');
+      assert.equal((await tool.run({ path: '.env', content: 'placeholder' })).allow, false);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('a missing required argument produces a clear error', async () => {
-  await assert.rejects(() => TOOLS.find((t) => t.name === 'apex_route').run({}), /query/);
+  // Run with a valid root so requireRoot() succeeds and it's the argument
+  // validation — not repo discovery — that actually fires.
+  const dir = repo();
+  try {
+    await withRepoRoot(dir, async () => {
+      await assert.rejects(() => TOOLS.find((t) => t.name === 'apex_route').run({}), /query/);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('the server constructs', () => {

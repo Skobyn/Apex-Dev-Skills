@@ -5,34 +5,56 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findRepoRoot, truthPaths, normalize } from '../dist/repo.js';
 
-test('finds the repo root from a nested directory', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'apex-repo-'));
+/**
+ * Set APEX_REPO_ROOT for the duration of `fn`, restoring whatever was there
+ * before — including "not set at all". Deleting unconditionally would destroy
+ * a value the developer or CI supplied, making the suite environment-dependent.
+ */
+function withRepoRoot(value, fn) {
+  const had = Object.prototype.hasOwnProperty.call(process.env, 'APEX_REPO_ROOT');
+  const prev = process.env.APEX_REPO_ROOT;
+  if (value === undefined) delete process.env.APEX_REPO_ROOT;
+  else process.env.APEX_REPO_ROOT = value;
   try {
-    mkdirSync(join(dir, 'tools', 'repo-lanes'), { recursive: true });
-    writeFileSync(join(dir, 'tools', 'repo-lanes', 'lanes.json'), '{}');
-    mkdirSync(join(dir, 'ui', 'src', 'marketing'), { recursive: true });
-    assert.equal(findRepoRoot(join(dir, 'ui', 'src', 'marketing')), dir);
+    return fn();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (had) process.env.APEX_REPO_ROOT = prev;
+    else delete process.env.APEX_REPO_ROOT;
   }
+}
+
+test('finds the repo root from a nested directory', () => {
+  withRepoRoot(undefined, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'apex-repo-'));
+    try {
+      mkdirSync(join(dir, 'tools', 'repo-lanes'), { recursive: true });
+      writeFileSync(join(dir, 'tools', 'repo-lanes', 'lanes.json'), '{}');
+      mkdirSync(join(dir, 'ui', 'src', 'marketing'), { recursive: true });
+      assert.equal(findRepoRoot(join(dir, 'ui', 'src', 'marketing')), dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 test('returns null when no apex-app root is above the start directory', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'apex-norepo-'));
-  try {
-    assert.equal(findRepoRoot(dir), null);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  withRepoRoot(undefined, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'apex-norepo-'));
+    try {
+      assert.equal(findRepoRoot(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 test('APEX_REPO_ROOT overrides discovery', () => {
   const dir = mkdtempSync(join(tmpdir(), 'apex-env-'));
   try {
-    process.env.APEX_REPO_ROOT = dir;
-    assert.equal(findRepoRoot('/nowhere'), dir);
+    withRepoRoot(dir, () => {
+      assert.equal(findRepoRoot('/nowhere'), dir);
+    });
   } finally {
-    delete process.env.APEX_REPO_ROOT;
     rmSync(dir, { recursive: true, force: true });
   }
 });
