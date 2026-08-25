@@ -211,10 +211,24 @@ test('a high-entropy secret is blocked even in a header-named variable', () => {
   try {
     // AUTH_TOKEN_HEADER matches SECRET_NAME via "TOKEN"; the _HEADER suffix
     // must no longer exempt it now that NON_SECRET_NAME_RE is narrowed.
-    const sample = ['AUTH', '_TOKEN_HEADER = ', JSON.stringify('Bearer sk-live-' + 'a9Fk2Lp8Qz7Rw4Nv6Bx3Hd5T')].join('');
+    // The value is whitespace-free: OPAQUE_VALUE requires 16+ non-space chars.
+    const sample = ['AUTH', '_TOKEN_HEADER = ', JSON.stringify('sk-live-' + 'a9Fk2Lp8Qz7Rw4Nv6Bx3Hd5T')].join('');
     const d = check(dir, 'backend/app/x.py', sample);
     assert.equal(d.allow, false);
     assert.equal(d.ruleId, 'BOUND-002');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a bearer-style secret containing a space is NOT caught at edit time', () => {
+  const dir = repo();
+  try {
+    // Documented limitation: OPAQUE_VALUE requires 16+ non-whitespace chars, so
+    // `TOKEN = "Bearer <secret>"` slips past the block tier. Widening the value
+    // pattern to admit spaces would make ordinary prose assigned to a
+    // secret-named variable look like a credential — a false block, which is a
+    // worse failure. apex-app's own hook and CI remain authoritative here.
+    const sample = ['AUTH', '_TOKEN = ', JSON.stringify('Bearer sk-live-' + 'a9Fk2Lp8Qz7Rw4Nv6Bx3Hd5T')].join('');
+    assert.equal(check(dir, 'backend/app/x.py', sample).allow, true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
