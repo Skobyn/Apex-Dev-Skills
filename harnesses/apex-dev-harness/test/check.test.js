@@ -5,9 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { check } from '../dist/check.js';
 
-/** Build a credential-shaped sample at runtime — never write one literally. */
+/**
+ * Build a credential-shaped sample at runtime — never write one literally.
+ * The value must be high-entropy: a placeholder-shaped value (repeated
+ * characters, "test", "example") is deliberately NOT treated as a secret.
+ */
 function credentialSample() {
-  return ['API', '_KEY = ', JSON.stringify('x'.repeat(24))].join('');
+  const value = 'sk-live-' + 'a9Fk2Lp8Qz7Rw4Nv6Bx3Hd5T'.slice(0, 24);
+  return ['API', '_KEY = ', JSON.stringify(value)].join('');
 }
 
 function repo() {
