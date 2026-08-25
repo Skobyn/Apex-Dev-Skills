@@ -8,7 +8,7 @@ Run the full apex build lifecycle for: **$ARGUMENTS**
 
 Route the ask before designing anything:
 
-!`apex route "$ARGUMENTS"`
+!`node ${CLAUDE_PLUGIN_ROOT}/engine/bin/apex.js route "$ARGUMENTS"`
 
 If the ask names a surface rather than a path, route the most likely path too. Report the lane, the surface status, and the skills the verdict named. Check the agent-coordination preamble for a partner already working this surface — if one exists, surface the overlap before touching code.
 
@@ -25,7 +25,7 @@ Work the plan one phase at a time via the `dev-plan-loop` skill. Do not start a 
 
 ## 4. GATE — every phase, no exceptions
 
-!`apex gate --message "phase complete"`
+!`node ${CLAUDE_PLUGIN_ROOT}/engine/bin/apex.js gate --message "phase complete"`
 
 A phase closes when its obligations pass, never because the work feels finished. If the gate says `NOT DONE`, the phase is open.
 

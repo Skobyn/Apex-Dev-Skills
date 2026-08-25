@@ -16,7 +16,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run bundle:plugin",
+    "bundle:plugin": "node scripts/bundle-plugin.js",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "test": "npm run build && node --test \"test/*.test.js\"",
     "prepublishOnly": "npm run clean && npm run build && npm test"

@@ -4,7 +4,7 @@ description: Where does this work go? Lane, surface-ledger status, MWG target, r
 
 Run the harness router for `$ARGUMENTS` (a repo-relative path or an app route):
 
-!`apex route "$ARGUMENTS"`
+!`node ${CLAUDE_PLUGIN_ROOT}/engine/bin/apex.js route "$ARGUMENTS"`
 
 Read the verdict and act on it:
 

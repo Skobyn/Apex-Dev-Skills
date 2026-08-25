@@ -5,10 +5,22 @@ Makes apex-app's governance mechanical: lanes and the surface ledger become a qu
 ## Install
 
 ```bash
-npm install -g apex-dev-harness     # the engine
-/plugin install apex-dev-harness    # the Claude Code surface
-cd /path/to/apex-app && apex init   # the hooks + policy (review the PR it produces)
+/plugin install apex-dev-harness    # the Claude Code surface — carries its own engine
 ```
+
+That's it for `/apex:route`, `/apex:gate`, `/apex:build`, `/apex:status`, and the
+`PreToolUse`/`PostToolUse` guardrail hooks — the plugin bundles the engine (`dist/`, `bin/`,
+`templates/`) under `engine/` and wires the hooks itself via `hooks/hooks.json`. No npm install
+and no `apex init` are needed for any of that.
+
+You only need the npm package separately if you want:
+
+```bash
+npm install -g apex-dev-harness     # `apex mcp start`, or the `apex` CLI from anywhere
+```
+
+The bundled engine excludes `dist/mcp/` (it is the only part that needs the
+`@modelcontextprotocol/sdk` dependency); `apex mcp start` requires the npm package.
 
 ## Commands
 

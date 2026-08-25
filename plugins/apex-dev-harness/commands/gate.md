@@ -2,7 +2,7 @@
 description: Run the done-gate — compute what the current diff owes, run those checks, and report a verdict.
 ---
 
-!`apex gate --message "$ARGUMENTS"`
+!`node ${CLAUDE_PLUGIN_ROOT}/engine/bin/apex.js gate --message "$ARGUMENTS"`
 
 A `NOT DONE` verdict is not advisory. Fix every unmet obligation, then run this again.
 

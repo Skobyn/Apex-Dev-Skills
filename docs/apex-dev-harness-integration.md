@@ -5,7 +5,28 @@ This document is written for whoever reviews the PR that wires
 not a PR — no branch was pushed and no PR was opened against `apex-app`.
 Activating hooks in the product repo is the repo owner's call.
 
+## The plugin is the primary delivery path
+
+For anyone working in Claude Code, installing the `apex-dev-harness` plugin
+is now the primary way to get the guardrails and commands into apex-app:
+the plugin bundles its own copy of the engine under `engine/` and wires
+`PreToolUse`/`PostToolUse` hooks itself via `hooks/hooks.json`
+(`${CLAUDE_PLUGIN_ROOT}/engine/templates/apex-hook.js`). Installing the
+plugin is sufficient on its own — **no `.claude/settings.json` edit and no
+`apex init` are needed for plugin users.**
+
+Everything below this section — the manual `.claude/settings.json` diff,
+the npm-tarball install, deleting the `.ps1`/`.cmd` files — is the *manual*
+path. It stays fully documented and supported for CI, Cursor, pre-commit
+hooks, or any other context that isn't Claude Code loading the plugin.
+The manual path's safety ordering is unchanged and must still be followed
+in that order: install the engine, verify with `apex doctor`, only then
+wire the hook and delete the superseded `.ps1`/`.cmd` files.
+
 ## Install prerequisite — read this before touching `.claude/settings.json`
+
+The rest of this section applies to the **manual path** only (CI, Cursor,
+pre-commit, or anywhere else the plugin isn't installed).
 
 `apex-hook.js` resolves its engine by package specifier
 (`import('apex-dev-harness/dist/…')`). If `apex-dev-harness` is not
