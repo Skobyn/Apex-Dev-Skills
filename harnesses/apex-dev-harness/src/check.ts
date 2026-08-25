@@ -18,7 +18,7 @@ const CREDENTIAL_RE = new RegExp(
 );
 
 /** Names that hold a key's NAME, location, or docs — not the secret itself. */
-const NON_SECRET_NAME_RE = /_(NAME|NAMES|URL|URI|DOCS|PATH|ID|HEADER|PREFIX|FIELD|ENV|VAR)$/i;
+const NON_SECRET_NAME_RE = /_(NAME|NAMES|URL|URI|DOCS|PATH|ENV|VAR)$/i;
 
 /**
  * True when the captured value is plainly not a live credential: a URL, an
@@ -54,7 +54,7 @@ function stripCommentsAndDocstrings(text: string): string {
     .replace(/"""[\s\S]*?"""/g, (m) => m.replace(/[^\n]/g, ' '))
     .replace(/'''[\s\S]*?'''/g, (m) => m.replace(/[^\n]/g, ' '))
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(m.length - p1.length))
+    .replace(/(^|[^:"'`])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(m.length - p1.length))
     .replace(/#[^\n]*/g, (m) => ' '.repeat(m.length));
 }
 
@@ -103,7 +103,7 @@ export function check(root: string, relPath: string, content: string | null): Ch
       const clearsOnly = code
         .split('\n')
         .filter((line) => line.includes('projectDataJson'))
-        .every((line) => /projectDataJson[^=]*=\s*(''|""|``)\s*;?\s*$/.test(line));
+        .every((line) => /projectDataJson[^=:]*[=:]\s*(''|""|``)\s*[,;)}\]]*\s*$/.test(line));
       if (!clearsOnly) {
         return deny(pdj, 'projectDataJson is a dead legacy field — never read it, never write it.');
       }

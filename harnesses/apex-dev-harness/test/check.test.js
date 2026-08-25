@@ -198,3 +198,47 @@ test('a real write to projectDataJson is STILL blocked', () => {
     assert.equal(d.ruleId, 'CONV-PROJECTDATA');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('an object-literal clear of projectDataJson is allowed', () => {
+  const dir = repo();
+  try {
+    assert.equal(check(dir, 'backend/app/r.py', 'payload = { "projectDataJson": "" }').allow, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a high-entropy secret is blocked even in a header-named variable', () => {
+  const dir = repo();
+  try {
+    const sample = ['AUTH', '_HEADER = ', JSON.stringify('Bearer sk-live-' + 'a9Fk2Lp8Qz7Rw4Nv6Bx3Hd5T')].join('');
+    const d = check(dir, 'backend/app/x.py', sample);
+    assert.equal(d.allow, false);
+    assert.equal(d.ruleId, 'BOUND-002');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a high-entropy secret is blocked even in an id-named variable', () => {
+  const dir = repo();
+  try {
+    const sample = ['CLIENT', '_SECRET_ID = ', JSON.stringify('sk_live_' + 'a9Fk2Lp8Qz7Rw4Nv6Bx3Hd5T')].join('');
+    assert.equal(check(dir, 'backend/app/x.py', sample).allow, false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a protocol-relative URL does not mask a violation later on the line', () => {
+  const dir = repo();
+  try {
+    const src = 'CDN = "//cdn.example.com/x.js"\nimport anthropic\n';
+    const d = check(dir, 'backend/agentic/svc.py', src);
+    assert.equal(d.allow, false);
+    assert.equal(d.ruleId, 'BOUND-004');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a genuine trailing line comment is still stripped', () => {
+  const dir = repo();
+  try {
+    // The comment must NOT be treated as code — this asserts the guard did not
+    // over-tighten and start blocking on commented-out examples.
+    assert.equal(check(dir, 'backend/agentic/svc.py', 'x = 1  // import anthropic\n').allow, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
