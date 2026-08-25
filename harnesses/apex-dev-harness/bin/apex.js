@@ -92,7 +92,7 @@ async function main(argv) {
     }
     case 'doctor': {
       const { doctor } = await import('../dist/doctor.js');
-      const r = doctor(root);
+      const r = await doctor(root);
       for (const l of r.lines) console.log(l);
       return r.ok ? 0 : 1;
     }

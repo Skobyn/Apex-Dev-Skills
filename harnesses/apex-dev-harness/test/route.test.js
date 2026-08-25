@@ -134,3 +134,21 @@ test('an unhinted file path still reports no-row rather than guessing', () => {
     assert.equal(v.surfaceVerdict, 'no-row');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a path inside a governed root with no lane row reports a lane gap', () => {
+  const dir = repo();
+  try {
+    const v = route(dir, 'ui/src/agentic/index.js');
+    assert.equal(v.laneGap, true);
+    assert.match(formatRoute(v), /UNGOVERNED — this path is inside a governed root but has NO lane row\. That is a gap in lanes\.json, not a lane\./);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a path outside every governed root has no lane gap', () => {
+  const dir = repo();
+  try {
+    const v = route(dir, 'scripts/oneoff.sh');
+    assert.equal(v.laneGap, false);
+    assert.doesNotMatch(formatRoute(v), /gap in lanes\.json/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

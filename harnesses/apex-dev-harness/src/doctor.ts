@@ -7,7 +7,7 @@ import { loadLanes } from './truth/lanes.js';
 import { loadLedger } from './truth/ledger.js';
 import { loadPolicy } from './truth/policy.js';
 
-export function doctor(root: string | null): { ok: boolean; lines: string[] } {
+export async function doctor(root: string | null): Promise<{ ok: boolean; lines: string[] }> {
   const lines: string[] = ['apex-dev-harness doctor', ''];
   let ok = true;
   const pass = (m: string) => lines.push(`  ok    ${m}`);
@@ -34,6 +34,7 @@ export function doctor(root: string | null): { ok: boolean; lines: string[] } {
     if (ledger.rowsWithoutRoutes > 0) {
       warn(`${ledger.rowsWithoutRoutes} ledger rows have no route pattern — those are name-matchable only`);
     }
+    if (ledger.warning) warn(ledger.warning);
   } else warn(ledger.warning!);
 
   const policy = loadPolicy(root);
@@ -57,6 +58,18 @@ export function doctor(root: string | null): { ok: boolean; lines: string[] } {
   lines.push('hooks');
   if (existsSync(join(root, '.claude', 'hooks', 'apex-hook.js'))) pass('.claude/hooks/apex-hook.js installed');
   else warn('.claude/hooks/apex-hook.js not installed — run `apex init`');
+
+  // The hook resolves the engine by package specifier. Checking only that the
+  // hook FILE exists proved nothing: if the package is not installed the hook
+  // fails open and every guardrail is silently off. Probe it the same way.
+  const { createRequire } = await import('node:module');
+  const req = createRequire(join(root, 'package.json'));
+  try {
+    req.resolve('apex-dev-harness/package.json');
+    pass('apex-dev-harness resolves from the project — the hook can load the engine');
+  } catch {
+    warn('apex-dev-harness is NOT installed in this project — the hook will fail open and NO rule will be enforced. Install it (npm i -D apex-dev-harness) or set APEX_ENGINE_DIST.');
+  }
   lines.push('');
 
   lines.push(ok ? 'result: ok' : 'result: FAILED');

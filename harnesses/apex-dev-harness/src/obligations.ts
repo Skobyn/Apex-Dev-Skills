@@ -18,8 +18,12 @@ function git(root: string, args: string[]): string {
 export function changedPaths(root: string, base = 'HEAD'): string[] {
   const unstaged = git(root, ['diff', '--name-only', base]);
   const staged = git(root, ['diff', '--name-only', '--cached']);
+  // `git diff` never lists untracked files, so a brand-new file built in the
+  // wrong surface would owe nothing — the flagship failure case. Union in
+  // untracked files explicitly.
+  const untracked = git(root, ['ls-files', '--others', '--exclude-standard']);
   const all = new Set(
-    [...unstaged.split('\n'), ...staged.split('\n')].map((s) => s.trim()).filter(Boolean),
+    [...unstaged.split('\n'), ...staged.split('\n'), ...untracked.split('\n')].map((s) => s.trim()).filter(Boolean),
   );
   return [...all].map(normalize);
 }

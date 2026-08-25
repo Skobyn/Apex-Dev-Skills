@@ -26,7 +26,7 @@ export function route(root: string, query: string): RouteVerdict {
   for (const t of [lanes, ledger, policy]) if (t.warning) warnings.push(t.warning);
 
   const q = normalize(query);
-  const { lane, entry } = laneFor(lanes, q);
+  const { lane, entry, gap } = laneFor(lanes, q);
   let surface = surfaceFor(ledger, q);
   if (!surface) {
     // The ledger keys on ROUTE paths and contains no source-file paths, so a
@@ -84,6 +84,7 @@ export function route(root: string, query: string): RouteVerdict {
     parity,
     importNotes,
     warnings,
+    laneGap: gap ?? false,
   };
 }
 
@@ -94,7 +95,11 @@ function pad(label: string): string {
 export function formatRoute(v: RouteVerdict): string {
   const lines: string[] = [];
   const laneNote = v.laneEntry?.notes ? ` — ${v.laneEntry.notes}` : '';
-  lines.push(`${pad('lane')}${v.lane.toUpperCase()}${laneNote}`);
+  if (v.laneGap) {
+    lines.push(`${pad('lane')}UNGOVERNED — this path is inside a governed root but has NO lane row. That is a gap in lanes.json, not a lane.`);
+  } else {
+    lines.push(`${pad('lane')}${v.lane.toUpperCase()}${laneNote}`);
+  }
   if (v.laneEntry?.replacement) lines.push(`${pad('replacement')}${v.laneEntry.replacement}`);
 
   if (v.surface) {

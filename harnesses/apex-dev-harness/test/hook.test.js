@@ -97,6 +97,41 @@ test('windows-style file paths are handled', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('MultiEdit content is read from edits[] and reaches content rules', () => {
+  const dir = repo();
+  try {
+    // Built from parts so this test file itself never contains a
+    // credential-shaped literal (this repo's own guardrail hook rejects it).
+    const secretLine = 'const ' + 'API_' + 'KEY = "sk-' + 'abcdefgh12345678' + '";';
+    const { json } = runHook('pre-tool-use', {
+      tool_name: 'MultiEdit',
+      tool_input: {
+        file_path: 'ui/src/ok.jsx',
+        edits: [
+          { old_string: 'a', new_string: 'const a = 1;' },
+          { old_string: 'b', new_string: secretLine },
+        ],
+      },
+    }, dir);
+    assert.equal(json.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, /BOUND-002/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a clean MultiEdit is allowed with a bare {}', () => {
+  const dir = repo();
+  try {
+    const { json } = runHook('pre-tool-use', {
+      tool_name: 'MultiEdit',
+      tool_input: {
+        file_path: 'ui/src/ok.jsx',
+        edits: [{ old_string: 'a', new_string: 'const a = 1;' }],
+      },
+    }, dir);
+    assert.deepEqual(json, {});
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('post-tool-use never blocks, even on a violation', () => {
   const dir = repo();
   try {

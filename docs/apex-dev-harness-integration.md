@@ -5,6 +5,28 @@ This document is written for whoever reviews the PR that wires
 not a PR — no branch was pushed and no PR was opened against `apex-app`.
 Activating hooks in the product repo is the repo owner's call.
 
+## Install prerequisite — read this before touching `.claude/settings.json`
+
+`apex-hook.js` resolves its engine by package specifier
+(`import('apex-dev-harness/dist/…')`). If `apex-dev-harness` is not
+installed as a dependency in the `apex-app` checkout, that import throws,
+the hook's `main().catch()` swallows the error and prints `{}`, and every
+guardrail silently allows everything — a false negative, not a crash, so
+nothing in the transcript announces it happened.
+
+Before you do anything else:
+
+1. `npm i -D apex-dev-harness` inside the `apex-app` checkout.
+2. Run `apex doctor`. Confirm its `hooks` section prints
+   `ok    apex-dev-harness resolves from the project — the hook can load
+   the engine`. If it instead warns that the package is NOT installed, stop
+   — do not wire the hook or delete the `.ps1`/`.cmd` files yet.
+3. Only after that line reads `ok` should you apply the
+   `.claude/settings.json` diff below **and delete the six superseded
+   `.ps1`/`.cmd` files in the same change.** Deleting them before the
+   engine is proven to resolve leaves the repo with no working guardrails
+   of either kind.
+
 ## What `apex init` writes
 
 Running `npx apex init` from inside an `apex-app` checkout (with
@@ -104,10 +126,15 @@ These are PowerShell scripts (or `.cmd` wrappers that invoke them) — they
 no-op on macOS, Linux, and WSL today, which is exactly the gap
 `apex-dev-harness` closes: `apex-hook.js` is a cross-platform Node script
 that runs identically everywhere Node runs, dispatching to the same
-`check`/`route`/`gate` engine the `apex` CLI uses directly. Once
-`.claude/settings.json` points at it, the six `.ps1`/`.cmd` files can be
-deleted; the PR that flips the settings should delete them in the same
-change so there is no window where both are wired in and could disagree.
+`check`/`route`/`gate` engine the `apex` CLI uses directly. **Once, and only
+once, `apex doctor` in the target checkout reports that `apex-dev-harness`
+resolves** (see the install prerequisite at the top of this document), the
+six `.ps1`/`.cmd` files can be deleted; the PR that flips the settings
+should delete them in the same change so there is no window where both are
+wired in and could disagree. Flipping the settings, or deleting the
+`.ps1`/`.cmd` files, before that `doctor` check passes leaves the repo with
+neither the old scripts nor a working new hook — the hook fails open and
+nothing enforces anything.
 
 **`agent-coord-*` hooks are out of scope.** They handle multi-agent session
 coordination, not code-quality/boundary gating, and are unrelated to what

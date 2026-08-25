@@ -1,7 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { obligationsFor, parityWarningsFor } from '../dist/obligations.js';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { obligationsFor, parityWarningsFor, changedPaths } from '../dist/obligations.js';
 import { DEFAULT_POLICY } from '../dist/truth/policy.js';
+
+function git(dir, args) {
+  execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+}
+
+function gitRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'apex-obl-git-'));
+  git(dir, ['init', '-q']);
+  git(dir, ['config', 'user.email', 'test@example.com']);
+  git(dir, ['config', 'user.name', 'test']);
+  writeFileSync(join(dir, 'README.md'), '# repo\n');
+  git(dir, ['add', 'README.md']);
+  git(dir, ['commit', '-q', '-m', 'init']);
+  return dir;
+}
 
 test('touching a capability surface owes the manifest obligation', () => {
   const obs = obligationsFor(DEFAULT_POLICY, ['backend/app/routes/studio_chat.py']);
@@ -41,4 +60,25 @@ test('parity warnings fire for a UI change', () => {
 
 test('parity warnings do not fire for backend-only changes', () => {
   assert.deepEqual(parityWarningsFor(DEFAULT_POLICY, ['backend/app/services/x.py']), []);
+});
+
+test('a brand-new untracked file is included in changedPaths, not silently skipped', () => {
+  const dir = gitRepo();
+  try {
+    mkdirSync(join(dir, 'ui', 'src', 'marketing'), { recursive: true });
+    writeFileSync(join(dir, 'ui', 'src', 'marketing', 'NewComponent.jsx'), 'export const x = 1;\n');
+    const paths = changedPaths(dir);
+    assert.ok(paths.includes('ui/src/marketing/NewComponent.jsx'), `expected untracked file in ${JSON.stringify(paths)}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an untracked new file still owes its obligations', () => {
+  const dir = gitRepo();
+  try {
+    mkdirSync(join(dir, 'backend', 'app', 'routes'), { recursive: true });
+    writeFileSync(join(dir, 'backend', 'app', 'routes', 'studio_chat.py'), '# new file\n');
+    const paths = changedPaths(dir);
+    const ids = obligationsFor(DEFAULT_POLICY, paths).map((o) => o.id);
+    assert.ok(ids.includes('studio-capability-manifest'), `expected obligation to fire for ${JSON.stringify(paths)}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

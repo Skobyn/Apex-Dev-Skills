@@ -122,6 +122,8 @@ export interface RouteVerdict {
   importNotes: string[];
   /** Truth-file problems. Non-empty means a reduced verdict. */
   warnings: string[];
+  /** True when the path is under a governedRoots entry but matched no module — a gap in lanes.json. */
+  laneGap: boolean;
 }
 
 export type CheckDecision =

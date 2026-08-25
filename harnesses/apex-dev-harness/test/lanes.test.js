@@ -49,6 +49,28 @@ test('a path under no governed root is ungoverned, not production', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('a path inside a governed root but matching no module is a lane GAP, not plain ungoverned', () => {
+  const dir = repoWith();
+  try {
+    const truth = loadLanes(dir);
+    // ui/src is a governedRoots entry; ui/src/agentic has no module row.
+    const v = laneFor(truth, 'ui/src/agentic/index.js');
+    assert.equal(v.lane, 'ungoverned');
+    assert.equal(v.entry, null);
+    assert.equal(v.gap, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a path outside every governed root is plain ungoverned, no gap flag', () => {
+  const dir = repoWith();
+  try {
+    const truth = loadLanes(dir);
+    const v = laneFor(truth, 'scripts/oneoff.sh');
+    assert.equal(v.lane, 'ungoverned');
+    assert.equal(v.gap, undefined);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('windows-style separators match the same module', () => {
   const dir = repoWith();
   try {

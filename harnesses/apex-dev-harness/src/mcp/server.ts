@@ -78,7 +78,7 @@ export const TOOLS: McpTool[] = [
     name: 'apex_doctor',
     description: 'What can the harness see? Truth-file parse coverage, wrapped-command availability, hook install state.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    run: async () => doctor(findRepoRoot()),
+    run: async () => await doctor(findRepoRoot()),
   },
 ];
 

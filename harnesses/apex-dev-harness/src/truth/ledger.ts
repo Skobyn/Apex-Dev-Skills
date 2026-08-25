@@ -24,7 +24,14 @@ function extractRoutes(cell: string): string[] {
 }
 
 function splitRow(line: string): string[] {
-  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+  // Honor escaped pipes: a surface name may legitimately contain "\|".
+  // Use a control character as the placeholder — never plain space — so we
+  // don't clobber legitimate spaces when restoring the escaped pipe.
+  const PLACEHOLDER = '';
+  return line.trim().replace(/\\\|/g, PLACEHOLDER)
+    .replace(/^\|/, '').replace(/\|$/, '')
+    .split('|')
+    .map((c) => c.split(PLACEHOLDER).join('|').trim());
 }
 
 export function loadLedger(root: string): LedgerTruth {
@@ -39,6 +46,7 @@ export function loadLedger(root: string): LedgerTruth {
   const rows: SurfaceRow[] = [];
   let section = '';
   let withoutRoutes = 0;
+  let unparsed = 0;
 
   for (const line of raw.split('\n')) {
     if (line.startsWith('## ')) {
@@ -48,9 +56,8 @@ export function loadLedger(root: string): LedgerTruth {
     if (!line.startsWith('|')) continue;
 
     const cells = splitRow(line);
-    if (cells.length < 4) continue;
-    if (/^[-: ]+$/.test(cells[0]!)) continue;                    // separator row
-    if (/^(surface|status)$/i.test(cells[0]!)) continue;         // header row
+    if (cells.length > 0 && /^[-: ]+$/.test(cells[0]!)) continue;   // separator row
+    if (cells.length > 0 && /^(surface|status)$/i.test(cells[0]!)) continue; // header row
 
     // The status-vocabulary table defines the vocabulary; it is not a surface.
     // Skip it by SECTION, not by name — a real surface may legitimately be
@@ -58,9 +65,22 @@ export function loadLedger(root: string): LedgerTruth {
     // alongside no-row and unparseable.
     if (/vocabulary/i.test(section)) continue;
 
+    if (cells.length < 3) {
+      if (STATUS_RE.test(line)) unparsed += 1;
+      continue;
+    }
+
     const statusCell = cells[2]!;
     const m = STATUS_RE.exec(statusCell);
-    if (!m) continue;
+    if (!m) {
+      // A row that carries a status token somewhere but failed our column
+      // assumptions is a PARSER gap, not a missing ledger row. Count it so
+      // it can be surfaced as a warning instead of silently reporting as
+      // no-row later ("the ledger has a bug" would be the wrong message —
+      // this is our bug).
+      if (STATUS_RE.test(line)) unparsed += 1;
+      continue;
+    }
 
     const surface = cells[0]!.replace(/\*\*/g, '').trim();
 
@@ -70,7 +90,11 @@ export function loadLedger(root: string): LedgerTruth {
     rows.push({ section, surface, routes, status: m[1] as SurfaceStatus, notes: cells[3] ?? '' });
   }
 
-  return { ok: true, rows, rowsWithoutRoutes: withoutRoutes };
+  const warning = unparsed > 0
+    ? `${unparsed} ledger row(s) carry a status but could not be parsed — those surfaces will report no-row incorrectly. The parser needs updating, not the ledger.`
+    : undefined;
+
+  return { ok: true, warning, rows, rowsWithoutRoutes: withoutRoutes };
 }
 
 /**

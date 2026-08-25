@@ -38,7 +38,7 @@ export function loadLanes(root: string): LanesTruth {
  * is still 'ungoverned' — the registry has a gap, and guessing 'production'
  * would hide it.
  */
-export function laneFor(truth: LanesTruth, relPath: string): { lane: Lane; entry: LaneEntry | null } {
+export function laneFor(truth: LanesTruth, relPath: string): { lane: Lane; entry: LaneEntry | null; gap?: boolean } {
   const p = normalize(relPath);
   let best: LaneEntry | null = null;
   for (const m of truth.modules) {
@@ -48,7 +48,20 @@ export function laneFor(truth: LanesTruth, relPath: string): { lane: Lane; entry
       if (!best || prefix.length > normalize(best.path).length) best = m;
     }
   }
-  return best ? { lane: best.lane, entry: best } : { lane: 'ungoverned', entry: null };
+  if (best) return { lane: best.lane, entry: best };
+
+  // No module matched. If the path is nonetheless under a governed root,
+  // that is a distinct outcome from being outside the repo's scope entirely
+  // — a gap in lanes.json, not merely an ungoverned path.
+  for (const root of truth.governedRoots) {
+    const prefix = normalize(root);
+    const boundary = prefix.endsWith('/') ? prefix : prefix + '/';
+    if (p === prefix || p.startsWith(boundary)) {
+      return { lane: 'ungoverned', entry: null, gap: true };
+    }
+  }
+
+  return { lane: 'ungoverned', entry: null };
 }
 
 /**

@@ -115,6 +115,60 @@ test('a missing ledger warns and returns no rows — it never throws', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('a genuine 3-column table is not dropped by the 4-column filter', () => {
+  const md = [
+    '## Staff portal',
+    '',
+    '| Surface | Routes | Status |',
+    '|---|---|---|',
+    '| Staff schedule | `/staff/schedule` | **LEGACY** |',
+  ].join('\n');
+  const dir = repoWith(md);
+  try {
+    const truth = loadLedger(dir);
+    assert.equal(truth.rows.length, 1);
+    assert.equal(truth.rows[0].surface, 'Staff schedule');
+    assert.equal(truth.rows[0].status, 'LEGACY');
+    assert.equal(truth.rows[0].notes, '');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an escaped pipe inside a surface name does not shift columns', () => {
+  const md = [
+    '## 07 Client portfolio',
+    '',
+    '| Surface | Routes | Status | Notes |',
+    '|---|---|---|---|',
+    '| Client portfolio (Overview \\| Performance \\| Docs) | `/portfolio` | **DUAL** | multi-tab surface |',
+  ].join('\n');
+  const dir = repoWith(md);
+  try {
+    const truth = loadLedger(dir);
+    assert.equal(truth.rows.length, 1);
+    assert.equal(truth.rows[0].surface, 'Client portfolio (Overview | Performance | Docs)');
+    assert.equal(truth.rows[0].status, 'DUAL');
+    assert.equal(truth.rows[0].notes, 'multi-tab surface');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a row that carries a status but cannot be parsed produces a warning, not silent loss', () => {
+  const md = [
+    '## 12 Broken section',
+    '',
+    '| Surface | Status |',
+    '|---|---|',
+    '| Half a table **LEGACY** |',
+  ].join('\n');
+  const dir = repoWith(md);
+  try {
+    const truth = loadLedger(dir);
+    assert.equal(truth.ok, true);
+    assert.equal(truth.rows.length, 0);
+    assert.match(truth.warning, /could not be parsed/i);
+    assert.match(truth.warning, /parser needs updating, not the ledger/i);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a real surface named like a status word is parsed, not silently dropped', () => {
   const md = [
     '## Status vocabulary',

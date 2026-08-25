@@ -76,7 +76,10 @@ async function main() {
 
   if (phase === 'pre-tool-use') {
     const { check } = await loadEngine('check.js');
-    const content = payload.tool_input.content ?? payload.tool_input.new_string ?? null;
+    const ti = payload.tool_input;
+    const content = ti.content
+      ?? ti.new_string
+      ?? (Array.isArray(ti.edits) ? ti.edits.map((e) => e?.new_string ?? '').join('\n') : null);
     const decision = check(root, rel, content);
     if (decision.allow) return emit();
     const src = decision.source ? ` (${decision.source})` : '';
@@ -93,6 +96,30 @@ async function main() {
       const inStudio = rel.split('/').includes('apexStudio');
       if (v.surface?.status === 'STUDIO' && !inStudio) {
         process.stderr.write(`[apex] ${v.surface.surface} is STUDIO-canonical — touching the legacy twin is a smell.\n`);
+      }
+
+      // Mirror the .ps1 hooks this shim supersedes: they ran the UI style
+      // generator check and the capability-manifest freshness check after an
+      // edit. Advisory only — stderr, never blocking, and only when relevant.
+      const { execSync } = await import('node:child_process');
+      const runQuiet = (cmd) => {
+        try { execSync(cmd, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000 }); return null; }
+        catch (e) { return String((e && (e.stdout || e.stderr)) || (e && e.message) || 'failed').trim(); }
+      };
+      if (/^ui\/src\/.*\.(js|jsx|css)$/.test(rel)) {
+        const out = runQuiet('node ui/scripts/check-style-generators.js');
+        if (out) process.stderr.write(`[apex] style-generator check failed:\n${out.slice(0, 2000)}\n`);
+      }
+      const CAPABILITY_SURFACES = [
+        'backend/app/routes/studio_chat.py',
+        'backend/agentic/core/mutations/registry.py',
+        'backend/app/routes/studio_rest_write_exceptions.py',
+        'ui/src/apexStudio/views/registry.js',
+        'ui/src/apexStudio/rail/navDirective.js',
+      ];
+      if (CAPABILITY_SURFACES.includes(rel) || rel.startsWith('backend/app/routes/studio_adapters/')) {
+        const out = runQuiet('cd backend && python -m scripts.gen_studio_capability_manifest --check');
+        if (out) process.stderr.write('[apex] capability manifest is STALE — regenerate it before you call this done.\n');
       }
     } catch { /* advisory only */ }
     return emit();
