@@ -251,13 +251,22 @@ test('a high-entropy secret is blocked even in an id-named variable', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a protocol-relative URL does not mask a violation later on the line', () => {
+test('a comment abutting a closing quote is stripped, not read as code', () => {
   const dir = repo();
   try {
-    const src = 'CDN = "//cdn.example.com/x.js"\nimport anthropic\n';
-    const d = check(dir, 'backend/agentic/svc.py', src);
-    assert.equal(d.allow, false);
-    assert.equal(d.ruleId, 'BOUND-004');
+    // The false block this guards against: commented-out code refused as if live.
+    assert.equal(check(dir, 'backend/app/r.py', 'const X = "u"// never touch projectDataJson').allow, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a string containing // can mask a same-line violation — accepted miss', () => {
+  const dir = repo();
+  try {
+    // Documented trade: treating a quote-abutting // as code would avoid this
+    // miss but would false-block commented-out code, which is the worse
+    // failure. CI and apex-app's own hook remain authoritative here.
+    const src = 'CDN = "//cdn.example.com/x.js"; doc["projectDataJson"] = payload';
+    assert.equal(check(dir, 'backend/app/r.py', src).allow, true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

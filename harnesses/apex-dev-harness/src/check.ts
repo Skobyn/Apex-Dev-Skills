@@ -54,7 +54,7 @@ function stripCommentsAndDocstrings(text: string): string {
     .replace(/"""[\s\S]*?"""/g, (m) => m.replace(/[^\n]/g, ' '))
     .replace(/'''[\s\S]*?'''/g, (m) => m.replace(/[^\n]/g, ' '))
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:"'`])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(m.length - p1.length))
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(m.length - p1.length))
     .replace(/#[^\n]*/g, (m) => ' '.repeat(m.length));
 }
 
