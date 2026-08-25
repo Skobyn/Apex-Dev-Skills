@@ -48,7 +48,13 @@ async function loadEngine(name) {
   // plugin-installed copy is self-sufficient.
   try {
     return await import(new URL(`../dist/${name}`, import.meta.url).href);
-  } catch {
+  } catch (err) {
+    // Only fall back when the sibling engine genuinely isn't there (the manual,
+    // non-bundled layout). If it EXISTS but threw while evaluating, that is a
+    // real bug: let it propagate to main().catch() and fail open with {}, rather
+    // than silently resolving a different — possibly older — installed engine
+    // whose confident answers would be wrong.
+    if (err?.code !== 'ERR_MODULE_NOT_FOUND') throw err;
     return import(`apex-dev-harness/dist/${name}`);
   }
 }

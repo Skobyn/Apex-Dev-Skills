@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -174,5 +174,44 @@ test('an absolute path with a differently-cased root prefix is still stripped', 
     }, dir);
     assert.equal(json.hookSpecificOutput?.permissionDecision, 'deny');
     assert.match(json.hookSpecificOutput.permissionDecisionReason, /RETIRED/i);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the hook falls back to the installed package when no sibling engine exists', () => {
+  // The coordinator's suggested version of this test set APEX_ENGINE_DIST
+  // alongside the no-sibling-dist setup, but loadEngine() checks that env
+  // override FIRST and returns immediately — so that version never reaches
+  // the sibling-import try/catch at all and does not exercise the fallback
+  // it claims to prove. To genuinely exercise "sibling missing -> package
+  // specifier" without the override short-circuiting it, this copies the
+  // hook to a directory with no sibling ../dist/ AND installs the real
+  // built engine under node_modules/apex-dev-harness/dist/, so the bare
+  // specifier import('apex-dev-harness/dist/...') resolves via normal
+  // Node module resolution -- the same way it would for a real `npm i`.
+  const dir = repo();
+  try {
+    const solo = join(dir, 'apex-hook.js');
+    writeFileSync(solo, readFileSync(HOOK, 'utf-8'));
+
+    const pkgDir = join(dir, 'node_modules', 'apex-dev-harness');
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: 'apex-dev-harness', type: 'module' }));
+    cpSync(DIST, join(pkgDir, 'dist'), { recursive: true });
+    // check.js reads templates/policy.json relative to the package root, so a
+    // stub package with dist/ alone throws ENOENT partway through -- mirror
+    // the real npm package's "files" layout (bin/, dist/, templates/).
+    cpSync(join(HERE, '..', 'templates'), join(pkgDir, 'templates'), { recursive: true });
+
+    const env = { ...process.env, APEX_REPO_ROOT: dir };
+    delete env.APEX_ENGINE_DIST;
+
+    const out = execFileSync(process.execPath, [solo, 'pre-tool-use'], {
+      input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: '.env', content: 'placeholder' } }),
+      encoding: 'utf-8',
+      env,
+    });
+    const json = JSON.parse(out);
+    assert.equal(json.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, /BOUND-005/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
