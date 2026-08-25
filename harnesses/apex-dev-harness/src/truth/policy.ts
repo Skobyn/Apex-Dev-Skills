@@ -27,7 +27,20 @@ export function loadPolicy(root: string): Policy {
     return { ...DEFAULT_POLICY, ok: true, warning: `no ${path} — using the harness's built-in policy` };
   }
   try {
-    return { ok: true, ...(JSON.parse(raw) as Omit<Policy, 'ok'>) };
+    const parsed = JSON.parse(raw) as Partial<Policy>;
+    // Field-wise, not a bare spread: a project policy that omits a section
+    // inherits the built-in default for that section rather than yielding
+    // `undefined` and crashing the first consumer. Fail open, always.
+    return {
+      ok: true,
+      version: parsed.version ?? DEFAULT_POLICY.version,
+      rules: parsed.rules ?? DEFAULT_POLICY.rules,
+      obligations: parsed.obligations ?? DEFAULT_POLICY.obligations,
+      watchlist: parsed.watchlist ?? DEFAULT_POLICY.watchlist,
+      mwgTargets: parsed.mwgTargets ?? DEFAULT_POLICY.mwgTargets,
+      skillRules: parsed.skillRules ?? DEFAULT_POLICY.skillRules,
+      parityRules: parsed.parityRules ?? DEFAULT_POLICY.parityRules,
+    };
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     return { ...DEFAULT_POLICY, ok: false, warning: `could not parse ${path}: ${why} — using the built-in policy` };
