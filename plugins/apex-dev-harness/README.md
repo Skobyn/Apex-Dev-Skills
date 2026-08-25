@@ -49,6 +49,34 @@ Surface hints (`surfaceHints`) are curated and partial: they cover
 route-mounted page files only, not components, hooks, services, or backend
 code.
 
+## Upgrading (npm install, not the plugin) — two steps, not one (0.3.1+)
+
+If you consume `apex-dev-harness` as an npm dependency rather than via
+`/plugin install`, upgrading takes **two commands**:
+
+```bash
+npm i -D apex-dev-harness@latest   # updates the engine (rules, hints, obligations)
+npx apex init --force              # updates the hook, which is a copy
+```
+
+`apex init` writes `.claude/hooks/apex-hook.js` into your repo as a plain
+file — it is a **copy**, not something Node resolves from `node_modules`.
+`npm i` alone updates `dist/` (so new rules and hints reach you through
+`loadPolicy`'s merge) but it cannot touch a file it already wrote into your
+repo, so the hook itself — its blocking logic, its `canonical` suppression,
+its stderr handling — stays frozen at whatever version last ran `apex init`.
+
+`apex doctor` now catches this: it stamps the engine version into the hook
+at `init` time and compares it against the running engine, warning by name
+(`apex-hook.js is from 0.3.0 but the installed engine is 0.3.1 ...`) when
+they drift, and warning separately when a hook predates stamping
+altogether. Run `apex doctor` after any `npm i -D apex-dev-harness@latest`
+to see whether step 2 is needed.
+
+**Plugin users are unaffected** — `/plugin install apex-dev-harness` bundles
+the engine and the hook together under `engine/`, so a plugin update
+replaces both in one step.
+
 ## Relationship to apex-scope-loop
 
 `/apex:build` step 2 hands non-trivial work to `apex-plan`, and step 3 executes it with

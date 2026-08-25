@@ -1,11 +1,29 @@
 // SPDX-License-Identifier: MIT
 // Report what the harness can actually see, and say plainly what it cannot.
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadLanes } from './truth/lanes.js';
 import { loadLedger } from './truth/ledger.js';
 import { loadPolicy, DEFAULT_POLICY } from './truth/policy.js';
 import { truthPaths } from './repo.js';
+import { HOOK_VERSION_MARKER } from './scaffold.js';
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ENGINE_PACKAGE_JSON = join(HERE, '..', 'package.json');
+function engineVersion() {
+    return JSON.parse(readFileSync(ENGINE_PACKAGE_JSON, 'utf-8')).version;
+}
+// The hook is a copy: read its stamped version off the second line, e.g.
+//   // apex-dev-harness-hook-version: 0.3.1
+// Returns null when the file predates version stamping (pre-0.3.1 `apex init`).
+function stampedHookVersion(hookPath) {
+    const text = readFileSync(hookPath, 'utf-8');
+    const line = text.split('\n')[1] ?? '';
+    const idx = line.indexOf(HOOK_VERSION_MARKER);
+    if (idx === -1)
+        return null;
+    return line.slice(idx + HOOK_VERSION_MARKER.length).trim();
+}
 const SNAPSHOT_SECTIONS = [
     { name: 'rules', keyOf: (r) => r.id },
     { name: 'obligations', keyOf: (o) => o.id },
@@ -124,11 +142,27 @@ export async function doctor(root) {
     }
     lines.push('');
     lines.push('hooks');
-    const hookInstalled = existsSync(join(root, '.claude', 'hooks', 'apex-hook.js'));
-    if (hookInstalled)
-        pass('.claude/hooks/apex-hook.js installed');
-    else
+    const hookPath = join(root, '.claude', 'hooks', 'apex-hook.js');
+    const hookInstalled = existsSync(hookPath);
+    if (hookInstalled) {
+        // Presence alone proved nothing: `npm i` updates dist/ but the hook is a
+        // COPY made by `apex init`, so it can silently go stale while doctor
+        // reported it "installed". Compare the stamp against the running engine.
+        const engine = engineVersion();
+        const stamped = stampedHookVersion(hookPath);
+        if (stamped === null) {
+            warn('.claude/hooks/apex-hook.js predates version stamping — it may be stale. Run `apex init --force`.');
+        }
+        else if (stamped !== engine) {
+            warn(`.claude/hooks/apex-hook.js is from ${stamped} but the installed engine is ${engine} — the hook is a COPY and npm i does not update it. Run \`apex init --force\`.`);
+        }
+        else {
+            pass(`.claude/hooks/apex-hook.js installed (${engine})`);
+        }
+    }
+    else {
         warn('.claude/hooks/apex-hook.js not installed — run `apex init`');
+    }
     if (hookInstalled && !existsSync(join(root, '.claude', 'hooks', 'package.json'))) {
         warn('.claude/hooks/package.json missing — every hook run will print a MODULE_TYPELESS_PACKAGE_JSON warning. Re-run `apex init`.');
     }

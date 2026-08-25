@@ -138,6 +138,47 @@ it says so; an emptied file is the correct outcome for a pure snapshot.
 `apex doctor` also flags this on its own (`N/M entries are verbatim
 built-in... Run 'apex policy prune'`).
 
+## Upgrading requires two steps, because the hook is a copy (0.3.1+)
+
+`.claude/hooks/apex-hook.js` is written by `apex init` as a plain file in
+your repo — same failure shape as the pre-0.3.0 policy snapshot above, just
+in a different artifact. `npm i -D apex-dev-harness@latest` updates
+`dist/` in `node_modules`, so any rule, hint, or obligation resolved from
+the engine reaches you immediately. It does **not** touch
+`.claude/hooks/apex-hook.js`, because that file isn't resolved from
+`node_modules` at all — `init` copied it once, and nothing about `npm i`
+knows it exists. A repo that upgrades the dependency and stops there keeps
+running whatever hook logic — blocking behavior, `canonical` suppression,
+the `runQuiet` stderr fix — shipped the last time `apex init` ran, silently,
+with `apex doctor` giving no indication anything was wrong (prior to
+0.3.1 it checked only `existsSync`).
+
+Upgrading via npm is therefore **two commands**, not one:
+
+```bash
+npm i -D apex-dev-harness@latest   # updates the engine (rules, hints, obligations)
+npx apex init --force              # updates the hook, which is a copy
+```
+
+As of 0.3.1, `apex init` stamps the engine version into the hook it writes
+(`// apex-dev-harness-hook-version: 0.3.1`, on the line immediately after
+the shebang — injected at write time from `package.json`, not hardcoded in
+the template, so the stamp itself can never drift from the engine that
+wrote it). `apex doctor`'s `hooks` section reads that stamp back and
+compares it against the running engine:
+
+- versions match → `ok    .claude/hooks/apex-hook.js installed (0.3.1)`
+- versions differ → `warn  .claude/hooks/apex-hook.js is from 0.3.0 but the
+  installed engine is 0.3.1 — the hook is a COPY and npm i does not update
+  it. Run `apex init --force`.`
+- no stamp at all (hook predates 0.3.1) → `warn
+  .claude/hooks/apex-hook.js predates version stamping — it may be stale.
+  Run `apex init --force`.`
+
+**Plugin users are unaffected.** `/plugin install apex-dev-harness` bundles
+the engine and the hook together under `engine/`; a plugin update replaces
+both files in the same step, so there is no copy to go stale independently.
+
 `init` does not touch `.claude/settings.json` — it prints the snippet below
 for a human to apply.
 
