@@ -1,10 +1,28 @@
 // SPDX-License-Identifier: MIT
 // Report what the harness can actually see, and say plainly what it cannot.
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadLanes } from './truth/lanes.js';
 import { loadLedger } from './truth/ledger.js';
-import { loadPolicy } from './truth/policy.js';
+import { loadPolicy, DEFAULT_POLICY } from './truth/policy.js';
+import { truthPaths } from './repo.js';
+const SNAPSHOT_SECTIONS = [
+    { name: 'rules', keyOf: (r) => r.id },
+    { name: 'obligations', keyOf: (o) => o.id },
+    { name: 'mwgTargets', keyOf: (m) => m.match },
+    { name: 'skillRules', keyOf: (s) => s.match },
+    { name: 'parityRules', keyOf: (p) => p.match },
+    { name: 'surfaceHints', keyOf: (h) => h.match },
+    { name: 'excludedFiles', keyOf: (e) => e.match },
+];
+function canon(v) {
+    return JSON.stringify(v, (_k, val) => {
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+            return Object.fromEntries(Object.keys(val).sort().map((k) => [k, val[k]]));
+        }
+        return val;
+    });
+}
 export async function doctor(root) {
     const lines = ['apex-dev-harness doctor', ''];
     let ok = true;
@@ -42,6 +60,54 @@ export async function doctor(root) {
         warn(policy.warning);
     else
         pass(`policy.json — ${policy.rules.length} rules, ${policy.obligations.length} obligations`);
+    // Snapshot detection: a project policy that is present and carries a lot
+    // of entries byte-identical to the built-in is a leftover full copy (the
+    // pre-0.3.0 `apex init` behavior), not a delta overlay — it will silently
+    // miss every rule and hint the engine adds from here on.
+    const policyPath = truthPaths(root).policy;
+    if (existsSync(policyPath)) {
+        try {
+            const parsed = JSON.parse(readFileSync(policyPath, 'utf-8'));
+            let total = 0;
+            let identical = 0;
+            for (const s of SNAPSHOT_SECTIONS) {
+                const arr = parsed[s.name];
+                if (!Array.isArray(arr))
+                    continue;
+                const builtinByKey = new Map(DEFAULT_POLICY[s.name].map((e) => [s.keyOf(e), e]));
+                for (const entry of arr) {
+                    total++;
+                    const b = builtinByKey.get(s.keyOf(entry));
+                    if (b !== undefined && canon(b) === canon(entry))
+                        identical++;
+                }
+            }
+            if (Array.isArray(parsed.watchlist)) {
+                const builtinSet = new Set(DEFAULT_POLICY.watchlist);
+                for (const w of parsed.watchlist) {
+                    total++;
+                    if (builtinSet.has(w))
+                        identical++;
+                }
+            }
+            if (total > 0 && identical === total) {
+                warn(`.harness/policy.json: ${identical}/${total} entries are verbatim built-in. This file is a snapshot, not config — it will freeze this repo out of engine updates. Run 'apex policy prune'.`);
+            }
+            else if (total > 0 && identical > 0) {
+                warn(`.harness/policy.json: ${identical}/${total} entries are verbatim built-in. Run 'apex policy prune' to drop the ones that carry no local config.`);
+            }
+            // A `disabled` entry without a reason is unreviewable later.
+            const disabled = parsed.disabled ?? {};
+            for (const [, arr] of [['rules', disabled.rules], ['surfaceHints', disabled.surfaceHints]]) {
+                for (const entry of (arr ?? [])) {
+                    if (typeof entry === 'string') {
+                        warn(`disabled entry ${entry} has no reason — an allowlist without reasons is unreviewable later`);
+                    }
+                }
+            }
+        }
+        catch { /* already reported via policy.warning above */ }
+    }
     lines.push('');
     lines.push('wrapped commands');
     const wrapped = [

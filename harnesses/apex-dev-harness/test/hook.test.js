@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -213,5 +213,156 @@ test('the hook falls back to the installed package when no sibling engine exists
     const json = JSON.parse(out);
     assert.equal(json.hookSpecificOutput?.permissionDecision, 'deny');
     assert.match(json.hookSpecificOutput.permissionDecisionReason, /BOUND-005/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── post-tool-use: capability-manifest staleness now BLOCKS (exit 2) ──────
+// The owner ruled that deleting studio-manifest-check.ps1 lost something
+// load-bearing: it exited 2, feeding the failure text back into the agent
+// loop. This restores that for genuine staleness, while keeping
+// could-not-run (missing python etc.) and the style-generator check
+// advisory (exit 0). Every path below still prints exactly `{}` on stdout.
+
+function runHookRaw(phase, payload, env) {
+  // execFileSync only returns stdout on a zero exit and discards stderr in
+  // that case (it's only attached to the thrown error on a non-zero exit),
+  // which is exactly wrong here: post-tool-use writes its advisory text to
+  // stderr while exiting 0 on most paths. spawnSync captures both regardless
+  // of exit code.
+  const r = spawnSync(process.execPath, [HOOK, phase], {
+    input: JSON.stringify(payload), encoding: 'utf-8', env,
+  });
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+function manifestRepo(checkCmd) {
+  const dir = repo();
+  return { dir, env: {
+    ...process.env, APEX_REPO_ROOT: dir, APEX_ENGINE_DIST: DIST,
+    APEX_MANIFEST_CHECK_CMD: checkCmd,
+    APEX_STYLE_CHECK_CMD: 'node -e "process.exit(0)"',
+  } };
+}
+
+const CAPABILITY_PATH = 'ui/src/apexStudio/views/registry.js';
+
+test('post-tool-use: a stale manifest blocks — stdout is exactly {} and exit code is 2', () => {
+  const { dir, env } = manifestRepo('node -e "process.stderr.write(\'manifest drift\'); process.exit(1)"');
+  try {
+    const { status, stdout, stderr } = runHookRaw('post-tool-use', { tool_input: { file_path: CAPABILITY_PATH } }, env);
+    assert.equal(status, 2);
+    assert.deepEqual(JSON.parse(stdout), {});
+    assert.equal(stdout.trim().split('\n').length, 1);
+    assert.match(stderr, /capability manifest is STALE/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('post-tool-use: a could-not-run manifest check stays advisory — {} and exit 0', () => {
+  const { dir, env } = manifestRepo('node -e "process.stderr.write(\'python: No module named scripts\'); process.exit(1)"');
+  try {
+    const { status, stdout, stderr } = runHookRaw('post-tool-use', { tool_input: { file_path: CAPABILITY_PATH } }, env);
+    assert.equal(status, 0);
+    assert.deepEqual(JSON.parse(stdout), {});
+    assert.match(stderr, /could not run the capability-manifest check/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('post-tool-use: a clean manifest check emits {} and exit 0, no stderr noise', () => {
+  const { dir, env } = manifestRepo('node -e "process.exit(0)"');
+  try {
+    const { status, stdout, stderr } = runHookRaw('post-tool-use', { tool_input: { file_path: CAPABILITY_PATH } }, env);
+    assert.equal(status, 0);
+    assert.deepEqual(JSON.parse(stdout), {});
+    assert.equal(stderr, '');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('post-tool-use: a style-generator failure stays advisory — {} and exit 0', () => {
+  const dir = repo();
+  try {
+    const env = {
+      ...process.env, APEX_REPO_ROOT: dir, APEX_ENGINE_DIST: DIST,
+      APEX_STYLE_CHECK_CMD: 'node -e "process.stdout.write(\'bad style\'); process.exit(1)"',
+      APEX_MANIFEST_CHECK_CMD: 'node -e "process.exit(0)"',
+    };
+    const { status, stdout, stderr } = runHookRaw('post-tool-use', { tool_input: { file_path: 'ui/src/x.jsx' } }, env);
+    assert.equal(status, 0);
+    assert.deepEqual(JSON.parse(stdout), {});
+    assert.match(stderr, /style-generator check failed/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('post-tool-use: a stderr-only check failure is reported, not swallowed', () => {
+  // The case the previous `e.stdout || e.stderr` form silently discarded:
+  // an empty stdout Buffer is truthy, so it always won over a real
+  // stderr-only failure. gen_studio_capability_manifest writes only to
+  // stderr, so this is the exact shape that made the exit-2 path
+  // unreachable before the fix.
+  const { dir, env } = manifestRepo('node -e "process.stderr.write(\'DRIFT DETECTED\'); process.exit(1)"');
+  try {
+    const { status, stderr } = runHookRaw('post-tool-use', { tool_input: { file_path: CAPABILITY_PATH } }, env);
+    assert.equal(status, 2);
+    assert.match(stderr, /DRIFT DETECTED/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── runQuiet unit tests (exported directly — the fastest, most honest way
+// to pin the Buffer-concatenation behavior without going through a child
+// process twice) ───────────────────────────────────────────────────────
+test('runQuiet: concatenates stdout+stderr rather than choosing (empty stdout Buffer is truthy)', async () => {
+  const { runQuiet } = await import(new URL('file://' + HOOK).href);
+  const out = runQuiet('node -e "process.stderr.write(\'only on stderr\')&&process.exit(1)"', process.cwd());
+  assert.match(out, /only on stderr/);
+});
+
+test('runQuiet: returns null on success', async () => {
+  const { runQuiet } = await import(new URL('file://' + HOOK).href);
+  assert.equal(runQuiet('node -e "process.exit(0)"', process.cwd()), null);
+});
+
+// ── post-tool-use: canonical-hint suppression ──────────────────────────
+test('post-tool-use: a canonical hint suppresses the legacy-twin advisory outside apexStudio', () => {
+  const dir = repo();
+  mkdirSync(join(dir, '.harness'), { recursive: true });
+  mkdirSync(join(dir, '.claude', 'tasks'), { recursive: true });
+  writeFileSync(join(dir, '.claude', 'tasks', 'apex-studio-surface-ledger.md'), [
+    '## Section',
+    '| Surface | Routes | Status | Notes |',
+    '| Email designer (legacy twin) | `/marketing/emails` | **STUDIO** | |',
+  ].join('\n'));
+  writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({
+    version: 1,
+    surfaceHints: [{ match: 'ui/src/marketing/EmailDesignerPage.jsx', surface: 'Email designer (legacy twin)', canonical: true }],
+  }));
+  try {
+    const env = {
+      ...process.env, APEX_REPO_ROOT: dir, APEX_ENGINE_DIST: DIST,
+      APEX_STYLE_CHECK_CMD: 'node -e "process.exit(0)"', APEX_MANIFEST_CHECK_CMD: 'node -e "process.exit(0)"',
+    };
+    const { stderr } = runHookRaw('post-tool-use', { tool_input: { file_path: 'ui/src/marketing/EmailDesignerPage.jsx' } }, env);
+    assert.equal(stderr.includes('STUDIO-canonical'), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('post-tool-use: without canonical, the legacy-twin advisory still fires outside apexStudio', () => {
+  const dir = repo();
+  mkdirSync(join(dir, '.harness'), { recursive: true });
+  mkdirSync(join(dir, '.claude', 'tasks'), { recursive: true });
+  writeFileSync(join(dir, '.claude', 'tasks', 'apex-studio-surface-ledger.md'), [
+    '## Section',
+    '| Surface | Routes | Status | Notes |',
+    '| Some legacy twin | `/legacy/thing` | **STUDIO** | |',
+  ].join('\n'));
+  writeFileSync(join(dir, '.harness', 'policy.json'), JSON.stringify({
+    version: 1,
+    surfaceHints: [{ match: 'ui/src/legacy/Thing.jsx', surface: 'Some legacy twin' }],
+  }));
+  try {
+    const env = {
+      ...process.env, APEX_REPO_ROOT: dir, APEX_ENGINE_DIST: DIST,
+      APEX_STYLE_CHECK_CMD: 'node -e "process.exit(0)"', APEX_MANIFEST_CHECK_CMD: 'node -e "process.exit(0)"',
+    };
+    const { stderr } = runHookRaw('post-tool-use', { tool_input: { file_path: 'ui/src/legacy/Thing.jsx' } }, env);
+    assert.match(stderr, /STUDIO-canonical/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

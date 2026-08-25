@@ -10,13 +10,21 @@
 // made Cursor treat the hook as broken and block EVERY Edit/Write in the
 // workspace. Fail open on every internal error: a harness bug must never
 // wedge editing.
+//
+// post-tool-use is the one phase allowed to set a non-zero exit code (2,
+// for genuine capability-manifest staleness — see below) so the failure
+// text re-enters the agent loop. Even then stdout MUST still be exactly
+// `{}`: never call process.exit() (Node's stdout is asynchronous on
+// Windows and an immediate exit can truncate it — empty stdout is exactly
+// what bricked every edit in Cursor on 2026-07-04), and never let emit()
+// clobber an exit code a caller already set.
 
-function emit(obj) {
-  // Do NOT call process.exit() here. Node's stdout is asynchronous on Windows,
-  // so exiting immediately after write() can truncate the output — and empty
-  // stdout is precisely what bricked every edit in Cursor on 2026-07-04.
-  // Setting exitCode lets Node flush and exit on its own.
-  process.exitCode = 0;
+import { execSync } from 'node:child_process';
+
+function emit(obj, exitCode = 0) {
+  // Setting exitCode (never calling process.exit()) lets Node flush stdout
+  // and exit on its own once the event loop drains.
+  process.exitCode = exitCode;
   process.stdout.write(JSON.stringify(obj ?? {}) + '\n');
 }
 
@@ -69,6 +77,26 @@ function toRelative(root, filePath) {
   return p;
 }
 
+/**
+ * Run `cmd` quietly, returning combined stdout+stderr text on failure or
+ * null on success. Exported so it can be unit-tested directly: execSync's
+ * thrown error carries stdout/stderr as Buffers, and an EMPTY Buffer is
+ * truthy — `e.stdout || e.stderr` therefore always picks empty stdout over
+ * a real stderr-only failure and silently discards it. The
+ * capability-manifest checker writes ONLY to stderr, so that form made its
+ * diagnostics (and the staleness signal this hook blocks on) unreachable.
+ * Concatenate, never choose.
+ */
+export function runQuiet(cmd, cwd) {
+  try {
+    execSync(cmd, { cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 });
+    return null;
+  } catch (e) {
+    const both = (String(e?.stdout ?? '') + String(e?.stderr ?? '')).trim();
+    return both || String(e?.message || 'failed').trim();
+  }
+}
+
 async function main() {
   const phase = process.argv[2];
 
@@ -100,30 +128,50 @@ async function main() {
   }
 
   if (phase === 'post-tool-use') {
-    // Advisory only — this phase must never block. Warnings go to stderr so
-    // stdout stays a single clean JSON object, and stay quiet on the happy
-    // path: a hook that prints on every edit trains people to ignore it.
+    // Mostly advisory (stderr only, exit 0) — EXCEPT genuine
+    // capability-manifest staleness, which blocks (exit 2) so the reason
+    // re-enters the agent loop, restoring what the superseded
+    // studio-manifest-check.ps1 did. Everything else here must never block.
+    let exitCode = 0;
     try {
-      const { route } = await loadEngine('route.js');
+      const [{ route }, { loadPolicy }, { matchesGlob }] = await Promise.all([
+        loadEngine('route.js'), loadEngine('truth/policy.js'), loadEngine('glob.js'),
+      ]);
       const v = route(root, rel);
       const inStudio = rel.split('/').includes('apexStudio');
-      if (v.surface?.status === 'STUDIO' && !inStudio) {
+
+      // A hint can mark itself `canonical: true` — this file IS the
+      // canonical implementation of that surface, so the legacy-twin
+      // advisory must not fire for it regardless of path. The path check
+      // (apexStudio) stays the default for files with no matching hint.
+      let canonicalHint = false;
+      try {
+        const policy = loadPolicy(root);
+        let bestLen = -1;
+        for (const hint of policy.surfaceHints ?? []) {
+          if (matchesGlob(hint.match, rel) && hint.match.length > bestLen) {
+            canonicalHint = !!hint.canonical;
+            bestLen = hint.match.length;
+          }
+        }
+      } catch { /* a policy load failure must not suppress or crash this */ }
+
+      if (v.surface?.status === 'STUDIO' && !inStudio && !canonicalHint) {
         process.stderr.write(`[apex] ${v.surface.surface} is STUDIO-canonical — touching the legacy twin is a smell.\n`);
       }
 
       // Mirror the .ps1 hooks this shim supersedes: they ran the UI style
       // generator check and the capability-manifest freshness check after an
-      // edit. Advisory only — stderr, never blocking, and only when relevant.
-      const { execSync } = await import('node:child_process');
-      // Keep well under the host's per-hook timeout (60s in Claude Code). If the
-      // platform kills us first we emit NOTHING, and empty stdout is the failure
-      // this whole file is written to avoid. These checks cost ~30ms and ~3s.
-      const runQuiet = (cmd) => {
-        try { execSync(cmd, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 }); return null; }
-        catch (e) { return String((e && (e.stdout || e.stderr)) || (e && e.message) || 'failed').trim(); }
-      };
+      // edit. Keep well under the host's per-hook timeout (60s in Claude
+      // Code) — these checks cost ~30ms and ~3s.
+      const run = (cmd) => runQuiet(cmd, root);
+      // Env overrides let tests substitute a fixture command without
+      // needing a real python/backend checkout — the real commands are the
+      // default in production.
+      const styleCmd = process.env.APEX_STYLE_CHECK_CMD || 'node ui/scripts/check-style-generators.js';
+      const manifestCmd = process.env.APEX_MANIFEST_CHECK_CMD || 'cd backend && python -m scripts.gen_studio_capability_manifest --check';
       if (/^ui\/src\/.*\.(js|jsx|css)$/.test(rel)) {
-        const out = runQuiet('node ui/scripts/check-style-generators.js');
+        const out = run(styleCmd);
         if (out) process.stderr.write(`[apex] style-generator check failed:\n${out.slice(0, 2000)}\n`);
       }
       const CAPABILITY_SURFACES = [
@@ -134,22 +182,36 @@ async function main() {
         'ui/src/apexStudio/rail/navDirective.js',
       ];
       if (CAPABILITY_SURFACES.includes(rel) || rel.startsWith('backend/app/routes/studio_adapters/')) {
-        const out = runQuiet('cd backend && python -m scripts.gen_studio_capability_manifest --check');
+        const out = run(manifestCmd);
         if (out) {
           const couldNotRun = /not found|No module named|command not found|ENOENT/i.test(out);
-          process.stderr.write(couldNotRun
-            ? `[apex] could not run the capability-manifest check (not a staleness result):\n${out.slice(0, 500)}\n`
-            : `[apex] capability manifest is STALE — regenerate it before you call this done.\n`);
+          if (couldNotRun) {
+            // Could-not-run is NOT evidence of staleness — stays advisory.
+            process.stderr.write(`[apex] could not run the capability-manifest check (not a staleness result):\n${out.slice(0, 500)}\n`);
+          } else {
+            process.stderr.write(`[apex] capability manifest is STALE — regenerate it before you call this done.\n${out.slice(0, 2000)}\n`);
+            exitCode = 2;
+          }
         }
       }
-    } catch { /* advisory only */ }
-    return emit();
+    } catch { /* on internal error, fail open (exit 0) — never block on our own bug */ }
+    return emit(undefined, exitCode);
   }
 
   return emit(); // session-start and anything unknown
 }
 
-main().catch(() => {
-  process.exitCode = 0;
-  process.stdout.write('{}\n');
-});
+// Only run main() when this file is the process entry point — importing it
+// (e.g. from a test, to reach `runQuiet`) must not block on stdin.
+const isMain = (() => {
+  if (!process.argv[1]) return false;
+  try { return new URL(import.meta.url).pathname === process.argv[1].replace(/\\/g, '/'); }
+  catch { return false; }
+})();
+
+if (isMain) {
+  main().catch(() => {
+    process.exitCode = 0;
+    process.stdout.write('{}\n');
+  });
+}

@@ -7,7 +7,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES = join(HERE, '..', 'templates');
 const FILES = [
     ['apex-hook.js', join('.claude', 'hooks', 'apex-hook.js')],
-    ['policy.json', join('.harness', 'policy.json')],
+    // `init` writes a minimal DELTA overlay, not a full copy of the built-in
+    // policy: loadPolicy() merges the two at read time, so any rule or hint
+    // added to the engine later reaches this repo automatically. A repo that
+    // still has the old full-copy snapshot should run `apex policy prune`.
+    ['policy-overlay.json', join('.harness', 'policy.json')],
     // Node resolves a file's module type from the nearest package.json. Scoping
     // "type": "module" to .claude/hooks/ silences MODULE_TYPELESS_PACKAGE_JSON
     // on every hook run without touching the consuming repo's root

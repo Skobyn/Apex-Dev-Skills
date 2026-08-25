@@ -62,15 +62,81 @@ files, and skips anything already present unless `--force` is passed:
 | Writes | From |
 |---|---|
 | `.claude/hooks/apex-hook.js` | `apex-dev-harness/templates/apex-hook.js` |
-| `.harness/policy.json` | `apex-dev-harness/templates/policy.json` |
+| `.harness/policy.json` | `apex-dev-harness/templates/policy-overlay.json` |
 
 `apex-hook.js` is a single Node file invoked three ways —
 `pre-tool-use`, `post-tool-use`, `session-start` — chosen by the hook
 matcher in `.claude/settings.json`. It always prints exactly one JSON object
 on stdout and fails open (`{}`, i.e. allow) on any internal error, because a
-harness bug must never block editing outright. `.harness/policy.json` is a
-starting policy (rules + obligations) that `doctor` and `gate` read; the repo
-can edit it in place once it's confirmed to be the right starting set.
+harness bug must never block editing outright.
+
+**`.harness/policy.json` is an OVERLAY, not a snapshot (0.3.0+).** `init`
+writes a minimal delta file — a `version`, a `_readme`, and an empty
+`disabled` block — not a copy of the built-in policy. `loadPolicy()` merges
+that overlay with the engine's built-in policy on every read: whatever the
+project file doesn't mention, it inherits from the built-in, so a rule or
+hint added to `apex-dev-harness` later reaches an already-`init`-ed repo
+automatically, with no re-`init` required. This replaces the pre-0.3.0
+behavior, where `init` wrote the full built-in policy verbatim; once that
+snapshot existed, `loadPolicy()` used it wholesale and nothing the engine
+shipped afterward could reach the repo — a real rule (`GUARD-SENSITIVE-FILE`)
+shipped and was silently inert in every repo that had already run `init`.
+
+Per array-valued section (`rules`, `obligations`, `surfaceHints`,
+`mwgTargets`, `skillRules`, `parityRules`, `excludedFiles`), and merging by
+`id` or `match` as appropriate:
+
+- **omit the key** — inherit the built-in entries for that section, in full.
+- **list entries** — merge with the built-in by key; a project entry with
+  the same `id`/`match` as a built-in one overrides it, and any other
+  project entries are added.
+- **`[]` explicitly** — clears the section entirely (neither the built-in
+  nor any project entries apply). This is the one case where "present but
+  empty" does NOT mean "no local changes."
+
+`watchlist` merges the same way, as a de-duplicated (case-insensitive) union
+of strings instead of an id/match-keyed merge.
+
+**Editing `policy.json` to drop a rule or hint no longer works** — a rule or
+hint you don't mention is inherited, not removed. Turning one off requires
+the uniform `disabled` block:
+
+```json
+{
+  "version": 1,
+  "disabled": {
+    "rules": [{ "id": "ARCH-003", "reason": "not applicable to this repo's structure" }],
+    "surfaceHints": [{ "match": "ui/src/pages/SomePage.jsx", "reason": "noisy — file serves two surfaces" }]
+  }
+}
+```
+
+Entries may be a bare string (`"ARCH-003"`) or the object form with a
+`reason`; the object form is required to give a reason, and `apex doctor`
+warns on any bare-string entry — an allowlist without reasons is
+unreviewable later, mirroring `studio_rest_write_exceptions.py`'s own
+exception convention.
+
+**Hint coverage is curated and partial, not comprehensive.**
+`surfaceHints` maps a small, hand-verified set of route-mounted PAGE files
+to their ledger surface — the files a top-level Route element actually
+renders. It does not, and is not meant to, cover components, hooks,
+services, or backend paths, which is most of the tree; an unhinted file
+simply reports `no-row` rather than a wrong guess. Every hint is checked by
+three durable invariants run against the live consuming repo in CI-adjacent
+testing (exists-on-disk, surface-verbatim, not-portal-only) precisely
+because a hint that was correct when written can go stale silently as files
+move or get deleted — that is how two of the pre-0.3.0 hints (`BrandPage.jsx`,
+`HouseGuideAdminPage.jsx`) survived undetected until this release.
+
+**Already ran `init` before 0.3.0?** Your `.harness/policy.json` is a full
+snapshot and is silently freezing the repo out of every rule and hint added
+since. Run `apex policy prune` — it drops every entry byte-identical to the
+built-in (comparing sorted-key JSON) and rewrites the file, printing what it
+removed and what genuinely-local config it kept. If nothing local remains,
+it says so; an emptied file is the correct outcome for a pure snapshot.
+`apex doctor` also flags this on its own (`N/M entries are verbatim
+built-in... Run 'apex policy prune'`).
 
 `init` does not touch `.claude/settings.json` — it prints the snippet below
 for a human to apply.
@@ -171,21 +237,27 @@ unchanged.** It writes `.claude/handoff/<session_id>.md` on the `Stop` event
 and has nothing to do with routing, lanes, or gating — it is not superseded
 and this integration does not touch it.
 
-### A feedback channel this supersession does not preserve
+### The manifest-staleness feedback channel (restored in 0.3.0)
 
 `quality-style-check` and `studio-manifest-check` both exited `2` on
 failure. In Claude Code, a `PostToolUse` hook that exits `2` feeds its
 failure text back into the agent's own loop as a tool result, so the agent
 sees the problem immediately and can self-correct in the same turn.
 
-`apex-hook.js`'s `post-tool-use` is deliberately **stderr-advisory and never
-blocks** — it always exits 0 and reports the same failures on stderr. That
-is a considered design choice (see the binding rule above: a false block is
-the worst failure this shim can produce), but it means this supersession is
-**not** like-for-like: anyone relying on the exit-2 behavior to get failures
-reflected back into the agent loop should know that channel is gone. The
-place those checks become blocking again is `apex gate`, which runs before
-merge — that is the intended enforcement point, not the PostToolUse hook.
+Prior to 0.3.0, `apex-hook.js`'s `post-tool-use` was stderr-advisory and
+never blocked for either check — the owner later ruled that dropping this
+for the capability manifest lost something load-bearing, since a stale
+manifest is a genuine, mechanically-checkable defect (not a style opinion).
+As of 0.3.0: when the capability-manifest check reports **genuine
+staleness**, `post-tool-use` writes the reason to stderr and exits `2`,
+re-entering the agent loop exactly as `studio-manifest-check.ps1` did. A
+**could-not-run** result (missing `python`, `No module named`, etc.) is
+explicitly NOT treated as staleness and stays advisory at exit `0` — failing
+to run a check is not evidence the thing it checks is stale. The
+style-generator check remains stderr-advisory at exit `0` in every case;
+`apex gate` (run before merge) is still the place both checks become a hard
+gate independent of this hook. Every path still prints exactly one JSON
+object (`{}`) on stdout — the exit code is the only signal that changes.
 
 ## Findings from the build (for the reviewer)
 

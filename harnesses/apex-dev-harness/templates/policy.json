@@ -1,40 +1,91 @@
 {
   "version": 1,
   "rules": [
-    { "id": "BOUND-005", "tier": "block", "scope": "repo", "check": "no-dotenv-files",
-      "source": ".agents/rules/boundaries.md" },
-    { "id": "BOUND-002", "tier": "block", "scope": "repo", "check": "no-credential-literals",
-      "source": ".agents/rules/boundaries.md" },
-    { "id": "GUARD-SENSITIVE-FILE", "tier": "block", "scope": "repo", "check": "no-sensitive-file-edit",
-      "source": ".claude/hooks/block-sensitive-files.ps1 (superseded)" },
-    { "id": "LANE-RETIRED", "tier": "block", "scope": "repo", "check": "no-retired-lane-edit",
-      "source": "tools/repo-lanes/lanes.json" },
-    { "id": "LANE-IMPORT", "tier": "block", "scope": "repo", "check": "no-new-legacy-import",
-      "source": "tools/repo-lanes/lanes.json" },
-    { "id": "CONV-PROJECTDATA", "tier": "block", "scope": "repo", "check": "no-project-data-json",
-      "source": "CLAUDE.md Key Conventions" },
-    { "id": "BOUND-004", "tier": "block", "scope": "backend/agentic/", "check": "no-provider-sdk-import",
-      "source": ".agents/rules/boundaries.md" },
-    { "id": "ARCH-003", "tier": "warn", "scope": "backend/agentic/", "check": "no-mutable-venue-scope",
-      "source": ".agents/rules/architecture.md" },
-    { "id": "ARCH-005", "tier": "warn", "scope": "backend/agentic/", "check": "no-untrusted-venue-header",
-      "source": ".agents/rules/architecture.md" },
-    { "id": "BOUND-001", "tier": "historical", "scope": "backend/agentic/",
+    {
+      "id": "BOUND-005",
+      "tier": "block",
+      "scope": "repo",
+      "check": "no-dotenv-files",
+      "source": ".agents/rules/boundaries.md"
+    },
+    {
+      "id": "BOUND-002",
+      "tier": "block",
+      "scope": "repo",
+      "check": "no-credential-literals",
+      "source": ".agents/rules/boundaries.md"
+    },
+    {
+      "id": "GUARD-SENSITIVE-FILE",
+      "tier": "block",
+      "scope": "repo",
+      "check": "no-sensitive-file-edit",
+      "source": ".claude/hooks/block-sensitive-files.ps1 (superseded)"
+    },
+    {
+      "id": "LANE-RETIRED",
+      "tier": "block",
+      "scope": "repo",
+      "check": "no-retired-lane-edit",
+      "source": "tools/repo-lanes/lanes.json"
+    },
+    {
+      "id": "LANE-IMPORT",
+      "tier": "block",
+      "scope": "repo",
+      "check": "no-new-legacy-import",
+      "source": "tools/repo-lanes/lanes.json"
+    },
+    {
+      "id": "CONV-PROJECTDATA",
+      "tier": "block",
+      "scope": "repo",
+      "check": "no-project-data-json",
+      "source": "CLAUDE.md Key Conventions"
+    },
+    {
+      "id": "BOUND-004",
+      "tier": "block",
+      "scope": "backend/agentic/",
+      "check": "no-provider-sdk-import",
+      "source": ".agents/rules/boundaries.md"
+    },
+    {
+      "id": "ARCH-003",
+      "tier": "warn",
+      "scope": "backend/agentic/",
+      "check": "no-mutable-venue-scope",
+      "source": ".agents/rules/architecture.md"
+    },
+    {
+      "id": "ARCH-005",
+      "tier": "warn",
+      "scope": "backend/agentic/",
+      "check": "no-untrusted-venue-header",
+      "source": ".agents/rules/architecture.md"
+    },
+    {
+      "id": "BOUND-001",
+      "tier": "historical",
+      "scope": "backend/agentic/",
       "source": ".agents/rules/boundaries.md",
-      "note": "The repo-wide isolation clause governed the AgentLoop framework deleted 2026-07-05 (ADR-002). The UI agentic directory it protected no longer exists. Enforcing it repo-wide would block nearly all work, so it is recorded, not enforced." }
+      "note": "The repo-wide isolation clause governed the AgentLoop framework deleted 2026-07-05 (ADR-002). The UI agentic directory it protected no longer exists. Enforcing it repo-wide would block nearly all work, so it is recorded, not enforced."
+    }
   ],
   "obligations": [
     {
       "id": "studio-capability-manifest",
       "reason": "diff touches a Studio capability surface",
-      "when": { "anyPathMatches": [
-        "backend/app/routes/studio_chat.py",
-        "backend/agentic/core/mutations/registry.py",
-        "backend/app/routes/studio_adapters/**",
-        "backend/app/routes/studio_rest_write_exceptions.py",
-        "ui/src/apexStudio/views/registry.js",
-        "ui/src/apexStudio/rail/navDirective.js"
-      ] },
+      "when": {
+        "anyPathMatches": [
+          "backend/app/routes/studio_chat.py",
+          "backend/agentic/core/mutations/registry.py",
+          "backend/app/routes/studio_adapters/**",
+          "backend/app/routes/studio_rest_write_exceptions.py",
+          "ui/src/apexStudio/views/registry.js",
+          "ui/src/apexStudio/rail/navDirective.js"
+        ]
+      },
       "run": [
         "cd backend && python -m scripts.gen_studio_capability_manifest --check",
         "cd backend && python -m pytest app/routes/tests/test_studio_capability_manifest.py app/routes/tests/test_studio_write_read_parity.py app/routes/tests/test_studio_resolver_tenancy.py -q"
@@ -43,11 +94,13 @@
     {
       "id": "stack-map",
       "reason": "diff touches the capability manifest, the stack map, or the entity tree",
-      "when": { "anyPathMatches": [
-        "backend/app/routes/studio_capability_manifest.json",
-        "tools/stack-map/**",
-        "ui/src/apexStudio/docs/07-entity-tree.md"
-      ] },
+      "when": {
+        "anyPathMatches": [
+          "backend/app/routes/studio_capability_manifest.json",
+          "tools/stack-map/**",
+          "ui/src/apexStudio/docs/07-entity-tree.md"
+        ]
+      },
       "run": [
         "python tools/stack-map/extract_capability.py --check",
         "python -m pytest tools/stack-map/tests/ -q"
@@ -56,43 +109,332 @@
     {
       "id": "ui-style-generators",
       "reason": "diff touches ui/src styles",
-      "when": { "anyPathMatches": ["ui/src/**/*.js", "ui/src/**/*.jsx", "ui/src/**/*.css"] },
-      "run": ["cd ui && node scripts/check-style-generators.js"]
+      "when": {
+        "anyPathMatches": [
+          "ui/src/**/*.js",
+          "ui/src/**/*.jsx",
+          "ui/src/**/*.css"
+        ]
+      },
+      "run": [
+        "cd ui && node scripts/check-style-generators.js"
+      ]
     },
     {
       "id": "lane-import-guards",
       "reason": "diff touches a governed root, so import guards must still pass",
-      "when": { "anyPathMatches": ["backend/**", "ui/src/**", "tools/repo-lanes/**"] },
-      "run": ["python -m pytest tools/repo-lanes/tests/ -q"]
+      "when": {
+        "anyPathMatches": [
+          "backend/**",
+          "ui/src/**",
+          "tools/repo-lanes/**"
+        ]
+      },
+      "run": [
+        "python -m pytest tools/repo-lanes/tests/ -q"
+      ]
     }
   ],
   "watchlist": [
-    "quick win", "quick fix", "fallback", "workaround", "bandaid", "band-aid",
-    "temporary", "interim", "simplified version", "for now", "good enough",
-    "sufficient for now", "small change", "minor tweak", "for consistency",
-    "just using", "tests coming later", "will add tests"
+    "quick win",
+    "quick fix",
+    "fallback",
+    "workaround",
+    "bandaid",
+    "band-aid",
+    "temporary",
+    "interim",
+    "simplified version",
+    "for now",
+    "good enough",
+    "sufficient for now",
+    "small change",
+    "minor tweak",
+    "for consistency",
+    "just using",
+    "tests coming later",
+    "will add tests"
   ],
   "mwgTargets": [
-    { "match": "ui/src/**", "target": "Baseline Newly Available (apex-app SaaS surface)" },
-    { "match": "backend/app/config/site_builder_kits/**", "target": "Baseline Widely Available (guest-facing venue site)" },
-    { "match": "website-edge-service/**", "target": "Baseline Widely Available (guest-facing funnel/landing)" }
+    {
+      "match": "ui/src/**",
+      "target": "Baseline Newly Available (apex-app SaaS surface)"
+    },
+    {
+      "match": "backend/app/config/site_builder_kits/**",
+      "target": "Baseline Widely Available (guest-facing venue site)"
+    },
+    {
+      "match": "website-edge-service/**",
+      "target": "Baseline Widely Available (guest-facing funnel/landing)"
+    }
   ],
   "skillRules": [
-    { "match": "ui/src/**", "skills": ["awesome-design (before AND after)", "modern-web-guidance"] },
-    { "match": "backend/app/routes/website_builder_studio.py", "skills": ["apex-globals-pipeline", "apex-publishing-pipeline"] },
-    { "match": "backend/app/config/site_builder_kits/**", "skills": ["awesome-design", "modern-web-guidance", "apex-starter-pages"] },
-    { "match": "ui/src/apexStudio/**", "skills": ["awesome-design", "modern-web-guidance"] }
+    {
+      "match": "ui/src/**",
+      "skills": [
+        "awesome-design (before AND after)",
+        "modern-web-guidance"
+      ]
+    },
+    {
+      "match": "backend/app/routes/website_builder_studio.py",
+      "skills": [
+        "apex-globals-pipeline",
+        "apex-publishing-pipeline"
+      ]
+    },
+    {
+      "match": "backend/app/config/site_builder_kits/**",
+      "skills": [
+        "awesome-design",
+        "modern-web-guidance",
+        "apex-starter-pages"
+      ]
+    },
+    {
+      "match": "ui/src/apexStudio/**",
+      "skills": [
+        "awesome-design",
+        "modern-web-guidance"
+      ]
+    }
   ],
   "parityRules": [
-    { "match": "ui/src/pages/HouseGuideAdminPage.jsx", "surfaces": ["ui/src/portal/PortalHouseGuidePage.jsx (staff view)"] },
-    { "match": "ui/src/**", "surfaces": ["desktop layout vs mobile branch (search isMobile)", "roles: super admin, org, venue manager, staff"] }
+    {
+      "match": "ui/src/pages/HouseGuideAdminPage.jsx",
+      "surfaces": [
+        "ui/src/portal/PortalHouseGuidePage.jsx (staff view)"
+      ]
+    },
+    {
+      "match": "ui/src/**",
+      "surfaces": [
+        "desktop layout vs mobile branch (search isMobile)",
+        "roles: super admin, org, venue manager, staff"
+      ]
+    }
   ],
   "surfaceHints": [
-    { "match": "ui/src/marketing/**", "surface": "Campaigns (portfolio + Campaign Home)" },
-    { "match": "ui/src/menuDesigner/**", "surface": "Menu designer (Konva)" },
-    { "match": "ui/src/pages/HouseGuideAdminPage.jsx", "surface": "House Guide admin" },
-    { "match": "ui/src/components/home/**", "surface": "Home dashboard" },
-    { "match": "ui/src/pages/MenuManagerPage.jsx", "surface": "Menu Manager core (items / recipes / ingredients / online menu / event packages)" },
-    { "match": "ui/src/pages/BrandPage.jsx", "surface": "Brand book (tokens)" }
-  ]
+    {
+      "match": "ui/src/marketing/**",
+      "surface": "Campaigns (portfolio + Campaign Home)"
+    },
+    {
+      "match": "ui/src/menuDesigner/**",
+      "surface": "Menu designer (Konva)"
+    },
+    {
+      "match": "ui/src/components/home/**",
+      "surface": "Home dashboard"
+    },
+    {
+      "match": "ui/src/pages/MenuManagerPage.jsx",
+      "surface": "Menu Manager core (items / recipes / ingredients / online menu / event packages)"
+    },
+    {
+      "match": "ui/src/marketing/AdCopyPage.jsx",
+      "surface": "Ads / ad copy"
+    },
+    {
+      "match": "ui/src/marketing/AudiencesPage.jsx",
+      "surface": "Audiences"
+    },
+    {
+      "match": "ui/src/marketing/EmailLibraryPage.jsx",
+      "surface": "Emails"
+    },
+    {
+      "match": "ui/src/marketing/LinkedInPage.jsx",
+      "surface": "LinkedIn (Signal)"
+    },
+    {
+      "match": "ui/src/marketing/MarketingHomePage.jsx",
+      "surface": "Campaigns (portfolio + Campaign Home)"
+    },
+    {
+      "match": "ui/src/marketing/MarketingReportsPage.jsx",
+      "surface": "Marketing reports"
+    },
+    {
+      "match": "ui/src/marketing/ProgramsListPage.jsx",
+      "surface": "Programs (incl. SEO foundation)"
+    },
+    {
+      "match": "ui/src/marketing/contests/ContestsListPage.jsx",
+      "surface": "Contests"
+    },
+    {
+      "match": "ui/src/marketing/popups/PopupLibraryPage.jsx",
+      "surface": "Popups"
+    },
+    {
+      "match": "ui/src/operations/Guestbook/GuestbookPage.jsx",
+      "surface": "Guestbook"
+    },
+    {
+      "match": "ui/src/pages/BrandSettingsPage.js",
+      "surface": "Brand research / voice / SEO defaults"
+    },
+    {
+      "match": "ui/src/pages/ContentGenerationStudioPage.js",
+      "surface": "Campaign asset generator (row was mislabeled \"Blog generation\")"
+    },
+    {
+      "match": "ui/src/pages/EmailSettingsPage.jsx",
+      "surface": "Profile (account / email signature + sender / notifications / security / preferences / per-venue CRM profile)"
+    },
+    {
+      "match": "ui/src/pages/FinancialsPage.jsx",
+      "surface": "Deep reporting (calendar, day detail, financials)"
+    },
+    {
+      "match": "ui/src/pages/FloorPlanPage.jsx",
+      "surface": "Live floor / device surfaces"
+    },
+    {
+      "match": "ui/src/pages/GoogleTagManagerPage.js",
+      "surface": "Site settings (domains, redirects, tags, compliance, go-live)"
+    },
+    {
+      "match": "ui/src/pages/KDSConfigPage.js",
+      "surface": "Live floor / device surfaces"
+    },
+    {
+      "match": "ui/src/pages/KDSPage.js",
+      "surface": "Live floor / device surfaces"
+    },
+    {
+      "match": "ui/src/pages/LiveLogPage.js",
+      "surface": "Live floor / device surfaces"
+    },
+    {
+      "match": "ui/src/pages/LivePos2Page.js",
+      "surface": "Live floor / device surfaces"
+    },
+    {
+      "match": "ui/src/pages/LivePosPage.js",
+      "surface": "Live floor / device surfaces"
+    },
+    {
+      "match": "ui/src/pages/MyProfilePage.jsx",
+      "surface": "Profile (account / email signature + sender / notifications / security / preferences / per-venue CRM profile)"
+    },
+    {
+      "match": "ui/src/pages/NightlyEmailPage.jsx",
+      "surface": "Nightly closing"
+    },
+    {
+      "match": "ui/src/pages/OrgIntegrationsPage.jsx",
+      "surface": "Org integrations / connections"
+    },
+    {
+      "match": "ui/src/pages/OrgMenuManagerPage.jsx",
+      "surface": "Org-level menu rollup"
+    },
+    {
+      "match": "ui/src/pages/PosOrdersPage.jsx",
+      "surface": "Live floor / device surfaces"
+    },
+    {
+      "match": "ui/src/pages/ReceiptsPage.jsx",
+      "surface": "Receipts (check lookup)"
+    },
+    {
+      "match": "ui/src/pages/ReportsCalendarPage.js",
+      "surface": "Deep reporting (calendar, day detail, financials)"
+    },
+    {
+      "match": "ui/src/pages/ReportsPage.js",
+      "surface": "Daily sales glance"
+    },
+    {
+      "match": "ui/src/pages/StaffSchedulingPage.js",
+      "surface": "Scheduling"
+    },
+    {
+      "match": "ui/src/pages/StaffStatsPage.jsx",
+      "surface": "Staff stats"
+    },
+    {
+      "match": "ui/src/pages/StaffTeamPage.jsx",
+      "surface": "Roster / employee"
+    },
+    {
+      "match": "ui/src/pages/TeamPage.jsx",
+      "surface": "Team page (unified team directory + per-user capability editor)"
+    },
+    {
+      "match": "ui/src/pages/WebsiteCompliancePage.jsx",
+      "surface": "Site settings (domains, redirects, tags, compliance, go-live)"
+    },
+    {
+      "match": "ui/src/pages/WebsiteDomainsPage.js",
+      "surface": "Site settings (domains, redirects, tags, compliance, go-live)"
+    },
+    {
+      "match": "ui/src/pages/WebsitePerformancePage.js",
+      "surface": "Site performance"
+    },
+    {
+      "match": "ui/src/pages/WebsiteRedirectsPage.js",
+      "surface": "Site settings (domains, redirects, tags, compliance, go-live)"
+    },
+    {
+      "match": "ui/src/pages/WebsiteTagManagerPage.jsx",
+      "surface": "Site settings (domains, redirects, tags, compliance, go-live)"
+    },
+    {
+      "match": "ui/src/pages/WeeklySpecialsPage.js",
+      "surface": "Menu builder / sales kit / weekly specials"
+    },
+    {
+      "match": "ui/src/pages/seo/SEODashboardPage.jsx",
+      "surface": "SEO module"
+    },
+    {
+      "match": "ui/src/marketing/EmailDesignerPage.jsx",
+      "surface": "Email designer (legacy twin)",
+      "canonical": true
+    },
+    {
+      "match": "ui/src/pages/BrandBookPrintPage.jsx",
+      "surface": "Brand book (tokens)",
+      "canonical": true
+    }
+  ],
+  "excludedFiles": [
+    {
+      "match": "ui/src/pages/TipSheetsPage.jsx",
+      "reason": "STUDIO row 156, but kept alive by OOS staff-portal mounts at /portal/tip-sheets and /portal/tip-reconciliation"
+    },
+    {
+      "match": "ui/src/pages/HouseGuideAdminPage.jsx",
+      "reason": "STUDIO row 171, but App.js mounts it only under /portal (OOS staff-product, manager hat)"
+    },
+    {
+      "match": "ui/src/pages/HouseGuideEditorPage.jsx",
+      "reason": "same as HouseGuideAdminPage \u2014 portal-only mount under a STUDIO row"
+    },
+    {
+      "match": "ui/src/pages/PortalHouseGuidePage.jsx",
+      "reason": "row 171 OOS staff surface, ledger states it is untouched by the flip"
+    },
+    {
+      "match": "ui/src/pages/PortalProfilePage.jsx",
+      "reason": "row 480 OOS staff twin of the Profile row"
+    },
+    {
+      "match": "ui/src/components/house-guide/**",
+      "reason": "row 171 lists these as KEPT shared organs consumed by the portal page"
+    },
+    {
+      "match": "ui/src/brand-showcase/**",
+      "reason": "row 85 labels these OOS/shared \u2014 the public showcase and the Studio workspace both consume them"
+    }
+  ],
+  "disabled": {
+    "rules": [],
+    "surfaceHints": []
+  }
 }
