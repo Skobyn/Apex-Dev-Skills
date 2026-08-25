@@ -126,7 +126,7 @@
     },
     {
       "name": "apex-agent-observability",
-      "description": "Trace, replay, and cost-attribute multi-agent runs: hook-driven JSONL AgentTrace, deterministic OrchestrationReplay, and per-subagent TokenLens — pure artifacts, with an optional read-only MCP dashboard server.",
+      "description": "Trace, replay, and cost-attribute multi-agent runs: hook-driven JSONL AgentTrace, deterministic OrchestrationReplay, and per-subagent TokenLens \u2014 pure artifacts, with an optional read-only MCP dashboard server.",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"
@@ -148,7 +148,7 @@
     },
     {
       "name": "apex-rag-memory",
-      "description": "Diagnose RAG/embedding/memory lifecycle health: audit chunking, detect embedding-model drift, find stale vectors, and regression-test retrieval recall with a golden Q/A harness. Not a vendor connector — it diagnoses retrieval quality.",
+      "description": "Diagnose RAG/embedding/memory lifecycle health: audit chunking, detect embedding-model drift, find stale vectors, and regression-test retrieval recall with a golden Q/A harness. Not a vendor connector \u2014 it diagnoses retrieval quality.",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"
@@ -165,6 +165,24 @@
         "recall",
         "lifecycle",
         "apex"
+      ]
+    },
+    {
+      "name": "apex-dev-harness",
+      "description": "Routing and gate engine for apex-app: lanes + surface-ledger routing, cross-platform guardrails, and phases that close on computed obligations.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-dev-harness",
+      "keywords": [
+        "apex",
+        "guardrails",
+        "lanes",
+        "surface-ledger",
+        "gate",
+        "routing"
       ]
     }
   ]
