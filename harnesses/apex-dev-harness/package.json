@@ -1,0 +1,35 @@
+{
+  "name": "apex-dev-harness",
+  "version": "0.1.0",
+  "description": "Routing and gate engine for apex-app: lanes, surface ledger, guardrails, and computed done-obligations.",
+  "type": "module",
+  "bin": {
+    "apex": "bin/apex.js"
+  },
+  "main": "./dist/route.js",
+  "types": "./dist/route.d.ts",
+  "files": [
+    "bin/",
+    "dist/",
+    "templates/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "test": "npm run build && node --test \"test/*.test.js\"",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3"
+  }
+}
