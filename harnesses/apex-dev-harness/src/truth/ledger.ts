@@ -6,7 +6,6 @@ import { readFileSync } from 'node:fs';
 import type { LedgerTruth, SurfaceRow, SurfaceStatus } from '../types.js';
 import { normalize, truthPaths } from '../repo.js';
 
-const STATUSES: SurfaceStatus[] = ['STUDIO', 'DUAL', 'LEGACY', 'OOS', 'RETIRED'];
 const STATUS_RE = /\*\*(STUDIO|DUAL|LEGACY|OOS|RETIRED)\*\*/;
 
 /** Pull route patterns out of a Routes cell: backticked tokens and bare /paths. */
@@ -53,13 +52,17 @@ export function loadLedger(root: string): LedgerTruth {
     if (/^[-: ]+$/.test(cells[0]!)) continue;                    // separator row
     if (/^(surface|status)$/i.test(cells[0]!)) continue;         // header row
 
+    // The status-vocabulary table defines the vocabulary; it is not a surface.
+    // Skip it by SECTION, not by name — a real surface may legitimately be
+    // called "Studio", and dropping it silently would be a third outcome
+    // alongside no-row and unparseable.
+    if (/vocabulary/i.test(section)) continue;
+
     const statusCell = cells[2]!;
     const m = STATUS_RE.exec(statusCell);
     if (!m) continue;
 
-    // The status-vocabulary table's first cell IS the status name — skip it.
     const surface = cells[0]!.replace(/\*\*/g, '').trim();
-    if (STATUSES.includes(surface.toUpperCase() as SurfaceStatus)) continue;
 
     const routes = extractRoutes(cells[1]!);
     if (routes.length === 0) withoutRoutes += 1;

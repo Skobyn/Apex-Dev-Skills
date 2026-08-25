@@ -114,3 +114,27 @@ test('a missing ledger warns and returns no rows — it never throws', () => {
     assert.deepEqual(truth.rows, []);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a real surface named like a status word is parsed, not silently dropped', () => {
+  const md = [
+    '## Status vocabulary',
+    '',
+    '| Status | Meaning | What it implies |',
+    '|---|---|---|',
+    '| **STUDIO** | canonical | build in Studio |',
+    '',
+    '## 11 Automations',
+    '',
+    '| Surface | Routes | Status | Notes |',
+    '|---|---|---|---|',
+    '| Studio | `/apex-studio` | **STUDIO** | a surface whose NAME is a status word |',
+  ].join('\n');
+  const dir = repoWith(md);
+  try {
+    const truth = loadLedger(dir);
+    assert.equal(truth.rows.length, 1, 'the vocabulary row must be skipped and the real row kept');
+    assert.equal(truth.rows[0].surface, 'Studio');
+    assert.equal(truth.rows[0].section, '11 Automations');
+    assert.equal(surfaceFor(truth, '/apex-studio').status, 'STUDIO');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
