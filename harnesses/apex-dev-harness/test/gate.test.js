@@ -116,3 +116,45 @@ test('an empty diff warns that it gated nothing', () => {
     assert.ok(v.warnings.some((w) => /empty diff/i.test(w)));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a dry run computes obligations without executing anything', () => {
+  const dir = bare();
+  try {
+    let called = 0;
+    const countingRunner = (_r, command) => { called += 1; return { command, ok: true, output: '' }; };
+    const v = gate(dir, {
+      paths: ['backend/app/routes/studio_chat.py'],
+      message: 'feat: x',
+      runner: countingRunner,
+      dryRun: true,
+    });
+    assert.ok(v.obligations.length > 0, 'obligations must still be computed');
+    assert.equal(called, 0, 'no command may run during a dry run');
+    assert.deepEqual(v.results, []);
+    assert.equal(v.dryRun, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a dry run renders as DRY RUN, never as a passing gate', () => {
+  const dir = bare();
+  try {
+    const out = formatGate(gate(dir, {
+      paths: ['backend/app/routes/studio_chat.py'],
+      message: 'feat: x',
+      runner: okRunner,
+      dryRun: true,
+    }));
+    assert.match(out, /DRY RUN/);
+    assert.equal(/VERDICT {5}DONE/.test(out), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a normal gate still executes and still reports DONE', () => {
+  const dir = bare();
+  try {
+    const v = gate(dir, { paths: ['backend/app/routes/studio_chat.py'], message: 'feat: x', runner: okRunner });
+    assert.ok(v.results.length > 0);
+    assert.equal(v.dryRun, false);
+    assert.match(formatGate(v), /VERDICT {5}DONE/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

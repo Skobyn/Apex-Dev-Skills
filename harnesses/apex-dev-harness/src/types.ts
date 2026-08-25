@@ -153,4 +153,6 @@ export interface GateVerdict {
   watchlistHits: WatchlistHit[];
   warnings: string[];
   ok: boolean;
+  /** True when obligations were computed but deliberately not executed. */
+  dryRun: boolean;
 }

@@ -29,6 +29,8 @@ export interface GateOptions {
   /** Override the diff (tests, and `--paths` on the CLI). */
   paths?: string[];
   runner?: (root: string, command: string) => CommandResult;
+  /** Compute obligations, parity and watchlist WITHOUT running any command. */
+  dryRun?: boolean;
 }
 
 export function gate(root: string, opts: GateOptions = {}): GateVerdict {
@@ -42,13 +44,17 @@ export function gate(root: string, opts: GateOptions = {}): GateVerdict {
 
   const obligations = obligationsFor(policy, paths);
   const results: CommandResult[] = [];
-  for (const o of obligations) for (const c of o.commands) results.push(runner(root, c));
+  // A dry run answers "what would this owe?" without side effects — the
+  // question a status check asks. Never execute here.
+  if (!opts.dryRun) {
+    for (const o of obligations) for (const c of o.commands) results.push(runner(root, c));
+  }
 
   const parityWarnings = parityWarningsFor(policy, paths);
   const watchlistHits = opts.message ? scanWatchlist(policy, opts.message) : [];
 
   const ok = results.every((r) => r.ok) && watchlistHits.length === 0;
-  return { obligations, results, parityWarnings, watchlistHits, warnings, ok };
+  return { obligations, results, parityWarnings, watchlistHits, warnings, ok, dryRun: opts.dryRun === true };
 }
 
 /** Say precisely what is unmet: failed checks and watchlist hits are different things. */
@@ -86,6 +92,11 @@ export function formatGate(v: GateVerdict): string {
 
   const failed = v.results.filter((r) => !r.ok).length;
   const hits = v.watchlistHits.length;
+  if (v.dryRun) {
+    const owed = v.obligations.length;
+    lines.push(`VERDICT     DRY RUN — ${owed} obligation${owed === 1 ? '' : 's'} owed, nothing executed`);
+    return lines.join('\n');
+  }
   lines.push(v.ok ? 'VERDICT     DONE — every obligation met' : `VERDICT     NOT DONE — ${summarizeUnmet(failed, hits)}`);
   return lines.join('\n');
 }

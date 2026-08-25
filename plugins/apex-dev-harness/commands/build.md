@@ -14,7 +14,7 @@ If the ask names a surface rather than a path, route the most likely path too. R
 
 ## 2. DECIDE
 
-Judge triviality by the `decide-plan-loop` skill's own criteria: three or more phases, crossing a bounded context, or a decision someone will ask about in six months.
+Judge triviality by the `decide-plan-loop` skill's own criteria: three or more phases, **a day or more of effort**, or touching more than one bounded context — plus the durability test of whether someone will ask "why did we do it this way" in six months.
 
 - **Non-trivial** → invoke the `decide-plan-loop` skill. It produces an ADR at `.claude/tasks/<slug>-adr.md` and a phased plan at `.claude/plans/<slug>-plan.md`.
 - **Bounded** → skip to step 3, and say why you judged it bounded.

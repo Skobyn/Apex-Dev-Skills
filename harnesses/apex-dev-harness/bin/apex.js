@@ -7,6 +7,7 @@ const USAGE = `apex — routing and gate engine for apex-app
   apex route <path|route>          What applies here: lane, surface, mwg, skills, parity
   apex gate [--base <ref>] [--message <text>] [--paths a,b]
                                    What this diff owes, run and verdicted
+                                   --dry-run lists what is owed without running it
   apex check <path> [--content -]  Block-tier decision for one edit (used by hooks)
   apex watchlist <file|->          BOUND-006 vocabulary scan
   apex doctor                      What the harness can see
@@ -59,7 +60,12 @@ async function main(argv) {
     case 'gate': {
       const m = await import('../dist/gate.js');
       const paths = arg(args, '--paths')?.split(',').map((s) => s.trim()).filter(Boolean);
-      const v = m.gate(needRoot(), { base: arg(args, '--base'), message: arg(args, '--message'), paths });
+      const v = m.gate(needRoot(), {
+        base: arg(args, '--base'),
+        message: arg(args, '--message'),
+        paths,
+        dryRun: args.includes('--dry-run'),
+      });
       console.log(json ? JSON.stringify(v, null, 2) : m.formatGate(v));
       return v.ok ? 0 : 1;
     }
