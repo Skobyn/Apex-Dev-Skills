@@ -25,6 +25,17 @@
         "orchestration",
         "apex"
       ]
+    },
+    {
+      "name": "apex-dev-harness",
+      "description": "Routing and gate engine for apex-app: lanes + surface-ledger routing, cross-platform guardrails, and phases that close on computed obligations.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-dev-harness",
+      "keywords": ["apex", "guardrails", "lanes", "surface-ledger", "gate", "routing"]
     }
   ]
 }

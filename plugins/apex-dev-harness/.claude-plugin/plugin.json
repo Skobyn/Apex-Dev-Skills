@@ -1,0 +1,8 @@
+{
+  "name": "apex-dev-harness",
+  "description": "Routing and gate engine for apex-app: answers where work goes (lanes + surface ledger), enforces the guardrails cross-platform, and closes phases on computed obligations instead of prose.",
+  "version": "0.1.0",
+  "author": { "name": "Apex Insights", "url": "https://getapexinsights.com" },
+  "license": "MIT",
+  "keywords": ["apex", "guardrails", "lanes", "surface-ledger", "gate", "routing"]
+}
