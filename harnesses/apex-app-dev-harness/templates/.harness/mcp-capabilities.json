@@ -1,0 +1,32 @@
+{
+  "schema": "mcp-capabilities/v1",
+  "harness": "apex-app-harness",
+  "mode": "local",
+  "transport": "stdio",
+  "auth": "none",
+  "tools": [
+    "ping",
+    "route",
+    "memory-search",
+    "memory-store",
+    "agents"
+  ],
+  "resources": [
+    "harness://manifest",
+    "harness://capabilities",
+    "harness://policy"
+  ],
+  "prompts": [
+    "kickoff"
+  ],
+  "policy": {
+    "defaultDeny": true,
+    "allowNetwork": false,
+    "allowShell": false,
+    "allowFileWrite": false,
+    "requireApprovalForDangerous": true,
+    "toolTimeoutMs": 30000,
+    "maxToolCallsPerTurn": 8,
+    "auditLog": true
+  }
+}

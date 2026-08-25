@@ -1,0 +1,106 @@
+{
+  "name": "apex-app-harness",
+  "version": "0.1.0",
+  "description": "Agent harness for Claude Code: plan, implement, review, and test code changes.",
+  "type": "module",
+  "bin": {
+    "apex-app-harness": "bin/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "test": "npm run build && node --test \"test/*.test.js\"",
+    "doctor": "node bin/cli.js doctor",
+    "mcp": "node bin/cli.js mcp start",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
+  },
+  "dependencies": {
+    "@metaharness/kernel": "^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "keywords": [
+    "agent-harness",
+    "mcp",
+    "claude-code",
+    "ruflo"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "harness": {
+    "template": "vertical:coding",
+    "memory": "agentdb",
+    "routing": "3-tier",
+    "marketplace": "powered-by",
+    "models": {
+      "barbarian": "deepseek/deepseek-v4-pro",
+      "scholar": "anthropic/claude-sonnet-4.6",
+      "sage": "anthropic/claude-opus-4.8"
+    },
+    "darwin": {
+      "enabled": true,
+      "surfaces": [
+        "planner",
+        "retryPolicy",
+        "toolPolicy",
+        "memoryPolicy"
+      ],
+      "generations": 10,
+      "sandbox": "agent"
+    },
+    "primitives": {
+      "cli": true,
+      "mcp": "local",
+      "memory": true,
+      "learning": true,
+      "witness": true,
+      "releaseGates": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3"
+  },
+  "main": "./dist/init.js",
+  "types": "./dist/init.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/init.d.ts",
+      "import": "./dist/init.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/server.d.ts",
+      "import": "./dist/mcp/server.js"
+    },
+    "./agents": {
+      "types": "./dist/agents/index.d.ts",
+      "import": "./dist/agents/index.js"
+    }
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "templates/",
+    ".harness/manifest.json",
+    ".harness/mcp-policy.json",
+    ".harness/mcp-capabilities.json",
+    "README.md",
+    "LICENSE",
+    "CLAUDE.md",
+    "witness.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Skobyn/Apex-Dev-Skills.git",
+    "directory": "harnesses/apex-app-dev-harness"
+  },
+  "homepage": "https://github.com/Skobyn/Apex-Dev-Skills/tree/main/harnesses/apex-app-dev-harness#readme",
+  "bugs": {
+    "url": "https://github.com/Skobyn/Apex-Dev-Skills/issues"
+  },
+  "author": "Apex Insights (https://getapexinsights.com)",
+  "publishConfig": {
+    "access": "public"
+  }
+}

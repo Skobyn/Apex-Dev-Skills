@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx apex-app-harness*)",
+      "mcp__apex-app-harness__*"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  },
+  "mcpServers": {
+    "apex-app-harness": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "apex-app-harness@latest",
+        "mcp",
+        "start"
+      ]
+    }
+  }
+}
