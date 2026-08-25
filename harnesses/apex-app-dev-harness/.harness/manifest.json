@@ -1,0 +1,63 @@
+{
+  "generator": "agent-harness-generator/web-ui",
+  "generatorVersion": "0.1.0",
+  "template": "vertical:coding",
+  "name": "apex-app-harness",
+  "hosts": [
+    "claude-code"
+  ],
+  "agents": [
+    "architect",
+    "implementer",
+    "reviewer",
+    "test-writer",
+    "orchestrator",
+    "evaluator",
+    "escalator"
+  ],
+  "skills": [
+    "plan-change"
+  ],
+  "commands": [
+    "doctor",
+    "review-diff"
+  ],
+  "memory": "agentdb",
+  "routing": "3-tier",
+  "marketplace": "powered-by",
+  "models": {
+    "barbarian": "deepseek/deepseek-v4-pro",
+    "scholar": "anthropic/claude-sonnet-4.6",
+    "sage": "anthropic/claude-opus-4.8"
+  },
+  "darwin": {
+    "enabled": true,
+    "surfaces": [
+      "planner",
+      "retryPolicy",
+      "toolPolicy",
+      "memoryPolicy"
+    ],
+    "generations": 10,
+    "sandbox": "agent"
+  },
+  "primitives": {
+    "cli": true,
+    "mcp": "local",
+    "memory": true,
+    "learning": true,
+    "witness": true,
+    "releaseGates": true
+  },
+  "mcpPolicy": {
+    "defaultDeny": true,
+    "allowNetwork": false,
+    "allowShell": false,
+    "allowFileWrite": false,
+    "requireApprovalForDangerous": true,
+    "toolTimeoutMs": 30000,
+    "maxToolCallsPerTurn": 8,
+    "auditLog": true
+  },
+  "createdAt": "2026-08-24T00:00:00.000Z"
+}

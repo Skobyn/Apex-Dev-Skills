@@ -1,0 +1,6 @@
+{
+  "schema": "witness/v1",
+  "subject": "apex-app-harness",
+  "note": "Provenance stub. Run `harness verify-witness` / `publish-harness` to produce the Ed25519-signed manifest.",
+  "signature": null
+}

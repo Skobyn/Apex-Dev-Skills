@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tgz
+.env
+.env.*
+!.env.example
+.harness/cache/
+
+# harness runtime artifacts
+.harness/audit.log
+.harness/memory.jsonl
