@@ -8,14 +8,33 @@
   },
   "plugins": [
     {
-      "name": "apex-plan-loop",
+      "name": "apex-project-start",
+      "description": "Interview-first greenfield project initializer: opens with 'what are you trying to build?', researches the context, then scaffolds a fully-governed repo (paved-road defaults), provisions ruflo + the Apex-Dev-Skills suite, and verifies it before the first commit. Generated projects are steered to build features via apex-plan/apex-loop. Supports TypeScript/JavaScript, Python, Go, and Rust.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-project-start",
+      "keywords": [
+        "scaffold",
+        "bootstrap",
+        "greenfield",
+        "init",
+        "governance",
+        "paved-road",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-scope-loop",
       "description": "Decide -> plan -> loop: SPARC-shaped ADR + phased plan authoring, with autonomous /loop + /schedule execution and per-phase swarm dispatch.",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"
       },
       "category": "development",
-      "source": "./plugins/apex-plan-loop",
+      "source": "./plugins/apex-scope-loop",
       "keywords": [
         "adr",
         "sparc",
@@ -23,6 +42,128 @@
         "loop",
         "swarm",
         "orchestration",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-guardrails",
+      "description": "Deterministic runtime guardrails via PreToolUse hooks: hard-block edits to sensitive paths, deny destructive bash, scan tool inputs for secrets, and compile a declarative YAML policy into enforced matcher config.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-guardrails",
+      "keywords": [
+        "guardrails",
+        "hooks",
+        "security",
+        "policy-as-code",
+        "secret-scanning",
+        "enforcement",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-agent-team",
+      "description": "Agent-team coordination tooling: TeamLint statically audits subagent/agent-team config before a run, and ContextBudget hooks warn before compaction silently drops critical state.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-agent-team",
+      "keywords": [
+        "agents",
+        "subagents",
+        "agent-team",
+        "coordination",
+        "lint",
+        "context-budget",
+        "hooks",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-legacy-comprehension",
+      "description": "Understand and safely change legacy or AI-generated code: pin current behavior with characterization tests before refactoring, and build a living system map of an unfamiliar codebase in an isolated subagent context.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-legacy-comprehension",
+      "keywords": [
+        "legacy",
+        "characterization-tests",
+        "pinning-tests",
+        "refactoring",
+        "ai-generated-code",
+        "codebase-comprehension",
+        "system-map",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-contracts-reliability",
+      "description": "Tool-contract validation + runtime reliability: a PostToolUse ledger that infers per-tool schemas and flags contract drift, plus FlakeGuard detection of non-deterministic agent failures (retries, partial failures, flaky tools).",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-contracts-reliability",
+      "keywords": [
+        "contracts",
+        "reliability",
+        "tool-validation",
+        "schema-drift",
+        "flake-detection",
+        "hooks",
+        "observability",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-agent-observability",
+      "description": "Trace, replay, and cost-attribute multi-agent runs: hook-driven JSONL AgentTrace, deterministic OrchestrationReplay, and per-subagent TokenLens \u2014 pure artifacts, with an optional read-only MCP dashboard server.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-agent-observability",
+      "keywords": [
+        "observability",
+        "tracing",
+        "multi-agent",
+        "subagent",
+        "replay",
+        "tokens",
+        "cost",
+        "hooks",
+        "mcp",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-rag-memory",
+      "description": "Diagnose RAG/embedding/memory lifecycle health: audit chunking, detect embedding-model drift, find stale vectors, and regression-test retrieval recall with a golden Q/A harness. Not a vendor connector \u2014 it diagnoses retrieval quality.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-rag-memory",
+      "keywords": [
+        "rag",
+        "embeddings",
+        "memory",
+        "retrieval",
+        "vector-search",
+        "evaluation",
+        "recall",
+        "lifecycle",
         "apex"
       ]
     },
@@ -35,7 +176,14 @@
       },
       "category": "development",
       "source": "./plugins/apex-dev-harness",
-      "keywords": ["apex", "guardrails", "lanes", "surface-ledger", "gate", "routing"]
+      "keywords": [
+        "apex",
+        "guardrails",
+        "lanes",
+        "surface-ledger",
+        "gate",
+        "routing"
+      ]
     }
   ]
 }

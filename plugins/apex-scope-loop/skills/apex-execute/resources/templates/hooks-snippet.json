@@ -1,0 +1,40 @@
+{
+  "_comment": "Drop these into .claude/settings.json under the 'hooks' key. They enforce the three guardrails: bounded reasoning, memory accumulation, and safe execution.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/skills/apex-execute/scripts/guardrail-pre-edit.mjs",
+            "_purpose": "Block writes to security-sensitive paths unless a security agent is in the active swarm"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y @claude-flow/cli@latest hooks post-edit --file ${tool.params.file_path}",
+            "_purpose": "Run formatter/linter and persist the trajectory step into ReasoningBank"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/skills/apex-execute/scripts/status.sh ${DEV_PLAN_PATH:-docs/plans/active.md}",
+            "_purpose": "Print plan status before yielding back to the user"
+          }
+        ]
+      }
+    ]
+  }
+}

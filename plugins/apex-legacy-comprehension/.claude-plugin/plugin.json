@@ -1,0 +1,20 @@
+{
+  "name": "apex-legacy-comprehension",
+  "description": "Understand and safely change legacy or AI-generated code: pin current behavior with characterization tests before refactoring, and build a living system map of an unfamiliar codebase in an isolated subagent context.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Apex Insights",
+    "url": "https://getapexinsights.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "legacy",
+    "characterization-tests",
+    "pinning-tests",
+    "refactoring",
+    "ai-generated-code",
+    "codebase-comprehension",
+    "system-map",
+    "apex"
+  ]
+}

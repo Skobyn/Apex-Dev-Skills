@@ -30,11 +30,11 @@ test('the orientation skill has name and description frontmatter', () => {
   assert.match(s, /description:/);
 });
 
-test('the marketplace lists the plugin alongside apex-plan-loop', () => {
+test('the marketplace lists the plugin alongside the other apex plugins', () => {
   const m = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'marketplace.json'), 'utf-8'));
   const names = m.plugins.map((p) => p.name);
   assert.ok(names.includes('apex-dev-harness'));
-  assert.ok(names.includes('apex-plan-loop'));
+  assert.ok(names.includes('apex-scope-loop'), 'apex-scope-loop is the planner /apex:build hands off to');
 });
 
 test('hooks/hooks.json exists, parses, and references ${CLAUDE_PLUGIN_ROOT}', () => {

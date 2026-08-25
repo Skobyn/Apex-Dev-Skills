@@ -14,14 +14,14 @@ If the ask names a surface rather than a path, route the most likely path too. R
 
 ## 2. DECIDE
 
-Judge triviality by the `decide-plan-loop` skill's own criteria: three or more phases, **a day or more of effort**, or touching more than one bounded context — plus the durability test of whether someone will ask "why did we do it this way" in six months.
+Judge triviality by the `apex-plan` skill's own criteria: three or more phases, **a day or more of effort**, or touching more than one bounded context — plus the durability test of whether someone will ask "why did we do it this way" in six months.
 
-- **Non-trivial** → invoke the `decide-plan-loop` skill. It produces an ADR at `.claude/tasks/<slug>-adr.md` and a phased plan at `.claude/plans/<slug>-plan.md`.
+- **Non-trivial** → invoke the `apex-plan` skill. It produces an ADR at `.claude/tasks/<slug>-adr.md` and a phased plan at `.claude/plans/<slug>-plan.md`.
 - **Bounded** → skip to step 3, and say why you judged it bounded.
 
 ## 3. EXECUTE
 
-Work the plan one phase at a time via the `dev-plan-loop` skill. Do not start a phase before its predecessor has passed step 4.
+Work the plan one phase at a time via the `apex-execute` skill. Do not start a phase before its predecessor has passed step 4.
 
 ## 4. GATE — every phase, no exceptions
 

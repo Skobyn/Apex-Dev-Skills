@@ -1,0 +1,19 @@
+{
+  "name": "apex-guardrails",
+  "description": "Deterministic runtime guardrails via PreToolUse hooks: hard-block edits to sensitive paths, deny destructive bash, scan tool inputs for secrets, and compile a declarative YAML policy into enforced matcher config.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Apex Insights",
+    "url": "https://getapexinsights.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "guardrails",
+    "hooks",
+    "security",
+    "policy-as-code",
+    "secret-scanning",
+    "enforcement",
+    "apex"
+  ]
+}

@@ -31,9 +31,9 @@ The bundled engine excludes `dist/mcp/` (it is the only part that needs the
 | `/apex:build <ask>` | Orient, decide, execute, gate, done |
 | `/apex:status` | Read-only orientation |
 
-## Relationship to apex-plan-loop
+## Relationship to apex-scope-loop
 
-`/apex:build` step 2 hands non-trivial work to `decide-plan-loop`, and step 3 executes it with
-`dev-plan-loop` — both from the **apex-plan-loop** plugin. Install it alongside this one. Claude Code
+`/apex:build` step 2 hands non-trivial work to `apex-plan`, and step 3 executes it with
+`apex-execute` — both from the **apex-scope-loop** plugin. Install it alongside this one. Claude Code
 plugins have no dependency mechanism, so this is documentation, not enforcement: without
-apex-plan-loop, `/apex:build` still orients and gates, but has no planner to hand off to.
+apex-scope-loop, `/apex:build` still orients and gates, but has no planner to hand off to.
