@@ -209,10 +209,23 @@ test('an object-literal clear of projectDataJson is allowed', () => {
 test('a high-entropy secret is blocked even in a header-named variable', () => {
   const dir = repo();
   try {
-    const sample = ['AUTH', '_HEADER = ', JSON.stringify('Bearer sk-live-' + 'a9Fk2Lp8Qz7Rw4Nv6Bx3Hd5T')].join('');
+    // AUTH_TOKEN_HEADER matches SECRET_NAME via "TOKEN"; the _HEADER suffix
+    // must no longer exempt it now that NON_SECRET_NAME_RE is narrowed.
+    const sample = ['AUTH', '_TOKEN_HEADER = ', JSON.stringify('Bearer sk-live-' + 'a9Fk2Lp8Qz7Rw4Nv6Bx3Hd5T')].join('');
     const d = check(dir, 'backend/app/x.py', sample);
     assert.equal(d.allow, false);
     assert.equal(d.ruleId, 'BOUND-002');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a secret in a variable with no secret-ish name is NOT caught at edit time', () => {
+  const dir = repo();
+  try {
+    // Documented limitation: CREDENTIAL_RE is name-anchored, so a high-entropy
+    // value under a neutral name passes the block tier. apex-app's own
+    // block-sensitive-files hook and CI remain authoritative for this case.
+    const sample = ['AUTH', '_HEADER = ', JSON.stringify('Bearer sk-live-' + 'a9Fk2Lp8Qz7Rw4Nv6Bx3Hd5T')].join('');
+    assert.equal(check(dir, 'backend/app/x.py', sample).allow, true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
