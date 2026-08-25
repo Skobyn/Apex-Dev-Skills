@@ -51,15 +51,41 @@ export function gate(root: string, opts: GateOptions = {}): GateVerdict {
   return { obligations, results, parityWarnings, watchlistHits, warnings, ok };
 }
 
+/** Say precisely what is unmet: failed checks and watchlist hits are different things. */
+function summarizeUnmet(failed: number, hits: number): string {
+  const parts: string[] = [];
+  if (failed > 0) parts.push(`${failed} check${failed === 1 ? '' : 's'} failed`);
+  if (hits > 0) parts.push(`${hits} watchlist hit${hits === 1 ? '' : 's'}`);
+  return parts.join(', ');
+}
+
 export function formatGate(v: GateVerdict): string {
   const lines: string[] = [];
-  for (const o of v.obligations) lines.push(`${o.reason} -> ${o.id}`);
-  for (const r of v.results) lines.push(`  ${r.ok ? 'PASS' : 'FAILED'}  ${r.command}`);
+
+  // Walk results in the order gate() pushed them: obligation by obligation,
+  // command by command. Grouping matters — a flat failure list leaves the
+  // reader unable to tell which obligation each command belongs to.
+  let i = 0;
+  for (const o of v.obligations) {
+    lines.push(`${o.reason} -> ${o.id}`);
+    for (const _c of o.commands) {
+      const r = v.results[i++];
+      if (!r) continue;
+      lines.push(`  ${r.ok ? 'PASS' : 'FAILED'}  ${r.command}`);
+    }
+  }
+  // Any results beyond the obligations' commands (defensive; should not occur).
+  for (; i < v.results.length; i++) {
+    const r = v.results[i]!;
+    lines.push(`  ${r.ok ? 'PASS' : 'FAILED'}  ${r.command}`);
+  }
+
   for (const p of v.parityWarnings) lines.push(`parity      ${p} — verify, or state why it diverges.`);
   for (const h of v.watchlistHits) lines.push(`watchlist   "${h.term}" (line ${h.line}) — BOUND-006`);
   for (const w of v.warnings) lines.push(`warn        ${w}`);
 
-  const unmet = v.results.filter((r) => !r.ok).length + v.watchlistHits.length;
-  lines.push(v.ok ? 'VERDICT     DONE — every obligation met' : `VERDICT     NOT DONE — ${unmet} obligation(s) unmet`);
+  const failed = v.results.filter((r) => !r.ok).length;
+  const hits = v.watchlistHits.length;
+  lines.push(v.ok ? 'VERDICT     DONE — every obligation met' : `VERDICT     NOT DONE — ${summarizeUnmet(failed, hits)}`);
   return lines.join('\n');
 }

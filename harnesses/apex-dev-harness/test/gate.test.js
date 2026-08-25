@@ -78,3 +78,41 @@ test('runCommand reports success for a zero exit', () => {
     assert.equal(runCommand(dir, 'node -e "process.exit(0)"').ok, true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('failed commands are grouped under the obligation that owes them', () => {
+  const dir = bare();
+  try {
+    const out = formatGate(gate(dir, {
+      paths: ['backend/app/routes/studio_chat.py'],
+      message: 'feat: x',
+      runner: failRunner,
+    }));
+    const lines = out.split('\n');
+    const firstObligation = lines.findIndex((l) => l.includes('->'));
+    assert.ok(firstObligation >= 0, 'expected an obligation header');
+    // The line immediately after an obligation header must be one of ITS commands,
+    // not another obligation header.
+    assert.match(lines[firstObligation + 1], /^ {2}(PASS|FAILED) {2}/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the verdict distinguishes failed checks from watchlist hits', () => {
+  const dir = bare();
+  try {
+    const out = formatGate(gate(dir, {
+      paths: ['README.md'],
+      message: 'fix: good enough for now',
+      runner: okRunner,
+    }));
+    assert.match(out, /watchlist hit/);
+    assert.equal(/obligation\(s\) unmet/.test(out), false, 'must not call a watchlist hit an obligation');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an empty diff warns that it gated nothing', () => {
+  const dir = bare();
+  try {
+    const v = gate(dir, { paths: [], message: 'noop', runner: okRunner });
+    assert.ok(v.warnings.some((w) => /empty diff/i.test(w)));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
