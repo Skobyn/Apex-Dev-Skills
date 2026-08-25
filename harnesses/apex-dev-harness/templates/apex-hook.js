@@ -12,8 +12,12 @@
 // wedge editing.
 
 function emit(obj) {
+  // Do NOT call process.exit() here. Node's stdout is asynchronous on Windows,
+  // so exiting immediately after write() can truncate the output — and empty
+  // stdout is precisely what bricked every edit in Cursor on 2026-07-04.
+  // Setting exitCode lets Node flush and exit on its own.
+  process.exitCode = 0;
   process.stdout.write(JSON.stringify(obj ?? {}) + '\n');
-  process.exit(0);
 }
 
 function deny(reason) {
@@ -46,7 +50,10 @@ async function loadEngine(name) {
 function toRelative(root, filePath) {
   const p = String(filePath).replace(/\\/g, '/');
   const r = root.replace(/\\/g, '/').replace(/\/$/, '');
-  return p.startsWith(r + '/') ? p.slice(r.length + 1) : p;
+  // Case-insensitive compare: Windows may hand us a different drive-letter case
+  // than findRepoRoot() returned, and a failed strip silently disables every rule.
+  if (p.toLowerCase().startsWith(r.toLowerCase() + '/')) return p.slice(r.length + 1);
+  return p;
 }
 
 async function main() {
@@ -83,7 +90,8 @@ async function main() {
     try {
       const { route } = await loadEngine('route.js');
       const v = route(root, rel);
-      if (v.surface?.status === 'STUDIO' && !rel.includes('apexStudio')) {
+      const inStudio = rel.split('/').includes('apexStudio');
+      if (v.surface?.status === 'STUDIO' && !inStudio) {
         process.stderr.write(`[apex] ${v.surface.surface} is STUDIO-canonical — touching the legacy twin is a smell.\n`);
       }
     } catch { /* advisory only */ }
@@ -93,4 +101,7 @@ async function main() {
   return emit(); // session-start and anything unknown
 }
 
-main().catch(() => process.stdout.write('{}\n'));
+main().catch(() => {
+  process.exitCode = 0;
+  process.stdout.write('{}\n');
+});

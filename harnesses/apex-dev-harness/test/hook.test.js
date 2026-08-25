@@ -103,3 +103,41 @@ test('post-tool-use never blocks, even on a violation', () => {
     assert.deepEqual(runHook('post-tool-use', { tool_name: 'Edit', tool_input: { file_path: 'ui/src/menuDesigner/x.jsx' } }, dir).json, {});
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a deny response is also exactly one JSON object', () => {
+  const dir = repo();
+  try {
+    const { raw } = runHook('pre-tool-use', { tool_name: 'Write', tool_input: { file_path: '.env', content: 'placeholder' } }, dir);
+    assert.equal(raw.trim().split('\n').length, 1);
+    assert.doesNotThrow(() => JSON.parse(raw));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('session-start emits the allow object and never blocks', () => {
+  const dir = repo();
+  try {
+    const { json } = runHook('session-start', { tool_input: { file_path: 'ui/src/menuDesigner/Canvas.jsx' } }, dir);
+    assert.deepEqual(json, {});
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an absolute path with a differently-cased root prefix is still stripped', () => {
+  const dir = repo();
+  try {
+    // BOUND-005 (the dotenv rule) matches on basename alone, so it can't
+    // distinguish a correctly-stripped relative path from a strip failure
+    // that leaves the path absolute -- it would pass either way. LANE-RETIRED
+    // does prefix-match the relative path against the lane entry
+    // ('ui/src/menuDesigner/'), so a failed strip (path stays absolute) makes
+    // it match no lane and silently ALLOW the edit. That's the case this
+    // test exercises: a differently-cased root prefix than findRepoRoot()
+    // returned must still be stripped, or the retired-lane rule goes dark.
+    const oddRoot = dir.toUpperCase();
+    const { json } = runHook('pre-tool-use', {
+      tool_name: 'Edit',
+      tool_input: { file_path: oddRoot + '/ui/src/menuDesigner/Canvas.jsx', content: 'x' },
+    }, dir);
+    assert.equal(json.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, /RETIRED/i);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
