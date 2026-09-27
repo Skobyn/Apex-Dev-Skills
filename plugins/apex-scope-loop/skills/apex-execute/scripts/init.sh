@@ -86,6 +86,11 @@ cat > "$STATE_DIR/checkpoint.json" <<EOF
   "worktree_branch": "$WT_BRANCH",
   "base_branch": "$BASE_BRANCH",
   "landed": false,
+  "harness": "$([[ "${APEX_GIBSON:-1}" == "0" ]] && echo off || echo gibson)",
+  "consecutive_failures": 0,
+  "tiers": {},
+  "reviews": {},
+  "approvals": {},
   "last_verdict": null,
   "last_iteration_at": null,
   "halted": false,
@@ -101,6 +106,18 @@ if [[ -n "$WT_PATH" ]]; then
   echo "[init] ALL phase work must happen inside the worktree above."
 fi
 
+# Record the green-gate baseline at the fork point (Gibson Law 4: zero NEW
+# failures vs. the branch point). Pre-existing red is recorded, never inherited.
+if [[ "${APEX_GIBSON:-1}" != "0" ]]; then
+  if [[ -f "$STATE_DIR/gate/baseline.json" ]]; then
+    echo "[init] green-gate baseline already recorded (kept) -> $STATE_DIR/gate/baseline.json"
+  else
+    echo "[init] recording green-gate baseline (generate → typecheck → lint → test → build) ..."
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/green-gate.sh" "$PLAN" baseline | sed 's/^/[init]   /' \
+      || echo "[init] WARNING: baseline capture failed — the gate will run in strict mode (any red step fails)"
+  fi
+fi
+
 # Seed memory namespace (best-effort; safe to fail if claude-flow not installed)
 if command -v npx >/dev/null 2>&1; then
   npx -y @claude-flow/cli@latest memory store \
@@ -109,4 +126,5 @@ if command -v npx >/dev/null 2>&1; then
     --namespace "$NAMESPACE" 2>/dev/null || echo "[init] (memory seed skipped — claude-flow unavailable)"
 fi
 
+[[ "${APEX_GIBSON:-1}" != "0" ]] && echo "[init] harness: gibson (green gate · independent review · Tier-C G12 · kill switch · ratchet). APEX_GIBSON=0 to disable."
 echo "[init] ready. next: /loop iterate the next phase of $PLAN"

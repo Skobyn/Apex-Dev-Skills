@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # apex-scope-loop structural smoke test
-# Verifies the plugin contract from ADR-0001. Exits non-zero on first failure.
+# Verifies the plugin contract from ADR-0001 (checks 1-10) and ADR-0002 (11-13). Exits non-zero on first failure.
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -81,5 +81,26 @@ if [ -n "$non_exec" ]; then
 fi
 ok "all .sh scripts are executable"
 
+# 11. gibson-reviewer agent (ADR-0002) present, with a model and a VERDICT contract
+GR="$PLUGIN_ROOT/agents/gibson-reviewer.md"
+[ -f "$GR" ] || fail "missing agent: $GR"
+grep -qE "^name:[[:space:]]+gibson-reviewer[[:space:]]*$" "$GR" || fail "gibson-reviewer missing name"
+grep -qE "^model:[[:space:]]+[a-z]+" "$GR" || fail "gibson-reviewer missing model:"
+grep -q "VERDICT: APPROVE" "$GR" || fail "gibson-reviewer does not define the VERDICT contract"
+ok "gibson-reviewer agent present with model + VERDICT contract"
+
+# 12. Harness scripts present and The Gibson credited
+for s in green-gate risk-tier lessons; do
+  [ -f "$PLUGIN_ROOT/skills/apex-execute/scripts/$s.sh" ] || fail "missing harness script: $s.sh"
+done
+grep -q "The Gibson" "$PLUGIN_ROOT/NOTICE" 2>/dev/null || fail "NOTICE missing or does not credit The Gibson"
+ok "harness scripts present; NOTICE credits The Gibson"
+
+# 13. ADR-0002 exists with Status: Proposed
+ADR2="$PLUGIN_ROOT/docs/adrs/0002-gibson-harness.md"
+[ -f "$ADR2" ] || fail "missing ADR-0002"
+grep -qE "^- \*\*Status:\*\* Proposed" "$ADR2" || fail "ADR-0002 not in Proposed status"
+ok "ADR-0002 exists with Status: Proposed"
+
 echo ""
-echo "smoke passed: 10/10 checks"
+echo "smoke passed: 13/13 checks"

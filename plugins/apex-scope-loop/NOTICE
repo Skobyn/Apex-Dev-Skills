@@ -1,0 +1,16 @@
+apex-scope-loop
+Copyright 2026 Apex Insights. Licensed under the MIT License (see the repo-level LICENSE).
+
+This plugin's execution harness adapts concepts from The Gibson:
+
+  The Gibson — https://github.com/The-AIE/the-gibson
+  Copyright 2026 Mark Hinkle
+  Licensed under the Apache License, Version 2.0
+  (http://www.apache.org/licenses/LICENSE-2.0)
+
+Adapted concepts: the Ten Laws (green gate vs. baseline, never grade your own
+homework, Tier C human merge gate, the ratchet), the A/B/C risk tiers, the six
+review lenses, the Ask Contract, the HALT kill switch, error budgets, and the
+.agents/gate.json gate-command format. The apex-scope-loop scripts and the
+gibson-reviewer agent are independent implementations. No Gibson source files
+are redistributed here. See skills/apex-execute/docs/GIBSON_HARNESS.md.

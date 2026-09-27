@@ -22,6 +22,20 @@ By contract, the **whole plan executes inside a single isolated git worktree** o
 
 This gives the loop a clean blast radius: a half-finished plan never leaves partial code on `main`, and an abandoned plan is discarded by deleting one worktree + branch. (Escape hatch: set `APEX_NO_WORKTREE=1` before `init.sh` to run in the base checkout — not recommended.)
 
+## The Gibson harness (on by default)
+
+Every task runs under harness disciplines adapted from [The Gibson](https://github.com/The-AIE/the-gibson) (Apache-2.0). They're enforced by scripts, not left to prose:
+
+1. **Kill switch.** `iterate.sh` halts before dispatch if `APEX_HALT=1` or a `HALT` file exists (`.dev-plan-state/HALT`, `<state-dir>/HALT`, or `gibson/HALT`).
+2. **Green gate vs. baseline.** `init.sh` snapshots generate → typecheck → lint → test → build at the fork point. `green-gate.sh check` fails only on *new* red, and it reports pre-existing red instead of hiding it.
+3. **Risk tier.** `risk-tier.sh` classifies each task's diff as A, B, or C. Tier C covers money, auth, consent/PII, security boundaries, schema, alerting, and prod data.
+4. **Independent review.** The `gibson-reviewer` agent reviews the exact head SHA in a fresh context, never a builder's own. Tier C gets a six-lens fan-out plus an adversarial pass.
+5. **Human gate G12 for Tier C.** The loop halts and asks in Ask Contract form (what / what it does / why / risks).
+6. **Enforced check-off.** `checkpoint.sh complete` refuses unless the gate, the review, and (for Tier C) the approval all bind to the current head SHA.
+7. **Error budget + ratchet.** Two consecutive failures trigger `ESCALATE` (a second opinion), three halt the plan. A failure signature seen twice triggers `RATCHET: FILE_LESSON` into the tracked `LESSONS.md`, which is recalled by tag at task start.
+
+Mapping, rationale, and what was deliberately left out: [docs/GIBSON_HARNESS.md](docs/GIBSON_HARNESS.md). Set `APEX_GIBSON=0` to opt out.
+
 ## Prerequisites
 
 - Claude Code 2.0+ with `/loop` and `/schedule` skills enabled
@@ -94,8 +108,9 @@ Each plan phase is dispatched to a fresh hierarchical-mesh swarm (queen-led, 6�
 2. Selects swarm topology + agent roles based on task tags (e.g., `[security]` → security-architect + security-auditor)
 3. Spawns all agents in **one message** with `run_in_background: true`, each scoped to the plan's worktree (`cd` into `worktree_path`)
 4. Waits for verdicts; never polls
-5. Stores trajectory + outcome in AgentDB via `memory_store` with namespace `apex-execute`
-6. Marks the task complete in the plan; commits the code to the worktree branch via hook (the base branch is untouched until `land.sh`)
+5. Runs the harness: green gate → risk tier → independent `gibson-reviewer` on the exact head SHA → G12 human approval for Tier C (see "The Gibson harness" above)
+6. Stores trajectory + outcome in AgentDB via `memory_store` with namespace `apex-execute`
+7. Marks the task complete in the plan (`checkpoint.sh complete` refuses if the harness evidence doesn't match the head SHA); commits the code to the worktree branch via hook (the base branch is untouched until `land.sh`)
 
 See [docs/SWARM_TOPOLOGIES.md](docs/SWARM_TOPOLOGIES.md) for topology-per-phase mapping.
 
@@ -187,7 +202,9 @@ Stored via `memory_store` with namespace `apex-execute` and embedded with ONNX v
 
 ### Guardrails
 
-Enforced via Claude Code hooks (`settings.json`):
+The per-task harness (green gate, risk tier, independent review, G12, error budget, ratchet) is enforced by the scripts. See "The Gibson harness" above.
+
+Additional guardrails can be enforced via Claude Code hooks (`settings.json`):
 - **Pre-edit**: refuse writes to `/src/security/**` without security-auditor in the swarm
 - **Post-edit**: run linters/formatters; reject on failure
 - **Pre-task**: AIDefense scan on inputs
@@ -205,7 +222,10 @@ See `resources/templates/hooks-snippet.json` for a starter config.
 | `scripts/audit.sh PLAN.md` | Nightly diff + memory append (called by `/schedule`) |
 | `scripts/architecture-review.sh PLAN.md` | Weekly drift check vs. plan intent |
 | `scripts/status.sh PLAN.md` | Print current state |
-| `scripts/checkpoint.sh PLAN.md` | Manually advance/rewind state |
+| `scripts/checkpoint.sh PLAN.md ACTION` | `complete` / `fail` / `review` / `approve` / `halt` / `rewind` — records verdicts and enforces the harness on check-off |
+| `scripts/green-gate.sh PLAN.md baseline\|check` | Baseline-relative green gate (zero new failures vs. the fork point) |
+| `scripts/risk-tier.sh PLAN.md LINE_NO` | Classify a task diff as Tier A/B/C and record it |
+| `scripts/lessons.sh PLAN.md fail\|add\|recall` | The ratchet: count repeat failures, file and recall lessons |
 
 ## Resources
 
@@ -218,6 +238,7 @@ See `resources/templates/hooks-snippet.json` for a starter config.
 
 - [LOOP_PATTERNS.md](docs/LOOP_PATTERNS.md) — Sense-layer recipes with delay tuning
 - [SCHEDULE_PATTERNS.md](docs/SCHEDULE_PATTERNS.md) — Continuity-layer recipes with cron
+- [GIBSON_HARNESS.md](docs/GIBSON_HARNESS.md) — Harness laws adopted from The Gibson and how each is enforced
 - [SWARM_TOPOLOGIES.md](docs/SWARM_TOPOLOGIES.md) — Phase-tag → topology mapping
 
 ## Troubleshooting
@@ -233,6 +254,14 @@ See `resources/templates/hooks-snippet.json` for a starter config.
 ### Issue: Memory namespace grows unbounded
 **Cause**: No consolidation
 **Solution**: Schedule monthly: `/schedule "0 3 1 * *" memory consolidate --namespace apex-execute`
+
+### Issue: `checkpoint.sh complete` refuses
+**Cause**: The harness evidence doesn't bind to the worktree's current head SHA: the gate or review is missing, stale, or failing, or a Tier C approval is missing
+**Solution**: Follow the listed reasons. Any new commit invalidates the previous gate and review, so re-run `green-gate.sh check` and re-review the new head
+
+### Issue: Gate reports `SKIPPED`
+**Cause**: No gate commands resolved (no `APEX_GATE_*`, `.agents/gate.json`, or matching `package.json` scripts)
+**Solution**: Add `.agents/gate.json` to the repo (see [GIBSON_HARNESS.md](docs/GIBSON_HARNESS.md)), then delete `.dev-plan-state/<hash>/gate/baseline.json` and re-run `init.sh`
 
 ### Issue: `/loop` keeps running after plan complete
 **Cause**: ScheduleWakeup not omitted on completion

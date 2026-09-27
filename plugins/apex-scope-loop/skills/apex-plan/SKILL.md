@@ -139,6 +139,8 @@ The **Swarm:** line is read by the orchestrator (the model running `/loop`) when
 - `Swarm: multi <count> [<type1>, <type2>, ...]` — N parallel Agents in one message
 - `Swarm: hierarchical <count> [<type1>, <type2>, ...]` — queen-led swarm via `mcp__claude-flow__swarm_init` + spawns
 
+**Risk tiers** (from The Gibson; see `apex-execute/docs/GIBSON_HARNESS.md`): tag any task that touches money, auth, consent/PII, security boundaries, schema/migrations, incident alerting, or production data with `[tier:c]` (or `[security]`). apex-execute classifies every diff anyway, and a diff can drift *into* Tier C during execution. Tagging at plan time makes the human G12 approval visible to the user before the loop starts, so it doesn't arrive as a surprise halt. Also make sure the target repo's gate commands are known: note them in the plan's Design Intent, or add `.agents/gate.json`.
+
 **Gates** are themselves checkbox tasks placed between phases:
 
 ```markdown
@@ -158,7 +160,7 @@ The **Swarm:** line is read by the orchestrator (the model running `/loop`) when
 How gates interact with `/loop iterate`:
 
 - **`[gate:auto]`** — iterate.sh treats this like any other task; the model runs the Acceptance check and advances on pass
-- **`[gate:human]`** — the model recognizes the tag, halts (sets `halted: true` in checkpoint with `halt_reason: "awaiting human gate <id>"`), prints "Awaiting human approval — reply 'approve <gate-id>' to continue," and exits the loop
+- **`[gate:human]`** — the model recognizes the tag, halts (sets `halted: true` in checkpoint with `halt_reason: "awaiting human gate <id>"`), presents the decision in **Ask Contract** form (what I'm asking / what it does / why / risks, all in plain language), prints "Awaiting human approval — reply 'approve <gate-id>' to continue," and exits the loop
 - **`[gate:partner:<email>]`** — the model writes a durable inbox item via `POST /api/agent-coordination/inbox` (`kind: "phase-gate-approval"`, `forUser: <email>`), then halts with `halt_reason: "awaiting partner gate <id>"`
 
 Use `scripts/gate.sh <plan-path> <gate-id>` for explicit gate evaluation outside the loop (e.g., a human running it to check what's blocking).

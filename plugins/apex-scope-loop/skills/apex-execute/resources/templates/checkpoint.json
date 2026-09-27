@@ -10,6 +10,31 @@
   "worktree_branch": "apex-scope-loop/<slug>",
   "base_branch": "main",
   "landed": false,
+  "harness": "gibson | off",
+  "consecutive_failures": 0,
+  "tiers": {
+    "<line_no>": {
+      "tier": "A | B | C",
+      "since": "<diff-base sha>"
+    }
+  },
+  "reviews": {
+    "<line_no>": {
+      "sha": "<exact head sha>",
+      "verdict": "APPROVE | REQUEST_CHANGES",
+      "reviewer": "gibson-reviewer",
+      "round": 1,
+      "at": "ISO-8601"
+    }
+  },
+  "approvals": {
+    "<line_no>": {
+      "gate": "G12",
+      "sha": "<exact head sha>",
+      "phrase": "<human's literal reply>",
+      "at": "ISO-8601"
+    }
+  },
   "last_verdict": {
     "line_no": 0,
     "result": "pass | fail",

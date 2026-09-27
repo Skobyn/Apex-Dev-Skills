@@ -61,7 +61,10 @@ Gates are checkbox tasks, just like phases. The line between Phase N and Phase N
 >
 > **Tags route topology** (see `apex-execute/docs/SWARM_TOPOLOGIES.md`):
 > `[backend]` `[frontend]` `[security]` `[perf]` `[ml-serving]` `[infra]`
-> `[research]` `[docs]` `[tests]` `[refactor]` `[gate:auto]` `[gate:human]` `[gate:partner:<email>]`
+> `[research]` `[docs]` `[tests]` `[refactor]` `[tier:c]` `[gate:auto]` `[gate:human]` `[gate:partner:<email>]`
+>
+> `[tier:c]` marks money / auth / consent-PII / security / schema / alerting / prod-data work: it gets a
+> six-lens + adversarial review and a human G12 approval before check-off (The Gibson harness).
 
 ---
 
