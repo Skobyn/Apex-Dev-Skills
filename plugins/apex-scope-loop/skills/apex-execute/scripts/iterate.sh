@@ -15,7 +15,17 @@
 #   TASK: <task-line>
 #   ACCEPTANCE: <criteria-line>
 #   BLOCKED_BY: <phase-or-empty>
+#   HEAD_SHA: <worktree HEAD at brief time — the task's diff base>
+#   HARNESS: gibson | off                # APEX_GIBSON=0 turns the harness off
+#   LESSONS: <n> matching ...           # ratchet entries for this task's tags
+#   CONSECUTIVE_FAILURES: <n>
 #   STATUS: READY | BLOCKED | COMPLETE | HALTED
+#
+# Kill switch (adapted from The Gibson): the loop halts immediately, before
+# any dispatch, if APEX_HALT=1 or any of these files exist:
+#   <repo>/.dev-plan-state/HALT      (all plans)
+#   <state-dir>/HALT                 (this plan)
+#   <repo>/gibson/HALT               (a Gibson-wired repo's permanent stop)
 set -euo pipefail
 
 PLAN="${1:?usage: iterate.sh PATH_TO_PLAN.md}"
@@ -40,10 +50,28 @@ if [[ -n "$WORKTREE" && ! -d "$WORKTREE" ]]; then
   exit 1
 fi
 
+# Kill switch — checked every iteration, before anything else is dispatched.
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+for f in "$REPO_ROOT/.dev-plan-state/HALT" "$STATE_DIR/HALT" "$REPO_ROOT/gibson/HALT"; do
+  if [[ -f "$f" ]]; then
+    echo "STATE: $STATE_DIR"
+    echo "STATUS: HALTED"
+    echo "HALT_REASON: kill switch file present: $f (delete it to resume)"
+    exit 0
+  fi
+done
+if [[ "${APEX_HALT:-0}" == "1" ]]; then
+  echo "STATE: $STATE_DIR"
+  echo "STATUS: HALTED"
+  echo "HALT_REASON: APEX_HALT=1"
+  exit 0
+fi
+
 # Halted?
 if grep -q '"halted": true' "$CHECKPOINT"; then
   echo "STATE: $STATE_DIR"
   echo "STATUS: HALTED"
+  echo "HALT_REASON: $(grep -o '"halt_reason": "[^"]*"' "$CHECKPOINT" | sed 's/.*: "//; s/"$//' || true)"
   exit 0
 fi
 
@@ -66,7 +94,7 @@ TASK_LINE="${NEXT_LINE#*:}"
 PHASE_ID=$(echo "$TASK_LINE" | grep -oE 'Phase [0-9]+(\.[0-9]+)*' | head -1 || echo "phase-unknown")
 
 # Extract tags ([backend][security] -> backend,security)
-TAGS=$(echo "$TASK_LINE" | grep -oE '\[[a-z-]+\]' | tr -d '[]' | grep -vE '^(x| )$' | paste -sd, - 2>/dev/null || echo "")
+TAGS=$(echo "$TASK_LINE" | grep -oE '\[[a-z:-]+\]' | tr -d '[]' | grep -vE '^(x| )$' | paste -sd, - 2>/dev/null || echo "")
 
 # Look ahead for Acceptance: and Blocked-by: lines
 ACCEPTANCE=""
@@ -107,4 +135,14 @@ echo "TASK: $TASK_LINE"
 echo "ACCEPTANCE: $ACCEPTANCE"
 echo "BLOCKED_BY: $BLOCKED_BY"
 echo "LINE_NO: $LINE_NO"
+echo "HEAD_SHA: $(git -C "${WORKTREE:-$REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [[ "${APEX_GIBSON:-1}" != "0" ]]; then
+  SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  echo "HARNESS: gibson"
+  "$SCRIPTS/lessons.sh" "$PLAN" recall "$TAGS" 2>/dev/null | head -1 \
+    | sed "s|\$| — read with: lessons.sh $PLAN recall $TAGS|" || true
+else
+  echo "HARNESS: off"
+fi
+echo "CONSECUTIVE_FAILURES: $(grep -o '"consecutive_failures": [0-9]*' "$CHECKPOINT" | grep -o '[0-9]*$' || echo 0)"
 echo "STATUS: READY"

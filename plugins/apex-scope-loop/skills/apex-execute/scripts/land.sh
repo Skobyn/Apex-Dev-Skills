@@ -42,6 +42,24 @@ if grep -qE '^- \[ \]' "$PLAN" && [[ "$FORCE" != "--force" ]]; then
   exit 1
 fi
 
+# 1b. Harness pre-land checks (adapted from The Gibson — docs/GIBSON_HARNESS.md).
+#     Unreviewed code must never reach the base branch, so with the harness on we
+#     refuse to auto-commit stray changes and re-run the green gate on the final head.
+if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
+  for f in "$REPO_ROOT/.dev-plan-state/HALT" "$STATE_DIR/HALT" "$REPO_ROOT/gibson/HALT"; do
+    [[ -f "$f" ]] && { echo "ERROR: kill switch present ($f) — refusing to land." >&2; exit 1; }
+  done
+  if [[ -d "$WT_PATH" ]] && [[ -n "$(git -C "$WT_PATH" status --porcelain)" ]]; then
+    echo "ERROR: worktree has uncommitted changes that no reviewer has seen — commit, gate, and review them first." >&2
+    exit 1
+  fi
+  SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if ! "$SCRIPTS/green-gate.sh" "$PLAN" check; then
+    echo "ERROR: final green gate failed on the branch head — refusing to land." >&2
+    exit 1
+  fi
+fi
+
 # 2. Flush any uncommitted code in the worktree onto the worktree branch.
 if [[ -d "$WT_PATH" ]] && [[ -n "$(git -C "$WT_PATH" status --porcelain)" ]]; then
   git -C "$WT_PATH" add -A

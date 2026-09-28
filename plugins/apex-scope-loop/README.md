@@ -24,6 +24,7 @@ The result is a system that **thinks alongside you**: it watches reality, persis
 - **Guardrails by default.** Phases close behind runnable checks or explicit human/partner approval. Bad work can't quietly cascade into the next phase.
 - **Autonomy you can trust.** `/loop` drives active sessions; `/schedule` runs nightly audits and weekly architecture reviews so progress continues while you sleep.
 - **Right-sized compute.** Each phase declares its own swarm — a single agent for trivial work, a full hierarchical-mesh for the heavy lifting.
+- **A harness with teeth.** Execution runs under disciplines adapted from [The Gibson](https://github.com/The-AIE/the-gibson). Each task must pass a green gate measured against the fork-point baseline, then get an independent review of its exact commit from an agent that didn't write it. Anything touching money, auth, PII, security, schema, or prod data stops for your approval. Repeated failures become permanent lessons. See [The Gibson harness](#the-gibson-harness).
 - **Isolated by default.** The whole plan runs in a dedicated git worktree on its own branch. `main` stays clean until the final gate passes and the branch is landed — a half-finished or abandoned plan never leaks partial code into your base branch.
 
 ## Prerequisites
@@ -80,6 +81,7 @@ Then `/reload-plugins` (or restart Claude Code) to activate.
 | Skill | `apex-execute` | Auto-triggered on "iterate plan", "autonomous loop", `/loop` invocations referencing a plan |
 | Command | `/apex-scope-loop:start <slug>` | Begin a new SCOPE authoring session |
 | Command | `/apex-scope-loop:iterate <plan>` | Run one phase of a promoted plan |
+| Agent | `gibson-reviewer` | Independent, read-only six-lens reviewer of one task's exact head SHA (Opus). Dispatched by the iterate loop; never reviews its own work |
 | Agent | `plan-author` | Delegate the SCOPE/COMPOSE/OPTIMIZE rounds to a Sonnet subagent (saves main-thread context) |
 
 ## How the two skills compose
@@ -102,6 +104,27 @@ apex-execute  (execution — the loop, inside an isolated worktree)
                                               (merge branch → main, remove worktree)
 ```
 
+## The Gibson harness
+
+apex-execute adopts the portable core of [The Gibson](https://github.com/The-AIE/the-gibson), an open source SDLC harness for agent fleets (Apache-2.0, Mark Hinkle). It's **on by default**. Set `APEX_GIBSON=0` to opt out.
+
+Per task, inside the worktree:
+
+```
+build swarm → commit → green-gate.sh check → risk-tier.sh → gibson-reviewer (exact head SHA)
+           → [Tier C: 6-lens fan-out + adversarial pass + your G12 approval] → acceptance → checkpoint complete
+```
+
+| Gibson law | What you get |
+|---|---|
+| Green gate vs. baseline (Law 4) | `init.sh` snapshots generate/typecheck/lint/test/build at the fork. A task fails only on *new* red. Commands come from `.agents/gate.json` (Gibson format), `APEX_GATE_*`, or `package.json` |
+| Never grade your own homework (Law 5) | The `gibson-reviewer` agent reviews in a fresh context and fails closed. Check-off is refused without an `APPROVE` on the current head |
+| Tier C is sacred (Law 7) | `risk-tier.sh` flags money/auth/PII/security/schema/prod-data diffs. They halt for your approval, asked in plain language (the Ask Contract) |
+| The ratchet (Law 9) | A failure seen twice must be filed in `.claude/apex-scope-loop/LESSONS.md`, and lessons are recalled by tag before each task |
+| Kill switch + error budget | `touch .dev-plan-state/HALT` (or `gibson/HALT`, or `APEX_HALT=1`) stops the loop. Two failures in a row buy a second opinion, and three halt the plan |
+
+Full mapping, and what was deliberately left out (cross-vendor routing, GitHub claims, CI templates): [skills/apex-execute/docs/GIBSON_HARNESS.md](skills/apex-execute/docs/GIBSON_HARNESS.md). For repo-level setup (CI gates, branch protection, labels), run The Gibson's own `gibson-setup` skill against the target repo.
+
 ## Compatibility
 
 - **Claude Code:** 2.0+ (requires `/loop`, `/schedule`, AskUserQuestion, ScheduleWakeup, Agent)
@@ -118,6 +141,7 @@ This plugin claims the AgentDB / memory namespace **`apex-scope-loop`**, followi
 | `apex-scope-loop:adrs/<slug>` | ADR metadata + status |
 | `apex-scope-loop:plans/<slug>` | Plan checkpoint + completion % |
 | `apex-scope-loop:outcomes/<slug>/<phase>` | Per-phase verdict + trajectory pattern |
+| `apex-scope-loop:lessons/<tag>` | Ratchet lessons (mirror of the tracked `.claude/apex-scope-loop/LESSONS.md`, per ADR-0002) |
 
 Any future plugin that wants to read/write these keys must claim a non-overlapping prefix and reference this plugin's ADR-0001.
 
@@ -127,11 +151,12 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 10 structural checks (frontmatter, namespace declaration, ADR status, script executability, README sections). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 13 structural checks (frontmatter, namespace declaration, ADR status, script executability, README sections, and the Gibson harness surface). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 
 - [ADR-0001 — apex-scope-loop plugin contract](docs/adrs/0001-apex-scope-loop-contract.md) — Status: **Proposed**. Defines surface, namespace, compatibility, and smoke contract.
+- [ADR-0002 — Adopt The Gibson's harness disciplines](docs/adrs/0002-gibson-harness.md) — Status: **Proposed**. Green gate, independent review, Tier C / G12, ratchet, kill switch.
 
 ## Migration from `.claude/skills/`
 
@@ -157,4 +182,4 @@ The skills' own SKILL.md files document anti-patterns at length. The most import
 
 ## License
 
-MIT — see the repo-level LICENSE.
+MIT — see the repo-level LICENSE. The execution harness adapts concepts from The Gibson (Apache-2.0); see [NOTICE](NOTICE).
