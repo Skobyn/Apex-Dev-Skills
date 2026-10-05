@@ -41,7 +41,8 @@ that what planlib runs is exactly what a CommonMark renderer shows as tasks
   - a task's block lines are indented at least 2 spaces
   - a checkbox anywhere except a column-0 task is refused (including one on
     the line after an empty list marker); blockquoted examples are allowed
-  - no byte-order mark; no setext underline inside a task block
+  - no byte-order mark; no setext underline inside a task block; no
+    whitespace other than space and tab; no escaped checkboxes
   - no front matter, no carriage return inside a line
 Anything outside the dialect makes the plan invalid; nothing is ever hidden.
 """
@@ -101,6 +102,7 @@ FENCELIKE_RE = re.compile(r"^\s*[`~]{3}")
 CHECKBOX_RE = re.compile(r"\[[ xX]\](?:[ \t]|$)")
 EXT_BLOCK_RE = re.compile(r"^(?:\$\$|:::)")
 BLOCK_LINE_RE = re.compile(r"^ {2,}\S")
+ESCAPED_BOX_RE = re.compile(r"^(?:\\\[|&#0*91;|&#x0*5[bB];|&lbrack;|&lsqb;)[ xX]?(?:\\\]|\]|&#0*93;|&#x0*5[dD];|&rbrack;|&rsqb;)")
 
 
 def strip_markers(line):
@@ -141,6 +143,10 @@ def scan(lines):
         n = i + 1
         if "\r" in line:
             errs.append(f"line {n}: carriage return inside a line (CommonMark treats it as a line break)")
+        odd = sorted({c for c in line if c.isspace() and c not in " \t\r"})
+        if odd:
+            errs.append(f"line {n}: whitespace other than space or tab ({', '.join(f'U+{ord(c):04X}' for c in odd)}); "
+                        "renderers treat it differently, so it could hide or reveal a task — replace it with a space")
         if fence:
             inside[i] = True
             if CLOSE_RE.match(line) and line[0] == fence[0] and len(line.rstrip(WS)) >= fence[1]:
@@ -178,6 +184,8 @@ def scan(lines):
         # blockquoted: prefixed list items, and a checkbox on the line after
         # an empty list marker ("-" then "  [ ] x"), which renderers show as
         # an open task.
+        if not quoted and ESCAPED_BOX_RE.match(rest):
+            errs.append(f"line {n}: an escaped checkbox ('\\[ ]', '&#91; ]') renders like one in some renderers; remove it")
         if not quoted and CHECKBOX_RE.match(rest) and not TASK_RE.match(line):
             errs.append(f"line {n}: checkbox not in the task form '- [ ] ' at column 0 "
                         "(it would not be a task; make it one or remove the checkbox)")

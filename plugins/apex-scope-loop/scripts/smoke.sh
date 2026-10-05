@@ -354,8 +354,9 @@ assert not planlib.disjoint(["Src/A/**"], ["src/a/x.py"])
 assert planlib.disjoint(["src/a/**"], ["src/b/**"])
 PY
 printf 'line one \342\200\250 has U+2028\n- [ ] **Phase 1.1** A\n  - Acceptance: true\n- [ ] **Phase 1.2** B\n  - Acceptance: true\n' >"$SMOKE_TMP/ls.md"
-LN="$(python3 "$PL" next "$SMOKE_TMP/ls.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["task"]["line_no"])')"
-[ "$(sed -n "${LN}p" "$SMOKE_TMP/ls.md")" = "- [ ] **Phase 1.1** A" ] || fail "planlib line numbers disagree with sed (line $LN)"
+# Every character str.splitlines would break on (U+2028, \v, \f, \x1c-\x1e,
+# U+0085) is whitespace, so it is refused: line numbers cannot drift from sed's.
+has "U+2028" "$(python3 "$PL" validate "$SMOKE_TMP/ls.md" 2>&1 || true)" || fail "a U+2028 line separator was not refused"
 printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  - Acceptance: false\n  - N1: x\n  - N2: x\n  - N3: x\n  - N4: x\n  - N5: x\n  - N6: x\n  - Blocked-by: Phase 1.1\n\n  - Swarm: single\n' >"$SMOKE_TMP/late.md"
 V="$(python3 "$PL" validate "$SMOKE_TMP/late.md" || true)"
 for want in "Acceptance: given more than once" "beyond the 8-line look-ahead" "directive outside any task block"; do
@@ -433,6 +434,13 @@ cases = {
   "hrthen":    (D + "***\n*\n  [ ] t\n\n" + T, None),
   "setext":    ("- [ ] **Phase 1.1** Ship it\n  ===\n  - Acceptance: true\n", None),
   "bom":       ("\ufeff" + T, None),
+  "vt-before": (D + "- \v[ ] **Phase 2** vt\n\n" + T, None),
+  "ff-after":  (D + "- [ ]\f**Phase 2** ff\n\n" + T, None),
+  "nbsp":      (D + "- \u00a0[ ] **Phase 2** nbsp\n\n" + T, None),
+  "ideosp":    (D + "-\n  \u3000[ ] **Phase 2** ideographic\n\n" + T, None),
+  "emsp":      (D + "-\u2003[x] t\n\n" + T, None),
+  "entity":    (D + "- &#91; ] t\n\n" + T, None),
+  "escaped":   (D + "- \\[ ] t\n\n" + T, None),
   # controls: these validate and run Phase 1.1
   "quoted":    (D + "> ```\n> - [ ] **Phase 9** quoted example\n> ```\n\n" + T, "Phase 1.1"),
   "fenceok":   (D + "```\nmake real\n```\n\n" + T, "Phase 1.1"),
