@@ -17,3 +17,10 @@ with a new one.
 **Harness fix:** Make the task diff a chain: the floor is the head at the last complete (else the fork point), every commit after it belongs to the current task, --since may only widen it, an unreachable floor falls back to merge-base; a gate line is exempt only when no code exists since the floor; classifiers search the original string (no length-changing transforms before indexing)
 **Plan:** apex-dispatch-plan.md
 **Tags:** ##risk-tier #harness #backend #gate
+
+## L-003 · 2026-10-05 · classifier-inputs-are-git-config-dependent
+**What happened:** Phase 1.4 attempt 3 (chain design) closed every bypass found in rounds 1-2, but round 3 found the content scan still depends on user git config (color.diff=always) and on pipe semantics (grep -q under pipefail on a large diff), and two of my own hardening steps regressed real setups (fork-on-base check for no-worktree/remote bases; exporting git env hardening into user gate commands)
+**Root cause:** every git call that feeds a security decision inherits user config and process env; hardening applied at process scope leaks into child commands; boundary checks were written against the worktree-mode case only
+**Harness fix:** Route every harness git call through one wrapper that pins output config (-c color.ui=never, core.quotepath=false, --no-ext-diff/--no-textconv, --ignore-submodules=none, GIT_NO_REPLACE_OBJECTS) per call, never exported; never grep -q from a pipe under pipefail (use here-strings); test each boundary check in no-worktree, remote-base and detached setups before review
+**Plan:** apex-dispatch-plan.md
+**Tags:** ##risk-tier #harness #git #backend
