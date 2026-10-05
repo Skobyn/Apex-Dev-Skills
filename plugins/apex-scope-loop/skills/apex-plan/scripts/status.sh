@@ -39,10 +39,12 @@ fi
 
 # Plan
 if [[ -f "$PLAN" ]]; then
-  TOTAL="$({ grep -cE '^- \[[ x]\]' "$PLAN" || true; })"
-  DONE="$({ grep -cE '^- \[x\]' "$PLAN" || true; })"
+  # Same parser as iterate.sh and land.sh (planlib.py).
+  PL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../apex-execute/scripts" && pwd)/planlib.py"
+  read -r TOTAL DONE < <(python3 "$PL" counts "$PLAN" 2>/dev/null || echo "0 0")
   TOTAL="${TOTAL:-0}"
   DONE="${DONE:-0}"
+  python3 "$PL" validate "$PLAN" >/dev/null 2>&1 || print_line "Validity:" "INVALID — run planlib.py validate $PLAN"
   PCT=0
   if [[ "$TOTAL" -gt 0 ]]; then
     PCT=$(( DONE * 100 / TOTAL ))
@@ -50,9 +52,8 @@ if [[ -f "$PLAN" ]]; then
   print_line "Plan:" "$PLAN"
   print_line "Progress:" "$DONE / $TOTAL tasks ($PCT%)"
 
-  NEXT="$(grep -nE '^- \[ \]' "$PLAN" | head -1 || true)"
-  if [[ -n "$NEXT" ]]; then
-    NEXT_LINE="${NEXT#*:}"
+  NEXT_LINE="$(python3 "$PL" next "$PLAN" 2>/dev/null | python3 -c 'import json,sys; print(((json.load(sys.stdin).get("task") or {}).get("line")) or "")' 2>/dev/null || true)"
+  if [[ -n "$NEXT_LINE" ]]; then
     print_line "Next task:" "$(echo "$NEXT_LINE" | sed 's/^- \[ \] //' | cut -c1-80)"
   else
     print_line "Next task:" "(none — all checked OR no tasks)"

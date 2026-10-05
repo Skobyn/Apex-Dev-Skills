@@ -72,65 +72,68 @@ if ! grep -qE '^\*\*Status\*\*: Accepted' "$ADR_PATH"; then
   fail "ADR status is not 'Accepted'. Current: $CURRENT_STATUS — flip it after refinement is done."
 fi
 
-# 6. Plan has >= 1 unchecked task
-if ! grep -qE '^- \[ \]' "$PLAN_PATH"; then
-  fail "Plan has no unchecked tasks (- [ ] ...). Either all tasks are checked or the plan is empty."
+# 6-7. The plan parses under the same rules iterate.sh and land.sh use
+#      (planlib.py validate: the plan dialect, every unchecked task has an
+#      Acceptance, Route/Paths/Budget directives are well formed, Paths are
+#      given for lanes, Blocked-by names real tasks, no cycles), and it has
+#      at least one unchecked task.
+if ! PLAN_ERRORS="$(python3 "$EXEC_SCRIPTS/planlib.py" validate "$PLAN_PATH" 2>&1)"; then
+  echo "Plan validation errors (planlib.py validate):" >&2
+  printf '%s\n' "$PLAN_ERRORS" | sed 's/^/  /' >&2
+  fail "plan is invalid — fix the lines above"
 fi
-
-# 7. Every checkbox task has an Acceptance line within next ~6 lines
-python3 - "$PLAN_PATH" <<'PY' || fail "Plan has tasks missing Acceptance lines (see python output above)"
-import re, sys, pathlib
-plan = pathlib.Path(sys.argv[1]).read_text().splitlines()
-errors = []
-for i, line in enumerate(plan):
-    if re.match(r'^- \[[ x]\] \*\*(Phase|Gate)', line):
-        window = plan[i+1:i+9]
-        if not any('Acceptance:' in l for l in window):
-            errors.append(f"  line {i+1}: {line.strip()[:80]}")
-if errors:
-    print("Tasks missing Acceptance:", file=sys.stderr)
-    for e in errors:
-        print(e, file=sys.stderr)
-    sys.exit(1)
-PY
+REMAINING="$(python3 "$EXEC_SCRIPTS/planlib.py" remaining "$PLAN_PATH")"
+[[ "$REMAINING" -gt 0 ]] || fail "Plan has no unchecked tasks (- [ ] ...). Either all tasks are checked or the plan is empty."
 
 # 8. Every gate task has a clear approval mechanism
 # [gate:auto]   → Acceptance must look runnable (no "human-ack" or "approve" phrase)
 # [gate:human]  → Acceptance must mention "approve" or "user types"
 # [gate:partner:email] → Acceptance must mention "inbox" or be partner-resolved
-GATE_ISSUES="$(grep -nE '\[gate:' "$PLAN_PATH" || true)"
-if [[ -n "$GATE_ISSUES" ]]; then
-  python3 - "$PLAN_PATH" <<'PY' || fail "Gate task has ambiguous Acceptance criteria"
-import re, sys, pathlib
-plan = pathlib.Path(sys.argv[1]).read_text().splitlines()
+python3 - "$EXEC_SCRIPTS" "$PLAN_PATH" <<'PY' || fail "Gate task has ambiguous Acceptance criteria"
+import re, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1]); import planlib
 errors = []
-for i, line in enumerate(plan):
-    m = re.search(r'\[gate:(auto|human|partner:[^\]]+)\]', line)
-    if not m:
+for t in planlib.parse(sys.argv[2]):
+    kinds = [g for g in t["tags"] if g.startswith("gate:")]
+    if not kinds:
         continue
-    kind = m.group(1)
-    window = plan[i+1:i+9]
-    acc_line = next((l for l in window if 'Acceptance:' in l), None)
-    if not acc_line:
-        errors.append(f"  line {i+1}: gate has no Acceptance: {line.strip()[:80]}")
-        continue
-    acc = acc_line.split('Acceptance:', 1)[1].strip()
-    if kind == 'auto':
+    kind, acc, where = kinds[0][5:], t["acceptance"], f"line {t['line_no']}"
+    if kind == "auto":
         # Should look runnable: contains a command-like token
-        if not re.search(r'(pytest|npm|curl|grep|python|bash|node|cargo|cd |&&|\|\||\.sh|\.py|\.js|\.ts)', acc):
-            errors.append(f"  line {i+1}: [gate:auto] should be runnable but Acceptance reads: {acc[:80]}")
-    elif kind == 'human':
-        if 'approve' not in acc.lower() and 'user types' not in acc.lower():
-            errors.append(f"  line {i+1}: [gate:human] should require approval phrase, got: {acc[:80]}")
-    elif kind.startswith('partner:'):
-        if 'inbox' not in acc.lower() and 'consumed' not in acc.lower():
-            errors.append(f"  line {i+1}: [gate:partner:...] should reference inbox item, got: {acc[:80]}")
+        if not re.search(r'(pytest|npm|curl|grep|python|bash|node|cargo|go |make|uv |cd |&&|\|\||\.sh|\.py|\.js|\.ts)', acc):
+            errors.append(f"  {where}: [gate:auto] should be runnable but Acceptance reads: {acc[:80]}")
+    elif kind == "human":
+        if "approve" not in acc.lower() and "user types" not in acc.lower():
+            errors.append(f"  {where}: [gate:human] should require approval phrase, got: {acc[:80]}")
+    elif kind.startswith("partner:"):
+        if "inbox" not in acc.lower() and "consumed" not in acc.lower() and "approve" not in acc.lower():
+            errors.append(f"  {where}: [gate:partner:...] should reference the partner's approval or inbox item, got: {acc[:80]}")
+    else:
+        errors.append(f"  {where}: unknown gate kind [gate:{kind}] (auto, human, partner:<who>)")
 if errors:
     print("Gate validation issues:", file=sys.stderr)
     for e in errors:
         print(e, file=sys.stderr)
     sys.exit(1)
 PY
+
+# 8b. With apex-dispatch installed, every unchecked task must route: a task
+#     route.sh would answer NEEDS_SPEC fails promotion (spec §6), so no model
+#     tokens are spent discovering it later.
+# shellcheck source=../../apex-execute/scripts/_lib.sh
+APEX_RESOLVE_MODE=read source "$EXEC_SCRIPTS/_lib.sh"
+DISPATCH="$(apex_dispatch_root)"
+if [[ -n "$DISPATCH" ]]; then
+  for LN in $(python3 -c 'import sys; sys.dont_write_bytecode=True; sys.path.insert(0, sys.argv[1]); import planlib; print(" ".join(str(t["line_no"]) for t in planlib.parse(sys.argv[2]) if not t["checked"]))' "$EXEC_SCRIPTS" "$PLAN_PATH"); do
+    OUT="$("$DISPATCH/scripts/route.sh" plan "$PLAN_PATH" --line "$LN" --dry-run 2>&1)" || fail "route.sh --dry-run failed for line $LN: $(printf '%s' "$OUT" | tail -1)"
+    if printf '%s\n' "$OUT" | grep -q '^ROUTE_STATUS: NEEDS_SPEC'; then
+      fail "line $LN would route to NEEDS_SPEC: $(printf '%s\n' "$OUT" | sed -n 's/^ROUTE_MISSING: //p' | head -1)"
+    fi
+  done
+  echo "Route dry-run: every unchecked task routes."
+else
+  echo "Route dry-run: skipped (apex-dispatch not installed beside apex-scope-loop)."
 fi
 
 # 9. apex-execute init.sh exists

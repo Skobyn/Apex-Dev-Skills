@@ -233,7 +233,7 @@ def parse(path):
         d = {"acceptance": "", "blocked_by_raw": [], "swarm": "", "route_raw": "", "paths_raw": "", "budget_raw": ""}
         key_map = {"Acceptance": "acceptance", "Blocked-by": "blocked_by_raw", "Swarm": "swarm",
                    "Route": "route_raw", "Paths": "paths_raw", "Budget": "budget_raw"}
-        repeated, late, in_example = [], [], []
+        repeated, late, in_example, noncanonical = [], [], [], []
         for j in block(lines, i):
             bm = BLOCKED_ANY_RE.match(lines[j])
             dm = DIRECTIVE_RE.match(lines[j])
@@ -244,6 +244,9 @@ def parse(path):
                 continue
             if inside[j] and ANY_DIRECTIVE_RE.match(lines[j]):
                 in_example.append(j + 1)         # never used; an error in validate
+                continue
+            if not dm and ANY_DIRECTIVE_RE.match(lines[j]):
+                noncanonical.append(j + 1)       # e.g. "+ Budget:", "Budget:", 5+ spaces: never silently dropped
                 continue
             if dm:
                 key = key_map[dm.group(1)]
@@ -273,6 +276,7 @@ def parse(path):
             "_repeated": repeated,
             "_late": late,
             "_in_example": in_example,
+            "_noncanonical": noncanonical,
         })
     return tasks
 
@@ -405,6 +409,9 @@ def cmd_validate(path):
             errs.append(f"{where}: {k}: given more than once")
         for k in t["_late"]:
             errs.append(f"{where}: {k} is beyond the {LOOKAHEAD}-line look-ahead; move it up")
+        for n in t["_noncanonical"]:
+            errs.append(f"line {n}: directive not in the form '  - Key: value' (indent 0-4 spaces, '-' or '*' bullet); "
+                        "it would be ignored, so a Budget or Route limit would not apply")
         for n in t["_in_example"]:
             errs.append(f"line {n}: directive inside a code example or comment in a task block "
                         "(move the example out of the task, or it could be mistaken for the task's own)")

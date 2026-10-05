@@ -586,5 +586,52 @@ L2="$(cd "$SMOKE_TMP/bw2" && source "$EX/_lib.sh" && apex_resolve plans/x-plan.m
 [ -n "$L1" ] && [ "$L1" = "$L2" ] || fail "bare-repo worktrees use different lesson ledgers: $L1 vs $L2"
 ok "one lessons ledger per repository"
 
+# 29. promote-to-loop validates with planlib (dialect, directives, cycles)
+#     before touching state; a valid plan still promotes.
+PR="$SMOKE_TMP/promote29"; mkdir -p "$PR/.claude/tasks" "$PR/.claude/plans"; git init -q -b main "$PR"
+printf '# ADR\n**Status**: Accepted\n' >"$PR/.claude/tasks/p-adr.md"
+printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  + Budget: usd=0.5\n' >"$PR/.claude/plans/p-plan.md"
+git -C "$PR" add -A; git -C "$PR" commit -qm p
+expect_refusal "promote a plan with a non-canonical directive" "directive not in the form" indir "$PR" APEX_GIBSON=0 "$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh" p
+[ ! -d "$PR/.dev-plan-state" ] || fail "promote created state for an invalid plan"
+printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  - Blocked-by: Phase 1.2\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n  - Blocked-by: Phase 1.1\n' >"$PR/.claude/plans/p-plan.md"
+expect_refusal "promote a cyclic plan" "Blocked-by cycle" indir "$PR" APEX_GIBSON=0 "$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh" p
+printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n- [ ] **Gate 1→2** [gate:human] approve\n  - Acceptance: user types approve gate-1-2\n' >"$PR/.claude/plans/p-plan.md"
+has "Route dry-run: skipped" "$(cd "$PR" && APEX_GIBSON=0 "$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh" p 2>&1)" || fail "a valid plan did not promote"
+ok "promote-to-loop: planlib validation, cycles, gate semantics, route dry-run seam"
+
+export GG_SH="$EX/green-gate.sh"
+# 30. green-gate autodetects non-npm toolchains (a real stop signal outside npm).
+GG="$SMOKE_TMP/gg30"; mkdir -p "$GG/plans"; git init -q -b main "$GG"
+printf 'test:\n\t@test -f ok.txt\nlint:\n\t@true\n' >"$GG/Makefile"; touch "$GG/ok.txt"
+printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n' >"$GG/plans/g-plan.md"; git -C "$GG" add -A; git -C "$GG" commit -qm g
+G_OUT="$( (cd "$GG" && "$EX/init.sh" plans/g-plan.md) 2>&1 || true)"
+has "GATE_STEP: test PASS" "$G_OUT" || fail "green-gate did not pick up the Makefile test target"
+G_WT="$(st "$GG" plans/g-plan.md)/worktree"
+git -C "$G_WT" rm -q ok.txt && git -C "$G_WT" commit -qm break
+has "GATE_STEP: test NEW_FAILURE" "$( (cd "$GG" && "$EX/green-gate.sh" plans/g-plan.md check) 2>&1 || true)" || fail "green-gate missed a new failure in an autodetected step"
+PY30="$SMOKE_TMP/py30"; mkdir -p "$PY30/tests"; printf '[project]\nname="x"\n[tool.ruff]\n' >"$PY30/pyproject.toml"
+python3 - "$PY30" <<'PY' || fail "green-gate Python autodetect"
+import os, subprocess, sys
+wt = sys.argv[1]
+src = open(os.environ["GG_SH"]).read()
+block = src[src.index("python3 - \"$WT\" \"$step\" <<'PY'") + len("python3 - \"$WT\" \"$step\" <<'PY'\n"):]
+block = block[:block.index("\nPY\n")]
+got = {s: subprocess.run([sys.executable, "-c", block, wt, s], capture_output=True, text=True).stdout for s in ("test", "lint", "typecheck")}
+assert got["test"].endswith("pytest -q") and got["lint"].endswith("ruff check .") and got["typecheck"] == "", got
+PY
+ok "green-gate: Makefile and Python toolchains autodetected"
+
+# 31. gate.sh partner gates: APEX_PARTNER_NOTIFY_CMD gets the gate JSON; with
+#     no channel the gate degrades to a human gate (exit 2), never exit 4.
+GP="$SMOKE_TMP/gp31"; mkdir -p "$GP/plans"; git init -q -b main "$GP"
+printf -- '- [ ] **Gate 1→2** [gate:partner:x@y.com] partner approval\n  - Acceptance: partner approves in inbox\n' >"$GP/plans/g-plan.md"
+GS="$PLUGIN_ROOT/skills/apex-plan/scripts/gate.sh"
+rc=0; out="$(cd "$GP" && APEX_PARTNER_NOTIFY_CMD="cat >'$SMOKE_TMP/notified.json'" "$GS" plans/g-plan.md gate-1-2 2>&1)" || rc=$?
+[ "$rc" = 2 ] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["forUser"]=="x@y.com"' "$SMOKE_TMP/notified.json" || fail "partner notify command did not receive the gate (rc=$rc)"
+rc=0; out="$(cd "$GP" && "$GS" plans/g-plan.md gate-1-2 2>&1)" || rc=$?
+[ "$rc" = 2 ] && has "treating as \[gate:human\]" "$out" || fail "a partner gate with no channel did not degrade to a human gate (rc=$rc)"
+ok "gate.sh: partner notifier, human-gate fallback"
+
 echo ""
-echo "smoke passed: 28/28 checks"
+echo "smoke passed: 31/31 checks"

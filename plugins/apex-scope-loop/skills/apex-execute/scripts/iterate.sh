@@ -140,7 +140,8 @@ PATHS="$(field 'd["task"]["paths"]')"
 BUDGET="$(field 'd["task"]["budget_raw"]')"
 LANES="$(field 'd["lanes"]')"
 
-# One active plan (or ad-hoc route) per repository: an atomic mkdir lock.
+# One active plan (or ad-hoc route) per repository and session: the ACTIVE lock
+# (every check-and-write under flock; see apex_lock in _lib.sh).
 LOCK_RC=0; apex_lock_acquire "$PLAN_HASH" "$PLAN_ABS" "$LINE_NO" BUILD || LOCK_RC=$?
 if [[ "$LOCK_RC" -ne 0 && "$LOCK_RC" -ne 10 ]]; then
   echo "STATE: $STATE_DIR"

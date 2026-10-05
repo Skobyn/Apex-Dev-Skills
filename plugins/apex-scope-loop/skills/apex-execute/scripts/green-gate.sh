@@ -13,6 +13,11 @@
 #   2. <worktree>/.agents/gate.json   (The Gibson's machine-readable gate twin;
 #                                     a top-level "gate" object is also read)
 #   3. package.json "scripts" entries of the same name → `npm run -s <step>`
+#   4. toolchain autodetect: a Makefile target named after the step; Python
+#      (pyproject/setup.*: pytest when tests/ or pytest config exist, ruff and
+#      mypy when configured; via `uv run` when uv.lock is present and uv is
+#      installed, else `python3 -m`); Cargo (test, clippy, build); Go (test,
+#      vet, build)
 # Empty / unresolved steps are skipped and reported as such.
 #
 # Env:
@@ -67,8 +72,40 @@ if os.path.isfile(pj):
     try:
         if step in (json.load(open(pj)).get("scripts") or {}):
             print(f"npm run -s {step}", end="")
+            sys.exit(0)
     except Exception:
         pass
+# 4. Toolchain autodetect (ADR-0003): a real stop signal in non-npm repos.
+import re, shutil
+def has(*names):
+    return any(os.path.exists(os.path.join(wt, n)) for n in names)
+mk = os.path.join(wt, "Makefile")
+if os.path.isfile(mk):
+    try:
+        if re.search(rf"^{re.escape(step)}\s*:(?!=)", open(mk, errors="replace").read(), re.M):
+            print(f"make {step}", end="")
+            sys.exit(0)
+    except Exception:
+        pass
+cmds = {}
+if has("pyproject.toml", "setup.py", "setup.cfg"):
+    py = "uv run" if (has("uv.lock") and shutil.which("uv")) else "python3 -m"
+    cfg = ""
+    for n in ("pyproject.toml", "setup.cfg", "ruff.toml", ".ruff.toml", "mypy.ini", "pytest.ini", "tox.ini"):
+        p = os.path.join(wt, n)
+        if os.path.isfile(p):
+            cfg += open(p, errors="replace").read()
+    if has("tests", "test") or "[tool.pytest" in cfg or has("pytest.ini"):
+        cmds["test"] = f"{py} pytest -q"
+    if "[tool.ruff" in cfg or has("ruff.toml", ".ruff.toml"):
+        cmds["lint"] = f"{py} ruff check ."
+    if "[tool.mypy" in cfg or has("mypy.ini"):
+        cmds["typecheck"] = f"{py} mypy ."
+elif has("Cargo.toml"):
+    cmds = {"test": "cargo test --quiet", "lint": "cargo clippy --quiet", "build": "cargo build --quiet"}
+elif has("go.mod"):
+    cmds = {"test": "go test ./...", "lint": "go vet ./...", "build": "go build ./..."}
+print(cmds.get(step, ""), end="")
 PY
 }
 
