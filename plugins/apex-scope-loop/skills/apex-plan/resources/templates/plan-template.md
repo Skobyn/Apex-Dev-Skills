@@ -30,10 +30,10 @@ drift between code and intent without having to read the full ADR.
 
 | Directive | Meaning |
 |-----------|---------|
-| `Swarm: single [<agent-type>]` | One `Agent` tool invocation; orchestrator picks subagent_type |
-| `Swarm: multi <count> [<t1>, <t2>, ...]` | N parallel `Agent` calls **in one message** |
-| `Swarm: hierarchical <count> [<t1>, <t2>, ...]` | `mcp__claude-flow__swarm_init` + N spawns, queen-led |
-| `Swarm: mesh <count> [<t1>, <t2>, ...]` | Peer-to-peer mesh topology, no queen |
+| `Swarm: single [{agent-type}]` | One `Agent` tool invocation; orchestrator picks subagent_type |
+| `Swarm: multi {count} [{t1}, {t2}, ...]` | N parallel `Agent` calls **in one message** |
+| `Swarm: hierarchical {count} [{t1}, {t2}, ...]` | `mcp__claude-flow__swarm_init` + N spawns, queen-led |
+| `Swarm: mesh {count} [{t1}, {t2}, ...]` | Peer-to-peer mesh topology, no queen |
 
 If `Swarm:` is omitted, the orchestrator uses **hierarchical 6 [architect, coder, tester, reviewer, researcher, analyst]**.
 
@@ -43,7 +43,7 @@ If `Swarm:` is omitted, the orchestrator uses **hierarchical 6 [architect, coder
 |----------|----------|
 | `[gate:auto]` | Orchestrator runs the Acceptance check; advances on pass, halts on fail |
 | `[gate:human]` | Orchestrator halts; user must type the approval phrase from Acceptance |
-| `[gate:partner:<email>]` | Orchestrator writes inbox item to `<email>`, halts until consumed |
+| `[gate:partner:{email}]` | Orchestrator writes inbox item to `{email}`, halts until consumed |
 
 Gates are checkbox tasks, just like phases. The line between Phase N and Phase N+1 is a Gate task that blocks Phase N+1 via `Blocked-by:`.
 
@@ -61,7 +61,7 @@ Gates are checkbox tasks, just like phases. The line between Phase N and Phase N
 >
 > **Tags route topology** (see `apex-execute/docs/SWARM_TOPOLOGIES.md`):
 > `[backend]` `[frontend]` `[security]` `[perf]` `[ml-serving]` `[infra]`
-> `[research]` `[docs]` `[tests]` `[refactor]` `[tier:c]` `[gate:auto]` `[gate:human]` `[gate:partner:<email>]`
+> `[research]` `[docs]` `[tests]` `[refactor]` `[tier:c]` `[gate:auto]` `[gate:human]` `[gate:partner:{email}]`
 >
 > `[tier:c]` marks money / auth / consent-PII / security / schema / alerting / prod-data work: it gets a
 > six-lens + adversarial review and a human G12 approval before check-off (The Gibson harness).

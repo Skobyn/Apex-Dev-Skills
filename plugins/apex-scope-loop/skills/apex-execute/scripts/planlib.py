@@ -36,9 +36,10 @@ that what planlib runs is exactly what a CommonMark renderer shows as tasks
   - code fences open at column 0 (after a blank line when they follow a
     task) and close on their exact closer at column 0; no other fence-like
     line inside; never left open
-  - no raw HTML anywhere outside fenced code and code spans ('<' followed
-    by a letter, '/', '!' or '?': blocks, comments, tags, autolinks), and no
-    '$$' or ':::' block outside a blockquote or list item
+  - no '<' followed by a letter, '/', '!' or '?' anywhere outside a
+    top-level fenced code block (raw HTML blocks, comments, tags, autolinks;
+    code spans are not exempt), and no '$$' or ':::' block outside a
+    blockquote or list item
   - a task's block lines are indented at least 2 spaces
   - a checkbox anywhere except a column-0 task is refused (including one on
     the line after an empty list marker); blockquoted examples are allowed
@@ -108,7 +109,6 @@ BLOCK_LINE_RE = re.compile(r"^ {2,}\S")
 ESCAPED_BOX_RE = re.compile(r"^(?:\\\[|&#[xX]?0*(?:91|5[bB]);|&lbrack;|&lsqb;)"
                             r"|^\[[ xX]?(?:&[#\w]+;|\\)")
 RAW_HTML_RE = re.compile(r"<[A-Za-z/!?]")
-CODE_SPAN_RE = re.compile(r"(`+)(?:(?!\1).)+?\1")
 
 
 def strip_markers(line):
@@ -164,6 +164,14 @@ def scan(lines):
                 errs.append(f"line {n}: a task line sits inside the code fence opened at line {fence[2]} "
                             "(examples must not start with '- [ ]' at column 0)")
             continue
+        # Raw HTML anywhere outside a top-level fence (a block, a comment, a
+        # tag in a list item, a blockquote, mid-sentence, or inside backticks:
+        # code-span boundaries are subtle enough that none are trusted) is
+        # refused: renderers that pass HTML through emit it unbalanced, and
+        # it can hide a live task or show it as example text.
+        if RAW_HTML_RE.search(line):
+            errs.append(f"line {n}: '<' followed by a letter, '/', '!' or '?' (raw HTML) is not allowed in a plan "
+                        "outside a top-level fenced code block — write placeholders as {name}, or 'a < b' with spaces")
         rest, prefixed, quoted = strip_markers(line)
         in_blk = i in in_block
         if in_blk and not BLOCK_LINE_RE.match(line):
@@ -182,13 +190,6 @@ def scan(lines):
                 inside[i] = True
             else:
                 errs.append(f"line {n}: code fences must start at column 0, after a blank line when they follow a task")
-        elif RAW_HTML_RE.search(CODE_SPAN_RE.sub("", line)):
-            # Raw HTML anywhere outside code (a block, a comment, a tag in a
-            # list item, a blockquote or mid-sentence) is emitted unbalanced
-            # by renderers that pass HTML through, and can hide a live task
-            # or show it as example text.
-            errs.append(f"line {n}: raw HTML ('<' followed by a letter, '/', '!' or '?') is not allowed in a plan "
-                        "outside fenced code or `code spans`")
         elif EXT_BLOCK_RE.match(rest) and (not prefixed or in_blk):
             errs.append(f"line {n}: '$$' / ':::' block syntax is not allowed in a plan")
         # Any checkbox that is not a column-0 task is refused unless it is
