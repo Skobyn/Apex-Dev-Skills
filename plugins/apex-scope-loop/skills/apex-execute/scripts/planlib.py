@@ -31,7 +31,7 @@ LOOKAHEAD = 8
 TASK_RE = re.compile(r"^- \[( |x|X)\] (.*)$")
 ID_RE = re.compile(r"\*\*\s*(Phase\s+[0-9]+(?:\.[0-9]+)*|Gate\s+[^*\s—:]+(?:\s*(?:→|->)\s*[^*\s—:]+)?)")
 TAG_RE = re.compile(r"\[([a-z0-9:@._+-]+)\](?!\()")  # not markdown link text
-FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")   # CommonMark: at most 3 spaces of indent
 DIRECTIVE_RE = re.compile(r"^\s*(?:-\s*)?(Acceptance|Blocked-by|Swarm|Route|Paths|Budget):\s*(.*?)\s*$")
 
 ROUTE_VALUES = {
@@ -59,29 +59,50 @@ def norm_ref(text):
 
 def read_lines(path):
     """Split exactly as sed and grep -n count lines (\n only; a trailing \r is dropped)."""
-    data = open(path, encoding="utf-8", newline="").read()
+    data = open(path, encoding="utf-8", errors="replace", newline="").read()
     return [l[:-1] if l.endswith("\r") else l for l in data.split("\n")]
 
 
+class PlanError(Exception):
+    """The plan cannot be read safely; every command refuses it."""
+
+
 def scan_fences(lines):
-    """CommonMark-style fenced code blocks. Returns (in_fence, unclosed_line):
-    in_fence[i] is True for fence lines and their contents; unclosed_line is the
-    1-based line of a fence never closed (the plan is then invalid). A backtick
-    opener whose info string contains a backtick is inline code, not a fence;
-    a fence closes only on the same character, at least as long, nothing after."""
-    in_fence = [False] * len(lines)
+    """Hidden regions: CommonMark-style fenced code blocks and HTML comments.
+    Returns (hidden, unclosed): hidden[i] is True for lines inside either;
+    unclosed describes a fence or comment never closed (the plan is invalid).
+    A backtick opener whose info string contains a backtick is inline code; a
+    fence closes only on the same character, at least as long, nothing after."""
+    hidden = [False] * len(lines)
     opener = None                     # (char, length, line_no)
+    comment = None                    # line_no of an open <!--
     for i, line in enumerate(lines):
+        if comment is not None:
+            hidden[i] = True
+            if "-->" in line:
+                comment = None
+            continue
         m = FENCE_OPEN_RE.match(line)
         if opener is None:
             if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
                 opener = (m.group(1)[0], len(m.group(1)), i + 1)
-                in_fence[i] = True
+                hidden[i] = True
+                continue
+            start = line.find("<!--")
+            if start != -1 and "-->" not in line[start + 4:]:
+                comment = i + 1
+                hidden[i] = True
+            elif start != -1 and line.lstrip().startswith("<!--"):
+                hidden[i] = True      # a one-line comment hides its line
             continue
-        in_fence[i] = True
+        hidden[i] = True
         if m and m.group(1)[0] == opener[0] and len(m.group(1)) >= opener[1] and not m.group(2).strip():
             opener = None
-    return in_fence, (opener[2] if opener else None)
+    if opener:
+        return hidden, f"line {opener[2]}: code fence is never closed"
+    if comment:
+        return hidden, f"line {comment}: HTML comment is never closed"
+    return hidden, None
 
 
 def block_lines(lines, in_fence, i):
@@ -100,7 +121,9 @@ def block_lines(lines, in_fence, i):
 
 def parse(path):
     lines = read_lines(path)
-    in_fence, _ = scan_fences(lines)
+    in_fence, unclosed = scan_fences(lines)
+    if unclosed:
+        raise PlanError(unclosed)
     tasks = []
     for i, line in enumerate(lines):
         if in_fence[i]:
@@ -122,6 +145,10 @@ def parse(path):
             dm = DIRECTIVE_RE.match(lines[j])
             if dm:
                 key = key_map[dm.group(1)]
+                # Inside a fence or comment only Blocked-by counts (fail closed):
+                # example text never supplies the command that gets run.
+                if in_fence[j] and key != "blocked_by_raw":
+                    continue
                 if j - i > LOOKAHEAD:
                     late.append(f"{dm.group(1)} at line {j + 1}")
                 if key == "blocked_by_raw":
@@ -222,10 +249,10 @@ def cmd_remaining(path):
 
 
 def cmd_next(path, max_lanes):
-    _, unclosed = scan_fences(read_lines(path))
-    if unclosed:
-        return {"status": "ERROR", "error": f"line {unclosed}: code fence is never closed", "task": None, "lanes": [], "blocked": []}
-    tasks = parse(path)
+    try:
+        tasks = parse(path)
+    except PlanError as e:
+        return {"status": "ERROR", "error": str(e), "task": None, "lanes": [], "blocked": []}
     by_ref = index(tasks)
     blocked, ready = [], []
     for t in tasks:
@@ -264,7 +291,10 @@ def cmd_task(path, line_no):
 
 
 def cmd_validate(path):
-    tasks = parse(path)
+    try:
+        tasks = parse(path)
+    except PlanError as e:
+        return [str(e)]
     by_ref = index(tasks)
     errs = []
     seen = {}
@@ -318,9 +348,7 @@ def cmd_validate(path):
     # Directive lines that belong to no task's block (e.g. after a blank line),
     # and code fences left open (everything after them would be hidden).
     lines = read_lines(path)
-    in_fence, unclosed = scan_fences(lines)
-    if unclosed:
-        errs.append(f"line {unclosed}: code fence is never closed")
+    in_fence, _ = scan_fences(lines)
     owned = set()
     for t in tasks:
         owned.update(block_lines(lines, in_fence, t["line_no"] - 1))
@@ -356,6 +384,14 @@ def main(argv):
     if len(argv) < 3:
         print(__doc__, file=sys.stderr)
         return 2
+    try:
+        return run(argv)
+    except PlanError as e:
+        print(f"ERROR: plan is invalid: {e}", file=sys.stderr)
+        return 3
+
+
+def run(argv):
     cmd, path = argv[1], argv[2]
     if cmd == "next":
         import os

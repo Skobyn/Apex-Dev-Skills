@@ -43,7 +43,16 @@ BASE_BRANCH="$(read_field base_branch)"
 # --- Preconditions (nothing is modified until all pass) ----------------------
 
 # 1. Final gate: the plan must be fully checked unless --force.
-REMAINING="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$PLAN_ABS")"   # same rules as iterate.sh
+#    Same rules as iterate.sh: an invalid plan is never landed, and "done" is
+#    planlib's count. Anything unexpected refuses (fail closed); --force does
+#    not bypass an invalid plan.
+if ! PLAN_ERRORS="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" validate "$PLAN_ABS" 2>&1)"; then
+  echo "ERROR: plan is invalid — refusing to land:" >&2
+  printf '%s\n' "$PLAN_ERRORS" | head -10 | sed 's/^/         /' >&2
+  exit 1
+fi
+REMAINING="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$PLAN_ABS" 2>/dev/null || true)"
+[[ "$REMAINING" =~ ^[0-9]+$ ]] || { echo "ERROR: could not count the plan's remaining tasks — refusing to land." >&2; exit 1; }
 if [[ "$REMAINING" -gt 0 ]] && [[ "$FORCE" != "--force" ]]; then
   echo "ERROR: plan has $REMAINING unchecked task(s) — final gate not passed. Refusing to land." >&2
   echo "       Override (advanced): land.sh $PLAN --force" >&2

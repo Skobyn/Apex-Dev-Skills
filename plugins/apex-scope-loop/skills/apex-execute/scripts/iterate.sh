@@ -114,6 +114,8 @@ if [[ "$SEL_STATUS" == "COMPLETE" ]]; then
   exit 0
 fi
 
+# Unreachable for a plan that passed validate (an all-blocked plan needs a
+# cycle or an unknown reference); kept as a fail-closed guard.
 if [[ "$SEL_STATUS" == "BLOCKED" ]]; then
   echo "STATE: $STATE_DIR"
   echo "STATUS: BLOCKED"

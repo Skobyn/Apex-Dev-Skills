@@ -119,7 +119,9 @@ else
 fi
 
 # Count tasks (lines starting with "- [ ]" or "- [x]")
-read -r TOTAL DONE < <(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" counts "$PLAN_ABS")
+COUNTS="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" counts "$PLAN_ABS")" \
+  || { echo "ERROR: the plan cannot be parsed (planlib.py validate $PLAN_ABS)" >&2; exit 1; }
+read -r TOTAL DONE <<<"$COUNTS"
 
 # Written with json.dump so paths containing quotes or backslashes stay valid.
 python3 - "$CHECKPOINT" "$PLAN_ABS" "$PLAN_HASH" "$NAMESPACE" "$TOTAL" "$DONE" "$WT_PATH" "$WT_BRANCH" "$BASE_BRANCH" \

