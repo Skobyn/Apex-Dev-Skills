@@ -209,7 +209,8 @@ apex_dispatch_root() {
 # Every read-check-write of it happens under an exclusive flock on
 # $STATE_BASE/.active.lock, so two callers can never both win. An owner whose
 # stage is DONE, or whose plan has landed, is reclaimed; anything unreadable
-# or partial counts as held (fail closed). The same owner re-acquires freely.
+# or partial counts as held (fail closed). The same plan in the same session
+# re-acquires freely; the same plan from another session is BUSY.
 # APEX_FORCE_UNLOCK=1 reclaims any lock (manual recovery only).
 apex_lock_dir() { printf '%s' "$STATE_BASE/ACTIVE"; }
 
@@ -270,7 +271,10 @@ with lk:
     elif op == "acquire":
         oid, plan, line, stage, kind = args
         if o is not None and force != "1":
-            if o == {} or (o.get("id") != oid and not stale(o)):
+            # Held by another plan, or by this plan in another session
+            # (spec §5.3 D: plan_hash + session_id), unless stale.
+            other_session = bool(session) and bool(o.get("session_id")) and o.get("session_id") != session
+            if o == {} or ((o.get("id") != oid or other_session) and not stale(o)):
                 sys.exit(10)   # BUSY (an uncaught error exits 1: never mistaken for BUSY)
         same = bool(o) and o.get("id") == oid and str(o.get("line_no")) == line
         n = {"kind": kind, "id": oid, "line_no": int(line) if line.isdigit() else line, "stage": stage,

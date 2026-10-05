@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """planlib.py — the one parser for apex-scope-loop plan files (ADR-0003).
 
-Used by iterate.sh (task selection), promote-to-loop.sh (validation) and
-apex-dispatch's route.sh (task features), so the three never disagree about
-what a task, a tag, a directive or a Blocked-by reference means.
+Used by iterate.sh (task selection and the validate gate), land.sh and init.sh
+(counting), and apex-dispatch's route.sh (task features), so they never
+disagree about what a task, a tag, a directive or a Blocked-by reference means.
 
 Usage:
   planlib.py next PLAN            JSON: the next unchecked, unblocked task, lanes, blocked tasks
@@ -11,28 +11,46 @@ Usage:
   planlib.py validate PLAN        prints one error per line; exit 1 if any
   planlib.py remaining PLAN       number of unchecked tasks (the one definition of done)
   planlib.py counts PLAN          "<total> <checked>"
+  Any command on an unreadable plan exits 3 ("ERROR: plan is invalid: ...").
 
-Task line:      - [ ] **Phase 2.1** [backend][api] Title
-Directives:     indented "- Key: value" lines (up to LOOKAHEAD lines, stopping
-                at a blank line or the next checkbox):
-                Acceptance, Blocked-by, Swarm, Route, Paths, Budget
-Blocked-by:     comma-separated; phase-2.1 | Phase 2.1 | **Phase 2.1** |
-                gate-2-3 | Gate 2→3 | Gate 2-3
-Route:          class=… provider=… fanout=… review=…   (may only tighten)
-Paths:          comma-separated globs (required when fanout=lanes)
-Budget:         usd=<n> spawns=<n> minutes=<n>          (may only lower)
+The grammar is deliberately small, and nothing in it hides a line:
+
+  Task        a line starting at column 0 with "- [ ]" or "- [x]" and
+              whitespace: always a task, wherever it appears. A checkbox in any
+              other list form ("* [ ]", "1. [ ]", up to 3 spaces of indent) is a
+              validation error, never silently skipped.
+                - [ ] **Phase 2.1** [backend][api] Title
+  Block       the lines after a task up to the next blank line or task.
+  Directive   a block line "- Key: value" indented 0-4 spaces, Key one of
+              Acceptance, Blocked-by, Swarm, Route, Paths, Budget. Deeper lines
+              are notes, except that "Blocked-by:" counts at any depth (fail closed).
+  Blocked-by  comma-separated; phase-2.1 | Phase 2.1 | **Phase 2.1** |
+              gate-2-3 | Gate 2→3 | Gate 2-3. Repeated lines merge.
+  Route       class=… provider=… fanout=… review=…   (may only tighten)
+  Paths       comma-separated repo-relative globs (required when fanout=lanes)
+  Budget      usd=<n> spawns=<n> minutes=<n>          (may only lower)
+
+Code fences and HTML comments are detected only to refuse ambiguity: a task
+line inside one, a directive inside one within a task block, or one left open
+makes the plan invalid. Rendering subtleties can therefore produce an error,
+never a task that runs or disappears unseen.
 """
 import json
+import os
 import posixpath
 import re
 import sys
 
 LOOKAHEAD = 8
-TASK_RE = re.compile(r"^- \[( |x|X)\] (.*)$")
+TASK_RE = re.compile(r"^- \[( |x|X)\][ \t]+(.*)$")
+LOOSE_CHECKBOX_RE = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+\[( |x|X)\]")
 ID_RE = re.compile(r"\*\*\s*(Phase\s+[0-9]+(?:\.[0-9]+)*|Gate\s+[^*\s—:]+(?:\s*(?:→|->)\s*[^*\s—:]+)?)")
 TAG_RE = re.compile(r"\[([a-z0-9:@._+-]+)\](?!\()")  # not markdown link text
-FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")   # CommonMark: at most 3 spaces of indent
-DIRECTIVE_RE = re.compile(r"^\s*(?:-\s*)?(Acceptance|Blocked-by|Swarm|Route|Paths|Budget):\s*(.*?)\s*$")
+KEYS = "Acceptance|Blocked-by|Swarm|Route|Paths|Budget"
+DIRECTIVE_RE = re.compile(r"^ {0,4}[-*][ \t]+(" + KEYS + r"):\s*(.*?)\s*$")
+ANY_DIRECTIVE_RE = re.compile(r"^\s*(?:[-*+][ \t]+)?(" + KEYS + r"):")
+BLOCKED_ANY_RE = re.compile(r"^\s*(?:[-*+][ \t]+)?Blocked-by:\s*(.*?)\s*$")
+FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 ROUTE_VALUES = {
     "class": {"auto", "docs", "tests", "mechanical", "feature", "bugfix", "migration", "security"},
@@ -41,6 +59,10 @@ ROUTE_VALUES = {
     "review": {"auto", "solo", "six-lens", "fanout"},
 }
 BUDGET_KEYS = {"usd", "spawns", "minutes"}
+
+
+class PlanError(Exception):
+    """The plan cannot be read safely; every command refuses it."""
 
 
 def norm_ref(text):
@@ -58,62 +80,49 @@ def norm_ref(text):
 
 
 def read_lines(path):
-    """Split exactly as sed and grep -n count lines (\n only; a trailing \r is dropped)."""
+    """Split exactly as sed and grep -n count lines (\\n only; a trailing \\r is dropped)."""
     data = open(path, encoding="utf-8", errors="replace", newline="").read()
     return [l[:-1] if l.endswith("\r") else l for l in data.split("\n")]
 
 
-class PlanError(Exception):
-    """The plan cannot be read safely; every command refuses it."""
-
-
-def scan_fences(lines):
-    """Hidden regions: CommonMark-style fenced code blocks and HTML comments.
-    Returns (hidden, unclosed): hidden[i] is True for lines inside either;
-    unclosed describes a fence or comment never closed (the plan is invalid).
-    A backtick opener whose info string contains a backtick is inline code; a
-    fence closes only on the same character, at least as long, nothing after."""
-    hidden = [False] * len(lines)
-    opener = None                     # (char, length, line_no)
-    comment = None                    # line_no of an open <!--
+def regions(lines):
+    """Lines inside code fences or HTML comments, detected generously (any
+    indentation; a comment opens at a line-start "<!--"). Used only to refuse
+    ambiguity, never to hide anything. Returns (inside, unclosed)."""
+    inside = [False] * len(lines)
+    fence = None                      # (char, length, line_no)
+    comment = None                    # line_no
     for i, line in enumerate(lines):
         if comment is not None:
-            hidden[i] = True
+            inside[i] = True
             if "-->" in line:
                 comment = None
             continue
-        m = FENCE_OPEN_RE.match(line)
-        if opener is None:
+        m = FENCE_RE.match(line)
+        if fence is None:
             if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
-                opener = (m.group(1)[0], len(m.group(1)), i + 1)
-                hidden[i] = True
-                continue
-            start = line.find("<!--")
-            if start != -1 and "-->" not in line[start + 4:]:
-                comment = i + 1
-                hidden[i] = True
-            elif start != -1 and line.lstrip().startswith("<!--"):
-                hidden[i] = True      # a one-line comment hides its line
+                fence = (m.group(1)[0], len(m.group(1)), i + 1)
+                inside[i] = True
+            elif line.lstrip().startswith("<!--"):
+                inside[i] = True
+                if "-->" not in line.lstrip()[4:]:
+                    comment = i + 1
             continue
-        hidden[i] = True
-        if m and m.group(1)[0] == opener[0] and len(m.group(1)) >= opener[1] and not m.group(2).strip():
-            opener = None
-    if opener:
-        return hidden, f"line {opener[2]}: code fence is never closed"
+        inside[i] = True
+        if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2).strip():
+            fence = None
+    if fence:
+        return inside, f"line {fence[2]}: code fence is never closed"
     if comment:
-        return hidden, f"line {comment}: HTML comment is never closed"
-    return hidden, None
+        return inside, f"line {comment}: HTML comment is never closed"
+    return inside, None
 
 
-def block_lines(lines, in_fence, i):
-    """Line indexes of task i's block: up to the next blank line or checkbox
-    outside a fence. Fences inside the block neither end it nor hide its
-    directives (a Blocked-by is never lost to formatting: fail closed)."""
+def block(lines, i):
+    """Line indexes of the block after task line i (to a blank line or task)."""
     out = []
     j = i + 1
-    while j < len(lines):
-        if not in_fence[j] and (not lines[j].strip() or TASK_RE.match(lines[j])):
-            break
+    while j < len(lines) and lines[j].strip() and not TASK_RE.match(lines[j]):
         out.append(j)
         j += 1
     return out
@@ -121,13 +130,15 @@ def block_lines(lines, in_fence, i):
 
 def parse(path):
     lines = read_lines(path)
-    in_fence, unclosed = scan_fences(lines)
+    inside, unclosed = regions(lines)
     if unclosed:
         raise PlanError(unclosed)
+    for i, line in enumerate(lines):
+        if TASK_RE.match(line) and inside[i]:
+            raise PlanError(f"line {i + 1}: a task line sits inside a code fence or HTML comment "
+                            "(examples must not start with '- [ ]' at column 0)")
     tasks = []
     for i, line in enumerate(lines):
-        if in_fence[i]:
-            continue                     # examples inside code fences are never tasks
         m = TASK_RE.match(line)
         if not m:
             continue
@@ -138,25 +149,25 @@ def parse(path):
         d = {"acceptance": "", "blocked_by_raw": [], "swarm": "", "route_raw": "", "paths_raw": "", "budget_raw": ""}
         key_map = {"Acceptance": "acceptance", "Blocked-by": "blocked_by_raw", "Swarm": "swarm",
                    "Route": "route_raw", "Paths": "paths_raw", "Budget": "budget_raw"}
-        repeated, late = [], []
-        # Every directive in the task's block counts (Blocked-by lines merge:
-        # fail closed); one beyond LOOKAHEAD lines or repeated is a validation error.
-        for j in block_lines(lines, in_fence, i):
+        repeated, late, in_example = [], [], []
+        for j in block(lines, i):
+            bm = BLOCKED_ANY_RE.match(lines[j])
             dm = DIRECTIVE_RE.match(lines[j])
+            if bm:                                # Blocked-by at any depth, in or out of examples
+                d["blocked_by_raw"].append(bm.group(1))
+                if j - i > LOOKAHEAD:
+                    late.append(f"Blocked-by at line {j + 1}")
+                continue
+            if inside[j] and ANY_DIRECTIVE_RE.match(lines[j]):
+                in_example.append(j + 1)         # never used; an error in validate
+                continue
             if dm:
                 key = key_map[dm.group(1)]
-                # Inside a fence or comment only Blocked-by counts (fail closed):
-                # example text never supplies the command that gets run.
-                if in_fence[j] and key != "blocked_by_raw":
-                    continue
                 if j - i > LOOKAHEAD:
                     late.append(f"{dm.group(1)} at line {j + 1}")
-                if key == "blocked_by_raw":
-                    d[key].append(dm.group(2))
-                else:
-                    if d[key]:
-                        repeated.append(dm.group(1))
-                    d[key] = dm.group(2)
+                if d[key]:
+                    repeated.append(dm.group(1))
+                d[key] = dm.group(2)
         acc = d["acceptance"]
         if len(acc) >= 2 and acc.startswith("`") and acc.endswith("`") and acc.count("`") == 2:
             acc = acc[1:-1]
@@ -177,6 +188,7 @@ def parse(path):
             "budget": parse_kv(d["budget_raw"]),
             "_repeated": repeated,
             "_late": late,
+            "_in_example": in_example,
         })
     return tasks
 
@@ -215,8 +227,8 @@ def blockers(task, by_ref):
 
 
 def glob_prefix(g):
-    """Literal directory-safe prefix of a repo-relative glob, or None when the
-    glob cannot be bounded (absolute, escapes with .., or starts with a wildcard)."""
+    """Literal prefix of a repo-relative glob (case-folded), or None when the
+    glob cannot be bounded (absolute, contains a '..' segment, backslashes)."""
     g = g.strip()
     # Reject on the raw text: normpath would collapse "**/.." or "[.][.]/.."
     # into a path that looks bounded but is not.
@@ -225,7 +237,7 @@ def glob_prefix(g):
     norm = posixpath.normpath(g)
     m = re.search(r"[*?\[{]", norm)
     prefix = norm[: m.start()] if m else norm
-    return prefix.lower()   # case-insensitive filesystems: compare case-folded
+    return prefix.lower()
 
 
 def disjoint(paths_a, paths_b):
@@ -240,7 +252,7 @@ def disjoint(paths_a, paths_b):
 
 
 def public(t):
-    return {k: v for k, v in t.items() if k not in ("ref", "_repeated", "_late")}
+    return {k: v for k, v in t.items() if k not in ("ref",) and not k.startswith("_")}
 
 
 def cmd_remaining(path):
@@ -295,8 +307,14 @@ def cmd_validate(path):
         tasks = parse(path)
     except PlanError as e:
         return [str(e)]
+    lines = read_lines(path)
+    inside, _ = regions(lines)
     by_ref = index(tasks)
     errs = []
+    for j, line in enumerate(lines):
+        if LOOSE_CHECKBOX_RE.match(line) and not TASK_RE.match(line):
+            errs.append(f"line {j + 1}: checkbox not in the task form '- [ ] ' at column 0 "
+                        "(it would not be a task; make it one or remove the checkbox)")
     seen = {}
     for t in tasks:
         where = f"line {t['line_no']}"
@@ -308,6 +326,9 @@ def cmd_validate(path):
             errs.append(f"{where}: {k}: given more than once")
         for k in t["_late"]:
             errs.append(f"{where}: {k} is beyond the {LOOKAHEAD}-line look-ahead; move it up")
+        for n in t["_in_example"]:
+            errs.append(f"line {n}: directive inside a code example or comment in a task block "
+                        "(move the example out of the task, or it could be mistaken for the task's own)")
         for p in t["paths"]:
             if glob_prefix(p) is None:
                 errs.append(f"{where}: Paths entry '{p}' must be repo-relative without '..'")
@@ -345,15 +366,15 @@ def cmd_validate(path):
                         raise ValueError
                 except ValueError:
                     errs.append(f"{where}: Budget {k}={v} must be a positive number")
-    # Directive lines that belong to no task's block (e.g. after a blank line),
-    # and code fences left open (everything after them would be hidden).
-    lines = read_lines(path)
-    in_fence, _ = scan_fences(lines)
+    # Directive-like lines that belong to no task's block (e.g. after a blank
+    # line). A Blocked-by is an error anywhere; others outside examples.
     owned = set()
     for t in tasks:
-        owned.update(block_lines(lines, in_fence, t["line_no"] - 1))
+        owned.update(block(lines, t["line_no"] - 1))
     for j, line in enumerate(lines):
-        if not in_fence[j] and DIRECTIVE_RE.match(line) and line[:1].isspace() and j not in owned:
+        if j in owned or TASK_RE.match(line):
+            continue
+        if BLOCKED_ANY_RE.match(line) or (not inside[j] and DIRECTIVE_RE.match(line) and line[:1].isspace()):
             errs.append(f"line {j + 1}: directive outside any task block (a blank line separates it from its task?)")
     # Cycle check over Blocked-by edges.
     graph = {}
@@ -394,7 +415,6 @@ def main(argv):
 def run(argv):
     cmd, path = argv[1], argv[2]
     if cmd == "next":
-        import os
         print(json.dumps(cmd_next(path, int(os.environ.get("APEX_MAX_LANES", "3")))))
         return 0
     if cmd == "remaining":
