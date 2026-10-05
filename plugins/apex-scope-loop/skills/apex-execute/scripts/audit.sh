@@ -24,7 +24,7 @@ TOTAL=$(awk '/^- \[[ x]\]/{c++} END{print c+0}' "$PLAN")
 
 # Worktree the plan executes in (commits land on its branch, not the plan file).
 WT_BRANCH=""
-[[ -f "$CHECKPOINT" ]] && WT_BRANCH="$(grep -o '"worktree_branch": "[^"]*"' "$CHECKPOINT" | head -1 | sed 's/.*: "//; s/"$//')"
+[[ -f "$CHECKPOINT" ]] && WT_BRANCH="$(read_field worktree_branch)"
 
 # Recently completed (last 24h). Prefer the worktree branch where code lands;
 # fall back to the plan file's history if no worktree branch is recorded.

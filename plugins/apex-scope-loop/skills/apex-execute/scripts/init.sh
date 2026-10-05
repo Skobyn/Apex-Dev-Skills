@@ -29,6 +29,17 @@ if ! git rev-parse --git-dir >/dev/null 2>&1 && [[ "${APEX_NO_WORKTREE:-0}" != "
   exit 1
 fi
 
+# The caller's checkout and the plan must belong to one repository: state is
+# keyed on the plan's repo, git operations run in the caller's.
+CALLER_COMMON="$(apex_common_dir "$REPO_ROOT")"
+PLAN_COMMON="$( [[ -n "$PLAN_TOP" ]] && apex_common_dir "$PLAN_TOP" || true)"
+if [[ -n "$CALLER_COMMON" && -n "$PLAN_COMMON" && "$CALLER_COMMON" != "$PLAN_COMMON" ]]; then
+  echo "ERROR: the plan lives in a different repository than this checkout." >&2
+  echo "       plan repo: $PLAN_COMMON   this checkout: $CALLER_COMMON" >&2
+  echo "       Run init.sh from a checkout of the plan's repository." >&2
+  exit 1
+fi
+
 mkdir -p "$STATE_DIR"
 
 # --- Resolve worktree branch + base branch -----------------------------------
@@ -45,6 +56,26 @@ if [[ -z "$BASE_BRANCH" ]]; then
   else
     BASE_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
   fi
+fi
+
+# --- An existing plan run is never silently taken over -----------------------
+# State is shared by every checkout of the repository, so a second init for the
+# same plan from another checkout would otherwise retarget the run (and reset
+# its reviews, approvals and error budget). Same base and repository: re-init
+# keeps the run's reviews, approvals and counters (and recreates a missing
+# worktree). Different base or repository: refuse. A landed run, or
+# APEX_INIT_FORCE=1, starts over.
+KEEP_RUN=0
+if [[ -f "$CHECKPOINT" && "${APEX_INIT_FORCE:-0}" != "1" && "$(read_field landed)" != "True" ]]; then
+  PREV_BASE="$(read_field base_branch)"
+  PREV_COMMON="$(read_field git_common_dir)"
+  if [[ "$PREV_BASE" != "$BASE_BRANCH" || ( -n "$PREV_COMMON" && "$PREV_COMMON" != "$CALLER_COMMON" ) ]]; then
+    echo "ERROR: this plan is already initialized against base '$PREV_BASE'${PREV_COMMON:+ in $PREV_COMMON}." >&2
+    echo "       Refusing to retarget it to '$BASE_BRANCH'${CALLER_COMMON:+ in $CALLER_COMMON}." >&2
+    echo "       Land or abandon that run first, or set APEX_INIT_FORCE=1 to start over (discards its reviews and approvals)." >&2
+    exit 1
+  fi
+  KEEP_RUN=1
 fi
 
 # --- Create (or reuse) the isolated execution worktree -----------------------
@@ -70,17 +101,28 @@ DONE=$(awk '/^- \[x\]/{c++} END{print c+0}' "$PLAN")
 
 # Written with json.dump so paths containing quotes or backslashes stay valid.
 python3 - "$CHECKPOINT" "$PLAN_ABS" "$PLAN_HASH" "$NAMESPACE" "$TOTAL" "$DONE" "$WT_PATH" "$WT_BRANCH" "$BASE_BRANCH" \
-  "$([[ "${APEX_GIBSON:-1}" == "0" ]] && echo off || echo gibson)" <<'PY'
-import datetime, json, sys
-path, plan, h, ns, total, done, wt, br, base, harness = sys.argv[1:]
-json.dump({
+  "$([[ "${APEX_GIBSON:-1}" == "0" ]] && echo off || echo gibson)" "$CALLER_COMMON" "$KEEP_RUN" <<'PY'
+import datetime, json, os, sys
+path, plan, h, ns, total, done, wt, br, base, harness, common, keep = sys.argv[1:]
+prev = {}
+if keep == "1" and os.path.isfile(path):
+    prev = json.load(open(path))
+fresh = {
     "plan_path": plan, "plan_hash": h, "namespace": ns,
     "initialized_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "total_tasks": int(total), "completed_tasks": int(done), "current_phase": None,
-    "worktree_path": wt, "worktree_branch": br, "base_branch": base, "landed": False,
+    "worktree_path": wt, "worktree_branch": br, "base_branch": base, "git_common_dir": common, "landed": False,
     "harness": harness, "consecutive_failures": 0, "tiers": {}, "reviews": {}, "approvals": {},
     "last_verdict": None, "last_iteration_at": None, "halted": False, "halt_reason": None,
-}, open(path, "w"), indent=2)
+}
+# Structural fields always come from this init; run history survives a re-init.
+structural = ("plan_path", "plan_hash", "namespace", "total_tasks", "completed_tasks",
+              "worktree_path", "worktree_branch", "base_branch", "git_common_dir", "harness")
+out = dict(fresh)
+for k, v in prev.items():
+    if k not in structural:
+        out[k] = v
+json.dump(out, open(path, "w"), indent=2)
 PY
 
 echo "[init] state -> $STATE_DIR/checkpoint.json"

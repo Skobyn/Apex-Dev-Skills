@@ -41,13 +41,6 @@ apex_resolve "$PLAN"
 WORKTREE="$(read_field worktree_path)"
 WT_BRANCH="$(read_field worktree_branch)"
 
-# Enforce worktree-bound execution: if a worktree was recorded, it must exist.
-if [[ -n "$WORKTREE" && ! -d "$WORKTREE" ]]; then
-  echo "STATE: $STATE_DIR"
-  echo "STATUS: ERROR worktree missing at $WORKTREE — re-run init.sh to recreate it"
-  exit 1
-fi
-
 # Kill switch — checked every iteration, before anything else is dispatched.
 while IFS= read -r f; do
   if [[ -f "$f" ]]; then
@@ -64,11 +57,18 @@ if [[ "${APEX_HALT:-0}" == "1" ]]; then
   exit 0
 fi
 
+# Enforce worktree-bound execution: if a worktree was recorded, it must exist.
+if [[ -n "$WORKTREE" && ! -d "$WORKTREE" ]]; then
+  echo "STATE: $STATE_DIR"
+  echo "STATUS: ERROR worktree missing at $WORKTREE — re-run init.sh to recreate it"
+  exit 1
+fi
+
 # Halted?
-if grep -q '"halted": true' "$CHECKPOINT"; then
+if [[ "$(read_field halted)" == "True" ]]; then
   echo "STATE: $STATE_DIR"
   echo "STATUS: HALTED"
-  echo "HALT_REASON: $(grep -o '"halt_reason": "[^"]*"' "$CHECKPOINT" | sed 's/.*: "//; s/"$//' || true)"
+  echo "HALT_REASON: $(read_field halt_reason)"
   exit 0
 fi
 
@@ -141,5 +141,5 @@ if [[ "${APEX_GIBSON:-1}" != "0" ]]; then
 else
   echo "HARNESS: off"
 fi
-echo "CONSECUTIVE_FAILURES: $(grep -o '"consecutive_failures": [0-9]*' "$CHECKPOINT" | grep -o '[0-9]*$' || echo 0)"
+echo "CONSECUTIVE_FAILURES: $(read_field consecutive_failures || true)"
 echo "STATUS: READY"

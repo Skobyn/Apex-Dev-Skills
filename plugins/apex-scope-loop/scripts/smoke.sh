@@ -162,5 +162,31 @@ cp "$R/.claude/plans/demo-plan.md" "$NG/a/plan.md"; cp "$R/.claude/plans/demo-pl
 [ "$(st "$NG" a/plan.md)" != "$(st "$NG" b/plan.md)" ] || fail "two plans named plan.md share one state dir outside git"
 ok "non-git mode: init/iterate agree and same-named plans do not collide"
 
+# 19. A run is never silently taken over: re-init from another checkout with a
+#     different base refuses; same base keeps the run's history; a plan from
+#     another repository refuses.
+( cd "$LW" && APEX_BASE_BRANCH=linked "$EX/init.sh" "$R/.claude/plans/demo-plan.md" >/dev/null 2>&1 ) \
+  && fail "init.sh retargeted an initialized plan to another base branch"
+python3 - "$S_BASE/checkpoint.json" <<'PY'
+import json, sys
+p = sys.argv[1]; s = json.load(open(p)); s.setdefault("reviews", {})["99"] = {"sha": "x", "verdict": "APPROVE"}; json.dump(s, open(p, "w"))
+PY
+( cd "$R" && APEX_GIBSON=0 "$EX/init.sh" .claude/plans/demo-plan.md >/dev/null 2>&1 ) || fail "same-base re-init failed"
+python3 -c 'import json,sys; sys.exit(0 if "99" in json.load(open(sys.argv[1])).get("reviews",{}) else 1)' "$S_BASE/checkpoint.json" \
+  || fail "same-base re-init discarded the run's reviews"
+O="$SMOKE_TMP/other"; git init -q -b main "$O"; git -C "$O" commit -q --allow-empty -m o
+( cd "$O" && APEX_GIBSON=0 "$EX/init.sh" "$R/.claude/plans/demo-plan.md" >/dev/null 2>&1 ) \
+  && fail "init.sh accepted a plan from a different repository than the caller's checkout"
+ok "init refuses takeover and cross-repo plans; re-init keeps run history"
+
+# 20. APEX_STATE_ROOT moves state only, is made absolute, and is keyed per repository.
+cp "$R/.claude/plans/demo-plan.md" "$R/.claude/plans/rel-plan.md"
+( cd "$R" && APEX_STATE_ROOT=rel-root APEX_GIBSON=0 "$EX/init.sh" .claude/plans/rel-plan.md >/dev/null 2>&1 ) || fail "init.sh with a relative APEX_STATE_ROOT failed"
+A1="$(cd "$R" && APEX_STATE_ROOT=rel-root "$EX/iterate.sh" .claude/plans/rel-plan.md | sed -n 's/^STATE: //p')"
+A2="$(cd "$R/.claude" && APEX_STATE_ROOT="$R/rel-root" "$EX/iterate.sh" plans/rel-plan.md | sed -n 's/^STATE: //p')"
+case "$A1" in /*) ;; *) fail "APEX_STATE_ROOT state dir is not absolute: $A1" ;; esac
+[ -n "$A1" ] && [ "$A1" = "$A2" ] || fail "relative APEX_STATE_ROOT split state: $A1 vs $A2"
+ok "APEX_STATE_ROOT is absolute and stable across working directories"
+
 echo ""
-echo "smoke passed: 18/18 checks"
+echo "smoke passed: 20/20 checks"
