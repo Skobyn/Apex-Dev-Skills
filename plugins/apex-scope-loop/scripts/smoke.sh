@@ -128,14 +128,39 @@ EX="$PLUGIN_ROOT/skills/apex-execute/scripts"
   || fail "promote-to-loop.sh failed in a repo with no .claude/skills copy: $(tail -3 "$SMOKE_TMP/promote.log")"
 ok "promote-to-loop resolves init.sh plugin-relatively (no .claude/skills copy)"
 
-S_BASE="$(cd "$R" && "$EX/iterate.sh" .claude/plans/demo-plan.md | sed -n 's/^STATE: //p')"
-WTP="$(cd "$R" && "$EX/iterate.sh" .claude/plans/demo-plan.md | sed -n 's/^WORKTREE: //p')"
+st() { # st DIR PLAN — the STATE line iterate.sh reports for PLAN when run from DIR
+  ( cd "$1" && "$EX/iterate.sh" "$2" 2>&1 | sed -n 's/^STATE: //p' | head -1 ) || true
+}
+S_BASE="$(st "$R" .claude/plans/demo-plan.md)"
+WTP="$( (cd "$R" && "$EX/iterate.sh" .claude/plans/demo-plan.md 2>&1 | sed -n 's/^WORKTREE: //p') || true)"
 [ -n "$WTP" ] && [ -d "$WTP" ] || fail "iterate.sh did not report a plan worktree"
-S_WT_PLAN="$(cd "$WTP" && "$EX/iterate.sh" "$WTP/.claude/plans/demo-plan.md" | sed -n 's/^STATE: //p')"
-S_WT_CWD="$(cd "$WTP" && "$EX/iterate.sh" "$R/.claude/plans/demo-plan.md" | sed -n 's/^STATE: //p')"
-[ -n "$S_BASE" ] && [ "$S_BASE" = "$S_WT_PLAN" ] && [ "$S_BASE" = "$S_WT_CWD" ] \
-  || fail "state root differs across checkouts: base=$S_BASE worktree-plan=$S_WT_PLAN worktree-cwd=$S_WT_CWD"
-ok "one state dir from the base checkout and from inside the worktree"
+S_WT_PLAN="$(st "$WTP" "$WTP/.claude/plans/demo-plan.md")"
+S_WT_CWD="$(st "$WTP" "$R/.claude/plans/demo-plan.md")"
+ln -s "$R" "$SMOKE_TMP/link"
+S_LINK="$(st "$SMOKE_TMP/link" .claude/plans/demo-plan.md)"
+[ -n "$S_BASE" ] && [ "$S_BASE" = "$S_WT_PLAN" ] && [ "$S_BASE" = "$S_WT_CWD" ] && [ "$S_BASE" = "$S_LINK" ] \
+  || fail "state dir differs: base=$S_BASE worktree-plan=$S_WT_PLAN worktree-cwd=$S_WT_CWD symlink=$S_LINK"
+ok "one state dir from the base checkout, the plan worktree and a symlinked path"
+
+# 17. Kill switches: a HALT in the checkout you run from, and a shared HALT, both stop the loop.
+LW="$SMOKE_TMP/linked"; git -C "$R" worktree add -q -b linked "$LW" main
+mkdir -p "$LW/gibson" && touch "$LW/gibson/HALT"
+( cd "$LW" && "$EX/iterate.sh" "$R/.claude/plans/demo-plan.md" | grep -q '^STATUS: HALTED' ) \
+  || fail "gibson/HALT in the linked worktree being run from was ignored"
+rm -f "$LW/gibson/HALT"; touch "$R/.dev-plan-state/HALT"
+( cd "$LW" && "$EX/iterate.sh" "$R/.claude/plans/demo-plan.md" | grep -q '^STATUS: HALTED' ) \
+  || fail "shared .dev-plan-state/HALT was ignored from a linked worktree"
+rm -f "$R/.dev-plan-state/HALT"
+ok "checkout-local and shared kill switches both halt"
+
+# 18. Outside git (APEX_NO_WORKTREE=1): init and iterate agree; same-named plans stay separate.
+NG="$SMOKE_TMP/nogit"; mkdir -p "$NG/a" "$NG/b"
+cp "$R/.claude/plans/demo-plan.md" "$NG/a/plan.md"; cp "$R/.claude/plans/demo-plan.md" "$NG/b/plan.md"
+( cd "$NG" && APEX_NO_WORKTREE=1 APEX_GIBSON=0 "$EX/init.sh" a/plan.md >/dev/null && APEX_NO_WORKTREE=1 APEX_GIBSON=0 "$EX/init.sh" b/plan.md >/dev/null ) \
+  || fail "init.sh failed outside git with APEX_NO_WORKTREE=1"
+( cd "$NG" && "$EX/iterate.sh" a/plan.md | grep -q '^STATUS: READY' ) || fail "iterate.sh outside git does not find the state init.sh wrote"
+[ "$(st "$NG" a/plan.md)" != "$(st "$NG" b/plan.md)" ] || fail "two plans named plan.md share one state dir outside git"
+ok "non-git mode: init/iterate agree and same-named plans do not collide"
 
 echo ""
-echo "smoke passed: 16/16 checks"
+echo "smoke passed: 18/18 checks"

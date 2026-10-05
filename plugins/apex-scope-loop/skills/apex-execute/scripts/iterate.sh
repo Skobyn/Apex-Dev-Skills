@@ -23,7 +23,7 @@
 #
 # Kill switch (adapted from The Gibson): the loop halts immediately, before
 # any dispatch, if APEX_HALT=1 or any of these files exist:
-#   <repo>/.dev-plan-state/HALT      (all plans)
+#   <checkout>/.dev-plan-state/HALT  and  <state-base>/HALT   (all plans)
 #   <state-dir>/HALT                 (this plan)
 #   <repo>/gibson/HALT               (a Gibson-wired repo's permanent stop)
 set -euo pipefail
@@ -49,14 +49,14 @@ if [[ -n "$WORKTREE" && ! -d "$WORKTREE" ]]; then
 fi
 
 # Kill switch — checked every iteration, before anything else is dispatched.
-for f in "$REPO_ROOT/.dev-plan-state/HALT" "$STATE_DIR/HALT" "$REPO_ROOT/gibson/HALT"; do
+while IFS= read -r f; do
   if [[ -f "$f" ]]; then
     echo "STATE: $STATE_DIR"
     echo "STATUS: HALTED"
     echo "HALT_REASON: kill switch file present: $f (delete it to resume)"
     exit 0
   fi
-done
+done < <(apex_halt_files)
 if [[ "${APEX_HALT:-0}" == "1" ]]; then
   echo "STATE: $STATE_DIR"
   echo "STATUS: HALTED"

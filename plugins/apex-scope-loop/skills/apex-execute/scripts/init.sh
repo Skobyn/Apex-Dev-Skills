@@ -23,16 +23,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
 NAMESPACE="apex-execute"
 
-if ! git -C "$(dirname "$PLAN_ABS")" rev-parse --git-dir >/dev/null 2>&1 && [[ -z "${APEX_STATE_ROOT:-}" ]]; then
-  if [[ "${APEX_NO_WORKTREE:-0}" == "1" ]]; then
-    REPO_ROOT="$(pwd)"
-    STATE_DIR="$REPO_ROOT/.dev-plan-state/$PLAN_HASH"
-    CHECKPOINT="$STATE_DIR/checkpoint.json"
-  else
-    echo "ERROR: apex-execute runs the plan in a git worktree, but this is not a git repository." >&2
-    echo "       Run inside a git repo, or set APEX_NO_WORKTREE=1 to opt out (not recommended)." >&2
-    exit 1
-  fi
+if ! git rev-parse --git-dir >/dev/null 2>&1 && [[ "${APEX_NO_WORKTREE:-0}" != "1" ]]; then
+  echo "ERROR: apex-execute runs the plan in a git worktree, but this is not a git repository." >&2
+  echo "       Run inside a git repo, or set APEX_NO_WORKTREE=1 to opt out (not recommended)." >&2
+  exit 1
 fi
 
 mkdir -p "$STATE_DIR"
@@ -44,9 +38,9 @@ WT_PATH="$STATE_DIR/worktree"
 
 BASE_BRANCH="${APEX_BASE_BRANCH:-}"
 if [[ -z "$BASE_BRANCH" ]]; then
-  if git -C "$REPO_ROOT" show-ref --verify --quiet refs/heads/main; then
+  if git -C "$REPO_ROOT" show-ref --verify --quiet refs/heads/main 2>/dev/null; then
     BASE_BRANCH="main"
-  elif git -C "$REPO_ROOT" show-ref --verify --quiet refs/heads/master; then
+  elif git -C "$REPO_ROOT" show-ref --verify --quiet refs/heads/master 2>/dev/null; then
     BASE_BRANCH="master"
   else
     BASE_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
@@ -74,30 +68,20 @@ fi
 TOTAL=$(awk '/^- \[[ x]\]/{c++} END{print c+0}' "$PLAN")
 DONE=$(awk '/^- \[x\]/{c++} END{print c+0}' "$PLAN")
 
-cat > "$STATE_DIR/checkpoint.json" <<EOF
-{
-  "plan_path": "$PLAN_ABS",
-  "plan_hash": "$PLAN_HASH",
-  "namespace": "$NAMESPACE",
-  "initialized_at": "$(date -u +%FT%TZ)",
-  "total_tasks": $TOTAL,
-  "completed_tasks": $DONE,
-  "current_phase": null,
-  "worktree_path": "$WT_PATH",
-  "worktree_branch": "$WT_BRANCH",
-  "base_branch": "$BASE_BRANCH",
-  "landed": false,
-  "harness": "$([[ "${APEX_GIBSON:-1}" == "0" ]] && echo off || echo gibson)",
-  "consecutive_failures": 0,
-  "tiers": {},
-  "reviews": {},
-  "approvals": {},
-  "last_verdict": null,
-  "last_iteration_at": null,
-  "halted": false,
-  "halt_reason": null
-}
-EOF
+# Written with json.dump so paths containing quotes or backslashes stay valid.
+python3 - "$CHECKPOINT" "$PLAN_ABS" "$PLAN_HASH" "$NAMESPACE" "$TOTAL" "$DONE" "$WT_PATH" "$WT_BRANCH" "$BASE_BRANCH" \
+  "$([[ "${APEX_GIBSON:-1}" == "0" ]] && echo off || echo gibson)" <<'PY'
+import datetime, json, sys
+path, plan, h, ns, total, done, wt, br, base, harness = sys.argv[1:]
+json.dump({
+    "plan_path": plan, "plan_hash": h, "namespace": ns,
+    "initialized_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "total_tasks": int(total), "completed_tasks": int(done), "current_phase": None,
+    "worktree_path": wt, "worktree_branch": br, "base_branch": base, "landed": False,
+    "harness": harness, "consecutive_failures": 0, "tiers": {}, "reviews": {}, "approvals": {},
+    "last_verdict": None, "last_iteration_at": None, "halted": False, "halt_reason": None,
+}, open(path, "w"), indent=2)
+PY
 
 echo "[init] state -> $STATE_DIR/checkpoint.json"
 echo "[init] plan: $TOTAL tasks ($DONE complete, $((TOTAL - DONE)) remaining)"

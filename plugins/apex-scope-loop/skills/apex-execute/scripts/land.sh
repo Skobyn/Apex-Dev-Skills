@@ -43,9 +43,9 @@ fi
 #     Unreviewed code must never reach the base branch, so with the harness on we
 #     refuse to auto-commit stray changes and re-run the green gate on the final head.
 if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
-  for f in "$REPO_ROOT/.dev-plan-state/HALT" "$STATE_DIR/HALT" "$REPO_ROOT/gibson/HALT"; do
+  while IFS= read -r f; do
     [[ -f "$f" ]] && { echo "ERROR: kill switch present ($f) — refusing to land." >&2; exit 1; }
-  done
+  done < <(apex_halt_files)
   if [[ -d "$WT_PATH" ]] && [[ -n "$(git -C "$WT_PATH" status --porcelain)" ]]; then
     echo "ERROR: worktree has uncommitted changes that no reviewer has seen — commit, gate, and review them first." >&2
     exit 1
