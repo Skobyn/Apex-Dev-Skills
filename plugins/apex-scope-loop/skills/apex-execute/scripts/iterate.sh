@@ -107,7 +107,7 @@ import json, sys
 for b in json.loads(sys.argv[1])["blocked"]:
     why = ", ".join(b["open"]) or "-"
     unk = (" unknown: " + ", ".join(b["unknown"])) if b["unknown"] else ""
-    print(f"BLOCKED_BY: line {b[\"line_no\"]} {b[\"id\"] or \"(no id)\"} waits on {why}{unk}")' "$SEL"
+    print("BLOCKED_BY: line %s %s waits on %s%s" % (b["line_no"], b["id"] or "(no id)", why, unk))' "$SEL"
   exit 0
 fi
 
@@ -128,6 +128,7 @@ if ! apex_lock_acquire "$PLAN_HASH" "$PLAN_ABS" "$LINE_NO" BUILD; then
   echo "STATE: $STATE_DIR"
   echo "STATUS: BUSY"
   echo "BUSY_WITH: $(apex_lock_owner)"
+  echo "BUSY_HINT: finish or land that run; if it was abandoned, re-run with APEX_FORCE_UNLOCK=1"
   exit 0
 fi
 

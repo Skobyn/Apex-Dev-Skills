@@ -80,14 +80,18 @@ REPO_ROOT_P="$(cd "$REPO_ROOT" && pwd -P)"
 [[ "$PLAN_ABS" == "$REPO_ROOT_P"/* ]] && PLAN_REL="${PLAN_ABS#"$REPO_ROOT_P"/}"
 LEDGER_REL=""
 [[ "$LESSONS_LEDGER" == "$REPO_ROOT_P"/* ]] && LEDGER_REL="${LESSONS_LEDGER#"$REPO_ROOT_P"/}"
+# Only a ledger inside the plugin's own directory may ride along (an
+# APEX_LESSONS_FILE pointing at a source file is not exempted).
+[[ "$LEDGER_REL" == .claude/apex-scope-loop/* ]] || LEDGER_REL=""
 DIRTY=()
+exempt() { [[ -n "$1" && ( "$1" == "$PLAN_REL" || "$1" == "$LEDGER_REL" ) ]]; }
 while IFS= read -r -d '' entry; do
-  path="${entry:3}"
-  # A rename/copy entry is followed by its source path as a separate record.
-  case "${entry:0:1}" in R|C) IFS= read -r -d '' _ || true ;; esac
-  [[ -n "$PLAN_REL" && "$path" == "$PLAN_REL" ]] && continue
-  [[ -n "$LEDGER_REL" && "$path" == "$LEDGER_REL" ]] && continue
-  DIRTY+=("$path")
+  xy="${entry:0:2}"; path="${entry:3}"; src=""
+  # A rename/copy (either column) is followed by its source path as its own record.
+  [[ "$xy" == *[RC]* ]] && { IFS= read -r -d '' src || true; }
+  # A rename is exempt only if both ends are exempt and it is the same file.
+  if exempt "$path" && { [[ -z "$src" ]] || [[ "$src" == "$path" ]]; }; then continue; fi
+  DIRTY+=("$path${src:+ (from $src)}")
 done < <(git -C "$REPO_ROOT" status --porcelain -z --untracked-files=no)
 if [[ ${#DIRTY[@]} -gt 0 ]]; then
   echo "ERROR: the base checkout has uncommitted tracked changes unrelated to this plan — commit or stash them first:" >&2
@@ -163,4 +167,5 @@ s["landed"] = True
 with open(p, "w") as f: json.dump(s, f, indent=2)
 PY
 
+apex_lock_release "$PLAN_HASH"
 echo "[land] DONE — $WT_BRANCH merged into $BASE_BRANCH and worktree removed."

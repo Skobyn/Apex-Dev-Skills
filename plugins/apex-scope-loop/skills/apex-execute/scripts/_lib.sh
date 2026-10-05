@@ -86,14 +86,23 @@ apex_resolve() {
     fi
   fi
   CHECKPOINT="$STATE_DIR/checkpoint.json"
-  # The lessons ledger is one per plan repository: the main checkout's copy
-  # (shared by every worktree), else the plan's checkout, else the caller's.
+  # The lessons ledger is one per plan repository, whatever the caller or the
+  # state layout: the main worktree's tracked copy; for a bare repository
+  # (no main worktree) one file in the common git dir; outside git the
+  # caller's checkout.
   if [[ -n "${APEX_LESSONS_FILE:-}" ]]; then
     LESSONS_LEDGER="$APEX_LESSONS_FILE"
-  elif [[ -n "$plan_top" && "$(basename "$STATE_BASE")" == ".dev-plan-state" && -z "${APEX_STATE_ROOT:-}" ]]; then
-    LESSONS_LEDGER="$(dirname "$STATE_BASE")/.claude/apex-scope-loop/LESSONS.md"
+  elif [[ -n "$plan_top" ]]; then
+    local main_wt
+    main_wt="$(git -C "$plan_top" worktree list --porcelain 2>/dev/null \
+      | awk '/^worktree /{p=substr($0,10); getline n; if (n != "bare") print p; exit}')"
+    if [[ -n "$main_wt" ]]; then
+      LESSONS_LEDGER="$(cd "$main_wt" && pwd -P)/.claude/apex-scope-loop/LESSONS.md"
+    else
+      LESSONS_LEDGER="$(apex_common_dir "$plan_top")/apex-scope-loop/LESSONS.md"
+    fi
   else
-    LESSONS_LEDGER="${PLAN_TOP:-$REPO_ROOT}/.claude/apex-scope-loop/LESSONS.md"
+    LESSONS_LEDGER="$REPO_ROOT/.claude/apex-scope-loop/LESSONS.md"
   fi
   apex_guard
 }
@@ -196,89 +205,80 @@ apex_dispatch_root() {
 }
 
 # --- ACTIVE lock (ADR-0003) ---------------------------------------------------
-# One active plan or ad-hoc route per repository, held as an atomic mkdir at
-# $STATE_BASE/ACTIVE with owner.json inside. The same owner
-# re-acquires freely (the stage and line are refreshed). A lock whose owner
-# plan has landed, or whose stage is DONE, is stale and is reclaimed.
+# One active plan or ad-hoc route per repository: $STATE_BASE/ACTIVE/owner.json.
+# Every read-check-write of it happens under an exclusive flock on
+# $STATE_BASE/.active.lock, so two callers can never both win. An owner whose
+# stage is DONE, or whose plan has landed, is reclaimed; anything unreadable
+# or partial counts as held (fail closed). The same owner re-acquires freely.
 # APEX_FORCE_UNLOCK=1 reclaims any lock (manual recovery only).
 apex_lock_dir() { printf '%s' "$STATE_BASE/ACTIVE"; }
 
-apex_lock_owner() {
-  python3 - "$(apex_lock_dir)/owner.json" <<'PY' 2>/dev/null || echo "unknown"
-import json, sys
-o = json.load(open(sys.argv[1]))
-print(f"{o.get('kind','plan')} {o.get('id','?')} line {o.get('line_no','?')} stage {o.get('stage','?')} ({o.get('plan') or o.get('label','')})")
-PY
-}
-
-# apex_lock_acquire OWNER_ID PLAN_OR_LABEL LINE_NO STAGE [KIND]
-apex_lock_acquire() {
-  local id="$1" plan="$2" line="$3" stage="$4" kind="${5:-plan}" d
-  d="$(apex_lock_dir)"
-  mkdir -p "$(dirname "$d")"
-  if ! mkdir "$d" 2>/dev/null; then
-    if ! python3 - "$d/owner.json" "$id" "${APEX_FORCE_UNLOCK:-0}" "$STATE_BASE" <<'PY' 2>/dev/null
-import json, os, sys
-path, me, force, root = sys.argv[1:]
-try:
-    o = json.load(open(path))
-except Exception:
-    sys.exit(0)            # unreadable owner: treat as stale
-if force == "1" or o.get("id") == me or o.get("stage") == "DONE":
-    sys.exit(0)
-cp = os.path.join(root, str(o.get("id")), "checkpoint.json")
-try:
-    if json.load(open(cp)).get("landed"):
-        sys.exit(0)
-except Exception:
-    pass
-sys.exit(1)
-PY
-    then
-      return 1
-    fi
-  fi
-  python3 - "$d/owner.json" "$id" "$plan" "$line" "$stage" "$kind" "${CLAUDE_CODE_SESSION_ID:-${APEX_SESSION_ID:-}}" <<'PY'
-import datetime, json, os, sys
-path, oid, plan, line, stage, kind, session = sys.argv[1:]
+# apex_lock OP [ARGS...] — acquire ID PLAN LINE STAGE KIND | stage STAGE |
+# release ID | owner. acquire exits 1 when another owner holds the lock.
+apex_lock() {
+  mkdir -p "$STATE_BASE"
+  python3 - "$STATE_BASE" "${APEX_FORCE_UNLOCK:-0}" "${CLAUDE_CODE_SESSION_ID:-${APEX_SESSION_ID:-}}" "$@" <<'PY'
+import datetime, fcntl, json, os, shutil, sys
+base, force, session, op, *args = sys.argv[1:]
+d = os.path.join(base, "ACTIVE")
+owner_path = os.path.join(d, "owner.json")
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-prev = {}
-if os.path.isfile(path):
+
+def read_owner():
     try:
-        prev = json.load(open(path))
+        return json.load(open(owner_path))
+    except FileNotFoundError:
+        return None if not os.path.isdir(d) else {}
     except Exception:
-        prev = {}
-same = prev.get("id") == oid and str(prev.get("line_no")) == line
-o = {"kind": kind, "id": oid, "line_no": int(line) if line.isdigit() else line, "stage": stage,
-     "session_id": session, "started_at": prev.get("started_at") if same and prev.get("started_at") else now,
-     "updated_at": now}
-o["plan" if kind == "plan" else "label"] = plan
-tmp = path + ".tmp"
-json.dump(o, open(tmp, "w"), indent=2)
-os.replace(tmp, path)
+        return {}
+
+def write_owner(o):
+    os.makedirs(d, exist_ok=True)
+    tmp = owner_path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(o, fh, indent=2)
+    os.replace(tmp, owner_path)
+
+def stale(o):
+    if o.get("stage") == "DONE":
+        return True
+    try:
+        return bool(json.load(open(os.path.join(base, str(o.get("id")), "checkpoint.json"))).get("landed"))
+    except Exception:
+        return False
+
+with open(os.path.join(base, ".active.lock"), "a+") as lk:
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    o = read_owner()
+    if op == "owner":
+        if not o:
+            print("none" if o is None else "unreadable owner (held)")
+        else:
+            print(f"{o.get('kind','plan')} {o.get('id','?')} line {o.get('line_no','?')} stage {o.get('stage','?')} ({o.get('plan') or o.get('label','')})")
+    elif op == "acquire":
+        oid, plan, line, stage, kind = args
+        if o is not None and force != "1":
+            if o == {} or (o.get("id") != oid and not stale(o)):
+                sys.exit(1)
+        same = bool(o) and o.get("id") == oid and str(o.get("line_no")) == line
+        n = {"kind": kind, "id": oid, "line_no": int(line) if line.isdigit() else line, "stage": stage,
+             "session_id": session, "started_at": o.get("started_at") if same and o.get("started_at") else now,
+             "updated_at": now}
+        n["plan" if kind == "plan" else "label"] = plan
+        write_owner(n)
+    elif op == "stage":
+        if o:
+            o["stage"], o["updated_at"] = args[0], now
+            write_owner(o)
+    elif op == "release":
+        if o and o.get("id") == args[0]:
+            shutil.rmtree(d, ignore_errors=True)
+    else:
+        sys.exit(2)
 PY
 }
 
-# apex_lock_stage STAGE — record a stage transition for the current owner.
-apex_lock_stage() {
-  local f; f="$(apex_lock_dir)/owner.json"
-  [[ -f "$f" ]] || return 0
-  python3 - "$f" "$1" <<'PY'
-import datetime, json, os, sys
-path, stage = sys.argv[1:]
-o = json.load(open(path))
-o["stage"] = stage
-o["updated_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-json.dump(o, open(path + ".tmp", "w"), indent=2)
-os.replace(path + ".tmp", path)
-PY
-}
-
-# apex_lock_release OWNER_ID — release only if OWNER_ID holds it.
-apex_lock_release() {
-  local d; d="$(apex_lock_dir)"
-  [[ -d "$d" ]] || return 0
-  if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("id")==sys.argv[2] else 1)' "$d/owner.json" "$1" 2>/dev/null; then
-    rm -rf "$d"
-  fi
-}
+apex_lock_acquire() { apex_lock acquire "$1" "$2" "$3" "$4" "${5:-plan}"; }
+apex_lock_owner()   { apex_lock owner 2>/dev/null || echo "unknown"; }
+apex_lock_stage()   { apex_lock stage "$1"; }
+apex_lock_release() { apex_lock release "$1"; }

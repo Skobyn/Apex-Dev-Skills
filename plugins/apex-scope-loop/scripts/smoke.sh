@@ -131,7 +131,8 @@ ok "promote-to-loop resolves init.sh plugin-relatively (no .claude/skills copy)"
 
 # brief DIR PLAN — iterate.sh's full brief, captured before any grep (grep -q
 # closing the pipe early would SIGPIPE iterate.sh under pipefail).
-brief() { local o; o="$( (cd "$1" && "$EX/iterate.sh" "$2") 2>&1 || true)"; printf '%s\n' "$o"; }
+# The exit code is kept as a final "__RC__: n" line so crashes are visible.
+brief() { local o rc=0; o="$( (cd "$1" && "$EX/iterate.sh" "$2") 2>&1)" || rc=$?; printf '%s\n__RC__: %s\n' "$o" "$rc"; }
 
 st() { # st DIR PLAN — the STATE line iterate.sh reports for PLAN when run from DIR
   ( cd "$1" && "$EX/iterate.sh" "$2" 2>&1 | sed -n 's/^STATE: //p' | head -1 ) || true
@@ -206,11 +207,11 @@ git -C "$O" add -A && git -C "$O" commit -qm o
 ( cd "$O" && APEX_GIBSON=0 "$EX/init.sh" .claude/plans/demo-plan.md >/dev/null 2>&1 ) || fail "init in the second repo failed"
 O_HEAD="$(git -C "$O" rev-parse main)"
 RP="$R/.claude/plans/demo-plan.md"
-expect_refusal "init.sh cross-repo"       "refusing to act" indir "$O" "$EX/init.sh" "$RP"
-expect_refusal "land.sh cross-repo"       "refusing to act" indir "$O" "$EX/land.sh" "$RP" --force
-expect_refusal "checkpoint.sh cross-repo" "refusing to act" indir "$O" "$EX/checkpoint.sh" "$RP" halt x
-expect_refusal "green-gate.sh cross-repo" "refusing to act" indir "$O" "$EX/green-gate.sh" "$RP" check
-expect_refusal "risk-tier.sh cross-repo"  "refusing to act" indir "$O" "$EX/risk-tier.sh" "$RP" 1
+expect_refusal "init.sh cross-repo"       "repository mismatch.*refusing to act" indir "$O" "$EX/init.sh" "$RP"
+expect_refusal "land.sh cross-repo"       "repository mismatch.*refusing to act" indir "$O" "$EX/land.sh" "$RP" --force
+expect_refusal "checkpoint.sh cross-repo" "repository mismatch.*refusing to act" indir "$O" "$EX/checkpoint.sh" "$RP" halt x
+expect_refusal "green-gate.sh cross-repo" "repository mismatch.*refusing to act" indir "$O" "$EX/green-gate.sh" "$RP" check
+expect_refusal "risk-tier.sh cross-repo"  "repository mismatch.*refusing to act" indir "$O" "$EX/risk-tier.sh" "$RP" 1
 IT_OUT="$( (cd "$O" && "$EX/iterate.sh" "$RP" 2>/dev/null) || true)"
 printf '%s\n' "$IT_OUT" | grep -q '^STATUS: ERROR repository mismatch' || fail "iterate.sh cross-repo did not report STATUS: ERROR repository mismatch"
 [ "$(git -C "$O" rev-parse main)" = "$O_HEAD" ] || fail "a cross-repo call moved the other repo's main"
@@ -272,8 +273,9 @@ cat >"$P25" <<'PLAN'
 - [ ] **Phase 1.2** [backend][gate:partner:x@y.com] waits on 1.3
   - Acceptance: true
   - Blocked-by: **Phase 1.3**
-- [ ] **Phase 1.3** [tests] all six directives
+- [ ] **Phase 1.3 — six directives** [tests] all six directives, see [docs](x.md)
   - Acceptance: `pytest -q`
+  - Notes: directives may sit anywhere in the first eight lines
   - Blocked-by: phase-1.1
   - Swarm: single [coder]
   - Route: class=tests provider=auto fanout=lanes review=solo
@@ -295,7 +297,7 @@ assert d["status"] == "READY" and t["id"] == "Phase 1.3", d
 assert t["acceptance"] == "pytest -q" and t["swarm"] == "single [coder]", t
 assert t["route"] == {"class": "tests", "provider": "auto", "fanout": "lanes", "review": "solo"}, t["route"]
 assert t["paths"] == ["tests/a/**"] and t["budget"] == {"usd": "2", "spawns": "3", "minutes": "20"}, t
-assert d["lanes"] == [t["line_no"], t["line_no"] + 7], d["lanes"]
+assert d["lanes"] == [t["line_no"], t["line_no"] + 8], d["lanes"]
 blocked = {b["id"]: b for b in d["blocked"]}
 assert blocked["Phase 1.2"]["open"] == ["Phase 1.3"], blocked
 assert blocked["Phase 1.5"]["unknown"] == ["Gate 9→10"], blocked
@@ -311,7 +313,54 @@ V="$(python3 "$PL" validate "$SMOKE_TMP/bad.md" || true)"
 for want in "Route class=nope" "fanout=lanes requires a Paths" "Budget usd=-1" "Blocked-by cycle"; do
   printf '%s' "$V" | grep -q "$want" || fail "validate missed: $want"
 done
-ok "planlib: tags, directives, Blocked-by, next-unblocked, lanes, validation"
+# Fail-closed parsing: fenced examples are not tasks; repeated Blocked-by
+# lines merge; a duplicated id blocks until every copy is checked; '..' and
+# absolute Paths never count as disjoint; line numbers match sed's.
+cat >"$SMOKE_TMP/fc.md" <<'PLAN'
+Example:
+```markdown
+- [ ] **Phase 9.9** [docs] example only
+  - Acceptance: rm -rf build
+- [x] **Phase 1.1** [docs] example claims done
+```
+- [ ] **Phase 1.1** [docs] real
+  - Acceptance: true
+- [x] **Phase 1.2** [docs] done
+  - Acceptance: true
+- [ ] **Phase 2.1** [docs] two Blocked-by lines
+  - Acceptance: true
+  - Blocked-by: Phase 1.2
+  - Blocked-by: Phase 1.1
+- [x] **Phase 3.1** dup done
+  - Acceptance: true
+- [ ] **Phase 3.1** dup open
+  - Acceptance: true
+- [ ] **Phase 3.2** waits on a duplicated id
+  - Acceptance: true
+  - Blocked-by: Phase 3.1
+PLAN
+python3 - "$PL" "$SMOKE_TMP/fc.md" <<'PY' || fail "planlib fail-closed parsing"
+import json, subprocess, sys
+pl, p = sys.argv[1:]
+d = json.loads(subprocess.check_output([sys.executable, pl, "next", p]))
+assert d["task"]["id"] == "Phase 1.1" and d["task"]["line_no"] == 7, d["task"]
+b = {x["id"]: x for x in d["blocked"]}
+assert b["Phase 2.1"]["open"] == ["Phase 1.1"], b
+assert b["Phase 3.2"]["open"] == ["Phase 3.1"], b
+sys.path.insert(0, pl.rsplit("/", 1)[0]); import planlib
+assert not planlib.disjoint(["src/a/../shared/*.py"], ["src/shared/util.py"])
+assert not planlib.disjoint(["/repo/src/**"], ["src/**"]) and not planlib.disjoint(["../x/**"], ["y/**"])
+assert planlib.disjoint(["src/a/**"], ["src/b/**"])
+PY
+printf 'line one \342\200\250 has U+2028\n- [ ] **Phase 1.1** A\n  - Acceptance: true\n- [ ] **Phase 1.2** B\n  - Acceptance: true\n' >"$SMOKE_TMP/ls.md"
+LN="$(python3 "$PL" next "$SMOKE_TMP/ls.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["task"]["line_no"])')"
+[ "$(sed -n "${LN}p" "$SMOKE_TMP/ls.md")" = "- [ ] **Phase 1.1** A" ] || fail "planlib line numbers disagree with sed (line $LN)"
+printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  - Acceptance: false\n  - N1: x\n  - N2: x\n  - N3: x\n  - N4: x\n  - N5: x\n  - N6: x\n  - Blocked-by: Phase 1.1\n\n  - Swarm: single\n' >"$SMOKE_TMP/late.md"
+V="$(python3 "$PL" validate "$SMOKE_TMP/late.md" || true)"
+for want in "Acceptance: given more than once" "beyond the 8-line look-ahead" "directive outside any task block"; do
+  printf '%s' "$V" | grep -q "$want" || fail "validate missed: $want"
+done
+ok "planlib: tags, directives, Blocked-by, next-unblocked, lanes, validation, fail-closed parsing"
 
 # 26. iterate.sh: ACTIVE lock (a second plan is BUSY), STAGE and directive fields
 #     in the brief, ROUTE: none without apex-dispatch, BLOCKED when nothing is ready.
@@ -328,7 +377,17 @@ APEX_FORCE_UNLOCK=1 brief "$K" plans/b-plan.md | grep -q '^STATUS: READY' || fai
 printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  - Blocked-by: phase-1.2\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n  - Blocked-by: phase-1.1\n' >"$K/plans/c-plan.md"
 ( cd "$K" && APEX_GIBSON=0 "$EX/init.sh" plans/c-plan.md >/dev/null 2>&1 ) || fail "init c-plan failed"
 APEX_FORCE_UNLOCK=1 brief "$K" plans/c-plan.md | grep -q '^STATUS: BLOCKED' || fail "an all-blocked plan was not BLOCKED"
-ok "iterate: ACTIVE lock, brief fields, ROUTE: none, BLOCKED"
+for p in a b c; do brief "$K" plans/$p-plan.md | grep -q '^__RC__: 0$' || fail "iterate.sh exited non-zero for plans/$p-plan.md"; done
+LOCKD="$(cd "$K" && source "$EX/_lib.sh" && apex_resolve plans/a-plan.md && printf '%s' "$STATE_BASE")/ACTIVE"
+rm -rf "$LOCKD"; mkdir -p "$LOCKD"
+brief "$K" plans/b-plan.md | grep -q '^STATUS: BUSY' || fail "a lock dir without owner.json was treated as free"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  rm -rf "$LOCKD"
+  ( brief "$K" plans/a-plan.md >"$SMOKE_TMP/ra" & brief "$K" plans/b-plan.md >"$SMOKE_TMP/rb" & wait )
+  n="$(cat "$SMOKE_TMP/ra" "$SMOKE_TMP/rb" | grep -c '^STATUS: READY' || true)"
+  [ "$n" = 1 ] || fail "lock race $i: $n plans got STATUS: READY"
+done
+ok "iterate: ACTIVE lock (atomic, fail-closed), brief fields, ROUTE: none, BLOCKED"
 
 # 27. land.sh handles a plan path that git quotes (spaces).
 Q="$SMOKE_TMP/quoted repo"; mkdir -p "$Q/my plans"; git init -q -b main "$Q"
@@ -336,7 +395,32 @@ printf -- '- [ ] **Phase 1.1** [docs] x\n  - Acceptance: true\n' >"$Q/my plans/q
 ( cd "$Q" && APEX_GIBSON=0 "$EX/init.sh" "my plans/q-plan.md" >/dev/null 2>&1 ) || fail "init with a spaced plan path failed"
 sed -i.bak 's/^- \[ \]/- [x]/' "$Q/my plans/q-plan.md" && rm -f "$Q/my plans/q-plan.md.bak"
 ( cd "$Q" && APEX_GIBSON=0 "$EX/land.sh" "my plans/q-plan.md" >/dev/null 2>&1 ) || fail "land.sh refused a plan path containing spaces"
-ok "land.sh: quoted plan paths"
+# A rename into the ledger path, or an APEX_LESSONS_FILE pointing at a source
+# file, never lets an unrelated change ride along.
+G="$SMOKE_TMP/g27"; mkdir -p "$G/plans" "$G/src"; git init -q -b main "$G"
+printf -- '- [ ] **Phase 1.1** [docs] x\n  - Acceptance: true\n' >"$G/plans/g-plan.md"; echo s >"$G/src/secret.txt"; echo a >"$G/src/app.py"
+git -C "$G" add -A; git -C "$G" commit -qm g
+( cd "$G" && APEX_GIBSON=0 "$EX/init.sh" plans/g-plan.md >/dev/null 2>&1 ) || fail "init g27 failed"
+sed -i.bak 's/^- \[ \]/- [x]/' "$G/plans/g-plan.md" && rm -f "$G/plans/g-plan.md.bak"
+mkdir -p "$G/.claude/apex-scope-loop"; git -C "$G" mv src/secret.txt .claude/apex-scope-loop/LESSONS.md
+expect_refusal "rename into the ledger" "unrelated to this plan" indir "$G" APEX_GIBSON=0 "$EX/land.sh" plans/g-plan.md
+git -C "$G" mv .claude/apex-scope-loop/LESSONS.md src/secret.txt; echo edit >>"$G/src/app.py"
+expect_refusal "APEX_LESSONS_FILE exemption" "unrelated to this plan" indir "$G" APEX_GIBSON=0 APEX_LESSONS_FILE="$G/src/app.py" "$EX/land.sh" plans/g-plan.md
+ok "land.sh: quoted plan paths; no exemption by rename or APEX_LESSONS_FILE"
+
+# 28. One lessons ledger per repository: base caller, worktree caller and a
+#     bare repo's worktrees all read and write the same file.
+LP="$R/.claude/plans/demo-plan.md"
+( cd "$R" && "$EX/lessons.sh" .claude/plans/demo-plan.md add "smoke lesson" w r f smoketag >/dev/null ) || fail "lessons add from the base checkout failed"
+( cd "$WTP" && "$EX/lessons.sh" "$WTP/.claude/plans/demo-plan.md" recall smoketag | grep -q '^LESSONS: 1 ' ) || fail "the plan worktree does not see the base checkout's lesson"
+BR="$SMOKE_TMP/bare.git"; git init -q --bare -b main "$BR"
+git -C "$BR" worktree add -q "$SMOKE_TMP/bw1" -b w1 2>/dev/null || git -C "$BR" worktree add -q "$SMOKE_TMP/bw1" --orphan w1
+mkdir -p "$SMOKE_TMP/bw1/plans"; cp "$P25" "$SMOKE_TMP/bw1/plans/x-plan.md"; git -C "$SMOKE_TMP/bw1" add -A; git -C "$SMOKE_TMP/bw1" commit -qm x
+git -C "$BR" worktree add -q "$SMOKE_TMP/bw2" -b w2 w1
+L1="$(cd "$SMOKE_TMP/bw1" && source "$EX/_lib.sh" && apex_resolve plans/x-plan.md && printf '%s' "$LESSONS_LEDGER")"
+L2="$(cd "$SMOKE_TMP/bw2" && source "$EX/_lib.sh" && apex_resolve plans/x-plan.md && printf '%s' "$LESSONS_LEDGER")"
+[ -n "$L1" ] && [ "$L1" = "$L2" ] || fail "bare-repo worktrees use different lesson ledgers: $L1 vs $L2"
+ok "one lessons ledger per repository"
 
 echo ""
-echo "smoke passed: 27/27 checks"
+echo "smoke passed: 28/28 checks"
