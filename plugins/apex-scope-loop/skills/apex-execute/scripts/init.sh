@@ -18,6 +18,7 @@ set -euo pipefail
 PLAN="${1:?usage: init.sh PATH_TO_PLAN.md}"
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 1; }
 
+APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"

@@ -5,8 +5,9 @@
 # Two roots, never conflated (ADR-0003):
 #   REPO_ROOT   the checkout the caller is working in: `git rev-parse
 #               --show-toplevel` from $PWD, else $PWD. Every git operation
-#               (worktree add, land's merge), the lessons ledger and the
-#               checkout-local kill switches use it, exactly as in 0.2.0.
+#               (worktree add, land's merge) and the checkout-local kill
+#               switches use it, exactly as in 0.2.0. The lessons ledger is
+#               per plan repository (LESSONS_LEDGER, set by apex_resolve).
 #   STATE_BASE  the directory holding plan state dirs, shared by the base
 #               checkout, the plan worktree and every linked worktree:
 #                 1. $APEX_STATE_ROOT/.dev-plan-state/<repo-id>  (explicit; moves
@@ -48,7 +49,7 @@ apex_state_base() {
 }
 
 # apex_resolve PLAN — set PLAN_ABS, PLAN_TOP, REPO_ROOT, STATE_BASE,
-# PLAN_HASH, STATE_DIR and CHECKPOINT, then run apex_guard (fatal on a
+# PLAN_HASH, STATE_DIR, CHECKPOINT and LESSONS_LEDGER, then run apex_guard (fatal on a
 # repository mismatch unless the caller declared APEX_RESOLVE_MODE=read).
 apex_resolve() {
   local plan="$1" plan_dir plan_top legacy legacy_dir main_root
@@ -85,6 +86,15 @@ apex_resolve() {
     fi
   fi
   CHECKPOINT="$STATE_DIR/checkpoint.json"
+  # The lessons ledger is one per plan repository: the main checkout's copy
+  # (shared by every worktree), else the plan's checkout, else the caller's.
+  if [[ -n "${APEX_LESSONS_FILE:-}" ]]; then
+    LESSONS_LEDGER="$APEX_LESSONS_FILE"
+  elif [[ -n "$plan_top" && "$(basename "$STATE_BASE")" == ".dev-plan-state" && -z "${APEX_STATE_ROOT:-}" ]]; then
+    LESSONS_LEDGER="$(dirname "$STATE_BASE")/.claude/apex-scope-loop/LESSONS.md"
+  else
+    LESSONS_LEDGER="${PLAN_TOP:-$REPO_ROOT}/.claude/apex-scope-loop/LESSONS.md"
+  fi
   apex_guard
 }
 
@@ -169,5 +179,106 @@ apex_guard() {
     printf 'WARNING: %s\n' "${problems[@]}" >&2
     return 0
   fi
-  apex_die "$(printf '%s; ' "${problems[@]}")refusing to act"
+  apex_die "$(printf '%s; ' "${problems[@]}")refusing to act. Recover: run from a checkout of the plan's repository; check the recorded branch back out in the worktree; if the repository was moved or re-cloned, the old run cannot be resumed — remove $STATE_DIR and re-run init.sh"
+}
+
+# apex_dispatch_root — the sibling apex-dispatch plugin, or empty.
+apex_dispatch_root() {
+  local c
+  for c in "${APEX_DISPATCH_ROOT:-}" "$APEX_SCOPE_LOOP_PLUGIN_ROOT/../apex-dispatch"; do
+    [[ -n "$c" && -x "$c/scripts/route.sh" ]] && { (cd "$c" && pwd); return; }
+  done
+  # Plugin cache layout <cache>/<marketplace>/<plugin>/<version>/ (assumed; Phase 0 spike 11 left the marketplace-install layout unverified)
+  for c in "$APEX_SCOPE_LOOP_PLUGIN_ROOT"/../../apex-dispatch/*/; do
+    [[ -x "$c/scripts/route.sh" ]] && { (cd "$c" && pwd); return; }
+  done
+  return 0
+}
+
+# --- ACTIVE lock (ADR-0003) ---------------------------------------------------
+# One active plan or ad-hoc route per repository, held as an atomic mkdir at
+# $STATE_BASE/ACTIVE with owner.json inside. The same owner
+# re-acquires freely (the stage and line are refreshed). A lock whose owner
+# plan has landed, or whose stage is DONE, is stale and is reclaimed.
+# APEX_FORCE_UNLOCK=1 reclaims any lock (manual recovery only).
+apex_lock_dir() { printf '%s' "$STATE_BASE/ACTIVE"; }
+
+apex_lock_owner() {
+  python3 - "$(apex_lock_dir)/owner.json" <<'PY' 2>/dev/null || echo "unknown"
+import json, sys
+o = json.load(open(sys.argv[1]))
+print(f"{o.get('kind','plan')} {o.get('id','?')} line {o.get('line_no','?')} stage {o.get('stage','?')} ({o.get('plan') or o.get('label','')})")
+PY
+}
+
+# apex_lock_acquire OWNER_ID PLAN_OR_LABEL LINE_NO STAGE [KIND]
+apex_lock_acquire() {
+  local id="$1" plan="$2" line="$3" stage="$4" kind="${5:-plan}" d
+  d="$(apex_lock_dir)"
+  mkdir -p "$(dirname "$d")"
+  if ! mkdir "$d" 2>/dev/null; then
+    if ! python3 - "$d/owner.json" "$id" "${APEX_FORCE_UNLOCK:-0}" "$STATE_BASE" <<'PY' 2>/dev/null
+import json, os, sys
+path, me, force, root = sys.argv[1:]
+try:
+    o = json.load(open(path))
+except Exception:
+    sys.exit(0)            # unreadable owner: treat as stale
+if force == "1" or o.get("id") == me or o.get("stage") == "DONE":
+    sys.exit(0)
+cp = os.path.join(root, str(o.get("id")), "checkpoint.json")
+try:
+    if json.load(open(cp)).get("landed"):
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+PY
+    then
+      return 1
+    fi
+  fi
+  python3 - "$d/owner.json" "$id" "$plan" "$line" "$stage" "$kind" "${CLAUDE_CODE_SESSION_ID:-${APEX_SESSION_ID:-}}" <<'PY'
+import datetime, json, os, sys
+path, oid, plan, line, stage, kind, session = sys.argv[1:]
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+prev = {}
+if os.path.isfile(path):
+    try:
+        prev = json.load(open(path))
+    except Exception:
+        prev = {}
+same = prev.get("id") == oid and str(prev.get("line_no")) == line
+o = {"kind": kind, "id": oid, "line_no": int(line) if line.isdigit() else line, "stage": stage,
+     "session_id": session, "started_at": prev.get("started_at") if same and prev.get("started_at") else now,
+     "updated_at": now}
+o["plan" if kind == "plan" else "label"] = plan
+tmp = path + ".tmp"
+json.dump(o, open(tmp, "w"), indent=2)
+os.replace(tmp, path)
+PY
+}
+
+# apex_lock_stage STAGE — record a stage transition for the current owner.
+apex_lock_stage() {
+  local f; f="$(apex_lock_dir)/owner.json"
+  [[ -f "$f" ]] || return 0
+  python3 - "$f" "$1" <<'PY'
+import datetime, json, os, sys
+path, stage = sys.argv[1:]
+o = json.load(open(path))
+o["stage"] = stage
+o["updated_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump(o, open(path + ".tmp", "w"), indent=2)
+os.replace(path + ".tmp", path)
+PY
+}
+
+# apex_lock_release OWNER_ID — release only if OWNER_ID holds it.
+apex_lock_release() {
+  local d; d="$(apex_lock_dir)"
+  [[ -d "$d" ]] || return 0
+  if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("id")==sys.argv[2] else 1)' "$d/owner.json" "$1" 2>/dev/null; then
+    rm -rf "$d"
+  fi
 }

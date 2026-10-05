@@ -4,7 +4,8 @@
 #
 # The ledger is a tracked, append-only markdown file so lessons outlive the
 # plan, the worktree, and the session:
-#   default: <repo-root>/.claude/apex-scope-loop/LESSONS.md  (override: APEX_LESSONS_FILE)
+#   default: <main checkout of the plan's repo>/.claude/apex-scope-loop/LESSONS.md
+#            (override: APEX_LESSONS_FILE)
 #
 # Usage:
 #   ./lessons.sh PLAN.md fail SIGNATURE
@@ -23,11 +24,12 @@ ACTION="${2:?action: fail|add|recall}"
 shift 2
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 
+APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
-# The ledger belongs to the plan's checkout (ADR-0003), not the caller's.
-LEDGER="${APEX_LESSONS_FILE:-${PLAN_TOP:-$REPO_ROOT}/.claude/apex-scope-loop/LESSONS.md}"
+# One ledger per plan repository (ADR-0003); apex_resolve sets LESSONS_LEDGER.
+LEDGER="$LESSONS_LEDGER"
 
 case "$ACTION" in
   fail)

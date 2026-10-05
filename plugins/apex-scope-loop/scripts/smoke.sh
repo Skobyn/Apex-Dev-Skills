@@ -129,6 +129,10 @@ EX="$PLUGIN_ROOT/skills/apex-execute/scripts"
   || fail "promote-to-loop.sh failed in a repo with no .claude/skills copy: $(tail -3 "$SMOKE_TMP/promote.log")"
 ok "promote-to-loop resolves init.sh plugin-relatively (no .claude/skills copy)"
 
+# brief DIR PLAN — iterate.sh's full brief, captured before any grep (grep -q
+# closing the pipe early would SIGPIPE iterate.sh under pipefail).
+brief() { local o; o="$( (cd "$1" && "$EX/iterate.sh" "$2") 2>&1 || true)"; printf '%s\n' "$o"; }
+
 st() { # st DIR PLAN — the STATE line iterate.sh reports for PLAN when run from DIR
   ( cd "$1" && "$EX/iterate.sh" "$2" 2>&1 | sed -n 's/^STATE: //p' | head -1 ) || true
 }
@@ -146,10 +150,10 @@ ok "one state dir from the base checkout, the plan worktree and a symlinked path
 # 17. Kill switches: a HALT in the checkout you run from, and a shared HALT, both stop the loop.
 LW="$SMOKE_TMP/linked"; git -C "$R" worktree add -q -b linked "$LW" main
 mkdir -p "$LW/gibson" && touch "$LW/gibson/HALT"
-( cd "$LW" && "$EX/iterate.sh" "$R/.claude/plans/demo-plan.md" | grep -q '^STATUS: HALTED' ) \
+brief "$LW" "$R/.claude/plans/demo-plan.md" | grep -q '^STATUS: HALTED' \
   || fail "gibson/HALT in the linked worktree being run from was ignored"
 rm -f "$LW/gibson/HALT"; touch "$R/.dev-plan-state/HALT"
-( cd "$LW" && "$EX/iterate.sh" "$R/.claude/plans/demo-plan.md" | grep -q '^STATUS: HALTED' ) \
+brief "$LW" "$R/.claude/plans/demo-plan.md" | grep -q '^STATUS: HALTED' \
   || fail "shared .dev-plan-state/HALT was ignored from a linked worktree"
 rm -f "$R/.dev-plan-state/HALT"
 ok "checkout-local and shared kill switches both halt"
@@ -159,7 +163,7 @@ NG="$SMOKE_TMP/nogit"; mkdir -p "$NG/a" "$NG/b"
 cp "$R/.claude/plans/demo-plan.md" "$NG/a/plan.md"; cp "$R/.claude/plans/demo-plan.md" "$NG/b/plan.md"
 ( cd "$NG" && APEX_NO_WORKTREE=1 APEX_GIBSON=0 "$EX/init.sh" a/plan.md >/dev/null && APEX_NO_WORKTREE=1 APEX_GIBSON=0 "$EX/init.sh" b/plan.md >/dev/null ) \
   || fail "init.sh failed outside git with APEX_NO_WORKTREE=1"
-( cd "$NG" && "$EX/iterate.sh" a/plan.md | grep -q '^STATUS: READY' ) || fail "iterate.sh outside git does not find the state init.sh wrote"
+brief "$NG" a/plan.md | grep -q '^STATUS: READY' || fail "iterate.sh outside git does not find the state init.sh wrote"
 [ "$(st "$NG" a/plan.md)" != "$(st "$NG" b/plan.md)" ] || fail "two plans named plan.md share one state dir outside git"
 ok "non-git mode: init/iterate agree and same-named plans do not collide"
 
@@ -202,11 +206,11 @@ git -C "$O" add -A && git -C "$O" commit -qm o
 ( cd "$O" && APEX_GIBSON=0 "$EX/init.sh" .claude/plans/demo-plan.md >/dev/null 2>&1 ) || fail "init in the second repo failed"
 O_HEAD="$(git -C "$O" rev-parse main)"
 RP="$R/.claude/plans/demo-plan.md"
-expect_refusal "init.sh cross-repo"       "repository mismatch" indir "$O" "$EX/init.sh" "$RP"
-expect_refusal "land.sh cross-repo"       "repository mismatch" indir "$O" "$EX/land.sh" "$RP" --force
-expect_refusal "checkpoint.sh cross-repo" "repository mismatch" indir "$O" "$EX/checkpoint.sh" "$RP" halt x
-expect_refusal "green-gate.sh cross-repo" "repository mismatch" indir "$O" "$EX/green-gate.sh" "$RP" check
-expect_refusal "risk-tier.sh cross-repo"  "repository mismatch" indir "$O" "$EX/risk-tier.sh" "$RP" 1
+expect_refusal "init.sh cross-repo"       "refusing to act" indir "$O" "$EX/init.sh" "$RP"
+expect_refusal "land.sh cross-repo"       "refusing to act" indir "$O" "$EX/land.sh" "$RP" --force
+expect_refusal "checkpoint.sh cross-repo" "refusing to act" indir "$O" "$EX/checkpoint.sh" "$RP" halt x
+expect_refusal "green-gate.sh cross-repo" "refusing to act" indir "$O" "$EX/green-gate.sh" "$RP" check
+expect_refusal "risk-tier.sh cross-repo"  "refusing to act" indir "$O" "$EX/risk-tier.sh" "$RP" 1
 IT_OUT="$( (cd "$O" && "$EX/iterate.sh" "$RP" 2>/dev/null) || true)"
 printf '%s\n' "$IT_OUT" | grep -q '^STATUS: ERROR repository mismatch' || fail "iterate.sh cross-repo did not report STATUS: ERROR repository mismatch"
 [ "$(git -C "$O" rev-parse main)" = "$O_HEAD" ] || fail "a cross-repo call moved the other repo's main"
@@ -228,7 +232,7 @@ expect_refusal "adopt foreign branch" "refusing to adopt" indir "$R" APEX_GIBSON
 WT2="$(st "$R" other/demo-plan.md)/worktree"
 rm -rf "$WT2"
 ( cd "$R" && APEX_GIBSON=0 "$EX/init.sh" other/demo-plan.md >/dev/null 2>&1 ) || fail "re-init after deleting the worktree failed"
-( cd "$R" && "$EX/iterate.sh" other/demo-plan.md | grep -q '^STATUS: READY' ) || fail "deleted worktree was not recreated"
+[ -d "$WT2" ] && [ "$(git -C "$WT2" symbolic-ref -q HEAD)" = "refs/heads/$B2" ] || fail "deleted worktree was not recreated on its branch"
 ok "per-plan branches; foreign branch refused; deleted worktree recreated"
 
 # 23. land.sh: refuses from the wrong checkout and with unrelated base changes,
@@ -258,5 +262,81 @@ for f in "$EX"/*.sh "$PLUGIN_ROOT"/skills/apex-plan/scripts/*.sh; do
 done
 ok "every _lib.sh user resolves before reading state"
 
+# 25. Plan parsing (planlib.py, the one parser): widened tags, 8-line look-ahead
+#     with six directives, Blocked-by forms, next-unblocked selection, fail-closed
+#     unknown references, validation (Route/Budget values, lanes need Paths, cycles).
+PL="$EX/planlib.py"; P25="$SMOKE_TMP/p25.md"
+cat >"$P25" <<'PLAN'
+- [x] **Phase 1.1** [docs] done
+  - Acceptance: true
+- [ ] **Phase 1.2** [backend][gate:partner:x@y.com] waits on 1.3
+  - Acceptance: true
+  - Blocked-by: **Phase 1.3**
+- [ ] **Phase 1.3** [tests] all six directives
+  - Acceptance: `pytest -q`
+  - Blocked-by: phase-1.1
+  - Swarm: single [coder]
+  - Route: class=tests provider=auto fanout=lanes review=solo
+  - Paths: tests/a/**
+  - Budget: usd=2 spawns=3 minutes=20
+- [ ] **Phase 1.4** [tests] lane two
+  - Acceptance: true
+  - Route: fanout=lanes
+  - Paths: src/b/**
+- [ ] **Phase 1.5** [docs] waits on a gate that does not exist
+  - Acceptance: true
+  - Blocked-by: Gate 9→10
+PLAN
+python3 - "$PL" "$P25" <<'PY' || fail "planlib next: wrong selection or parsing"
+import json, subprocess, sys
+d = json.loads(subprocess.check_output([sys.executable, sys.argv[1], "next", sys.argv[2]]))
+t = d["task"]
+assert d["status"] == "READY" and t["id"] == "Phase 1.3", d
+assert t["acceptance"] == "pytest -q" and t["swarm"] == "single [coder]", t
+assert t["route"] == {"class": "tests", "provider": "auto", "fanout": "lanes", "review": "solo"}, t["route"]
+assert t["paths"] == ["tests/a/**"] and t["budget"] == {"usd": "2", "spawns": "3", "minutes": "20"}, t
+assert d["lanes"] == [t["line_no"], t["line_no"] + 7], d["lanes"]
+blocked = {b["id"]: b for b in d["blocked"]}
+assert blocked["Phase 1.2"]["open"] == ["Phase 1.3"], blocked
+assert blocked["Phase 1.5"]["unknown"] == ["Gate 9→10"], blocked
+tags = json.loads(subprocess.check_output([sys.executable, sys.argv[1], "task", sys.argv[2], "3"]))["tags"]
+assert tags == ["backend", "gate:partner:x@y.com"], tags
+PY
+python3 "$PL" next "$EX/../resources/examples/sample-plan.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["task"]["id"]=="Phase 1.1" and any(b["id"]=="Phase 1.2" and b["open"]==["Phase 1.1"] for b in d["blocked"]), d' \
+  || fail "sample-plan: **Phase 1.2** Blocked-by phase-1.1 is not resolved"
+V="$(python3 "$PL" validate "$P25" || true)"
+printf '%s' "$V" | grep -q "Blocked-by 'Gate 9→10' does not name a task" || fail "validate missed an unknown Blocked-by"
+printf -- '- [ ] **Phase 1.1** [x] a\n  - Acceptance: true\n  - Blocked-by: phase-1.2\n  - Route: class=nope fanout=lanes\n  - Budget: usd=-1\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n  - Blocked-by: phase-1.1\n' >"$SMOKE_TMP/bad.md"
+V="$(python3 "$PL" validate "$SMOKE_TMP/bad.md" || true)"
+for want in "Route class=nope" "fanout=lanes requires a Paths" "Budget usd=-1" "Blocked-by cycle"; do
+  printf '%s' "$V" | grep -q "$want" || fail "validate missed: $want"
+done
+ok "planlib: tags, directives, Blocked-by, next-unblocked, lanes, validation"
+
+# 26. iterate.sh: ACTIVE lock (a second plan is BUSY), STAGE and directive fields
+#     in the brief, ROUTE: none without apex-dispatch, BLOCKED when nothing is ready.
+K="$SMOKE_TMP/lockrepo"; mkdir -p "$K/plans"; git init -q -b main "$K"
+cp "$P25" "$K/plans/a-plan.md"; cp "$P25" "$K/plans/b-plan.md"; git -C "$K" add -A; git -C "$K" commit -qm k
+( cd "$K" && APEX_GIBSON=0 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 && APEX_GIBSON=0 "$EX/init.sh" plans/b-plan.md >/dev/null 2>&1 ) || fail "init for the lock test failed"
+OUT_A="$(cd "$K" && "$EX/iterate.sh" plans/a-plan.md)"
+for want in "^STATUS: READY" "^STAGE: BUILD" "^ROUTE_DIRECTIVE: class=tests" "^PATHS: tests/a/\*\*" "^BUDGET: usd=2" "^LANES: " "^ROUTE: none"; do
+  printf '%s\n' "$OUT_A" | grep -q "$want" || fail "iterate brief lacks $want"
+done
+brief "$K" plans/b-plan.md | grep -q '^STATUS: BUSY' || fail "a second plan was not BUSY while the first holds the ACTIVE lock"
+brief "$K" plans/a-plan.md | grep -q '^STATUS: READY' || fail "the lock owner could not re-acquire"
+APEX_FORCE_UNLOCK=1 brief "$K" plans/b-plan.md | grep -q '^STATUS: READY' || fail "APEX_FORCE_UNLOCK did not reclaim the lock"
+printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  - Blocked-by: phase-1.2\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n  - Blocked-by: phase-1.1\n' >"$K/plans/c-plan.md"
+( cd "$K" && APEX_GIBSON=0 "$EX/init.sh" plans/c-plan.md >/dev/null 2>&1 ) || fail "init c-plan failed"
+APEX_FORCE_UNLOCK=1 brief "$K" plans/c-plan.md | grep -q '^STATUS: BLOCKED' || fail "an all-blocked plan was not BLOCKED"
+ok "iterate: ACTIVE lock, brief fields, ROUTE: none, BLOCKED"
+
+# 27. land.sh handles a plan path that git quotes (spaces).
+Q="$SMOKE_TMP/quoted repo"; mkdir -p "$Q/my plans"; git init -q -b main "$Q"
+printf -- '- [ ] **Phase 1.1** [docs] x\n  - Acceptance: true\n' >"$Q/my plans/q-plan.md"; git -C "$Q" add -A; git -C "$Q" commit -qm q
+( cd "$Q" && APEX_GIBSON=0 "$EX/init.sh" "my plans/q-plan.md" >/dev/null 2>&1 ) || fail "init with a spaced plan path failed"
+sed -i.bak 's/^- \[ \]/- [x]/' "$Q/my plans/q-plan.md" && rm -f "$Q/my plans/q-plan.md.bak"
+( cd "$Q" && APEX_GIBSON=0 "$EX/land.sh" "my plans/q-plan.md" >/dev/null 2>&1 ) || fail "land.sh refused a plan path containing spaces"
+ok "land.sh: quoted plan paths"
+
 echo ""
-echo "smoke passed: 24/24 checks"
+echo "smoke passed: 27/27 checks"

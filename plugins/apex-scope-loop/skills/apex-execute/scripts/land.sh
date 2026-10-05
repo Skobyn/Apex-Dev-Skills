@@ -27,6 +27,7 @@ PLAN="${1:?usage: land.sh PATH_TO_PLAN.md [--force]}"
 FORCE="${2:-}"
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 
+APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
@@ -72,14 +73,25 @@ if [[ "$CURRENT" != "$BASE_BRANCH" ]]; then
 fi
 
 # 4. No tracked changes in the base checkout other than the plan file itself
-#    (its checkboxes are flipped there). Unrelated work is never swept in.
+#    (its checkboxes are flipped there) and the lessons ledger (append-only).
+#    Unrelated work is never swept in.
 PLAN_REL=""
 REPO_ROOT_P="$(cd "$REPO_ROOT" && pwd -P)"
 [[ "$PLAN_ABS" == "$REPO_ROOT_P"/* ]] && PLAN_REL="${PLAN_ABS#"$REPO_ROOT_P"/}"
-DIRTY="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no | sed 's/^...//' | grep -vxF "${PLAN_REL:-/}" || true)"
-if [[ -n "$DIRTY" ]]; then
+LEDGER_REL=""
+[[ "$LESSONS_LEDGER" == "$REPO_ROOT_P"/* ]] && LEDGER_REL="${LESSONS_LEDGER#"$REPO_ROOT_P"/}"
+DIRTY=()
+while IFS= read -r -d '' entry; do
+  path="${entry:3}"
+  # A rename/copy entry is followed by its source path as a separate record.
+  case "${entry:0:1}" in R|C) IFS= read -r -d '' _ || true ;; esac
+  [[ -n "$PLAN_REL" && "$path" == "$PLAN_REL" ]] && continue
+  [[ -n "$LEDGER_REL" && "$path" == "$LEDGER_REL" ]] && continue
+  DIRTY+=("$path")
+done < <(git -C "$REPO_ROOT" status --porcelain -z --untracked-files=no)
+if [[ ${#DIRTY[@]} -gt 0 ]]; then
   echo "ERROR: the base checkout has uncommitted tracked changes unrelated to this plan — commit or stash them first:" >&2
-  printf '         %s\n' $DIRTY >&2
+  printf '         %s\n' "${DIRTY[@]}" >&2
   exit 1
 fi
 
@@ -115,9 +127,13 @@ if [[ -d "$WT_PATH" ]] && [[ -n "$(git -C "$WT_PATH" status --porcelain)" ]]; th
   echo "[land] committed pending worktree changes."
 fi
 
-# 8. Record the plan's progress on the base branch (the plan file only).
-if [[ -n "$PLAN_REL" ]] && [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no -- "$PLAN_REL")" ]]; then
-  git -C "$REPO_ROOT" commit -m "apex-scope-loop: record plan completion for $WT_BRANCH" -- "$PLAN_REL"
+# 8. Record the plan's progress on the base branch (plan file and lessons ledger only).
+RECORD=()
+for rel in "$PLAN_REL" "$LEDGER_REL"; do
+  [[ -n "$rel" ]] && [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no -- "$rel")" ]] && RECORD+=("$rel")
+done
+if [[ ${#RECORD[@]} -gt 0 ]]; then
+  git -C "$REPO_ROOT" commit -m "apex-scope-loop: record plan completion for $WT_BRANCH" -- "${RECORD[@]}"
 fi
 
 # 9. Merge the worktree's exact head.

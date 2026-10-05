@@ -28,6 +28,7 @@ PLAN="${1:?usage: checkpoint.sh PLAN.md ACTION [...]}"
 ACTION="${2:?action: complete|fail|review|approve|halt|rewind}"
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found"; exit 1; }
 
+APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
