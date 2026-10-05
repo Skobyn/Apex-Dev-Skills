@@ -30,12 +30,18 @@ The grammar is deliberately small, and nothing in it hides a line:
   Paths       comma-separated repo-relative globs (required when fanout=lanes)
   Budget      usd=<n> spawns=<n> minutes=<n>          (may only lower)
 
-Code fences, HTML comments and raw HTML blocks (<pre>, <script>, <style>,
-<textarea>) are detected only to refuse ambiguity: a task line inside one, a
-directive inside one within a task block, one left open, or a fence-looking
-line inside a fence that is not its exact closer at the opener's indentation
-makes the plan invalid. Rendering subtleties can therefore produce an error,
-never a task that runs or disappears unseen.
+The plan is a restricted markdown dialect, verified rather than guessed, so
+that what planlib runs is exactly what a CommonMark renderer shows as tasks
+(a column-0 line can only be hidden by a top-level fence or HTML block):
+  - code fences open at column 0 (after a blank line when they follow a
+    task) and close on their exact closer at column 0; no other fence-like
+    line inside; never left open
+  - no line starting with '<' (HTML block, comment, tag), '$$' or ':::',
+    except inside a blockquote or list item outside a task block
+  - a task's block lines are indented at least 2 spaces
+  - checkboxes in any other list form are refused (blockquoted examples are allowed)
+  - no front matter, no carriage return inside a line
+Anything outside the dialect makes the plan invalid; nothing is ever hidden.
 """
 import json
 import os
@@ -45,14 +51,12 @@ import sys
 
 LOOKAHEAD = 8
 TASK_RE = re.compile(r"^- \[( |x|X)\][ \t]+(.*)$")
-LOOSE_CHECKBOX_RE = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+\[( |x|X)\]")
 ID_RE = re.compile(r"\*\*\s*(Phase\s+[0-9]+(?:\.[0-9]+)*|Gate\s+[^*\s—:]+(?:\s*(?:→|->)\s*[^*\s—:]+)?)")
 TAG_RE = re.compile(r"\[([a-z0-9:@._+-]+)\](?!\()")  # not markdown link text
 KEYS = "Acceptance|Blocked-by|Swarm|Route|Paths|Budget"
 DIRECTIVE_RE = re.compile(r"^ {0,4}[-*][ \t]+(" + KEYS + r"):\s*(.*?)\s*$")
 ANY_DIRECTIVE_RE = re.compile(r"^\s*(?:[-*+][ \t]+)?(" + KEYS + r"):")
 BLOCKED_ANY_RE = re.compile(r"^\s*(?:[-*+][ \t]+)?Blocked-by:\s*(.*?)\s*$")
-FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 ROUTE_VALUES = {
     "class": {"auto", "docs", "tests", "mechanical", "feature", "bugfix", "migration", "security"},
@@ -87,71 +91,96 @@ def read_lines(path):
     return [l[:-1] if l.endswith("\r") else l for l in data.split("\n")]
 
 
-RAW_OPEN_RE = re.compile(r"^\s*<(pre|script|style|textarea)\b", re.I)
+WS = " \t"
+MARKER_RE = re.compile(r"[ \t]*(?:>|[-*+](?:[ \t]+|$)|\d{1,9}[.)](?:[ \t]+|$))[ \t]*")
+OPEN_RE = re.compile(r"^(`{3,}|~{3,})(.*)$")
+CLOSE_RE = re.compile(r"^(`{3,}|~{3,})[ \t]*$")
+FENCELIKE_RE = re.compile(r"^\s*[`~]{3}")
+CHECKBOX_RE = re.compile(r"\[[ xX]\](?:[ \t]|$)")
+EXT_BLOCK_RE = re.compile(r"^(?:\$\$|:::)")
+BLOCK_LINE_RE = re.compile(r"^ {2,}\S")
 
 
-def regions(lines):
-    """Lines inside code fences, HTML comments and raw HTML blocks (<pre>,
-    <script>, <style>, <textarea>), detected generously. Used only to refuse
-    ambiguity, never to hide anything. Returns (inside, problem): problem is
-    an unclosed region, or nesting this parser will not guess at (a
-    fence-looking line inside a fence that is not its exact closer at the
-    opener's own indentation)."""
+def strip_markers(line):
+    """Remove leading container markers (>, -, *, +, N., N)); report whether
+    any were present and whether one was a blockquote."""
+    rest, prefixed, quoted = line, False, False
+    while True:
+        m = MARKER_RE.match(rest)
+        if not m:
+            return rest.lstrip(WS), prefixed, quoted
+        prefixed = True
+        quoted = quoted or ">" in m.group(0)
+        rest = rest[m.end():]
+
+
+def scan(lines):
+    """Verify the plan stays inside the dialect where planlib and a CommonMark
+    renderer must agree, and mark lines inside top-level code fences.
+
+    A line at column 0 closes every open list item and blockquote, and a task
+    or fence line is a block start (never a lazy continuation), so only a
+    top-level fenced code block or a top-level HTML block can show a column-0
+    task line as an example. HTML block starts are refused outright; fences
+    must open at column 0 and close on their exact CommonMark closer; anything
+    planlib cannot prove is refused. Returns (inside, errors)."""
     inside = [False] * len(lines)
-    fence = None                      # (char, length, indent, line_no)
-    comment = None                    # line_no
-    raw = None                        # (tag, line_no)
+    errs = []
+    in_block = set()
+    for i, l in enumerate(lines):
+        if TASK_RE.match(l):
+            in_block.update(block(lines, i))
+    if lines and re.match(r"(?:---|\+\+\+)[ \t]*$", lines[0]):
+        errs.append("line 1: front matter ('---' / '+++') may hide the plan in some renderers; remove it")
+    fence = None
     for i, line in enumerate(lines):
-        if comment is not None:
+        n = i + 1
+        if "\r" in line:
+            errs.append(f"line {n}: carriage return inside a line (CommonMark treats it as a line break)")
+        if fence:
             inside[i] = True
-            if "-->" in line:
-                comment = None
+            if CLOSE_RE.match(line) and line[0] == fence[0] and len(line.rstrip(WS)) >= fence[1]:
+                fence = None
+            elif FENCELIKE_RE.match(line):
+                errs.append(f"line {n}: fence-like line inside the code fence opened at line {fence[2]} "
+                            "(examples must not contain fence lines; the only one allowed is the exact closer at column 0)")
+            elif TASK_RE.match(line):
+                errs.append(f"line {n}: a task line sits inside the code fence opened at line {fence[2]} "
+                            "(examples must not start with '- [ ]' at column 0)")
             continue
-        if raw is not None:
-            inside[i] = True
-            if f"</{raw[0]}" in line.lower():
-                raw = None
-            continue
-        m = FENCE_RE.match(line)
-        indent = len(line) - len(line.lstrip(" \t"))
-        if fence is None:
-            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
-                fence = (m.group(1)[0], len(m.group(1)), indent, i + 1)
+        rest, prefixed, quoted = strip_markers(line)
+        in_blk = i in in_block
+        if in_blk and not BLOCK_LINE_RE.match(line):
+            errs.append(f"line {n}: a task's block lines must be indented at least 2 spaces")
+        if FENCELIKE_RE.match(rest):
+            m = OPEN_RE.match(line)            # matches only an unprefixed column-0 fence
+            if prefixed:
+                if in_blk:
+                    errs.append(f"line {n}: code fence inside a task block (put a blank line before it)")
+            elif m and m.group(1)[0] == "`" and "`" in m.group(2):
+                pass                           # inline code, not a fence
+            elif m and not in_blk:
+                fence = (m.group(1)[0], len(m.group(1)), n)
                 inside[i] = True
-            elif line.lstrip().startswith("<!--"):
-                inside[i] = True
-                if "-->" not in line.lstrip()[4:]:
-                    comment = i + 1
             else:
-                rm = RAW_OPEN_RE.match(line)
-                if rm:
-                    inside[i] = True
-                    tag = rm.group(1).lower()
-                    if f"</{tag}" not in line.lower():
-                        raw = (tag, i + 1)
-            continue
-        inside[i] = True
-        if m:
-            closes = m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2).strip()
-            if not (closes and indent == fence[2]):
-                return inside, (f"line {i + 1}: fence-like line inside the code fence opened at line {fence[3]} "
-                                "(nested or differently indented fences are ambiguous; use a longer outer fence "
-                                "with its closer at the opener's indentation, or indent examples consistently)")
-            fence = None
+                errs.append(f"line {n}: code fences must start at column 0, after a blank line when they follow a task")
+        elif rest.startswith("<") and (not prefixed or in_blk):
+            errs.append(f"line {n}: a line starting with '<' (raw HTML block, comment or tag) is not allowed in a plan")
+        elif EXT_BLOCK_RE.match(rest) and (not prefixed or in_blk):
+            errs.append(f"line {n}: '$$' / ':::' block syntax is not allowed in a plan")
+        if prefixed and not quoted and CHECKBOX_RE.match(rest) and not TASK_RE.match(line):
+            errs.append(f"line {n}: checkbox not in the task form '- [ ] ' at column 0 "
+                        "(it would not be a task; make it one or remove the checkbox)")
     if fence:
-        return inside, f"line {fence[3]}: code fence is never closed"
-    if comment:
-        return inside, f"line {comment}: HTML comment is never closed"
-    if raw:
-        return inside, f"line {raw[1]}: <{raw[0]}> block is never closed"
-    return inside, None
+        errs.append(f"line {fence[2]}: code fence is never closed")
+    return inside, errs
 
 
 def block(lines, i):
     """Line indexes of the block after task line i (to a blank line or task)."""
     out = []
     j = i + 1
-    while j < len(lines) and lines[j].strip() and not TASK_RE.match(lines[j]):
+    while j < len(lines) and lines[j].strip(WS) and not TASK_RE.match(lines[j]):
         out.append(j)
         j += 1
     return out
@@ -159,13 +188,9 @@ def block(lines, i):
 
 def parse(path):
     lines = read_lines(path)
-    inside, unclosed = regions(lines)
-    if unclosed:
-        raise PlanError(unclosed)
-    for i, line in enumerate(lines):
-        if TASK_RE.match(line) and inside[i]:
-            raise PlanError(f"line {i + 1}: a task line sits inside a code fence or HTML comment "
-                            "(examples must not start with '- [ ]' at column 0)")
+    inside, errs = scan(lines)
+    if errs:
+        raise PlanError(errs[0] + (f" (and {len(errs) - 1} more; run planlib.py validate)" if len(errs) > 1 else ""))
     tasks = []
     for i, line in enumerate(lines):
         m = TASK_RE.match(line)
@@ -332,18 +357,13 @@ def cmd_task(path, line_no):
 
 
 def cmd_validate(path):
-    try:
-        tasks = parse(path)
-    except PlanError as e:
-        return [str(e)]
     lines = read_lines(path)
-    inside, _ = regions(lines)
+    inside, scan_errs = scan(lines)
+    if scan_errs:
+        return scan_errs
+    tasks = parse(path)
     by_ref = index(tasks)
     errs = []
-    for j, line in enumerate(lines):
-        if LOOSE_CHECKBOX_RE.match(line) and not TASK_RE.match(line):
-            errs.append(f"line {j + 1}: checkbox not in the task form '- [ ] ' at column 0 "
-                        "(it would not be a task; make it one or remove the checkbox)")
     seen = {}
     for t in tasks:
         where = f"line {t['line_no']}"
