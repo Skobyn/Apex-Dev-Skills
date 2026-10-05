@@ -30,7 +30,7 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh`
   - Blocked-by: Phase 1.1
 
-- [ ] **Phase 1.3** [backend] promote-to-loop.sh directive validation, cycle check, route dry-run; green-gate toolchain autodetect; gate.sh partner notifier
+- [x] **Phase 1.3** [backend] promote-to-loop.sh directive validation, cycle check, route dry-run; green-gate toolchain autodetect; gate.sh partner notifier
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh`
   - Blocked-by: Phase 1.2
 
