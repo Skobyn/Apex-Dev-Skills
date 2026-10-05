@@ -123,11 +123,18 @@ COUNTS="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" counts "$PLAN_ABS")" \
   || { echo "ERROR: the plan cannot be parsed (planlib.py validate $PLAN_ABS)" >&2; exit 1; }
 read -r TOTAL DONE <<<"$COUNTS"
 
-# Written with json.dump so paths containing quotes or backslashes stay valid.
+# The fork point: the first task's diff base (ADR-0003 chain). A re-init that
+# keeps the run keeps the recorded one.
+FORK_SHA="$(git -C "${WT_PATH:-$REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+
+# Written with json.dump so paths containing quotes or backslashes stay valid;
+# under checkpoint.sh's state lock, atomically.
 python3 - "$CHECKPOINT" "$PLAN_ABS" "$PLAN_HASH" "$NAMESPACE" "$TOTAL" "$DONE" "$WT_PATH" "$WT_BRANCH" "$BASE_BRANCH" \
-  "$([[ "${APEX_GIBSON:-1}" == "0" ]] && echo off || echo gibson)" "$CALLER_COMMON" "$KEEP_RUN" <<'PY'
-import datetime, json, os, sys
-path, plan, h, ns, total, done, wt, br, base, harness, common, keep = sys.argv[1:]
+  "$([[ "${APEX_GIBSON:-1}" == "0" ]] && echo off || echo gibson)" "$CALLER_COMMON" "$KEEP_RUN" "$FORK_SHA" "$STATE_DIR/.checkpoint.lock" <<'PY'
+import datetime, fcntl, json, os, sys
+path, plan, h, ns, total, done, wt, br, base, harness, common, keep, fork, lock = sys.argv[1:]
+lfd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+fcntl.flock(lfd, fcntl.LOCK_EX)
 prev = {}
 if keep == "1" and os.path.isfile(path):
     prev = json.load(open(path))
@@ -138,6 +145,7 @@ fresh = {
     "worktree_path": wt, "worktree_branch": br, "base_branch": base, "git_common_dir": common, "landed": False,
     "harness": harness, "consecutive_failures": 0, "tiers": {}, "reviews": {}, "approvals": {},
     "last_verdict": None, "last_iteration_at": None, "halted": False, "halt_reason": None,
+    "fork_sha": fork or None, "completes": [],
 }
 # Structural fields always come from this init; run history survives a re-init.
 structural = ("plan_path", "plan_hash", "namespace", "total_tasks", "completed_tasks",
@@ -146,7 +154,16 @@ out = dict(fresh)
 for k, v in prev.items():
     if k not in structural:
         out[k] = v
-json.dump(out, open(path, "w"), indent=2)
+if not out.get("fork_sha"):
+    out["fork_sha"] = fork or None
+tmp = path + ".tmp"
+try:
+    os.unlink(tmp)
+except FileNotFoundError:
+    pass
+with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644), "w") as f:
+    json.dump(out, f, indent=2)
+os.replace(tmp, path)
 PY
 
 echo "[init] state -> $STATE_DIR/checkpoint.json"

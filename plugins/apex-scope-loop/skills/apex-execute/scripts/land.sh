@@ -138,6 +138,13 @@ if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
     echo "ERROR: worktree has uncommitted changes that no reviewer has seen — commit, gate, and review them first." >&2
     exit 1
   fi
+  # Every landed commit was verified by a reviewed `complete` (the chain):
+  # nothing may follow the last completion's head.
+  LAND_FLOOR="$(apex_floor "$REPO_ROOT" "$LAND_SHA" || true)"
+  if [[ -z "$LAND_FLOOR" ]] || ! git -C "$REPO_ROOT" diff --quiet --no-renames "$LAND_FLOOR" "$LAND_SHA" 2>/dev/null; then
+    echo "ERROR: ${WT_BRANCH} has commits after the last reviewed completion (${LAND_FLOOR:0:12}..${LAND_SHA:0:12}) — review and complete them as a task first." >&2
+    exit 1
+  fi
   if ! "$APEX_EXECUTE_SCRIPTS/green-gate.sh" "$PLAN" check; then
     echo "ERROR: final green gate failed on the branch head — refusing to land." >&2
     exit 1

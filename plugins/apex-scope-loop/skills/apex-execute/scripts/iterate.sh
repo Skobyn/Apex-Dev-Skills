@@ -20,7 +20,9 @@
 #   TASK: <task-line>
 #   ACCEPTANCE: <criteria-line>
 #   BLOCKED_BY: <phase-or-empty>
-#   HEAD_SHA: <worktree HEAD at brief time — the task's diff base>
+#   HEAD_SHA: <worktree HEAD at brief time>
+#   TASK_BASE: <the task's diff base: the chain floor (ADR-0003); "none" when
+#              no fork point is recorded — risk-tier and complete then refuse>
 #   HARNESS: gibson | off                # APEX_GIBSON=0 turns the harness off
 #   LESSONS: <n> matching ...           # ratchet entries for this task's tags
 #   CONSECUTIVE_FAILURES: <n>
@@ -157,20 +159,20 @@ if [[ "$LOCK_RC" -eq 10 ]]; then
 fi
 
 HEAD_SHA="$(git -C "${WORKTREE:-$REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
-# The task's diff base is fixed the first time the task is briefed (a retry
-# keeps the original base, so earlier attempts' commits stay in the diff).
-# risk-tier.sh refuses a --since later than it.
-TASK_BASE="$HEAD_SHA"
-if [[ "$HEAD_SHA" != unknown ]]; then
-  TASK_BASE="$(python3 - "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" "$LINE_NO" "$HEAD_SHA" <<'PY'
+# The task's diff base is the chain floor (ADR-0003): the head the last
+# reviewed `complete` verified, else the run's fork point. A 0.2.x run has no
+# fork point recorded: it is fixed once, here, at the worktree's fork from the
+# base branch (never in an APEX_NO_WORKTREE run, where that would be HEAD).
+if [[ -z "$(read_field fork_sha)" && -n "$WT_BRANCH" ]]; then
+  FORK="$(git -C "$WORKTREE" merge-base HEAD "$(read_field base_branch)" 2>/dev/null || true)"
+  [[ -n "$FORK" ]] && python3 - "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" "$FORK" <<'PY' || true
 import fcntl, json, os, sys
-path, lock, line_no, head = sys.argv[1:]
+path, lock, fork = sys.argv[1:]
 fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(fd, fcntl.LOCK_EX)          # checkpoint.sh's state lock
 s = json.load(open(path))
-bases = s.setdefault("bases", {})
-if line_no not in bases:
-    bases[line_no] = head
+if not s.get("fork_sha"):
+    s["fork_sha"] = fork
     tmp = path + ".tmp"
     try:
         os.unlink(tmp)
@@ -179,10 +181,9 @@ if line_no not in bases:
     with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644), "w") as f:
         json.dump(s, f, indent=2)
     os.replace(tmp, path)
-print(bases[line_no])
 PY
-)" || TASK_BASE="$HEAD_SHA"
 fi
+TASK_BASE="$(apex_floor "${WORKTREE:-$REPO_ROOT}" || echo none)"
 echo "STATE: $STATE_DIR"
 echo "WORKTREE: $WORKTREE"
 echo "BRANCH: $WT_BRANCH"
@@ -214,7 +215,7 @@ echo "CONSECUTIVE_FAILURES: $(python3 -c 'import json,sys; print(json.load(open(
 # the Swarm: directive exactly as in 0.2.0.
 DISPATCH="$(apex_dispatch_root)"
 if [[ -n "$DISPATCH" && "${APEX_DISPATCH_MODE:-}" != "off" ]]; then
-  ROUTE_OUT="$("$DISPATCH/scripts/route.sh" plan "$PLAN_ABS" --line "$LINE_NO" --base "$HEAD_SHA" ${LANES:+--lanes "$LANES"} 2>&1)" \
+  ROUTE_OUT="$("$DISPATCH/scripts/route.sh" plan "$PLAN_ABS" --line "$LINE_NO" --base "$TASK_BASE" ${LANES:+--lanes "$LANES"} 2>&1)" \
     || ROUTE_OUT="ROUTE: error route.sh exited non-zero: $(printf '%s' "$ROUTE_OUT" | tail -1)"
   printf '%s\n' "$ROUTE_OUT"
   # A route that refuses to dispatch decides the iteration's status.

@@ -24,9 +24,15 @@
 #     head SHA, unless --skip-review names why review does not apply  (Law 5)
 #   - a Tier C task needs a recorded human approval (G12) for that exact head
 #     SHA; --skip-review never waives it                       (Law 7)
-#   - a risk tier must be recorded; --skip-review never waives it
-#   Gate tasks (a **Gate …** id with a [gate:*] tag) carry no code and are
-#   exempt from the gate/review checks — unless the line was tiered C.
+#   - a risk tier must be recorded for the head; --skip-review never waives it
+#   - the task diff is everything since the chain floor (ADR-0003; apex_floor:
+#     the head the last reviewed `complete` verified, else the run's fork
+#     point); `complete` re-classifies it (risk-tier.sh --no-record) and the
+#     effective tier is the higher of that and the recorded tier
+#   A gate task (its line opens with **Gate …** and carries a [gate:*] tag) is
+#   exempt only when it adds no code since the floor (no commits, no dirty or
+#   untracked files) and neither its tags nor its recorded tier say Tier C.
+#   A reviewed completion records its verified head: the next task's floor.
 #
 # Reviews (ADR-0003): every verdict is a record; a round is a distinct head
 # SHA reviewed in the current attempt, and a fourth round is refused
@@ -93,15 +99,41 @@ task_field() {
 import json, re, sys
 t = json.loads(sys.argv[1])
 gate = re.match(r"- \[[ xX]\] \*\*Gate ", t["line"]) is not None and any(x.startswith("gate:") for x in t["tags"])
-print("1" if (t["checked"] if sys.argv[2] == "checked" else gate) else "0")' "$TASK_JSON" "$1"
+forced_c = any(x in ("security", "tier:c", "tier-c") for x in t["tags"])
+print("1" if {"checked": t["checked"], "gate": gate, "forced_c": forced_c}[sys.argv[2]] else "0")' "$TASK_JSON" "$1"
 }
 recorded_tier() {
   python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("tiers", {}).get(sys.argv[2]) or {}).get("tier") or "")' "$CHECKPOINT" "$1"
 }
 refuse_if_halted() {
-  local why
+  local why f
   why="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(s.get("halt_reason") or "halted" if s.get("halted") else "")' "$CHECKPOINT")"
   [[ -z "$why" ]] || { echo "[checkpoint] REFUSED $ACTION: the plan is halted ($why) — a human clears it with: checkpoint.sh PLAN resume REASON" >&2; exit 1; }
+  if [[ "${APEX_GIBSON:-1}" != "0" ]]; then
+    [[ "${APEX_HALT:-0}" != "1" ]] || { echo "[checkpoint] REFUSED $ACTION: kill switch APEX_HALT=1" >&2; exit 1; }
+    while IFS= read -r f; do
+      [[ -f "$f" ]] && { echo "[checkpoint] REFUSED $ACTION: kill switch present ($f)" >&2; exit 1; }
+    done < <(apex_halt_files)
+  fi
+  return 0
+}
+# dirty_paths — uncommitted and untracked (not ignored) paths in the
+# worktree, minus the plan file and the lessons ledger; "?" when git fails.
+dirty_paths() {
+  { git -C "$WT" status --porcelain=v1 -z --untracked-files=all 2>/dev/null || printf '?? ?\0'; } | python3 -c '
+import os, sys
+wt, keep = sys.argv[1], {os.path.realpath(p) for p in sys.argv[2:] if p}
+recs = sys.stdin.buffer.read().split(b"\0")
+i = 0
+while i < len(recs):
+    r = recs[i].decode("utf-8", "replace"); i += 1
+    if len(r) < 4:
+        continue
+    xy, path = r[:2], r[3:]
+    if "R" in xy or "C" in xy:
+        i += 1                                  # the source path record
+    if path == "?" or os.path.realpath(os.path.join(wt, path)) not in keep:
+        print(path)' "$WT" "$PLAN_ABS" "${LESSONS_LEDGER:-}"
 }
 need_sha() {
   [[ "$1" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "[checkpoint] REFUSED $ACTION: '$1' is not a full commit SHA" >&2; exit 1; }
@@ -131,18 +163,35 @@ case "$ACTION" in
     need_line "$LINE_NO"
     [[ "$(task_field checked)" == "0" ]] || { echo "[checkpoint] REFUSED complete: line $LINE_NO is already checked" >&2; exit 1; }
     refuse_if_halted
-    IS_GATE="$(task_field gate)"
-    [[ "$(recorded_tier "$LINE_NO")" == "C" ]] && IS_GATE=0   # Tier C is never exempt
+    HEAD_V="$(head_sha)"   # the head this completion verifies (and records)
+    # The task's code is everything since the chain floor (ADR-0003). A gate
+    # line is exempt from the checks only when it adds no code at all and
+    # nothing marks it Tier C.
+    FLOOR="$(apex_floor "$WT" "$HEAD_V" || true)"
+    EXEMPT=0
+    if [[ "$(task_field gate)" == "1" && "$(task_field forced_c)" == "0" && "$(recorded_tier "$LINE_NO")" != "C" && -n "$FLOOR" ]] \
+       && git -C "$WT" diff --quiet --no-renames "$FLOOR" "$HEAD_V" 2>/dev/null && [[ -z "$(dirty_paths)" ]]; then
+      EXEMPT=1
+    fi
     if [[ -n "$SKIP_REVIEW" && -d "$DISPATCH_STATE" ]]; then
       echo "[checkpoint] REFUSED complete: apex-dispatch state exists ($DISPATCH_STATE); --skip-review is not accepted — record a reviewed verdict" >&2
       exit 1
     fi
-    if [[ "${APEX_GIBSON:-1}" != "0" && "$IS_GATE" == "0" ]]; then
-      python3 - "$CHECKPOINT" "$STATE_DIR/gate/last.json" "$LINE_NO" "$(head_sha)" "$SKIP_REVIEW" <<'PY'
+    if [[ "${APEX_GIBSON:-1}" != "0" && "$EXEMPT" == "0" ]]; then
+      [[ -n "$FLOOR" ]] || { echo "[checkpoint] REFUSED complete: no diff base — this run has no fork point recorded (re-run iterate.sh, or re-init the run)" >&2; exit 1; }
+      # Recompute the tier from the whole task diff: the recorded tier (which
+      # keeps a decision-layer raise) never outranks what the code shows.
+      RT_OUT="$("$APEX_EXECUTE_SCRIPTS/risk-tier.sh" "$PLAN" "$LINE_NO" --since "$FLOOR" --no-record 9>&- 2>&1)" \
+        || { echo "[checkpoint] REFUSED complete: could not classify the task diff:" >&2; printf '%s\n' "$RT_OUT" | tail -3 | sed 's/^/  /' >&2; exit 1; }
+      COMPUTED="$(printf '%s\n' "$RT_OUT" | sed -n 's/^TIER: //p' | head -1)"
+      [[ "$COMPUTED" =~ ^[ABC]$ && "$(printf '%s\n' "$RT_OUT" | sed -n 's/^HEAD: //p' | head -1)" == "$HEAD_V" ]] \
+        || { echo "[checkpoint] REFUSED complete: the task diff was not classified at the head ${HEAD_V:0:12} (did the head move?)" >&2; exit 1; }
+      python3 - "$CHECKPOINT" "$STATE_DIR/gate/last.json" "$LINE_NO" "$HEAD_V" "$SKIP_REVIEW" "$COMPUTED" "$FLOOR" <<'PY'
 import json, os, sys
-cp, gate_path, line_no, head, skip = sys.argv[1:]
+cp, gate_path, line_no, head, skip, computed, floor = sys.argv[1:]
 s = json.load(open(cp))
 problems = []
+order = {"A": 0, "B": 1, "C": 2}
 g = json.load(open(gate_path)) if os.path.isfile(gate_path) else None
 if not g:
     problems.append("no green-gate result — run: green-gate.sh PLAN check")
@@ -151,13 +200,18 @@ elif g.get("head_sha") != head:
 elif g.get("result") not in ("PASS", "SKIPPED"):
     problems.append(f"green gate is {g.get('result')} — zero new failures vs. baseline required")
 trec = s.get("tiers", {}).get(line_no) or {}
-tier = trec.get("tier")
-if tier is None:
-    problems.append("no risk tier recorded — run: risk-tier.sh PLAN LINE --since <brief HEAD_SHA>")
+recorded = trec.get("tier")
+if recorded is None:
+    problems.append(f"no risk tier recorded — run: risk-tier.sh PLAN LINE --since {floor[:12]} (TASK_BASE)")
 elif trec.get("head") != head:
-    # A tier classifies one head; code committed since may be riskier. The
-    # recorded tier still ratchets, so re-running can only keep or raise it.
-    problems.append(f"the risk tier was recorded for {str(trec.get('head'))[:12]}, not the head {head[:12]} — re-run: risk-tier.sh PLAN LINE --since <brief HEAD_SHA>")
+    problems.append(f"the risk tier was recorded for {str(trec.get('head') or 'an older version')[:12]}, not the head {head[:12]} "
+                    f"— re-run: risk-tier.sh PLAN LINE --since {floor[:12]} (TASK_BASE)")
+# Effective tier: the higher of the recorded tier and the tier the task diff
+# shows now (classified here from the chain floor, with the plan's tags).
+tier = max([t for t in (recorded, computed) if t in order], key=order.get)
+if recorded in order and order[computed] > order[recorded]:
+    problems.append(f"the task diff since {floor[:12]} classifies as Tier {computed}, above the recorded Tier {recorded} "
+                    "— re-run risk-tier.sh and give the task the Tier " + computed + " review")
 r = s.get("reviews", {}).get(line_no) or {}
 attempt = r.get("attempt", 1)
 records = r.get("records")
@@ -189,25 +243,29 @@ PY
     fi
     # With apex-dispatch state, the ledger must back the completion (not
     # waived by APEX_GIBSON=0).
-    if [[ -d "$DISPATCH_STATE" && "$IS_GATE" == "0" ]]; then
+    if [[ -d "$DISPATCH_STATE" && "$EXEMPT" == "0" ]]; then
       [[ -n "$DISPATCH" ]] || { echo "[checkpoint] REFUSED complete: dispatch state exists ($DISPATCH_STATE) but apex-dispatch is not installed beside apex-scope-loop (APEX_DISPATCH_ROOT)" >&2; exit 1; }
-      "$DISPATCH/scripts/ledger.sh" evidence --state "$STATE_DIR" --line "$LINE_NO" --head "$(head_sha)" 9>&- \
+      "$DISPATCH/scripts/ledger.sh" evidence --state "$STATE_DIR" --line "$LINE_NO" --head "$HEAD_V" 9>&- \
         || { echo "[checkpoint] REFUSED complete: ledger evidence missing or the hash chain is broken (ledger.sh evidence)" >&2; exit 1; }
     fi
     # Flip "- [ ]" to "- [x]" on that line (BSD/macOS sed)
     sed -i.bak "${LINE_NO}s/^- \[ \]/- [x]/" "$PLAN" && rm -f "${PLAN}.bak"
     python3 -c "$PY_SAVE"'
 import sys
-path, now, verdict, line_no, skip = sys.argv[1:]
+path, now, verdict, line_no, skip, head, harness = sys.argv[1:]
 with open(path) as f: s = json.load(f)
 s["completed_tasks"] = s.get("completed_tasks", 0) + 1
+# The chain advances only past code the harness verified (APEX_GIBSON=0
+# completions leave their code in the diff of the next task).
+if harness == "1" and head != "unknown":
+    s.setdefault("completes", []).append({"line": int(line_no), "head": head, "at": now})
 s["last_verdict"] = {"line_no": int(line_no), "result": "pass", "reason": verdict, "at": now}
 if skip:
     s.setdefault("skipped_reviews", {})[line_no] = {"reason": skip, "at": now}
 s["last_iteration_at"] = now
 s["current_phase"] = None
 s["consecutive_failures"] = 0
-save(path, s)' "$CHECKPOINT" "$NOW" "$VERDICT" "$LINE_NO" "$SKIP_REVIEW"
+save(path, s)' "$CHECKPOINT" "$NOW" "$VERDICT" "$LINE_NO" "$SKIP_REVIEW" "$HEAD_V" "$([[ "${APEX_GIBSON:-1}" != "0" ]] && echo 1 || echo 0)"
     apex_lock_stage "$PLAN_HASH" DONE   # this plan's lock becomes reclaimable until its next iterate
     echo "[checkpoint] complete @ line $LINE_NO ($VERDICT)"
     ;;
@@ -435,10 +493,16 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON"
     sed -i.bak "${LINE_NO}s/^- \[[xX]\]/- [ ]/" "$PLAN" && rm -f "${PLAN}.bak"
     python3 -c "$PY_SAVE"'
 import sys
-path = sys.argv[1]
+path, line_no = sys.argv[1:]
 with open(path) as f: s = json.load(f)
 s["completed_tasks"] = max(0, s.get("completed_tasks", 0) - 1)
-save(path, s)' "$CHECKPOINT"
+# The chain floor moves back to before this task: its code (and everything
+# completed after it) is in the next task diff again.
+c = s.get("completes") or []
+idx = [i for i, e in enumerate(c) if e.get("line") == int(line_no)]
+if idx:
+    s["completes"] = c[:idx[-1]]
+save(path, s)' "$CHECKPOINT" "$LINE_NO"
     echo "[checkpoint] rewound line $LINE_NO"
     ;;
 

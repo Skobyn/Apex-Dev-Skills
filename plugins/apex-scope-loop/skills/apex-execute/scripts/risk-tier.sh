@@ -14,10 +14,12 @@
 #               risk-tier@1) and combine as max(heuristic, decision): a
 #               decision can raise the tier, never lower it (spec §6). Absent,
 #               failing or malformed: the heuristic stands, noted in REASON.
-#   --since  diff base for this task (TASK_BASE from iterate.sh's brief). It may
-#            be earlier than the task's recorded base, never later (a later
-#            base would hide the task's own commits). Default: the recorded
-#            base, else the merge-base of the worktree branch and the base branch.
+#   --since  diff base for this task. Default and latest allowed: the chain
+#            floor (TASK_BASE in iterate.sh's brief: the head the last reviewed
+#            complete verified, else the run's fork point). An earlier base
+#            only widens the diff.
+#   --no-record  print the classification of the diff without recording it
+#               (checkpoint.sh complete recomputes the tier this way).
 #   --tags   extra tags; the task's own tags are always read from the plan.
 #            [security] or [tier:c] force Tier C.
 #
@@ -29,12 +31,13 @@ set -euo pipefail
 PLAN="${1:?usage: risk-tier.sh PLAN.md LINE_NO [--since SHA] [--tags t1,t2]}"
 LINE_NO="${2:?line_no required}"
 shift 2
-SINCE=""; TAGS=""; CLASSIFY=0
+SINCE=""; TAGS=""; CLASSIFY=0; NO_RECORD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --since) SINCE="${2:?}"; shift 2 ;;
     --tags)  TAGS="${2-}"; shift 2 ;;
     --classify) CLASSIFY=1; shift ;;
+    --no-record) NO_RECORD=1; shift ;;
     *) echo "ERROR: unknown arg $1" >&2; exit 2 ;;
   esac
 done
@@ -57,30 +60,26 @@ BASE_BRANCH="$(read_field base_branch)"
 # The task's own tags always count (a caller cannot drop [tier:c]).
 PLAN_TAGS="$(python3 -c 'import json,sys; print(",".join(json.loads(sys.argv[1])["tags"]))' "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO")")"
 TAGS="${TAGS:+$TAGS,}$PLAN_TAGS"
-# Recorded base: the first brief's HEAD (iterate.sh), else the first --since
-# this line was tiered with.
-FLOOR="$(python3 -c '
-import json, sys
-s = json.load(open(sys.argv[1])); ln = sys.argv[2]
-print(s.get("bases", {}).get(ln) or (s.get("tiers", {}).get(ln) or {}).get("since") or "")' "$CHECKPOINT" "$LINE_NO")"
-if [[ -z "$SINCE" ]]; then
-  SINCE="${FLOOR:-$(git -C "$WT" merge-base HEAD "$BASE_BRANCH" 2>/dev/null || git -C "$WT" rev-parse HEAD)}"
-fi
-# Fail closed: an unknown diff base would classify an empty diff as Tier A.
+# The task's diff base is the chain floor (ADR-0003; apex_floor in _lib.sh).
+# --since may only widen the diff (an ancestor of the floor), never narrow it.
+FLOOR="$(apex_floor "$WT")" \
+  || { echo "ERROR: no diff base: this run has no fork point recorded (re-run iterate.sh, or re-init the run)" >&2; exit 2; }
+[[ -n "$SINCE" ]] || SINCE="$FLOOR"
 SINCE="$(git -C "$WT" rev-parse -q --verify "${SINCE}^{commit}" 2>/dev/null)" \
   || { echo "ERROR: --since is not a commit in $WT" >&2; exit 2; }
 HEAD_NOW="$(git -C "$WT" rev-parse HEAD)"
-git -C "$WT" merge-base --is-ancestor "$SINCE" "$HEAD_NOW" \
-  || { echo "ERROR: --since ${SINCE:0:12} is not an ancestor of the worktree head ${HEAD_NOW:0:12}" >&2; exit 2; }
-if [[ -n "$FLOOR" ]] && ! git -C "$WT" merge-base --is-ancestor "$SINCE" "$FLOOR" 2>/dev/null; then
+if ! git -C "$WT" merge-base --is-ancestor "$SINCE" "$FLOOR" 2>/dev/null; then
   echo "ERROR: --since ${SINCE:0:12} is later than this task's base ${FLOOR:0:12} — it would hide the task's own commits; use --since $FLOOR (TASK_BASE) or omit --since" >&2
   exit 2
 fi
 
-# Committed changes since SINCE plus anything still uncommitted.
-FILES="$( { git -C "$WT" diff --name-only "$SINCE" HEAD; git -C "$WT" diff --name-only HEAD; \
-            git -C "$WT" ls-files --others --exclude-standard; } 2>/dev/null | sort -u | sed '/^$/d')"
-LINES="$( { git -C "$WT" diff --numstat "$SINCE" HEAD; git -C "$WT" diff --numstat HEAD; } 2>/dev/null \
+# Committed changes since SINCE plus anything still uncommitted. Renames are
+# split into delete + add (an auth file moved to a bland name keeps its old
+# path in the list); paths are not octal-quoted.
+GIT=(git -c core.quotepath=false -C "$WT")
+FILES="$( { "${GIT[@]}" diff --no-renames --name-only "$SINCE" "$HEAD_NOW"; "${GIT[@]}" diff --no-renames --name-only HEAD; \
+            "${GIT[@]}" ls-files --others --exclude-standard; } 2>/dev/null | sort -u | sed '/^$/d')"
+LINES="$( { "${GIT[@]}" diff --no-renames --numstat "$SINCE" "$HEAD_NOW"; "${GIT[@]}" diff --no-renames --numstat HEAD; } 2>/dev/null \
           | awk '$1 ~ /^[0-9]+$/ {s += $1 + $2} END {print s + 0}')"
 NFILES="$(printf '%s\n' "$FILES" | sed '/^$/d' | wc -l | tr -d ' ')"
 
@@ -110,7 +109,7 @@ barnacles manacle manacles coracle coracles""".split())
 WORD = re.compile(r"[A-Z]{2,}s(?![a-z])|[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
 for path in sys.stdin.read().splitlines():
     spans = [(m.start(), m.end(), m.group().lower()) for m in WORD.finditer(path)]
-    for m in re.finditer(r"(?=(sso|acl))", path.lower()):
+    for m in re.finditer(r"(?i)(?=(sso|acl))", path):   # offsets in the original string
         a = m.start()
         if not any(s <= a and a + 3 <= e and w in BENIGN for s, e, w in spans):
             print(path)
@@ -124,7 +123,7 @@ done <<<"$FILES"
 
 # Tier C: content signals in added lines (catches risk in innocuously named files).
 C_CONTENT='(stripe|charge\(|amount_cents|price|currency|bcrypt|argon2|jwt\.|verify_?token|set-cookie|httponly|samesite|csrf|consent|date_of_birth|ssn|social_security|DROP (TABLE|COLUMN)|ALTER TABLE|DELETE FROM|TRUNCATE)'
-ADDED="$( { git -C "$WT" diff -U0 "$SINCE" HEAD; git -C "$WT" diff -U0 HEAD; } 2>/dev/null | grep -E '^\+[^+]' || true)"
+ADDED="$( { "${GIT[@]}" diff --no-renames -U0 "$SINCE" "$HEAD_NOW"; "${GIT[@]}" diff --no-renames -U0 HEAD; } 2>/dev/null | grep -E '^\+[^+]' || true)"
 if [[ -n "$ADDED" ]] && printf '%s' "$ADDED" | grep -qiE "$C_CONTENT"; then
   hit="$(printf '%s' "$ADDED" | grep -oiE "$C_CONTENT" | head -1)"
   raise C "tier-c content signal in diff: '$hit'"
@@ -182,8 +181,9 @@ print(v if v in ("A", "B", "C") and not d.get("uncertain") else "")' "$DOUT" 2>/
 fi
 
 # Persist (tier only ratchets upward — diffs may drift into C, never out).
-# Under checkpoint.sh's state lock, written atomically.
-TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" <<'PY'
+# Under checkpoint.sh's state lock, written atomically. --no-record (used by
+# checkpoint.sh complete) prints the heuristic for the diff without recording.
+[[ "$NO_RECORD" == "1" ]] || TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" <<'PY'
 import fcntl, json, os, sys
 path, line_no, tier, since, lock, head = sys.argv[1:]
 fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
@@ -209,6 +209,7 @@ PY
 )"
 
 echo "TIER: $TIER"
+echo "HEAD: $HEAD_NOW"
 echo "DIFF: $NFILES file(s), $LINES line(s) since ${SINCE:0:12}"
 if [[ ${#REASONS[@]} -eq 0 ]]; then
   echo "REASON: no elevated-risk signals"

@@ -113,6 +113,28 @@ apex_halt_files() {
     | awk '!seen[$0]++'
 }
 
+# apex_floor DIR [REV] — the current task's diff base (ADR-0003, the chain):
+# the head the last harness-on `complete` verified, else the run's fork point
+# (fork_sha, written by init.sh). When that is no longer an ancestor of REV
+# (default HEAD in DIR; after a rebase or amend) it falls back to their
+# merge-base, which only widens the diff. Prints nothing and returns 1 when no
+# floor resolves — callers refuse; the floor is never REV itself by default.
+apex_floor() {
+  local dir="$1" rev="${2:-HEAD}" f
+  f="$(python3 -c '
+import json, sys
+s = json.load(open(sys.argv[1]))
+c = s.get("completes") or []
+print(c[-1]["head"] if c else (s.get("fork_sha") or ""))' "$CHECKPOINT" 2>/dev/null)" || return 1
+  [[ -n "$f" ]] || return 1
+  f="$(git -C "$dir" rev-parse -q --verify "${f}^{commit}" 2>/dev/null)" || return 1
+  if ! git -C "$dir" merge-base --is-ancestor "$f" "$rev" 2>/dev/null; then
+    f="$(git -C "$dir" merge-base "$f" "$rev" 2>/dev/null)" || return 1
+  fi
+  [[ -n "$f" ]] || return 1
+  printf '%s\n' "$f"
+}
+
 # read_field KEY — a top-level checkpoint value as text ("" when absent or
 # null). Callers read string fields only (worktree_path, worktree_branch,
 # base_branch).

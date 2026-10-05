@@ -705,40 +705,42 @@ printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer", "li
 (cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv2 --agent-id ag2 >/dev/null) || fail "a new record (possibly on a reused inode) was refused as already recorded"
 ok "checkpoint: provenance required with dispatch state; role and line from the record; one use per record"
 
-# 34. risk-tier: short tokens are whole words ("lessons" is not SSO); the
-#     decision layer can raise a tier, never lower it.
-RT="$SMOKE_TMP/rt34"; mkdir -p "$RT/plans" "$RT/scripts"; git init -q -b main "$RT"
-for i in 1 2 3 4 5 6 7 8 9 10; do printf -- '- [ ] **Phase 1.%s** a\n  - Acceptance: true\n' "$i"; done >"$RT/plans/r-plan.md"; git -C "$RT" add -A; git -C "$RT" commit -qm r
-( cd "$RT" && APEX_GIBSON=0 "$EX/init.sh" plans/r-plan.md >/dev/null 2>&1 ) || fail "init for the risk-tier test failed"
-RWT="$(st "$RT" plans/r-plan.md)/worktree"; B0="$(git -C "$RWT" rev-parse HEAD)"
-mkdir -p "$RWT/scripts"; echo x >"$RWT/scripts/lessons.sh"; git -C "$RWT" add -A; git -C "$RWT" commit -qm l
-has "^TIER: A" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0")" || fail "lessons.sh was classified above Tier A"
-printf '#!/bin/sh\necho "{\\"verdict\\": \\"$FAKE_TIER\\", \\"uncertain\\": false}"\n' >"$SMOKE_TMP/decide.sh"; chmod +x "$SMOKE_TMP/decide.sh"
-has "^TIER: B" "$(cd "$RT" && FAKE_TIER=B APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0" --classify)" || fail "the decision layer could not raise the tier"
-has "^TIER: B" "$(cd "$RT" && FAKE_TIER=A APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0" --classify)" || fail "the decision layer lowered a recorded tier"
-mkdir -p "$RWT/src"; echo x >"$RWT/src/jwtVerify.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm j; B1="$(git -C "$RWT" rev-parse HEAD~1)"
-has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 3 --since "$B1")" || fail "src/jwtVerify.ts (camelCase) was not Tier C"
-echo x >"$RWT/src/userRoles.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm u
-has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 5 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/userRoles.ts (camelCase) was not Tier C"
-echo x >"$RWT/src/userACLs.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm a
-has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 7 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/userACLs.ts (plural acronym) was not Tier C"
-echo x >"$RWT/src/oracle.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm o
-has "^TIER: A" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 9 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/oracle.ts was classified above Tier A (acl inside a word)"
-echo x >"$RWT/src/AzureADSSO.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm z
-has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 11 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/AzureADSSO.ts (adjacent acronyms) was not Tier C"
-mkdir -p "$RWT/src/sso2"; echo x >"$RWT/src/sso2/index.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm z2
-has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 13 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/sso2/index.ts was not Tier C"
-expect_refusal "an unknown --since" "not a commit" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 1 --since deadbeefdeadbeef
-ln=13; for f in src/associateSSOIdentity.ts src/ProcessorSSO.ts src/lessonsso.ts; do
-  echo x >"$RWT/$f"; git -C "$RWT" add -A; git -C "$RWT" commit -qm "$f"; ln=$((ln + 2))
-  has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md "$ln" --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "$f was not Tier C (allowlist swallowed the token)"
+# 34. risk-tier: path classification fails closed (sso/acl inside words only
+#     when the whole word is an allowlisted ordinary word; renames keep the
+#     old path; unquoted UTF-8 paths); the diff base is the chain floor, never
+#     later; the decision layer can raise a tier, never lower it.
+rt_tier() { # rt_tier PATH... — the tier of a task diff that adds PATH(s), in a fresh run
+  local d wt f; d="$(mktemp -d "$SMOKE_TMP/rt.XXXXXX")"; mkdir -p "$d/plans"; git init -q -b main "$d"
+  git -C "$d" config core.quotepath false
+  printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n' >"$d/plans/r-plan.md"; git -C "$d" add -A; git -C "$d" commit -qm r
+  ( cd "$d" && APEX_GIBSON=0 "$EX/init.sh" plans/r-plan.md >/dev/null 2>&1 ) || { echo "init-failed"; return 0; }
+  wt="$(st "$d" plans/r-plan.md)/worktree"
+  for f in "$@"; do mkdir -p "$wt/$(dirname "$f")"; echo x >"$wt/$f"; done
+  git -C "$wt" add -A; git -C "$wt" commit -qm t
+  (cd "$d" && "$EX/risk-tier.sh" plans/r-plan.md 1 --no-record 2>&1) | sed -n 's/^TIER: //p'
+}
+for f in src/jwtVerify.ts lib/userRoles.ts src/userACLs.ts src/AzureADSSO.ts src/sso2/index.ts src/associateSSOIdentity.ts \
+         src/ProcessorSSO.ts src/lessonsso.ts k8s/clusterrolebinding.yaml "İİİİ/sso/associated.ts" "db/données.sql"; do
+  [ "$(rt_tier "$f")" = C ] || fail "$f was not Tier C"
 done
-expect_refusal "a --since later than the task's base" "later than this task's base" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 3 --since "$(git -C "$RWT" rev-parse HEAD)"
-mkdir -p "$RWT/src/sso"; echo x >"$RWT/src/sso/login.py"; git -C "$RWT" add -A; git -C "$RWT" commit -qm s
-has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0")" || fail "an sso/ path was not Tier C"
+for f in scripts/lessons.sh src/oracle.ts "lessons/İ.py"; do
+  [ "$(rt_tier "$f")" = A ] || fail "$f was classified above Tier A"
+done
+RT="$SMOKE_TMP/rt34"; mkdir -p "$RT/plans" "$RT/src/auth"; git init -q -b main "$RT"
+for i in 1 2; do printf -- '- [ ] **Phase 1.%s** a\n  - Acceptance: true\n' "$i"; done >"$RT/plans/r-plan.md"
+echo x >"$RT/src/auth/session.py"; git -C "$RT" add -A; git -C "$RT" commit -qm r
+( cd "$RT" && APEX_GIBSON=0 "$EX/init.sh" plans/r-plan.md >/dev/null 2>&1 ) || fail "init for the risk-tier test failed"
+RWT="$(st "$RT" plans/r-plan.md)/worktree"
+printf '#!/bin/sh\necho "{\\"verdict\\": \\"$FAKE_TIER\\", \\"uncertain\\": false}"\n' >"$SMOKE_TMP/decide.sh"; chmod +x "$SMOKE_TMP/decide.sh"
+has "^TIER: B" "$(cd "$RT" && FAKE_TIER=B APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 3 --classify)" || fail "the decision layer could not raise the tier"
+has "^TIER: B" "$(cd "$RT" && FAKE_TIER=A APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 3 --classify)" || fail "the decision layer lowered a recorded tier"
+git -C "$RWT" mv src/auth/session.py src/x.py; git -C "$RWT" commit -qm mv
+has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1)" || fail "an auth file renamed to a bland name was not Tier C"
+expect_refusal "an unknown --since" "not a commit" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 1 --since deadbeefdeadbeef
+expect_refusal "a --since later than the task's base" "later than this task's base" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$(git -C "$RWT" rev-parse HEAD)"
 expect_refusal "a non-numeric risk-tier line" "plan line number" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md '1,$'
 expect_refusal "a risk-tier line that is not a task" "not a task" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 2
-ok "risk-tier: whole-word and camelCase short tokens; decision layer raises only"
+ok "risk-tier: fail-closed path classes, renames, UTF-8 paths, chain floor; decision layer raises only"
 
 # 35. green-gate re-baselines a step the baseline never ran, at the fork SHA,
 #     only when the fork resolves the same command (a plan-added step stays strict).
@@ -821,5 +823,45 @@ printf -- '- [ ] tidy something without an id\n  - Acceptance: true\n- [ ] rewri
 expect_refusal "a code task naming a **Gate** in prose" "no green-gate\|no risk tier\|no independent review" indir "$IX" "$CP" plans/i-plan.md complete 3 ok
 ok "checkpoint: line validation, no verdict laundering, no Tier C skip, parallel-safe, resume, halt, gate ids"
 
+# 37. The chain (ADR-0003): a task's code is everything since the head the last
+#     reviewed complete verified; complete re-classifies it; a gate line is
+#     exempt only when it adds no code; land refuses unreviewed commits.
+CN="$SMOKE_TMP/cn37"; mkdir -p "$CN/plans"; git init -q -b main "$CN"
+printf -- '- [ ] **Phase 1.1** [docs] first\n  - Acceptance: true\n- [ ] **Gate 1→2** [gate:human] sign-off\n  - Acceptance: true\n- [ ] **Phase 2.1** [docs] second\n  - Acceptance: true\n- [ ] **Gate 2→3** [gate:human] [tier:c] security sign-off\n  - Acceptance: true\n' >"$CN/plans/n-plan.md"
+git -C "$CN" add -A; git -C "$CN" commit -qm n
+( cd "$CN" && APEX_GIBSON=0 "$EX/init.sh" plans/n-plan.md >/dev/null 2>&1 ) || fail "init for the chain test failed"
+CNS="$(st "$CN" plans/n-plan.md)"; NWT="$CNS/worktree"; nsha() { git -C "$NWT" rev-parse HEAD; }
+cn() { (cd "$CN" && "$@"); }
+FORK="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["fork_sha"])' "$CNS/checkpoint.json")"
+[ "$FORK" = "$(nsha)" ] || fail "init did not record the fork point"
+echo doc >"$NWT/notes.md"; git -C "$NWT" add -A; git -C "$NWT" commit -qm doc; H1="$(nsha)"
+cn "$EX/green-gate.sh" plans/n-plan.md check >/dev/null 2>&1 || true
+cn "$EX/risk-tier.sh" plans/n-plan.md 1 >/dev/null; cn "$CP" plans/n-plan.md review 1 "$H1" APPROVE >/dev/null
+cn "$CP" plans/n-plan.md complete 1 ok >/dev/null 2>&1 || fail "a reviewed docs task could not complete"
+has "^TASK_BASE: $H1" "$(cn "$EX/iterate.sh" plans/n-plan.md 2>&1)" || fail "TASK_BASE is not the head the last complete verified"
+cn "$EX/risk-tier.sh" plans/n-plan.md 3 >/dev/null                      # gate tiered A on an empty diff
+mkdir -p "$NWT/src/auth"; echo x >"$NWT/src/auth/login.py"; git -C "$NWT" add -A; git -C "$NWT" commit -qm auth
+cn "$EX/green-gate.sh" plans/n-plan.md check >/dev/null 2>&1 || true
+expect_refusal "a gate line carrying code (tiered before the code)" "recorded for\|classifies as Tier C\|no independent review" cn "$CP" plans/n-plan.md complete 3 ok
+expect_refusal "a --since after the last complete" "later than this task's base" cn "$EX/risk-tier.sh" plans/n-plan.md 3 --since "$(nsha)"
+python3 - "$CNS/checkpoint.json" "$(nsha)" <<'PY'
+import json, sys
+p, h = sys.argv[1:]; s = json.load(open(p)); s["tiers"]["3"] = {"tier": "A", "head": h}; json.dump(s, open(p, "w"))
+PY
+expect_refusal "a recorded tier below the task diff" "classifies as Tier C" cn "$CP" plans/n-plan.md complete 3 ok
+cn "$CP" plans/n-plan.md fail 3 retry >/dev/null
+has "^TASK_BASE: $H1" "$(cn "$EX/iterate.sh" plans/n-plan.md 2>&1)" || fail "fail moved the chain floor"
+git -C "$NWT" reset -q --hard "$H1"
+cn "$CP" plans/n-plan.md complete 3 ok >/dev/null 2>&1 || fail "a gate line with no code could not complete"
+expect_refusal "a [tier:c] gate line" "no risk tier\|adversarial\|G12\|no independent review" cn "$CP" plans/n-plan.md complete 7 ok
+echo y >"$NWT/src.py"; mkdir -p "$NWT/src/auth"; echo x >"$NWT/src/auth/token.py"; git -C "$NWT" add -A; git -C "$NWT" commit -qm unreviewed
+(cd "$CN" && APEX_GIBSON=0 "$CP" plans/n-plan.md complete 5 ok >/dev/null 2>&1) || fail "APEX_GIBSON=0 complete failed"
+has "^TASK_BASE: $H1" "$(cn "$EX/iterate.sh" plans/n-plan.md 2>&1)" || fail "an APEX_GIBSON=0 completion advanced the chain"
+(cd "$CN" && APEX_GIBSON=0 "$CP" plans/n-plan.md complete 7 ok >/dev/null 2>&1) || fail "APEX_GIBSON=0 complete of the last task failed"
+expect_refusal "landing commits no reviewed complete covered" "after the last reviewed completion" cn "$EX/land.sh" plans/n-plan.md
+cn "$CP" plans/n-plan.md rewind 1 >/dev/null
+python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert not s["completes"], s["completes"]' "$CNS/checkpoint.json" || fail "rewind did not move the chain back"
+ok "chain: fork point, TASK_BASE, re-classified complete, code-free gates, fail/rewind/APEX_GIBSON=0, land boundary"
+
 echo ""
-echo "smoke passed: 36/36 checks"
+echo "smoke passed: 37/37 checks"
