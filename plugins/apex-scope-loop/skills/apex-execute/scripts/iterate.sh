@@ -31,6 +31,7 @@ set -euo pipefail
 PLAN="${1:?usage: iterate.sh PATH_TO_PLAN.md}"
 [[ -f "$PLAN" ]] || { echo "STATUS: ERROR plan not found"; exit 1; }
 
+APEX_STATUS_PROTOCOL=1
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"

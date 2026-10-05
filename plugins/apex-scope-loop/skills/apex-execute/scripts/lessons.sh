@@ -26,7 +26,8 @@ shift 2
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
-LEDGER="${APEX_LESSONS_FILE:-$REPO_ROOT/.claude/apex-scope-loop/LESSONS.md}"
+# The ledger belongs to the plan's checkout (ADR-0003), not the caller's.
+LEDGER="${APEX_LESSONS_FILE:-${PLAN_TOP:-$REPO_ROOT}/.claude/apex-scope-loop/LESSONS.md}"
 
 case "$ACTION" in
   fail)

@@ -48,7 +48,8 @@ apex_state_base() {
 }
 
 # apex_resolve PLAN — set PLAN_ABS, PLAN_TOP, REPO_ROOT, STATE_BASE,
-# PLAN_HASH, STATE_DIR and CHECKPOINT.
+# PLAN_HASH, STATE_DIR and CHECKPOINT, then run apex_guard (fatal on a
+# repository mismatch unless the caller declared APEX_RESOLVE_MODE=read).
 apex_resolve() {
   local plan="$1" plan_dir plan_top legacy legacy_dir main_root
   plan_dir="$(cd "$(dirname "$plan")" && pwd -P)"
@@ -71,6 +72,8 @@ apex_resolve() {
   if [[ ! -d "$STATE_DIR" ]]; then
     legacy="$(printf '%s' "$(cd "$(dirname "$plan")" && pwd)/$(basename "$plan")" | apex_sha12)"
     legacy_dir="$REPO_ROOT/.dev-plan-state/$legacy"
+    # Never adopt a state dir from the caller's checkout for another repo's plan.
+    [[ "$(apex_common_dir "$REPO_ROOT")" == "$(apex_common_dir "$plan_dir")" ]] || legacy_dir="/nonexistent"
     if [[ ! -f "$legacy_dir/checkpoint.json" && -n "$plan_top" && "$(basename "$STATE_BASE")" == ".dev-plan-state" ]]; then
       main_root="$(dirname "$STATE_BASE")"
       legacy="$(printf '%s' "$main_root/${PLAN_ABS#"$plan_top"/}" | apex_sha12)"
@@ -82,6 +85,7 @@ apex_resolve() {
     fi
   fi
   CHECKPOINT="$STATE_DIR/checkpoint.json"
+  apex_guard
 }
 
 # apex_halt_files — every kill-switch path: checkout-local and shared.
@@ -110,4 +114,60 @@ apex_common_dir() {
   c="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
   [[ -n "$c" ]] && (cd "$c" && pwd -P)
   return 0
+}
+
+# apex_die MSG — fail with MSG. Scripts that speak the iterate.sh brief
+# protocol set APEX_STATUS_PROTOCOL=1 to also get a STATUS: ERROR line.
+apex_die() {
+  [[ "${APEX_STATUS_PROTOCOL:-0}" == "1" ]] && echo "STATUS: ERROR $1"
+  echo "ERROR: $1" >&2
+  exit 3
+}
+
+# apex_guard — one repository, proven (ADR-0003). State is keyed on the
+# plan's repository; git actions run in the caller's checkout and in the
+# checkpoint's worktree. Before any script acts, all four must name the same
+# repository (physical common git dirs):
+#   C  the caller's checkout            P  the plan's checkout
+#   K  checkpoint git_common_dir        W  the recorded worktree, if present
+# (a 0.2.0 checkpoint has no K; W stands in for it). The recorded worktree
+# must also have the recorded branch checked out, and a recorded branch with
+# no recorded worktree path is corruption. APEX_RESOLVE_MODE=read (status,
+# audit, architecture review) turns a failure into a warning; nothing
+# overrides it in act mode, APEX_INIT_FORCE included.
+apex_guard() {
+  local mode="${APEX_RESOLVE_MODE:-act}" c p k="" w="" wt="" br="" problems=() head
+  c="$(apex_common_dir "$REPO_ROOT")"
+  p="$( [[ -n "$PLAN_TOP" ]] && apex_common_dir "$PLAN_TOP" || true)"
+  if [[ -f "$CHECKPOINT" ]]; then
+    k="$(read_field git_common_dir)"
+    wt="$(read_field worktree_path)"
+    br="$(read_field worktree_branch)"
+    [[ -n "$wt" && -d "$wt" ]] && w="$(apex_common_dir "$wt")"
+  fi
+  if [[ -n "$p" && -z "$c" && "$mode" == "act" ]]; then
+    problems+=("the plan is in a git repository but this directory is not; run from a checkout of $p")
+  fi
+  local name val ref=""
+  for name in c p k w; do
+    val="${!name}"
+    [[ -z "$val" ]] && continue
+    if [[ -z "$ref" ]]; then ref="$val"; continue; fi
+    if [[ "$val" != "$ref" ]]; then
+      problems+=("repository mismatch: caller=${c:--} plan=${p:--} checkpoint=${k:--} worktree=${w:--}")
+      break
+    fi
+  done
+  if [[ -n "$br" && -z "$wt" ]]; then
+    problems+=("checkpoint records branch '$br' but no worktree path (corrupt checkpoint)")
+  elif [[ -n "$br" && -n "$w" ]]; then
+    head="$(git -C "$wt" symbolic-ref -q HEAD 2>/dev/null || true)"
+    [[ "$head" == "refs/heads/$br" ]] || problems+=("worktree $wt has '${head:-detached HEAD}' checked out, expected refs/heads/$br")
+  fi
+  [[ ${#problems[@]} -eq 0 ]] && return 0
+  if [[ "$mode" == "read" ]]; then
+    printf 'WARNING: %s\n' "${problems[@]}" >&2
+    return 0
+  fi
+  apex_die "$(printf '%s; ' "${problems[@]}")refusing to act"
 }

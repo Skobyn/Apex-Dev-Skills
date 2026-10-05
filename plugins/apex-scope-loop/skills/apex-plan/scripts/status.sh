@@ -69,6 +69,7 @@ fi
 
 # apex-execute checkpoint
 if [[ -f "$PLAN" ]]; then
+  APEX_RESOLVE_MODE=read  # reporting only: a repository mismatch warns
   # Same state resolution as apex-execute (shared state root across worktrees).
   # shellcheck source=../../apex-execute/scripts/_lib.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../apex-execute/scripts" && pwd)/_lib.sh"

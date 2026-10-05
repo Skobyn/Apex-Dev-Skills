@@ -29,22 +29,17 @@ if ! git rev-parse --git-dir >/dev/null 2>&1 && [[ "${APEX_NO_WORKTREE:-0}" != "
   exit 1
 fi
 
-# The caller's checkout and the plan must belong to one repository: state is
-# keyed on the plan's repo, git operations run in the caller's.
+# apex_resolve has already proven the caller, the plan and any existing
+# checkpoint name one repository (apex_guard).
 CALLER_COMMON="$(apex_common_dir "$REPO_ROOT")"
-PLAN_COMMON="$( [[ -n "$PLAN_TOP" ]] && apex_common_dir "$PLAN_TOP" || true)"
-if [[ -n "$CALLER_COMMON" && -n "$PLAN_COMMON" && "$CALLER_COMMON" != "$PLAN_COMMON" ]]; then
-  echo "ERROR: the plan lives in a different repository than this checkout." >&2
-  echo "       plan repo: $PLAN_COMMON   this checkout: $CALLER_COMMON" >&2
-  echo "       Run init.sh from a checkout of the plan's repository." >&2
-  exit 1
-fi
 
 mkdir -p "$STATE_DIR"
 
 # --- Resolve worktree branch + base branch -----------------------------------
 SLUG="$(basename "$PLAN" .md)"; SLUG="${SLUG%-plan}"
-WT_BRANCH="apex-scope-loop/${SLUG}"
+# The plan hash makes the branch unique per plan: two plans with the same slug
+# never share a branch, and an unrelated apex-scope-loop/<slug> is never adopted.
+WT_BRANCH="apex-scope-loop/${SLUG}-${PLAN_HASH}"
 WT_PATH="$STATE_DIR/worktree"
 
 BASE_BRANCH="${APEX_BASE_BRANCH:-}"
@@ -76,20 +71,47 @@ if [[ -f "$CHECKPOINT" && "${APEX_INIT_FORCE:-0}" != "1" && "$(read_field landed
     exit 1
   fi
   KEEP_RUN=1
+  # An existing run keeps the branch and path it was created with (0.2.0 runs
+  # included); only a fresh run gets the per-plan branch name.
+  PREV_BRANCH="$(read_field worktree_branch)"; PREV_PATH="$(read_field worktree_path)"
+  [[ -n "$PREV_BRANCH" ]] && WT_BRANCH="$PREV_BRANCH"
+  [[ -n "$PREV_PATH" ]] && WT_PATH="$PREV_PATH"
+elif [[ -f "$CHECKPOINT" && "${APEX_INIT_FORCE:-0}" == "1" && "$(read_field landed)" != "True" ]]; then
+  # Starting over must not inherit a worktree forked from the old base.
+  OLD_PATH="$(read_field worktree_path)"; OLD_BRANCH="$(read_field worktree_branch)"
+  if [[ -n "$OLD_PATH" && -d "$OLD_PATH" ]] || { [[ -n "$OLD_BRANCH" ]] && git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$OLD_BRANCH"; }; then
+    echo "ERROR: APEX_INIT_FORCE=1 will not reuse the previous run's worktree or branch." >&2
+    echo "       Remove them first (this discards unlanded work):" >&2
+    [[ -n "$OLD_PATH" && -d "$OLD_PATH" ]] && echo "         git worktree remove --force '$OLD_PATH'" >&2
+    [[ -n "$OLD_BRANCH" ]] && echo "         git branch -D '$OLD_BRANCH'" >&2
+    exit 1
+  fi
 fi
 
 # --- Create (or reuse) the isolated execution worktree -----------------------
+# Reuse only a live worktree of this repository with the expected branch
+# checked out; a deleted (prunable) worktree is recreated; an existing branch
+# of that name is used only when it belongs to this run.
+git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
 if [[ "${APEX_NO_WORKTREE:-0}" == "1" ]]; then
   WT_PATH=""
   WT_BRANCH=""
   echo "[init] WARNING: APEX_NO_WORKTREE=1 — execution will run in the base checkout."
-elif git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $WT_PATH"; then
+elif [[ -d "$WT_PATH" ]]; then
+  if [[ "$(apex_common_dir "$WT_PATH")" != "$CALLER_COMMON" ]] \
+     || [[ "$(git -C "$WT_PATH" symbolic-ref -q HEAD 2>/dev/null)" != "refs/heads/$WT_BRANCH" ]]; then
+    echo "ERROR: $WT_PATH exists but is not a worktree of this repository on $WT_BRANCH — refusing to reuse it." >&2
+    exit 1
+  fi
   echo "[init] reusing existing worktree: $WT_PATH (branch $WT_BRANCH)"
-elif [[ -e "$WT_PATH" ]]; then
-  echo "[init] reusing existing worktree dir: $WT_PATH"
 elif git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$WT_BRANCH"; then
+  if [[ "$KEEP_RUN" != "1" ]]; then
+    echo "ERROR: branch $WT_BRANCH already exists but no run of this plan owns it — refusing to adopt it." >&2
+    echo "       Delete it (git branch -D '$WT_BRANCH') or land/abandon the run that created it." >&2
+    exit 1
+  fi
   git -C "$REPO_ROOT" worktree add "$WT_PATH" "$WT_BRANCH"
-  echo "[init] worktree added on existing branch $WT_BRANCH -> $WT_PATH"
+  echo "[init] worktree recreated on this run's branch $WT_BRANCH -> $WT_PATH"
 else
   git -C "$REPO_ROOT" worktree add -b "$WT_BRANCH" "$WT_PATH" "$BASE_BRANCH"
   echo "[init] worktree created: branch $WT_BRANCH (from $BASE_BRANCH) -> $WT_PATH"

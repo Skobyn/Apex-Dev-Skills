@@ -114,6 +114,7 @@ ok "no .claude/skills paths; hooks-snippet.json removed"
 for v in $(compgen -e | grep '^APEX_' || true); do unset "$v"; done
 SMOKE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/apex-scope-loop-smoke.XXXXXX")"
 trap 'git -C "$SMOKE_TMP/repo" worktree prune >/dev/null 2>&1 || true; rm -rf "$SMOKE_TMP"' EXIT
+[ -n "${SMOKE_KEEP:-}" ] && trap - EXIT
 export GIT_AUTHOR_NAME=smoke GIT_AUTHOR_EMAIL=smoke@example.invalid GIT_COMMITTER_NAME=smoke GIT_COMMITTER_EMAIL=smoke@example.invalid
 R="$SMOKE_TMP/repo"; mkdir -p "$R/.claude/tasks" "$R/.claude/plans"
 git -C "$R" init -q -b main
@@ -162,11 +163,19 @@ cp "$R/.claude/plans/demo-plan.md" "$NG/a/plan.md"; cp "$R/.claude/plans/demo-pl
 [ "$(st "$NG" a/plan.md)" != "$(st "$NG" b/plan.md)" ] || fail "two plans named plan.md share one state dir outside git"
 ok "non-git mode: init/iterate agree and same-named plans do not collide"
 
+# indir DIR CMD... — run CMD in DIR (portable stand-in for GNU `env -C`).
+indir() { local d="$1"; shift; ( cd "$d" && env "$@" ); }
+# expect_refusal LABEL PATTERN CMD... — CMD must fail and say PATTERN.
+expect_refusal() {
+  local label="$1" pat="$2" out; shift 2
+  if out="$("$@" 2>&1)"; then fail "$label: expected a refusal, got success"; fi
+  printf '%s' "$out" | grep -q -- "$pat" || fail "$label: refused for the wrong reason: $(printf '%s' "$out" | tail -2)"
+}
+
 # 19. A run is never silently taken over: re-init from another checkout with a
-#     different base refuses; same base keeps the run's history; a plan from
-#     another repository refuses.
-( cd "$LW" && APEX_BASE_BRANCH=linked "$EX/init.sh" "$R/.claude/plans/demo-plan.md" >/dev/null 2>&1 ) \
-  && fail "init.sh retargeted an initialized plan to another base branch"
+#     different base refuses; same base keeps the run's history.
+expect_refusal "retarget to another base" "Refusing to retarget" \
+  indir "$LW" APEX_BASE_BRANCH=linked "$EX/init.sh" "$R/.claude/plans/demo-plan.md"
 python3 - "$S_BASE/checkpoint.json" <<'PY'
 import json, sys
 p = sys.argv[1]; s = json.load(open(p)); s.setdefault("reviews", {})["99"] = {"sha": "x", "verdict": "APPROVE"}; json.dump(s, open(p, "w"))
@@ -174,19 +183,80 @@ PY
 ( cd "$R" && APEX_GIBSON=0 "$EX/init.sh" .claude/plans/demo-plan.md >/dev/null 2>&1 ) || fail "same-base re-init failed"
 python3 -c 'import json,sys; sys.exit(0 if "99" in json.load(open(sys.argv[1])).get("reviews",{}) else 1)' "$S_BASE/checkpoint.json" \
   || fail "same-base re-init discarded the run's reviews"
-O="$SMOKE_TMP/other"; git init -q -b main "$O"; git -C "$O" commit -q --allow-empty -m o
-( cd "$O" && APEX_GIBSON=0 "$EX/init.sh" "$R/.claude/plans/demo-plan.md" >/dev/null 2>&1 ) \
-  && fail "init.sh accepted a plan from a different repository than the caller's checkout"
-ok "init refuses takeover and cross-repo plans; re-init keeps run history"
+ok "init refuses takeover; re-init keeps run history"
 
 # 20. APEX_STATE_ROOT moves state only, is made absolute, and is keyed per repository.
 cp "$R/.claude/plans/demo-plan.md" "$R/.claude/plans/rel-plan.md"
 ( cd "$R" && APEX_STATE_ROOT=rel-root APEX_GIBSON=0 "$EX/init.sh" .claude/plans/rel-plan.md >/dev/null 2>&1 ) || fail "init.sh with a relative APEX_STATE_ROOT failed"
-A1="$(cd "$R" && APEX_STATE_ROOT=rel-root "$EX/iterate.sh" .claude/plans/rel-plan.md | sed -n 's/^STATE: //p')"
-A2="$(cd "$R/.claude" && APEX_STATE_ROOT="$R/rel-root" "$EX/iterate.sh" plans/rel-plan.md | sed -n 's/^STATE: //p')"
-case "$A1" in /*) ;; *) fail "APEX_STATE_ROOT state dir is not absolute: $A1" ;; esac
-[ -n "$A1" ] && [ "$A1" = "$A2" ] || fail "relative APEX_STATE_ROOT split state: $A1 vs $A2"
+A1="$(APEX_STATE_ROOT=rel-root st "$R" .claude/plans/rel-plan.md)"
+A2="$(APEX_STATE_ROOT="$R/rel-root" st "$R/.claude" plans/rel-plan.md)"
+case "$A1" in /*) ;; *) fail "APEX_STATE_ROOT state dir is not absolute: '$A1'" ;; esac
+[ "$A1" = "$A2" ] || fail "relative APEX_STATE_ROOT split state: $A1 vs $A2"
 ok "APEX_STATE_ROOT is absolute and stable across working directories"
 
+# 21. One repository, proven: every acting script refuses another repo's plan,
+#     even when the caller's repo runs a same-path plan; reporting scripts warn.
+O="$SMOKE_TMP/other"; git init -q -b main "$O"; mkdir -p "$O/.claude/plans"
+cp "$R/.claude/plans/demo-plan.md" "$O/.claude/plans/demo-plan.md"
+git -C "$O" add -A && git -C "$O" commit -qm o
+( cd "$O" && APEX_GIBSON=0 "$EX/init.sh" .claude/plans/demo-plan.md >/dev/null 2>&1 ) || fail "init in the second repo failed"
+O_HEAD="$(git -C "$O" rev-parse main)"
+RP="$R/.claude/plans/demo-plan.md"
+expect_refusal "init.sh cross-repo"       "repository mismatch" indir "$O" "$EX/init.sh" "$RP"
+expect_refusal "land.sh cross-repo"       "repository mismatch" indir "$O" "$EX/land.sh" "$RP" --force
+expect_refusal "checkpoint.sh cross-repo" "repository mismatch" indir "$O" "$EX/checkpoint.sh" "$RP" halt x
+expect_refusal "green-gate.sh cross-repo" "repository mismatch" indir "$O" "$EX/green-gate.sh" "$RP" check
+expect_refusal "risk-tier.sh cross-repo"  "repository mismatch" indir "$O" "$EX/risk-tier.sh" "$RP" 1
+IT_OUT="$( (cd "$O" && "$EX/iterate.sh" "$RP" 2>/dev/null) || true)"
+printf '%s\n' "$IT_OUT" | grep -q '^STATUS: ERROR repository mismatch' || fail "iterate.sh cross-repo did not report STATUS: ERROR repository mismatch"
+[ "$(git -C "$O" rev-parse main)" = "$O_HEAD" ] || fail "a cross-repo call moved the other repo's main"
+ST_OUT="$( (cd "$O" && "$EX/status.sh" "$RP" 2>&1) || true)"
+printf '%s\n' "$ST_OUT" | grep -q 'WARNING: repository mismatch' || fail "status.sh did not warn on a cross-repo plan"
+ok "acting scripts refuse another repository's plan; status warns"
+
+# 22. Branches are per plan; a foreign same-name branch is never adopted; a
+#     deleted worktree is recreated by init.
+B1="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worktree_branch"])' "$S_BASE/checkpoint.json")"
+mkdir -p "$R/other"; cp "$RP" "$R/other/demo-plan.md"
+( cd "$R" && APEX_GIBSON=0 "$EX/init.sh" other/demo-plan.md >/dev/null 2>&1 ) || fail "init of a same-slug plan failed"
+B2="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worktree_branch"])' "$(st "$R" other/demo-plan.md)/checkpoint.json")"
+[ "$B1" != "$B2" ] || fail "two same-slug plans share branch $B1"
+cp "$RP" "$R/.claude/plans/fresh-plan.md"
+FRESH_STATE="$(cd "$R" && source "$EX/_lib.sh" && apex_resolve .claude/plans/fresh-plan.md && echo "$STATE_DIR")"
+git -C "$R" branch "apex-scope-loop/fresh-$(basename "$FRESH_STATE")" main
+expect_refusal "adopt foreign branch" "refusing to adopt" indir "$R" APEX_GIBSON=0 "$EX/init.sh" .claude/plans/fresh-plan.md
+WT2="$(st "$R" other/demo-plan.md)/worktree"
+rm -rf "$WT2"
+( cd "$R" && APEX_GIBSON=0 "$EX/init.sh" other/demo-plan.md >/dev/null 2>&1 ) || fail "re-init after deleting the worktree failed"
+( cd "$R" && "$EX/iterate.sh" other/demo-plan.md | grep -q '^STATUS: READY' ) || fail "deleted worktree was not recreated"
+ok "per-plan branches; foreign branch refused; deleted worktree recreated"
+
+# 23. land.sh: refuses from the wrong checkout and with unrelated base changes,
+#     without modifying anything; lands the exact worktree head otherwise.
+L="$SMOKE_TMP/landrepo"; mkdir -p "$L/plans"; git init -q -b main "$L"
+printf -- '- [x] **Phase 1.1** [docs] done\n  - Acceptance: true\n' >"$L/plans/l-plan.md"; echo base >"$L/tracked.txt"
+git -C "$L" add -A && git -C "$L" commit -qm base
+( cd "$L" && APEX_GIBSON=0 "$EX/init.sh" plans/l-plan.md >/dev/null 2>&1 ) || fail "init for the land test failed"
+LWT="$(cd "$L" && "$EX/iterate.sh" plans/l-plan.md | sed -n 's/^WORKTREE: //p')"
+[ -n "$LWT" ] || LWT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worktree_path"])' "$(st "$L" plans/l-plan.md)/checkpoint.json")"
+echo feature >"$LWT/feature.txt"; git -C "$LWT" add -A; git -C "$LWT" commit -qm feature
+LH="$(git -C "$LWT" rev-parse HEAD)"; MAIN0="$(git -C "$L" rev-parse main)"
+expect_refusal "land from inside the plan worktree" "run land.sh from there" indir "$LWT" APEX_GIBSON=0 "$EX/land.sh" "$L/plans/l-plan.md"
+echo dirty >>"$L/tracked.txt"
+expect_refusal "land with unrelated base changes" "unrelated to this plan" indir "$L" APEX_GIBSON=0 "$EX/land.sh" plans/l-plan.md
+[ "$(git -C "$L" rev-parse main)" = "$MAIN0" ] && [ "$(git -C "$LWT" rev-parse HEAD)" = "$LH" ] || fail "a refused land modified a branch"
+git -C "$L" checkout -q -- tracked.txt
+( cd "$L" && APEX_GIBSON=0 "$EX/land.sh" plans/l-plan.md >/dev/null 2>&1 ) || fail "land.sh failed on a ready plan"
+git -C "$L" merge-base --is-ancestor "$LH" main || fail "land.sh did not merge the worktree head"
+ok "land.sh refuses safely and merges the exact worktree head"
+
+# 24. Every script that sources _lib.sh resolves (and so guards) before reading state.
+for f in "$EX"/*.sh "$PLUGIN_ROOT"/skills/apex-plan/scripts/*.sh; do
+  grep -q '_lib.sh"' "$f" || continue
+  awk '/apex_resolve "\$PLAN"/{r=1} /read_field |\$CHECKPOINT/{ if(!r){bad=1; exit} } END{exit bad}' "$f" \
+    || fail "$(basename "$f") reads state before apex_resolve"
+done
+ok "every _lib.sh user resolves before reading state"
+
 echo ""
-echo "smoke passed: 20/20 checks"
+echo "smoke passed: 24/24 checks"

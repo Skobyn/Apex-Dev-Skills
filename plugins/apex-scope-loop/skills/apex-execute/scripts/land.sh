@@ -9,10 +9,18 @@
 #   ./land.sh path/to/plan.md            # land only if the plan is complete
 #   ./land.sh path/to/plan.md --force    # land even with unchecked tasks
 #
+# Order (ADR-0003): every precondition is checked before anything changes —
+# repository identity (apex_guard), final gate, kill switches, the caller's
+# checkout is the base checkout on the base branch with no tracked changes
+# other than the plan file, and the green gate. Only then: flush (harness off
+# or --force), record the plan file, merge the worktree's exact head SHA,
+# remove the worktree, delete the branch only if fully merged.
+#
 # Exit codes:
 #   0  — Landed; worktree branch merged into base and removed
 #   1  — Not ready / merge precondition failed (message explains why)
 #   2  — Bad args / not initialized
+#   3  — Repository mismatch (apex_guard)
 set -euo pipefail
 
 PLAN="${1:?usage: land.sh PATH_TO_PLAN.md [--force]}"
@@ -31,7 +39,9 @@ BASE_BRANCH="$(read_field base_branch)"
 
 [[ -n "$WT_BRANCH" ]] || { echo "ERROR: no worktree branch recorded (APEX_NO_WORKTREE run?) — nothing to land." >&2; exit 1; }
 
-# 1. Final-gate guard: the plan must be fully checked unless --force.
+# --- Preconditions (nothing is modified until all pass) ----------------------
+
+# 1. Final gate: the plan must be fully checked unless --force.
 if grep -qE '^- \[ \]' "$PLAN" && [[ "$FORCE" != "--force" ]]; then
   REMAINING=$(grep -cE '^- \[ \]' "$PLAN" || true)
   echo "ERROR: plan has $REMAINING unchecked task(s) — final gate not passed. Refusing to land." >&2
@@ -39,60 +49,96 @@ if grep -qE '^- \[ \]' "$PLAN" && [[ "$FORCE" != "--force" ]]; then
   exit 1
 fi
 
-# 1b. Harness pre-land checks (adapted from The Gibson — docs/GIBSON_HARNESS.md).
-#     Unreviewed code must never reach the base branch, so with the harness on we
-#     refuse to auto-commit stray changes and re-run the green gate on the final head.
+# 2. Kill switches (harness on, no --force).
 if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
   while IFS= read -r f; do
     [[ -f "$f" ]] && { echo "ERROR: kill switch present ($f) — refusing to land." >&2; exit 1; }
   done < <(apex_halt_files)
+fi
+
+# 3. The caller's checkout must be the base checkout, on the base branch.
+#    Never merge in a checkout the caller is not in.
+CURRENT="$(git -C "$REPO_ROOT" symbolic-ref -q --short HEAD 2>/dev/null || echo '')"
+if [[ "$CURRENT" != "$BASE_BRANCH" ]]; then
+  HOLDER="$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null \
+    | awk -v b="branch refs/heads/$BASE_BRANCH" '/^worktree /{p=substr($0,10)} $0==b{print p; exit}')"
+  echo "ERROR: this checkout ($REPO_ROOT) is on '${CURRENT:-detached HEAD}', expected the base branch '$BASE_BRANCH'." >&2
+  if [[ -n "$HOLDER" ]]; then
+    echo "       '$BASE_BRANCH' is checked out at $HOLDER — run land.sh from there." >&2
+  else
+    echo "       Switch with: git -C '$REPO_ROOT' checkout '$BASE_BRANCH'" >&2
+  fi
+  exit 1
+fi
+
+# 4. No tracked changes in the base checkout other than the plan file itself
+#    (its checkboxes are flipped there). Unrelated work is never swept in.
+PLAN_REL=""
+REPO_ROOT_P="$(cd "$REPO_ROOT" && pwd -P)"
+[[ "$PLAN_ABS" == "$REPO_ROOT_P"/* ]] && PLAN_REL="${PLAN_ABS#"$REPO_ROOT_P"/}"
+DIRTY="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no | sed 's/^...//' | grep -vxF "${PLAN_REL:-/}" || true)"
+if [[ -n "$DIRTY" ]]; then
+  echo "ERROR: the base checkout has uncommitted tracked changes unrelated to this plan — commit or stash them first:" >&2
+  printf '         %s\n' $DIRTY >&2
+  exit 1
+fi
+
+# 5. The branch to merge is exactly what the worktree holds.
+if [[ -d "$WT_PATH" ]]; then
+  LAND_SHA="$(git -C "$WT_PATH" rev-parse HEAD)"
+  BR_SHA="$(git -C "$REPO_ROOT" rev-parse -q --verify "refs/heads/$WT_BRANCH" || true)"
+  [[ "$BR_SHA" == "$LAND_SHA" ]] || { echo "ERROR: refs/heads/$WT_BRANCH ($BR_SHA) is not the worktree head ($LAND_SHA) — refusing to land." >&2; exit 1; }
+else
+  LAND_SHA="$(git -C "$REPO_ROOT" rev-parse -q --verify "refs/heads/$WT_BRANCH" || true)"
+  [[ -n "$LAND_SHA" ]] || { echo "ERROR: neither the worktree ($WT_PATH) nor branch $WT_BRANCH exists — nothing to land." >&2; exit 1; }
+fi
+
+# 6. Harness: unreviewed code never reaches the base branch.
+if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
   if [[ -d "$WT_PATH" ]] && [[ -n "$(git -C "$WT_PATH" status --porcelain)" ]]; then
     echo "ERROR: worktree has uncommitted changes that no reviewer has seen — commit, gate, and review them first." >&2
     exit 1
   fi
-  SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if ! "$SCRIPTS/green-gate.sh" "$PLAN" check; then
+  if ! "$APEX_EXECUTE_SCRIPTS/green-gate.sh" "$PLAN" check; then
     echo "ERROR: final green gate failed on the branch head — refusing to land." >&2
     exit 1
   fi
 fi
 
-# 2. Flush any uncommitted code in the worktree onto the worktree branch.
+# --- Mutations ------------------------------------------------------------------
+
+# 7. Flush uncommitted worktree changes (reachable only with the harness off or --force).
 if [[ -d "$WT_PATH" ]] && [[ -n "$(git -C "$WT_PATH" status --porcelain)" ]]; then
   git -C "$WT_PATH" add -A
   git -C "$WT_PATH" commit -m "apex-scope-loop: flush working changes before landing $WT_BRANCH"
+  LAND_SHA="$(git -C "$WT_PATH" rev-parse HEAD)"
   echo "[land] committed pending worktree changes."
 fi
 
-# 3. Base checkout must be on the base branch.
-CURRENT="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
-if [[ "$CURRENT" != "$BASE_BRANCH" ]]; then
-  echo "ERROR: base checkout is on '$CURRENT', expected '$BASE_BRANCH'." >&2
-  echo "       Switch with: git -C $REPO_ROOT checkout $BASE_BRANCH" >&2
-  exit 1
+# 8. Record the plan's progress on the base branch (the plan file only).
+if [[ -n "$PLAN_REL" ]] && [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no -- "$PLAN_REL")" ]]; then
+  git -C "$REPO_ROOT" commit -m "apex-scope-loop: record plan completion for $WT_BRANCH" -- "$PLAN_REL"
 fi
 
-# 4. Record plan/ADR progress on the base branch (best-effort) so the merge is clean.
-if [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]]; then
-  git -C "$REPO_ROOT" commit -am "apex-scope-loop: record plan completion for $WT_BRANCH" || true
-fi
-
-# 5. Merge the worktree branch into the base branch.
-echo "[land] merging $WT_BRANCH into $BASE_BRANCH ..."
-if ! git -C "$REPO_ROOT" merge --no-ff "$WT_BRANCH" -m "apex-scope-loop: merge $WT_BRANCH into $BASE_BRANCH (final gate passed)"; then
+# 9. Merge the worktree's exact head.
+echo "[land] merging $WT_BRANCH (${LAND_SHA:0:12}) into $BASE_BRANCH ..."
+if ! git -C "$REPO_ROOT" merge --no-ff "$LAND_SHA" -m "apex-scope-loop: merge $WT_BRANCH into $BASE_BRANCH (final gate passed)"; then
   echo "ERROR: merge hit conflicts. Resolve in $REPO_ROOT, commit, then re-run land.sh." >&2
   exit 1
 fi
 
-# 6. Tear down the worktree and delete the now-merged branch.
+# 10. Tear down the worktree; delete the branch only if it is fully merged.
 if [[ -d "$WT_PATH" ]]; then
-  git -C "$REPO_ROOT" worktree remove "$WT_PATH" --force
-  echo "[land] removed worktree $WT_PATH"
+  if git -C "$REPO_ROOT" worktree remove "$WT_PATH"; then
+    echo "[land] removed worktree $WT_PATH"
+  else
+    echo "[land] WARNING: could not remove worktree $WT_PATH (left in place)" >&2
+  fi
 fi
 git -C "$REPO_ROOT" branch -d "$WT_BRANCH" 2>/dev/null \
-  || git -C "$REPO_ROOT" branch -D "$WT_BRANCH" 2>/dev/null || true
+  || echo "[land] WARNING: branch $WT_BRANCH not deleted (not fully merged, or still checked out)" >&2
 
-# 7. Mark landed in checkpoint.
+# 11. Mark landed in checkpoint.
 python3 - "$CHECKPOINT" <<'PY'
 import json, sys
 p = sys.argv[1]
