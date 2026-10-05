@@ -18,7 +18,7 @@ section to detect drift in the code.
 > **Task format** (the orchestrator parses these):
 > ```
 > - [ ] **Phase X.Y** [tag1][tag2] Short imperative task title
->   - Acceptance: <runnable check the swarm verdicts against>
+>   - Acceptance: {runnable check the swarm verdicts against}
 >   - Blocked-by: phase-X.Y   (optional)
 > ```
 >

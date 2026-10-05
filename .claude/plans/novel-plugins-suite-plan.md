@@ -46,8 +46,8 @@ Build six themed plugins covering 13 researched ideas in under-served niches (ag
 > **Task format** (apex-execute `iterate.sh` parses these):
 > ```
 > - [x] **Phase X.Y** [tag1][tag2] Imperative task title
->   - Acceptance: <runnable check>
->   - Swarm: <directive>
+>   - Acceptance: {runnable check}
+>   - Swarm: {directive}
 >   - Blocked-by: phase-X.Y
 > ```
 

@@ -36,8 +36,9 @@ that what planlib runs is exactly what a CommonMark renderer shows as tasks
   - code fences open at column 0 (after a blank line when they follow a
     task) and close on their exact closer at column 0; no other fence-like
     line inside; never left open
-  - no line starting with '<' (HTML block, comment, tag), '$$' or ':::',
-    except inside a blockquote or list item outside a task block
+  - no raw HTML anywhere outside fenced code and code spans ('<' followed
+    by a letter, '/', '!' or '?': blocks, comments, tags, autolinks), and no
+    '$$' or ':::' block outside a blockquote or list item
   - a task's block lines are indented at least 2 spaces
   - a checkbox anywhere except a column-0 task is refused (including one on
     the line after an empty list marker); blockquoted examples are allowed
@@ -102,7 +103,12 @@ FENCELIKE_RE = re.compile(r"^\s*[`~]{3}")
 CHECKBOX_RE = re.compile(r"\[[ xX]\](?:[ \t]|$)")
 EXT_BLOCK_RE = re.compile(r"^(?:\$\$|:::)")
 BLOCK_LINE_RE = re.compile(r"^ {2,}\S")
-ESCAPED_BOX_RE = re.compile(r"^(?:\\\[|&#0*91;|&#x0*5[bB];|&lbrack;|&lsqb;)[ xX]?(?:\\\]|\]|&#0*93;|&#x0*5[dD];|&rbrack;|&rsqb;)")
+# An escaped or entity-spelled checkbox: either bracket written as an escape
+# or entity, or an entity/escape inside otherwise literal brackets.
+ESCAPED_BOX_RE = re.compile(r"^(?:\\\[|&#[xX]?0*(?:91|5[bB]);|&lbrack;|&lsqb;)"
+                            r"|^\[[ xX]?(?:&[#\w]+;|\\)")
+RAW_HTML_RE = re.compile(r"<[A-Za-z/!?]")
+CODE_SPAN_RE = re.compile(r"(`+)(?:(?!\1).)+?\1")
 
 
 def strip_markers(line):
@@ -176,8 +182,13 @@ def scan(lines):
                 inside[i] = True
             else:
                 errs.append(f"line {n}: code fences must start at column 0, after a blank line when they follow a task")
-        elif rest.startswith("<") and (not prefixed or in_blk):
-            errs.append(f"line {n}: a line starting with '<' (raw HTML block, comment or tag) is not allowed in a plan")
+        elif RAW_HTML_RE.search(CODE_SPAN_RE.sub("", line)):
+            # Raw HTML anywhere outside code (a block, a comment, a tag in a
+            # list item, a blockquote or mid-sentence) is emitted unbalanced
+            # by renderers that pass HTML through, and can hide a live task
+            # or show it as example text.
+            errs.append(f"line {n}: raw HTML ('<' followed by a letter, '/', '!' or '?') is not allowed in a plan "
+                        "outside fenced code or `code spans`")
         elif EXT_BLOCK_RE.match(rest) and (not prefixed or in_blk):
             errs.append(f"line {n}: '$$' / ':::' block syntax is not allowed in a plan")
         # Any checkbox that is not a column-0 task is refused unless it is

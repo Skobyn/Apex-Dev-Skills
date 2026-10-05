@@ -54,8 +54,8 @@ Gates are checkbox tasks, just like phases. The line between Phase N and Phase N
 > **Task format** (the apex-execute `iterate.sh` parses these):
 > ```
 > - [ ] **Phase X.Y** [tag1][tag2] Imperative task title
->   - Acceptance: <runnable check>
->   - Swarm: <directive>            (optional — defaults to hierarchical 6)
+>   - Acceptance: {runnable check}
+>   - Swarm: {directive}            (optional — defaults to hierarchical 6)
 >   - Blocked-by: phase-X.Y         (optional)
 > ```
 >

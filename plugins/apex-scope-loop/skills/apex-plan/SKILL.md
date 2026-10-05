@@ -128,7 +128,7 @@ Each task line uses the apex-execute format (parsed by `iterate.sh`):
 
 ```markdown
 - [ ] **Phase X.Y** [tag1][tag2] Imperative task title
-  - Acceptance: <runnable check the swarm verdicts against>
+  - Acceptance: {runnable check the swarm verdicts against}
   - Swarm: <topology> <count> [<agent-types>]
   - Blocked-by: phase-X.Y   (optional)
 ```

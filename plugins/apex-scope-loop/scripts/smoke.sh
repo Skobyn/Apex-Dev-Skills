@@ -374,8 +374,9 @@ vx() { python3 "$PL" validate "$SMOKE_TMP/$1.md" 2>&1 || true; }
 [ "$(fx f6 '<!--\n- [ ] **Phase 9.1** commented out\n  - Acceptance: rm -rf x\n-->\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n')" = "ERROR None" ] || fail "a task line inside an HTML comment was not refused"
 [ "$(fx f7 '<!-- never closed\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n')" = "ERROR None" ] || fail "an unclosed HTML comment did not make the plan an error"
 [ "$(fx f8 '        ```\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n        ```\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n')" = "ERROR None" ] || fail "a task between indented fence lines was not refused"
-[ "$(fx f10 'Templates must not emit a bare <!-- marker.\n\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n\na --> arrow\n')" = "READY Phase 1.1" ] || fail "an inline <!-- hid tasks"
-[ "$(python3 "$PL" remaining "$SMOKE_TMP/f10.md")" = 2 ] || fail "an inline <!-- changed the remaining count"
+# Raw HTML anywhere outside code is refused, inline <!-- included (renderers
+# that pass HTML through emit it unbalanced and hide what follows).
+[ "$(fx f10 'Templates must not emit a bare <!-- marker.\n\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n\na --> arrow\n')" = "ERROR None" ] || fail "an inline <!-- was not refused"
 [ "$(fx f11 '- [x] **Phase 1.1** a\n  - Acceptance: true\n  ```sh\n  make a\n     ```\n- [ ] **Phase 1.2** must still run\n  - Acceptance: make b\n')" = "ERROR None" ] || fail "a fence closed at another indentation was not refused"
 [ "$(fx f12 '- [x] **Phase 1.1** a\n  - Acceptance: true\n\nTemplate:\n\n```\n        ```\n- [ ] **Phase 9.9** example\n  - Acceptance: ./deploy.sh --prod\n```\n')" = "ERROR None" ] || fail "an indented fence line inside a fence let an example task through"
 [ "$(fx f13 '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  - Notes:\n    ```sh\n    make\n\n```\n- [ ] **Phase 9.9** example\n  - Acceptance: ./deploy.sh --prod\n```\n')" = "ERROR None" ] || fail "a list-item fence closed at column 0 let an example task through"
@@ -441,11 +442,22 @@ cases = {
   "emsp":      (D + "-\u2003[x] t\n\n" + T, None),
   "entity":    (D + "- &#91; ] t\n\n" + T, None),
   "escaped":   (D + "- \\[ ] t\n\n" + T, None),
+  "h4-listcomment": ("- <!--\n" + T, None),
+  "h5-quotecomment": ("> <!--\n" + T, None),
+  "h1-midhidden":  ("Notes for reviewers <div hidden>\n\n" + T, None),
+  "h2-midtextarea":("Example plan below <textarea>\n\n" + T, None),
+  "autolink":      ("See <https://example.com>\n\n" + T, None),
+  "ent-hexcap":    (D + "- &#X5B; ] t\n\n" + T, None),
+  "ent-inside":    (D + "- [&#32;] t\n\n" + T, None),
+  "ent-nbsp":      (D + "- [&nbsp;] t\n\n" + T, None),
+  "ent-close":     (D + "- [ &#93; t\n\n" + T, None),
   # controls: these validate and run Phase 1.1
+  "codespan":    (D + "Use `<repo-root>` and ``<div>`` in code spans.\n\n" + T, "Phase 1.1"),
+  "lessthan":    (D + "Keep p50 < 150 ms and 3 <= n.\n\n" + T, "Phase 1.1"),
   "quoted":    (D + "> ```\n> - [ ] **Phase 9** quoted example\n> ```\n\n" + T, "Phase 1.1"),
   "fenceok":   (D + "```\nmake real\n```\n\n" + T, "Phase 1.1"),
   "longfence": (D + "````md\nexample text\n````\n\n" + T, "Phase 1.1"),
-  "midcomment":(D + "text <!-- inline\n\n" + T, "Phase 1.1"),
+  "midcomment":(D + "text <!-- inline\n\n" + T, None),
   "listfence": (D + "- ```\n  note\n\n" + T, "Phase 1.1"),
 }
 bad = []
