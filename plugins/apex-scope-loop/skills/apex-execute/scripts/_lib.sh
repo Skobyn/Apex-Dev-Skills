@@ -213,24 +213,28 @@ apex_dispatch_root() {
 # APEX_FORCE_UNLOCK=1 reclaims any lock (manual recovery only).
 apex_lock_dir() { printf '%s' "$STATE_BASE/ACTIVE"; }
 
-# apex_lock OP [ARGS...] — acquire ID PLAN LINE STAGE KIND | stage STAGE |
-# release ID | owner. acquire exits 1 when another owner holds the lock.
+# apex_lock OP [ARGS...] — acquire ID PLAN LINE STAGE KIND | stage ID STAGE |
+# release ID | owner. acquire exits 10 when another owner holds the lock; any
+# other non-zero exit means the lock itself could not be used (an error, not BUSY).
+# stage and release act only for the current owner.
 apex_lock() {
   mkdir -p "$STATE_BASE"
   python3 - "$STATE_BASE" "${APEX_FORCE_UNLOCK:-0}" "${CLAUDE_CODE_SESSION_ID:-${APEX_SESSION_ID:-}}" "$@" <<'PY'
-import datetime, fcntl, json, os, shutil, sys
+import datetime, fcntl, json, os, re, shutil, sys
 base, force, session, op, *args = sys.argv[1:]
 d = os.path.join(base, "ACTIVE")
 owner_path = os.path.join(d, "owner.json")
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 def read_owner():
+    """None = no lock; {} = held but unreadable (fail closed); else the owner."""
     try:
-        return json.load(open(owner_path))
+        o = json.load(open(owner_path))
     except FileNotFoundError:
         return None if not os.path.isdir(d) else {}
     except Exception:
         return {}
+    return o if isinstance(o, dict) and o else {}
 
 def write_owner(o):
     os.makedirs(d, exist_ok=True)
@@ -242,12 +246,20 @@ def write_owner(o):
 def stale(o):
     if o.get("stage") == "DONE":
         return True
+    oid = str(o.get("id", ""))
+    if not re.fullmatch(r"[0-9a-f]{12}", oid):
+        return False             # never resolve a path from an unexpected id
     try:
         return bool(json.load(open(os.path.join(base, str(o.get("id")), "checkpoint.json"))).get("landed"))
     except Exception:
         return False
 
-with open(os.path.join(base, ".active.lock"), "a+") as lk:
+try:
+    lk = open(os.path.join(base, ".active.lock"), "a+")
+except OSError as e:
+    print(f"apex_lock: {e}", file=sys.stderr)
+    sys.exit(3)
+with lk:
     fcntl.flock(lk, fcntl.LOCK_EX)
     o = read_owner()
     if op == "owner":
@@ -259,7 +271,7 @@ with open(os.path.join(base, ".active.lock"), "a+") as lk:
         oid, plan, line, stage, kind = args
         if o is not None and force != "1":
             if o == {} or (o.get("id") != oid and not stale(o)):
-                sys.exit(1)
+                sys.exit(10)   # BUSY (an uncaught error exits 1: never mistaken for BUSY)
         same = bool(o) and o.get("id") == oid and str(o.get("line_no")) == line
         n = {"kind": kind, "id": oid, "line_no": int(line) if line.isdigit() else line, "stage": stage,
              "session_id": session, "started_at": o.get("started_at") if same and o.get("started_at") else now,
@@ -267,8 +279,8 @@ with open(os.path.join(base, ".active.lock"), "a+") as lk:
         n["plan" if kind == "plan" else "label"] = plan
         write_owner(n)
     elif op == "stage":
-        if o:
-            o["stage"], o["updated_at"] = args[0], now
+        if o and o.get("id") == args[0]:
+            o["stage"], o["updated_at"] = args[1], now
             write_owner(o)
     elif op == "release":
         if o and o.get("id") == args[0]:
@@ -280,5 +292,5 @@ PY
 
 apex_lock_acquire() { apex_lock acquire "$1" "$2" "$3" "$4" "${5:-plan}"; }
 apex_lock_owner()   { apex_lock owner 2>/dev/null || echo "unknown"; }
-apex_lock_stage()   { apex_lock stage "$1"; }
+apex_lock_stage()   { apex_lock stage "$1" "$2"; }
 apex_lock_release() { apex_lock release "$1"; }

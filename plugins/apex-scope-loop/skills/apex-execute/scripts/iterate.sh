@@ -83,11 +83,26 @@ if [[ "$(read_field halted)" == "True" ]]; then
   exit 0
 fi
 
+# A plan that fails validation is never iterated (fail closed): a stray
+# directive, an unclosed code fence or an unknown Blocked-by could otherwise
+# change which task runs.
+if ! PLAN_ERRORS="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" validate "$PLAN_ABS" 2>&1)"; then
+  echo "STATE: $STATE_DIR"
+  printf '%s\n' "$PLAN_ERRORS" | head -10 | sed 's/^/PLAN_ERROR: /'
+  echo "STATUS: ERROR plan is invalid — fix the PLAN_ERROR lines (planlib.py validate) and re-run"
+  exit 1
+fi
+
 # Next unchecked, unblocked task (planlib.py is the one plan parser).
 SEL="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" next "$PLAN_ABS")" \
   || { echo "STATE: $STATE_DIR"; echo "STATUS: ERROR plan could not be parsed"; exit 1; }
 field() { python3 -c 'import json,sys; d=json.loads(sys.argv[1]); exec("v="+sys.argv[2]); print("" if v is None else (",".join(map(str,v)) if isinstance(v,list) else v))' "$SEL" "$1"; }
 SEL_STATUS="$(field 'd["status"]')"
+if [[ "$SEL_STATUS" == "ERROR" ]]; then
+  echo "STATE: $STATE_DIR"
+  echo "STATUS: ERROR $(field 'd["error"]')"
+  exit 1
+fi
 
 if [[ "$SEL_STATUS" == "COMPLETE" ]]; then
   echo "STATE: $STATE_DIR"
@@ -124,7 +139,13 @@ BUDGET="$(field 'd["task"]["budget_raw"]')"
 LANES="$(field 'd["lanes"]')"
 
 # One active plan (or ad-hoc route) per repository: an atomic mkdir lock.
-if ! apex_lock_acquire "$PLAN_HASH" "$PLAN_ABS" "$LINE_NO" BUILD; then
+LOCK_RC=0; apex_lock_acquire "$PLAN_HASH" "$PLAN_ABS" "$LINE_NO" BUILD || LOCK_RC=$?
+if [[ "$LOCK_RC" -ne 0 && "$LOCK_RC" -ne 10 ]]; then
+  echo "STATE: $STATE_DIR"
+  echo "STATUS: ERROR the ACTIVE lock could not be read or written under $STATE_BASE (exit $LOCK_RC)"
+  exit 1
+fi
+if [[ "$LOCK_RC" -eq 10 ]]; then
   echo "STATE: $STATE_DIR"
   echo "STATUS: BUSY"
   echo "BUSY_WITH: $(apex_lock_owner)"

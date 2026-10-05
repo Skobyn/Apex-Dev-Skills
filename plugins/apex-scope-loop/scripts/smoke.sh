@@ -303,6 +303,7 @@ assert blocked["Phase 1.2"]["open"] == ["Phase 1.3"], blocked
 assert blocked["Phase 1.5"]["unknown"] == ["Gate 9→10"], blocked
 tags = json.loads(subprocess.check_output([sys.executable, sys.argv[1], "task", sys.argv[2], "3"]))["tags"]
 assert tags == ["backend", "gate:partner:x@y.com"], tags
+assert "docs" not in t["tags"] and t["tags"] == ["tests"], t["tags"]   # [docs](x.md) is link text
 PY
 python3 "$PL" next "$EX/../resources/examples/sample-plan.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["task"]["id"]=="Phase 1.1" and any(b["id"]=="Phase 1.2" and b["open"]==["Phase 1.1"] for b in d["blocked"]), d' \
   || fail "sample-plan: **Phase 1.2** Blocked-by phase-1.1 is not resolved"
@@ -329,8 +330,8 @@ Example:
   - Acceptance: true
 - [ ] **Phase 2.1** [docs] two Blocked-by lines
   - Acceptance: true
-  - Blocked-by: Phase 1.2
   - Blocked-by: Phase 1.1
+  - Blocked-by: Phase 1.2
 - [x] **Phase 3.1** dup done
   - Acceptance: true
 - [ ] **Phase 3.1** dup open
@@ -347,9 +348,12 @@ assert d["task"]["id"] == "Phase 1.1" and d["task"]["line_no"] == 7, d["task"]
 b = {x["id"]: x for x in d["blocked"]}
 assert b["Phase 2.1"]["open"] == ["Phase 1.1"], b
 assert b["Phase 3.2"]["open"] == ["Phase 3.1"], b
+sys.dont_write_bytecode = True
 sys.path.insert(0, pl.rsplit("/", 1)[0]); import planlib
 assert not planlib.disjoint(["src/a/../shared/*.py"], ["src/shared/util.py"])
 assert not planlib.disjoint(["/repo/src/**"], ["src/**"]) and not planlib.disjoint(["../x/**"], ["y/**"])
+assert not planlib.disjoint(["src/a/**/../../b/x.py"], ["b/x.py"]) and not planlib.disjoint(["src/a/[.][.]/../b/x.py"], ["b/x.py"])
+assert not planlib.disjoint(["Src/A/**"], ["src/a/x.py"])
 assert planlib.disjoint(["src/a/**"], ["src/b/**"])
 PY
 printf 'line one \342\200\250 has U+2028\n- [ ] **Phase 1.1** A\n  - Acceptance: true\n- [ ] **Phase 1.2** B\n  - Acceptance: true\n' >"$SMOKE_TMP/ls.md"
@@ -360,14 +364,25 @@ V="$(python3 "$PL" validate "$SMOKE_TMP/late.md" || true)"
 for want in "Acceptance: given more than once" "beyond the 8-line look-ahead" "directive outside any task block"; do
   printf '%s' "$V" | grep -q "$want" || fail "validate missed: $want"
 done
-ok "planlib: tags, directives, Blocked-by, next-unblocked, lanes, validation, fail-closed parsing"
+# Code fences follow CommonMark; an unclosed fence makes the plan invalid,
+# never COMPLETE; an indented fence inside a task's notes hides nothing.
+fx() { printf '%b' "$2" >"$SMOKE_TMP/$1.md"; python3 "$PL" next "$SMOKE_TMP/$1.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], (d.get("task") or {}).get("id"))'; }
+[ "$(fx f1 '- [x] **Phase 1.1** a\n  - Acceptance: true\n\n```x``` marks inline code\n\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n')" = "READY Phase 1.2" ] || fail "inline code at line start opened a fence"
+[ "$(fx f2 '- [x] **Phase 1.1** a\n  - Acceptance: true\n```\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n')" = "ERROR None" ] || fail "an unclosed fence did not make the plan an error"
+[ "$(fx f3 '~~~\n```\n- [ ] **Phase 9** x\n  - Acceptance: rm -rf x\n~~~\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n')" = "READY Phase 1.1" ] || fail "a backtick line closed a tilde fence"
+[ "$(fx f4 '````\n```bash\n- [ ] **Phase 9** x\n  - Acceptance: rm -rf x\n````\n- [ ] **Phase 1.1** a\n  - Acceptance: true\n')" = "READY Phase 1.1" ] || fail "a shorter fence closed a four-backtick fence"
+[ "$(fx f5 '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  ```\n  example\n\n  more\n  ```\n  - Blocked-by: Phase 1.2\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n')" = "READY Phase 1.2" ] || fail "an indented fence in a task's notes dropped its Blocked-by"
+printf -- '- [x] **Phase 1.1** a\n  - Acceptance: true\n```\n- [ ] **Phase 9** example\n```\n' >"$SMOKE_TMP/rem.md"
+[ "$(python3 "$PL" remaining "$SMOKE_TMP/rem.md")" = 0 ] || fail "planlib remaining counted a fenced example"
+ok "planlib: tags, directives, Blocked-by, next-unblocked, lanes, validation, fail-closed parsing, fences"
 
 # 26. iterate.sh: ACTIVE lock (a second plan is BUSY), STAGE and directive fields
 #     in the brief, ROUTE: none without apex-dispatch, BLOCKED when nothing is ready.
 K="$SMOKE_TMP/lockrepo"; mkdir -p "$K/plans"; git init -q -b main "$K"
-cp "$P25" "$K/plans/a-plan.md"; cp "$P25" "$K/plans/b-plan.md"; git -C "$K" add -A; git -C "$K" commit -qm k
+# A valid copy of the check-25 plan (its Phase 1.5 names an unknown gate on purpose).
+sed '/Phase 1.5/,$d' "$P25" >"$K/plans/a-plan.md"; cp "$K/plans/a-plan.md" "$K/plans/b-plan.md"; git -C "$K" add -A; git -C "$K" commit -qm k
 ( cd "$K" && APEX_GIBSON=0 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 && APEX_GIBSON=0 "$EX/init.sh" plans/b-plan.md >/dev/null 2>&1 ) || fail "init for the lock test failed"
-OUT_A="$(cd "$K" && "$EX/iterate.sh" plans/a-plan.md)"
+OUT_A="$(brief "$K" plans/a-plan.md)"
 for want in "^STATUS: READY" "^STAGE: BUILD" "^ROUTE_DIRECTIVE: class=tests" "^PATHS: tests/a/\*\*" "^BUDGET: usd=2" "^LANES: " "^ROUTE: none"; do
   printf '%s\n' "$OUT_A" | grep -q "$want" || fail "iterate brief lacks $want"
 done
@@ -376,8 +391,12 @@ brief "$K" plans/a-plan.md | grep -q '^STATUS: READY' || fail "the lock owner co
 APEX_FORCE_UNLOCK=1 brief "$K" plans/b-plan.md | grep -q '^STATUS: READY' || fail "APEX_FORCE_UNLOCK did not reclaim the lock"
 printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  - Blocked-by: phase-1.2\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n  - Blocked-by: phase-1.1\n' >"$K/plans/c-plan.md"
 ( cd "$K" && APEX_GIBSON=0 "$EX/init.sh" plans/c-plan.md >/dev/null 2>&1 ) || fail "init c-plan failed"
-APEX_FORCE_UNLOCK=1 brief "$K" plans/c-plan.md | grep -q '^STATUS: BLOCKED' || fail "an all-blocked plan was not BLOCKED"
-for p in a b c; do brief "$K" plans/$p-plan.md | grep -q '^__RC__: 0$' || fail "iterate.sh exited non-zero for plans/$p-plan.md"; done
+# Everything blocked needs a cycle or an unknown reference: both make the plan
+# invalid, and an invalid plan is never iterated.
+C_OUT="$(APEX_FORCE_UNLOCK=1 brief "$K" plans/c-plan.md)"
+printf '%s\n' "$C_OUT" | grep -q '^PLAN_ERROR: Blocked-by cycle' && printf '%s\n' "$C_OUT" | grep -q '^STATUS: ERROR plan is invalid' \
+  || fail "a cyclic plan was not refused as invalid"
+for p in a b; do brief "$K" plans/$p-plan.md | grep -q '^__RC__: 0$' || fail "iterate.sh exited non-zero for plans/$p-plan.md"; done
 LOCKD="$(cd "$K" && source "$EX/_lib.sh" && apex_resolve plans/a-plan.md && printf '%s' "$STATE_BASE")/ACTIVE"
 rm -rf "$LOCKD"; mkdir -p "$LOCKD"
 brief "$K" plans/b-plan.md | grep -q '^STATUS: BUSY' || fail "a lock dir without owner.json was treated as free"
@@ -387,7 +406,16 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   n="$(cat "$SMOKE_TMP/ra" "$SMOKE_TMP/rb" | grep -c '^STATUS: READY' || true)"
   [ "$n" = 1 ] || fail "lock race $i: $n plans got STATUS: READY"
 done
-ok "iterate: ACTIVE lock (atomic, fail-closed), brief fields, ROUTE: none, BLOCKED"
+rm -rf "$LOCKD"; mkdir -p "$LOCKD"; echo null >"$LOCKD/owner.json"
+brief "$K" plans/b-plan.md | grep -q '^STATUS: BUSY' || fail "an owner.json of null was treated as free"
+rm -rf "$LOCKD"; brief "$K" plans/a-plan.md >/dev/null
+B_ID="$(cd "$K" && source "$EX/_lib.sh" && apex_resolve plans/b-plan.md && printf '%s' "$PLAN_HASH")"
+( cd "$K" && source "$EX/_lib.sh" && apex_resolve plans/a-plan.md && apex_lock_stage "$B_ID" DONE )
+grep -q '"stage": "BUILD"' "$LOCKD/owner.json" || fail "a non-owner changed the lock's stage"
+rm -rf "$LOCKD"; mkdir -p "$LOCKD.lockdir-test"; LOCKF="$(dirname "$LOCKD")/.active.lock"; rm -f "$LOCKF"; mkdir "$LOCKF"
+brief "$K" plans/a-plan.md | grep -q '^STATUS: ERROR the ACTIVE lock could not be' || fail "an unusable lock file was reported as BUSY"
+rmdir "$LOCKF" "$LOCKD.lockdir-test"
+ok "iterate: ACTIVE lock (atomic, fail-closed, owner-checked), brief fields, ROUTE: none, invalid plans refused"
 
 # 27. land.sh handles a plan path that git quotes (spaces).
 Q="$SMOKE_TMP/quoted repo"; mkdir -p "$Q/my plans"; git init -q -b main "$Q"
@@ -406,7 +434,14 @@ mkdir -p "$G/.claude/apex-scope-loop"; git -C "$G" mv src/secret.txt .claude/ape
 expect_refusal "rename into the ledger" "unrelated to this plan" indir "$G" APEX_GIBSON=0 "$EX/land.sh" plans/g-plan.md
 git -C "$G" mv .claude/apex-scope-loop/LESSONS.md src/secret.txt; echo edit >>"$G/src/app.py"
 expect_refusal "APEX_LESSONS_FILE exemption" "unrelated to this plan" indir "$G" APEX_GIBSON=0 APEX_LESSONS_FILE="$G/src/app.py" "$EX/land.sh" plans/g-plan.md
-ok "land.sh: quoted plan paths; no exemption by rename or APEX_LESSONS_FILE"
+# land.sh and iterate.sh share one definition of done: a fenced example
+# checkbox is not an unchecked task.
+FE="$SMOKE_TMP/fenced"; mkdir -p "$FE/plans"; git init -q -b main "$FE"
+printf -- '- [ ] **Phase 1.1** [docs] x\n  - Acceptance: true\n\nExample:\n```\n- [ ] **Phase 9** example\n```\n' >"$FE/plans/f-plan.md"; git -C "$FE" add -A; git -C "$FE" commit -qm f
+( cd "$FE" && APEX_GIBSON=0 "$EX/init.sh" plans/f-plan.md >/dev/null 2>&1 ) || fail "init for the fenced-plan land failed"
+sed -i.bak '1s/^- \[ \]/- [x]/' "$FE/plans/f-plan.md" && rm -f "$FE/plans/f-plan.md.bak"
+( cd "$FE" && APEX_GIBSON=0 "$EX/land.sh" plans/f-plan.md >/dev/null 2>&1 ) || fail "land.sh counted a fenced example as an unchecked task"
+ok "land.sh: quoted plan paths; no exemption by rename or APEX_LESSONS_FILE; done means what iterate means"
 
 # 28. One lessons ledger per repository: base caller, worktree caller and a
 #     bare repo's worktrees all read and write the same file.

@@ -95,7 +95,7 @@ s["current_phase"] = None
 s["consecutive_failures"] = 0
 with open(path, "w") as f: json.dump(s, f, indent=2)
 PY
-    apex_lock_stage DONE   # the ACTIVE lock becomes reclaimable until the next iterate
+    apex_lock_stage "$PLAN_HASH" DONE   # this plan's lock becomes reclaimable until its next iterate
     echo "[checkpoint] complete @ line $LINE_NO ($VERDICT)"
     ;;
 

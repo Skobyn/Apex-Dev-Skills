@@ -43,8 +43,8 @@ BASE_BRANCH="$(read_field base_branch)"
 # --- Preconditions (nothing is modified until all pass) ----------------------
 
 # 1. Final gate: the plan must be fully checked unless --force.
-if grep -qE '^- \[ \]' "$PLAN" && [[ "$FORCE" != "--force" ]]; then
-  REMAINING=$(grep -cE '^- \[ \]' "$PLAN" || true)
+REMAINING="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$PLAN_ABS")"   # same rules as iterate.sh
+if [[ "$REMAINING" -gt 0 ]] && [[ "$FORCE" != "--force" ]]; then
   echo "ERROR: plan has $REMAINING unchecked task(s) — final gate not passed. Refusing to land." >&2
   echo "       Override (advanced): land.sh $PLAN --force" >&2
   exit 1

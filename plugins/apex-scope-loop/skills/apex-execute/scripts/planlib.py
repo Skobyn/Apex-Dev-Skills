@@ -9,6 +9,8 @@ Usage:
   planlib.py next PLAN            JSON: the next unchecked, unblocked task, lanes, blocked tasks
   planlib.py task PLAN LINE_NO    JSON: one task by its 1-based line number
   planlib.py validate PLAN        prints one error per line; exit 1 if any
+  planlib.py remaining PLAN       number of unchecked tasks (the one definition of done)
+  planlib.py counts PLAN          "<total> <checked>"
 
 Task line:      - [ ] **Phase 2.1** [backend][api] Title
 Directives:     indented "- Key: value" lines (up to LOOKAHEAD lines, stopping
@@ -29,7 +31,7 @@ LOOKAHEAD = 8
 TASK_RE = re.compile(r"^- \[( |x|X)\] (.*)$")
 ID_RE = re.compile(r"\*\*\s*(Phase\s+[0-9]+(?:\.[0-9]+)*|Gate\s+[^*\s—:]+(?:\s*(?:→|->)\s*[^*\s—:]+)?)")
 TAG_RE = re.compile(r"\[([a-z0-9:@._+-]+)\](?!\()")  # not markdown link text
-FENCE_RE = re.compile(r"^\s*(```|~~~)")
+FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 DIRECTIVE_RE = re.compile(r"^\s*(?:-\s*)?(Acceptance|Blocked-by|Swarm|Route|Paths|Budget):\s*(.*?)\s*$")
 
 ROUTE_VALUES = {
@@ -61,16 +63,44 @@ def read_lines(path):
     return [l[:-1] if l.endswith("\r") else l for l in data.split("\n")]
 
 
+def scan_fences(lines):
+    """CommonMark-style fenced code blocks. Returns (in_fence, unclosed_line):
+    in_fence[i] is True for fence lines and their contents; unclosed_line is the
+    1-based line of a fence never closed (the plan is then invalid). A backtick
+    opener whose info string contains a backtick is inline code, not a fence;
+    a fence closes only on the same character, at least as long, nothing after."""
+    in_fence = [False] * len(lines)
+    opener = None                     # (char, length, line_no)
+    for i, line in enumerate(lines):
+        m = FENCE_OPEN_RE.match(line)
+        if opener is None:
+            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                opener = (m.group(1)[0], len(m.group(1)), i + 1)
+                in_fence[i] = True
+            continue
+        in_fence[i] = True
+        if m and m.group(1)[0] == opener[0] and len(m.group(1)) >= opener[1] and not m.group(2).strip():
+            opener = None
+    return in_fence, (opener[2] if opener else None)
+
+
+def block_lines(lines, in_fence, i):
+    """Line indexes of task i's block: up to the next blank line or checkbox
+    outside a fence. Fences inside the block neither end it nor hide its
+    directives (a Blocked-by is never lost to formatting: fail closed)."""
+    out = []
+    j = i + 1
+    while j < len(lines):
+        if not in_fence[j] and (not lines[j].strip() or TASK_RE.match(lines[j])):
+            break
+        out.append(j)
+        j += 1
+    return out
+
+
 def parse(path):
     lines = read_lines(path)
-    in_fence = [False] * len(lines)
-    fenced = False
-    for i, line in enumerate(lines):
-        if FENCE_RE.match(line):
-            in_fence[i] = True
-            fenced = not fenced
-            continue
-        in_fence[i] = fenced
+    in_fence, _ = scan_fences(lines)
     tasks = []
     for i, line in enumerate(lines):
         if in_fence[i]:
@@ -86,11 +116,9 @@ def parse(path):
         key_map = {"Acceptance": "acceptance", "Blocked-by": "blocked_by_raw", "Swarm": "swarm",
                    "Route": "route_raw", "Paths": "paths_raw", "Budget": "budget_raw"}
         repeated, late = [], []
-        # A task's block runs to the next blank line, checkbox or fence. Every
-        # directive in it counts (Blocked-by lines merge: fail closed); one
-        # beyond LOOKAHEAD lines or repeated is a validation error.
-        j = i + 1
-        while j < len(lines) and lines[j].strip() and not TASK_RE.match(lines[j]) and not FENCE_RE.match(lines[j]):
+        # Every directive in the task's block counts (Blocked-by lines merge:
+        # fail closed); one beyond LOOKAHEAD lines or repeated is a validation error.
+        for j in block_lines(lines, in_fence, i):
             dm = DIRECTIVE_RE.match(lines[j])
             if dm:
                 key = key_map[dm.group(1)]
@@ -102,7 +130,6 @@ def parse(path):
                     if d[key]:
                         repeated.append(dm.group(1))
                     d[key] = dm.group(2)
-            j += 1
         acc = d["acceptance"]
         if len(acc) >= 2 and acc.startswith("`") and acc.endswith("`") and acc.count("`") == 2:
             acc = acc[1:-1]
@@ -164,11 +191,11 @@ def glob_prefix(g):
     """Literal directory-safe prefix of a repo-relative glob, or None when the
     glob cannot be bounded (absolute, escapes with .., or starts with a wildcard)."""
     g = g.strip()
-    if not g or g.startswith("/") or "\\" in g:
+    # Reject on the raw text: normpath would collapse "**/.." or "[.][.]/.."
+    # into a path that looks bounded but is not.
+    if not g or g.startswith("/") or "\\" in g or ".." in g.split("/"):
         return None
     norm = posixpath.normpath(g)
-    if norm == ".." or norm.startswith("../") or "/../" in f"/{norm}/":
-        return None
     m = re.search(r"[*?\[{]", norm)
     prefix = norm[: m.start()] if m else norm
     return prefix.lower()   # case-insensitive filesystems: compare case-folded
@@ -189,7 +216,15 @@ def public(t):
     return {k: v for k, v in t.items() if k not in ("ref", "_repeated", "_late")}
 
 
+def cmd_remaining(path):
+    """Unchecked tasks, by the same rules as next (the one definition of done)."""
+    return sum(1 for t in parse(path) if not t["checked"])
+
+
 def cmd_next(path, max_lanes):
+    _, unclosed = scan_fences(read_lines(path))
+    if unclosed:
+        return {"status": "ERROR", "error": f"line {unclosed}: code fence is never closed", "task": None, "lanes": [], "blocked": []}
     tasks = parse(path)
     by_ref = index(tasks)
     blocked, ready = [], []
@@ -280,20 +315,17 @@ def cmd_validate(path):
                         raise ValueError
                 except ValueError:
                     errs.append(f"{where}: Budget {k}={v} must be a positive number")
-    # Directive lines that belong to no task's block (e.g. after a blank line).
-    owned = set()
+    # Directive lines that belong to no task's block (e.g. after a blank line),
+    # and code fences left open (everything after them would be hidden).
     lines = read_lines(path)
+    in_fence, unclosed = scan_fences(lines)
+    if unclosed:
+        errs.append(f"line {unclosed}: code fence is never closed")
+    owned = set()
     for t in tasks:
-        j = t["line_no"]
-        while j < len(lines) and lines[j].strip() and not TASK_RE.match(lines[j]) and not FENCE_RE.match(lines[j]):
-            owned.add(j)
-            j += 1
-    fenced = False
+        owned.update(block_lines(lines, in_fence, t["line_no"] - 1))
     for j, line in enumerate(lines):
-        if FENCE_RE.match(line):
-            fenced = not fenced
-            continue
-        if not fenced and DIRECTIVE_RE.match(line) and line[:1].isspace() and j not in owned:
+        if not in_fence[j] and DIRECTIVE_RE.match(line) and line[:1].isspace() and j not in owned:
             errs.append(f"line {j + 1}: directive outside any task block (a blank line separates it from its task?)")
     # Cycle check over Blocked-by edges.
     graph = {}
@@ -328,6 +360,13 @@ def main(argv):
     if cmd == "next":
         import os
         print(json.dumps(cmd_next(path, int(os.environ.get("APEX_MAX_LANES", "3")))))
+        return 0
+    if cmd == "remaining":
+        print(cmd_remaining(path))
+        return 0
+    if cmd == "counts":
+        ts = parse(path)
+        print(len(ts), sum(1 for t in ts if t["checked"]))
         return 0
     if cmd == "task":
         t = cmd_task(path, int(argv[3]))
