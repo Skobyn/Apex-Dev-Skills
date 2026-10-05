@@ -110,6 +110,8 @@ ok "no .claude/skills paths; hooks-snippet.json removed"
 
 # 15-16. Functional: a plan promoted in a scratch repo, then resolved from the
 # base checkout and from inside the plan worktree, lands on ONE state dir.
+# The functional checks must not inherit the caller's loop configuration.
+for v in $(compgen -e | grep '^APEX_' || true); do unset "$v"; done
 SMOKE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/apex-scope-loop-smoke.XXXXXX")"
 trap 'git -C "$SMOKE_TMP/repo" worktree prune >/dev/null 2>&1 || true; rm -rf "$SMOKE_TMP"' EXIT
 export GIT_AUTHOR_NAME=smoke GIT_AUTHOR_EMAIL=smoke@example.invalid GIT_COMMITTER_NAME=smoke GIT_COMMITTER_EMAIL=smoke@example.invalid
