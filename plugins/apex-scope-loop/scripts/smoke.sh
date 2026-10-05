@@ -672,25 +672,36 @@ ok "checkpoint: SHA form, round cap, attempts, Tier C adversarial, complete/rewi
 CKS="$(st "$CK" plans/c-plan.md)"; mkdir -p "$CKS/dispatch/reviews-raw"
 git -C "$CWT" commit -q --allow-empty -m p1
 expect_refusal "typed verdict with dispatch state" "needs provenance" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv
-printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer"}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag1.json"
+printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer"}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag0.json"
+expect_refusal "a record that names no task line" "must name their task line" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag0
+printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer", "line": 1}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag1.json"
 expect_refusal "verdict that contradicts its record" "says REQUEST_CHANGES" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --agent-id ag1
 expect_refusal "default reviewer name with dispatch state" "name the reviewer" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES --agent-id ag1
 expect_refusal "role relabelled against its record" "does not match" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1 --role adversarial
 (cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1 >/dev/null) || fail "a verdict matching its reviews-raw record was refused"
 expect_refusal "a provenance record used twice" "already recorded" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1
+ln "$CKS/dispatch/reviews-raw/ag1.json" "$CKS/dispatch/reviews-raw/ag1b.json"
+expect_refusal "a provenance record reused through a hard link" "already recorded" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1b
 expect_refusal "path-like agent id" "unexpected characters" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --agent-id ../x
-mkdir -p "$SMOKE_TMP/forged"; printf '{"head_sha": "%s", "verdict": "APPROVE", "role": "adversarial"}' "$(sha)" >"$SMOKE_TMP/forged/result.json"
+mkdir -p "$SMOKE_TMP/forged"; printf '{"head_sha": "%s", "verdict": "APPROVE", "role": "adversarial", "line": 1}' "$(sha)" >"$SMOKE_TMP/forged/result.json"
 expect_refusal "a worker result outside the shim directories" "not a shim worker directory" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$SMOKE_TMP/forged"
-mkdir -p "$CKS/dispatch/workers/w1"; cp "$SMOKE_TMP/forged/result.json" "$CKS/dispatch/workers/w1/"
+mkdir -p "$CKS/dispatch/workers/w1/deep"; cp "$SMOKE_TMP/forged/result.json" "$CKS/dispatch/workers/w1/"; cp "$SMOKE_TMP/forged/result.json" "$CKS/dispatch/workers/w1/deep/"
+expect_refusal "a worker result nested below a worker directory" "not a shim worker directory" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$CKS/dispatch/workers/w1/deep"
 (cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$CKS/dispatch/workers/w1" >/dev/null) || fail "a worker result inside the dispatch state was refused"
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["reviews"]["1"]["records"][-1]; assert r["role"]=="adversarial" and r["provenance"]=="worker", r' "$CKS/checkpoint.json" || fail "the role was not taken from the worker record"
 expect_refusal "--skip-review with dispatch state" "skip-review is not accepted" indir "$CK" "$CP" plans/c-plan.md complete 1 ok --skip-review why
-ok "checkpoint: provenance required with dispatch state; role from the record; one use per record"
+mkdir -p "$SMOKE_TMP/fd33/scripts"; printf '#!/bin/sh\n(sleep 6 >/dev/null 2>&1 </dev/null &)\necho "rung: effort+1"\n' >"$SMOKE_TMP/fd33/scripts/route.sh"; chmod +x "$SMOKE_TMP/fd33/scripts/route.sh"
+printf '{"route_id": "r1"}' >"$CKS/dispatch/active-route.json"
+has "ESCALATE_ROUTE: rung: effort+1" "$(cd "$CK" && APEX_DISPATCH_ROOT="$SMOKE_TMP/fd33" "$CP" plans/c-plan.md fail 1 "esc" 2>&1)" || fail "fail did not relay route.sh escalate"
+t0=$SECONDS; (cd "$CK" && "$CP" plans/c-plan.md halt "lock probe" >/dev/null && "$CP" plans/c-plan.md resume "lock probe" >/dev/null)
+[ $((SECONDS - t0)) -lt 4 ] || fail "a background child of route.sh held the checkpoint lock"
+rm -f "$CKS/dispatch/active-route.json"
+ok "checkpoint: provenance required with dispatch state; role and line from the record; one use per record file"
 
 # 34. risk-tier: short tokens are whole words ("lessons" is not SSO); the
 #     decision layer can raise a tier, never lower it.
 RT="$SMOKE_TMP/rt34"; mkdir -p "$RT/plans" "$RT/scripts"; git init -q -b main "$RT"
-printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n' >"$RT/plans/r-plan.md"; git -C "$RT" add -A; git -C "$RT" commit -qm r
+for i in 1 2 3 4 5; do printf -- '- [ ] **Phase 1.%s** a\n  - Acceptance: true\n' "$i"; done >"$RT/plans/r-plan.md"; git -C "$RT" add -A; git -C "$RT" commit -qm r
 ( cd "$RT" && APEX_GIBSON=0 "$EX/init.sh" plans/r-plan.md >/dev/null 2>&1 ) || fail "init for the risk-tier test failed"
 RWT="$(st "$RT" plans/r-plan.md)/worktree"; B0="$(git -C "$RWT" rev-parse HEAD)"
 mkdir -p "$RWT/scripts"; echo x >"$RWT/scripts/lessons.sh"; git -C "$RWT" add -A; git -C "$RWT" commit -qm l
@@ -699,12 +710,17 @@ printf '#!/bin/sh\necho "{\\"verdict\\": \\"$FAKE_TIER\\", \\"uncertain\\": fals
 has "^TIER: B" "$(cd "$RT" && FAKE_TIER=B APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0" --classify)" || fail "the decision layer could not raise the tier"
 has "^TIER: B" "$(cd "$RT" && FAKE_TIER=A APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0" --classify)" || fail "the decision layer lowered a recorded tier"
 mkdir -p "$RWT/src"; echo x >"$RWT/src/jwtVerify.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm j; B1="$(git -C "$RWT" rev-parse HEAD~1)"
-has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 2 --since "$B1")" || fail "src/jwtVerify.ts (camelCase) was not Tier C"
+has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 3 --since "$B1")" || fail "src/jwtVerify.ts (camelCase) was not Tier C"
 echo x >"$RWT/src/userRoles.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm u
-has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 3 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/userRoles.ts (camelCase) was not Tier C"
+has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 5 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/userRoles.ts (camelCase) was not Tier C"
+echo x >"$RWT/src/userACLs.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm a
+has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 7 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/userACLs.ts (plural acronym) was not Tier C"
+echo x >"$RWT/src/oracle.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm o
+has "^TIER: A" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 9 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/oracle.ts was classified above Tier A (acl inside a word)"
 mkdir -p "$RWT/src/sso"; echo x >"$RWT/src/sso/login.py"; git -C "$RWT" add -A; git -C "$RWT" commit -qm s
 has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0")" || fail "an sso/ path was not Tier C"
 expect_refusal "a non-numeric risk-tier line" "plan line number" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md '1,$'
+expect_refusal "a risk-tier line that is not a task" "not a task" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 2
 ok "risk-tier: whole-word and camelCase short tokens; decision layer raises only"
 
 # 35. green-gate re-baselines a step the baseline never ran, at the fork SHA,
@@ -761,7 +777,22 @@ for i in 1 2 3; do (cd "$CH" && "$CP" plans/h-plan.md fail 1 "f$i" >/dev/null); 
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["halted"]' "$CHS/checkpoint.json" || fail "rewind of an unchecked task cleared a halt"
 (cd "$CH" && "$CP" plans/h-plan.md resume "human looked" >/dev/null)
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert not s["halted"] and s["consecutive_failures"]==0' "$CHS/checkpoint.json" || fail "resume did not clear the halt"
-ok "checkpoint: line validation, no verdict laundering, no Tier C skip, parallel-safe, resume"
+# A 0.2.0 REQUEST_CHANGES at the head blocks --skip-review too.
+python3 - "$CHS/checkpoint.json" "$(hsha)" <<'PY'
+import json, sys
+p, h = sys.argv[1:]; s = json.load(open(p)); s["halted"] = False; s["consecutive_failures"] = 0
+s["tiers"]["3"] = {"tier": "A"}; s["reviews"]["3"] = {"sha": h, "verdict": "REQUEST_CHANGES", "round": 1}; json.dump(s, open(p, "w"))
+PY
+expect_refusal "a 0.2.0 REQUEST_CHANGES with --skip-review" "requested changes" indir "$CH" "$CP" plans/h-plan.md complete 3 ok --skip-review n/a
+(cd "$CH" && "$CP" plans/h-plan.md halt "probe" >/dev/null)
+expect_refusal "a review while halted" "halted" indir "$CH" "$CP" plans/h-plan.md review 3 "$(hsha)" APPROVE
+(cd "$CH" && "$CP" plans/h-plan.md resume "probe" >/dev/null)
+# A [gate:*] tag quoted in a code task does not exempt it.
+GX="$SMOKE_TMP/gx36"; mkdir -p "$GX/plans"; git init -q -b main "$GX"
+printf -- '- [ ] **Phase 1.1** [security] harden auth; docs mention `[gate:auto]` syntax\n  - Acceptance: true\n' >"$GX/plans/x-plan.md"; git -C "$GX" add -A; git -C "$GX" commit -qm x
+( cd "$GX" && APEX_GIBSON=0 "$EX/init.sh" plans/x-plan.md >/dev/null 2>&1 ) || fail "init for the gate-tag test failed"
+expect_refusal "a code task quoting a gate tag" "no independent review\|no risk tier\|green" indir "$GX" "$CP" plans/x-plan.md complete 1 ok
+ok "checkpoint: line validation, no verdict laundering, no Tier C skip, parallel-safe, resume, halt, gate ids"
 
 echo ""
 echo "smoke passed: 36/36 checks"

@@ -11,9 +11,10 @@
 #   ./checkpoint.sh PLAN.md resume   REASON       # human: clear a halt and the error budget
 #   ./checkpoint.sh PLAN.md rewind   LINE_NO      # uncheck a completed task
 #
-# LINE_NO is always the line of a task in the plan (planlib); SHA is a full
-# commit id (40 or 64 hex). Every action holds an exclusive lock on the plan's
-# state, so parallel reviewers cannot lose each other's records.
+# LINE_NO is always the line of a task in a valid plan (planlib); SHA is a
+# full commit id (40 or 64 hex). Every action holds an exclusive lock on the
+# plan's state, so parallel reviewers cannot lose each other's records.
+# While the plan is halted, `review` and `complete` are refused.
 #
 # Harness enforcement on `complete` (adapted from The Gibson — see
 # docs/GIBSON_HARNESS.md; disable with APEX_GIBSON=0):
@@ -24,8 +25,8 @@
 #   - a Tier C task needs a recorded human approval (G12) for that exact head
 #     SHA; --skip-review never waives it                       (Law 7)
 #   - a risk tier must be recorded; --skip-review never waives it
-#   Gate tasks (a [gate:*] tag) carry no code and are exempt from the
-#   gate/review checks.
+#   Gate tasks (a **Gate …** id with a [gate:*] tag) carry no code and are
+#   exempt from the gate/review checks — unless the line was tiered C.
 #
 # Reviews (ADR-0003): every verdict is a record; a round is a distinct head
 # SHA reviewed in the current attempt, and a fourth round is refused
@@ -37,9 +38,10 @@
 #
 # apex-dispatch (when <state>/dispatch/ exists): a verdict is accepted only
 # with provenance — a hook-written reviews-raw record (--agent-id) or a worker
-# result.json inside the dispatch state or the shim worktrees (--worker) — that
-# carries the same verdict, SHA and role. The role comes from the record; a
-# record is used once. --skip-review and the default reviewer name are refused,
+# result.json one level inside <state>/dispatch/workers or the shim worktree
+# root (--worker) — that carries the same verdict, SHA, role and task line. The
+# role comes from the record; a record (the file, by inode) is used once.
+# --skip-review and the default reviewer name are refused,
 # and `complete` needs ledger evidence (ledger.sh evidence) even with
 # APEX_GIBSON=0. APEX_DISPATCH_ROOT is trusted like APEX_GIBSON: whoever sets
 # the environment owns the harness.
@@ -61,16 +63,12 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
 [[ -f "$CHECKPOINT" ]] || { echo "ERROR: not initialized — run init.sh first"; exit 1; }
 
-# Serialise every action on this plan's state: re-run this script holding an
-# exclusive flock (released when the process exits).
-if [[ "${APEX_CHECKPOINT_LOCK_HELD:-}" != "$STATE_DIR" ]]; then
-  APEX_CHECKPOINT_LOCK_HELD="$STATE_DIR" exec python3 -c '
-import fcntl, os, sys
-fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o644)
-fcntl.flock(fd, fcntl.LOCK_EX)
-os.set_inheritable(fd, True)
-os.execvp("bash", ["bash"] + sys.argv[2:])' "$STATE_DIR/.checkpoint.lock" "${BASH_SOURCE[0]}" "$@"
-fi
+# Serialise every action on this plan's state: an exclusive flock on fd 9,
+# held by this shell until it exits (the lock belongs to the open file, which
+# python locks and this shell keeps open). External tools get 9>&- so a
+# background child of theirs never holds it.
+exec 9>>"$STATE_DIR/.checkpoint.lock"
+python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)'
 
 NOW="$(date -u +%FT%TZ)"
 WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
@@ -80,25 +78,44 @@ DISPATCH="$(apex_dispatch_root)"
 
 need_line() {
   [[ "$1" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "ERROR: LINE_NO must be a plan line number, got '$1'" >&2; exit 1; }
+  local err
+  err="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" validate "$PLAN" 2>&1)" \
+    || { echo "[checkpoint] REFUSED $ACTION: the plan is invalid:" >&2; printf '%s\n' "$err" | head -5 | sed 's/^/  /' >&2; exit 1; }
   TASK_JSON="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$1" 2>/dev/null || true)"
   [[ "$TASK_JSON" == \{* ]] || { echo "[checkpoint] REFUSED $ACTION: line $1 is not a task in $PLAN" >&2; exit 1; }
 }
+# checked: the box is ticked. gate: a **Gate …** task carrying a [gate:*] tag
+# (a tag alone, e.g. quoted in prose, does not make a code task a gate).
 task_field() {
   python3 -c '
 import json, sys
 t = json.loads(sys.argv[1])
-gate = any(x.startswith("gate:") for x in t["tags"])
+gate = t["id"].startswith("Gate") and any(x.startswith("gate:") for x in t["tags"])
 print("1" if (t["checked"] if sys.argv[2] == "checked" else gate) else "0")' "$TASK_JSON" "$1"
+}
+recorded_tier() {
+  python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("tiers", {}).get(sys.argv[2]) or {}).get("tier") or "")' "$CHECKPOINT" "$1"
+}
+refuse_if_halted() {
+  local why
+  why="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(s.get("halt_reason") or "halted" if s.get("halted") else "")' "$CHECKPOINT")"
+  [[ -z "$why" ]] || { echo "[checkpoint] REFUSED $ACTION: the plan is halted ($why) — a human clears it with: checkpoint.sh PLAN resume REASON" >&2; exit 1; }
 }
 need_sha() {
   [[ "$1" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "[checkpoint] REFUSED $ACTION: '$1' is not a full commit SHA" >&2; exit 1; }
 }
-# Atomic JSON write shared by the python blocks below.
+# Atomic JSON write shared by the python blocks below (never follows a
+# planted .tmp symlink).
 PY_SAVE='
 import json, os
 def save(path, s):
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    with os.fdopen(fd, "w") as f:
         json.dump(s, f, indent=2)
     os.replace(tmp, path)
 '
@@ -111,7 +128,9 @@ case "$ACTION" in
     [[ "${5:-}" == "--skip-review" ]] && SKIP_REVIEW="${6:?--skip-review needs a reason}"
     need_line "$LINE_NO"
     [[ "$(task_field checked)" == "0" ]] || { echo "[checkpoint] REFUSED complete: line $LINE_NO is already checked" >&2; exit 1; }
+    refuse_if_halted
     IS_GATE="$(task_field gate)"
+    [[ "$(recorded_tier "$LINE_NO")" == "C" ]] && IS_GATE=0   # Tier C is never exempt
     if [[ -n "$SKIP_REVIEW" && -d "$DISPATCH_STATE" ]]; then
       echo "[checkpoint] REFUSED complete: apex-dispatch state exists ($DISPATCH_STATE); --skip-review is not accepted — record a reviewed verdict" >&2
       exit 1
@@ -134,7 +153,10 @@ if tier is None:
     problems.append("no risk tier recorded — run: risk-tier.sh PLAN LINE --since <brief HEAD_SHA>")
 r = s.get("reviews", {}).get(line_no) or {}
 attempt = r.get("attempt", 1)
-at_head = [x for x in r.get("records", []) if x.get("sha") == head]
+records = r.get("records")
+if records is None:                                    # 0.2.0 single record = attempt 1
+    records = [{"attempt": 1, "sha": r["sha"], "verdict": r.get("verdict"), "role": "reviewer"}] if r.get("sha") else []
+at_head = [x for x in records if x.get("sha") == head]
 if any(x.get("verdict") != "APPROVE" for x in at_head):
     # Any attempt: a failure starts a new attempt, it does not launder a verdict.
     problems.append(f"a review of the head {head[:12]} requested changes — address the findings in a new commit and re-review")
@@ -142,10 +164,6 @@ if skip and tier == "C":
     problems.append("Tier C: --skip-review cannot waive the review and adversarial pass")
 elif not skip:
     recs = [x for x in at_head if x.get("attempt", 1) == attempt]
-    if not recs and "records" not in r and r.get("sha") == head and attempt == 1:   # 0.2.0 record
-        recs = [{"verdict": r.get("verdict"), "role": "reviewer"}]
-        if recs[0]["verdict"] != "APPROVE":
-            problems.append("a review of the head requested changes — address the findings and re-review")
     if not recs:
         problems.append("no independent review recorded for the worktree head "
                         f"{head[:12]} in this attempt — dispatch the reviewer, then: checkpoint.sh PLAN review LINE SHA VERDICT")
@@ -166,7 +184,7 @@ PY
     # waived by APEX_GIBSON=0).
     if [[ -d "$DISPATCH_STATE" && "$IS_GATE" == "0" ]]; then
       [[ -n "$DISPATCH" ]] || { echo "[checkpoint] REFUSED complete: dispatch state exists ($DISPATCH_STATE) but apex-dispatch is not installed beside apex-scope-loop (APEX_DISPATCH_ROOT)" >&2; exit 1; }
-      "$DISPATCH/scripts/ledger.sh" evidence --state "$STATE_DIR" --line "$LINE_NO" --head "$(head_sha)" \
+      "$DISPATCH/scripts/ledger.sh" evidence --state "$STATE_DIR" --line "$LINE_NO" --head "$(head_sha)" 9>&- \
         || { echo "[checkpoint] REFUSED complete: ledger evidence missing or the hash chain is broken (ledger.sh evidence)" >&2; exit 1; }
     fi
     # Flip "- [ ]" to "- [x]" on that line (BSD/macOS sed)
@@ -221,7 +239,7 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:
       elif [[ -z "$RID" ]]; then
         echo "ESCALATE_ROUTE: error $ROUTE_FILE has no route_id"
       else
-        "$DISPATCH/scripts/route.sh" escalate "$RID" 2>&1 | sed 's/^/ESCALATE_ROUTE: /' || echo "ESCALATE_ROUTE: error route.sh escalate $RID failed"
+        "$DISPATCH/scripts/route.sh" escalate "$RID" 9>&- 2>&1 | sed 's/^/ESCALATE_ROUTE: /' || echo "ESCALATE_ROUTE: error route.sh escalate $RID failed"
       fi
     fi
     ;;
@@ -247,6 +265,7 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:
     done
     need_line "$LINE_NO"
     need_sha "$SHA"
+    refuse_if_halted
     case "$VERDICT" in APPROVE|REQUEST_CHANGES) ;; *) echo "ERROR: verdict must be APPROVE or REQUEST_CHANGES" >&2; exit 1 ;; esac
     [[ -z "$ROLE" || "$ROLE" =~ ^(reviewer|adversarial|lens:[a-z/-]+)$ ]] || { echo "ERROR: --role must be reviewer, adversarial or lens:<name>" >&2; exit 1; }
     [[ -n "$AGENT_ID" && -n "$WORKER" ]] && { echo "ERROR: --agent-id and --worker are exclusive" >&2; exit 1; }
@@ -260,12 +279,14 @@ def die(msg):
     sys.exit(1)
 def save(s):
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    with os.fdopen(fd, "w") as f:
         json.dump(s, f, indent=2)
     os.replace(tmp, path)
-def under(p, root):
-    root = os.path.realpath(root)
-    return p == root or p.startswith(root + os.sep)
 ROLE_RE = r"reviewer|adversarial|lens:[a-z/-]+"
 provenance, source = "declared", ""
 s = json.load(open(path))
@@ -273,28 +294,36 @@ if os.path.isdir(dstate):
     # Provenance (spec §5.3 G): the verdict must come from a record the
     # orchestrator did not type — a hook-written reviews-raw record or a shim
     # worker result.json — with the same verdict, SHA and role.
-    if reviewer_named != "1":
+    if reviewer_named != "1" or reviewer == "gibson-reviewer":
         die("apex-dispatch state exists: name the reviewer (the default name is not accepted)")
-    shim_root = os.path.join(top, ".claude", "apex-dispatch", "worktrees")
+    # A worker directory is exactly one level below <state>/dispatch/workers or
+    # the shim worktree root, and the shim root itself is not a symlink.
+    shim_root = os.path.join(os.path.realpath(top), ".claude", "apex-dispatch", "worktrees")
+    roots = [os.path.realpath(os.path.join(dstate, "workers"))]
+    if os.path.realpath(shim_root) == shim_root:
+        roots.append(shim_root)
     if agent_id:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", agent_id):
             die("--agent-id has unexpected characters")
         rec_path = os.path.join(dstate, "reviews-raw", f"{agent_id}.json")
-        source = "agent:" + agent_id
     elif worker:
         real = os.path.realpath(worker)
-        if not (under(real, dstate) or under(real, shim_root)):
-            die(f"--worker {worker} is not a shim worker directory (inside {dstate} or {shim_root})")
+        if os.path.dirname(real) not in roots:
+            die(f"--worker {worker} is not a shim worker directory (one level inside {' or '.join(roots)})")
         rec_path = os.path.join(real, "result.json")
-        source = "worker:" + real
     else:
         die("apex-dispatch state exists, so a verdict needs provenance: --agent-id (hook-written reviews-raw record) "
             "or --worker DIR (worker result.json); a typed verdict is not accepted")
     try:
-        rec = json.load(open(rec_path))
+        with open(rec_path) as fh:
+            st = os.fstat(fh.fileno())
+            rec = json.load(fh)
         assert isinstance(rec, dict)
     except Exception:
         die(f"no readable provenance record at {rec_path}")
+    # The record's identity is the file itself: case variants, aliases and
+    # hard links of one record are the same record.
+    source = f"file:{st.st_dev}:{st.st_ino}"
     if rec.get("head_sha") != sha:
         die(f"the provenance record reviewed {str(rec.get('head_sha'))[:12]}, not {sha[:12]}")
     if rec.get("verdict") != verdict:
@@ -305,8 +334,8 @@ if os.path.isdir(dstate):
     if role and role != rrole:
         die(f"--role {role} does not match the provenance record's role {rrole}")
     role = rrole
-    if "line" in rec and str(rec["line"]) != line_no:
-        die(f"the provenance record is for line {rec['line']}, not {line_no}")
+    if str(rec.get("line", "")) != line_no:
+        die(f"the provenance record is for line {rec.get('line')!r}, not {line_no} (records must name their task line)")
     if rec.get("route") and route_id and rec["route"] != route_id:
         die(f"the provenance record is for route {rec['route']}, not {route_id}")
     route_id = route_id or str(rec.get("route") or "")

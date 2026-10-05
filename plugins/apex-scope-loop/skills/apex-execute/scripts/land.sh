@@ -182,12 +182,15 @@ git -C "$REPO_ROOT" branch -d "$WT_BRANCH" 2>/dev/null \
   || echo "[land] WARNING: branch $WT_BRANCH not deleted (not fully merged, or still checked out)" >&2
 
 # 11. Mark landed in checkpoint.
-python3 - "$CHECKPOINT" <<'PY'
-import json, sys
-p = sys.argv[1]
+python3 - "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" <<'PY'
+import fcntl, json, os, sys
+p, lock = sys.argv[1:]
+fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX)          # checkpoint.sh's state lock
 with open(p) as f: s = json.load(f)
 s["landed"] = True
-with open(p, "w") as f: json.dump(s, f, indent=2)
+with open(p + ".tmp", "w") as f: json.dump(s, f, indent=2)
+os.replace(p + ".tmp", p)
 PY
 
 apex_lock_release "$PLAN_HASH"

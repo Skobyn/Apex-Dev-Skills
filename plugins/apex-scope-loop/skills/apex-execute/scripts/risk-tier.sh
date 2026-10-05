@@ -43,6 +43,8 @@ APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
 [[ -f "$CHECKPOINT" ]] || { echo "ERROR: not initialized — run init.sh first" >&2; exit 2; }
+python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO" >/dev/null 2>&1 \
+  || { echo "ERROR: line $LINE_NO is not a task in $PLAN (or the plan is invalid: planlib.py validate)" >&2; exit 2; }
 
 WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 BASE_BRANCH="$(read_field base_branch)"
@@ -65,17 +67,20 @@ raise() { # raise <tier> <reason>
   REASONS+=("$2")
 }
 
-# Tier C: path signals (case-insensitive).
-# Short tokens (sso, jwt, acl, role, pii, csp, cors, saml, rbac) must stand
-# alone as a path word: "lessons.sh" is not single sign-on. A camelCase hump
-# is a word boundary ("jwtVerify.ts", "userRoles.ts", "JWTStrategy.java").
-# Longer tokens still match inside words (e.g. "authz", "sessions", "billing_v2").
-C_PATHS='(auth|login|logout|session|oauth|password|passwd|credential|permission|billing|payment|stripe|paypal|invoice|pricing|checkout|subscription|refund|ledger|wallet|consent|gdpr|ccpa|privacy|personal|migration|migrate|schema|\.sql$|prisma|secret|crypto|encrypt|security|middleware|rate.?limit|webhook|alert|pagerduty|oncall|incident|prod(uction)?[-_.]?(data|db|config))'
-C_WORDS='(^|[^a-z0-9])(sso|jwt|acl|acls|role|roles|pii|csp|cors|saml|rbac)([^a-z0-9]|$)'
+# Tier C: path signals (case-insensitive). Fail closed: a false positive only
+# costs review; a miss lands an auth change unreviewed.
+# Every token matches inside words ("jwtverify", "clusterrolebinding",
+# "maskPIIs"), except the two that collide with ordinary words — "sso"
+# (lessons, processor) and "acl" (oracle, miracle). Those must stand alone as
+# a path word, singular or plural; a camelCase hump is a word boundary
+# ("listSSOs.ts", "manageACLs.ts").
+C_PATHS='(auth|login|logout|session|oauth|password|passwd|credential|permission|billing|payment|stripe|paypal|invoice|pricing|checkout|subscription|refund|ledger|wallet|consent|gdpr|ccpa|privacy|personal|migration|migrate|schema|\.sql$|prisma|secret|crypto|encrypt|security|middleware|rate.?limit|webhook|alert|pagerduty|oncall|incident|prod(uction)?[-_.]?(data|db|config)|jwt|rbac|saml|pii|csp|cors|role)'
+C_WORDS='(^|[^a-z0-9])(sso|acl)s?([^a-z0-9]|$)'
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  words="$(printf '%s' "$f" | sed -E 's/([a-z0-9])([A-Z])/\1_\2/g; s/([A-Z])([A-Z][a-z])/\1_\2/g')"
-  if printf '%s' "$f" | grep -qiE "$C_PATHS" || printf '%s' "$words" | grep -qiE "$C_WORDS"; then
+  # Split camelCase humps; an acronym keeps its plural "s" (ACLs -> ACLS).
+  words="$(printf '%s' "$f" | sed -E 's/([A-Z]{2,})s([^a-z]|$)/\1S\2/g; s/([a-z0-9])([A-Z])/\1_\2/g; s/([A-Z])([A-Z][a-z])/\1_\2/g')"
+  if printf '%s' "$f" | grep -qiE "$C_PATHS" || printf '%s\n%s' "$f" "$words" | grep -qiE "$C_WORDS"; then
     raise C "tier-c path: $f"
   fi
 done <<<"$FILES"
