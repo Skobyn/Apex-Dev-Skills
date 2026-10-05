@@ -90,7 +90,7 @@ task_field() {
   python3 -c '
 import json, sys
 t = json.loads(sys.argv[1])
-gate = t["id"].startswith("Gate") and any(x.startswith("gate:") for x in t["tags"])
+gate = (t.get("id") or "").startswith("Gate ") and any(x.startswith("gate:") for x in t["tags"])
 print("1" if (t["checked"] if sys.argv[2] == "checked" else gate) else "0")' "$TASK_JSON" "$1"
 }
 recorded_tier() {
@@ -148,9 +148,14 @@ elif g.get("head_sha") != head:
     problems.append(f"green gate ran on {g.get('head_sha','?')[:12]}, worktree head is {head[:12]} — re-run green-gate.sh check")
 elif g.get("result") not in ("PASS", "SKIPPED"):
     problems.append(f"green gate is {g.get('result')} — zero new failures vs. baseline required")
-tier = (s.get("tiers", {}).get(line_no) or {}).get("tier")
+trec = s.get("tiers", {}).get(line_no) or {}
+tier = trec.get("tier")
 if tier is None:
     problems.append("no risk tier recorded — run: risk-tier.sh PLAN LINE --since <brief HEAD_SHA>")
+elif trec.get("head") != head:
+    # A tier classifies one head; code committed since may be riskier. The
+    # recorded tier still ratchets, so re-running can only keep or raise it.
+    problems.append(f"the risk tier was recorded for {str(trec.get('head'))[:12]}, not the head {head[:12]} — re-run: risk-tier.sh PLAN LINE --since <brief HEAD_SHA>")
 r = s.get("reviews", {}).get(line_no) or {}
 attempt = r.get("attempt", 1)
 records = r.get("records")
@@ -271,7 +276,7 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:
     [[ -n "$AGENT_ID" && -n "$WORKER" ]] && { echo "ERROR: --agent-id and --worker are exclusive" >&2; exit 1; }
     python3 - "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$VERDICT" "$REVIEWER" "$REVIEWER_NAMED" "$ROLE" "$AGENT_ID" "$WORKER" \
       "$PROVIDER" "$MODEL" "$ROUTE_ID" "$DISPATCH_STATE" "${PLAN_TOP:-$REPO_ROOT}" "${APEX_REVIEW_CAP:-3}" <<'PY'
-import json, os, re, sys
+import hashlib, json, os, re, sys
 (path, now, line_no, sha, verdict, reviewer, reviewer_named, role, agent_id, worker,
  provider, model, route_id, dstate, top, cap) = sys.argv[1:]
 def die(msg):
@@ -315,15 +320,17 @@ if os.path.isdir(dstate):
         die("apex-dispatch state exists, so a verdict needs provenance: --agent-id (hook-written reviews-raw record) "
             "or --worker DIR (worker result.json); a typed verdict is not accepted")
     try:
-        with open(rec_path) as fh:
+        with open(rec_path, "rb") as fh:
             st = os.fstat(fh.fileno())
-            rec = json.load(fh)
+            raw = fh.read()
+        rec = json.loads(raw)
         assert isinstance(rec, dict)
     except Exception:
         die(f"no readable provenance record at {rec_path}")
-    # The record's identity is the file itself: case variants, aliases and
-    # hard links of one record are the same record.
-    source = f"file:{st.st_dev}:{st.st_ino}"
+    # A record's identity is the file and its content: case variants, aliases
+    # and hard links of one record are one record, while a new record that
+    # reuses a freed inode (or a result rewritten for a new round) is not.
+    source = f"file:{st.st_dev}:{st.st_ino}:{hashlib.sha256(raw).hexdigest()}"
     if rec.get("head_sha") != sha:
         die(f"the provenance record reviewed {str(rec.get('head_sha'))[:12]}, not {sha[:12]}")
     if rec.get("verdict") != verdict:
@@ -348,10 +355,11 @@ if os.path.isdir(dstate):
     provenance = "reviews-raw" if agent_id else "worker"
 role = role or "reviewer"
 r = s.setdefault("reviews", {}).setdefault(line_no, {})
-if "records" not in r and r.get("sha"):          # 0.2.0 single record
+if "records" not in r and r.get("sha"):          # 0.2.0 single record = attempt 1
     r["records"] = [{"attempt": 1, "sha": r["sha"], "verdict": r.get("verdict"), "reviewer": r.get("reviewer"),
                      "role": "reviewer", "provenance": "declared", "at": r.get("at")}]
-    r["rounds"] = [r["sha"]]
+    if r.get("attempt", 1) == 1:
+        r["rounds"] = [r["sha"]]
 attempt = r.setdefault("attempt", 1)
 rounds = r.setdefault("rounds", [])
 if sha not in rounds:

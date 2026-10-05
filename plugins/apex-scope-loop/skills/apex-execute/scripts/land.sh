@@ -189,8 +189,14 @@ fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(fd, fcntl.LOCK_EX)          # checkpoint.sh's state lock
 with open(p) as f: s = json.load(f)
 s["landed"] = True
-with open(p + ".tmp", "w") as f: json.dump(s, f, indent=2)
-os.replace(p + ".tmp", p)
+tmp = p + ".tmp"
+try:
+    os.unlink(tmp)
+except FileNotFoundError:
+    pass
+with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644), "w") as f:
+    json.dump(s, f, indent=2)
+os.replace(tmp, p)
 PY
 
 apex_lock_release "$PLAN_HASH"

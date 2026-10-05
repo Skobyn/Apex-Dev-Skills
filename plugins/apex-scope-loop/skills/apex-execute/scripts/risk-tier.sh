@@ -43,8 +43,10 @@ APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
 [[ -f "$CHECKPOINT" ]] || { echo "ERROR: not initialized — run init.sh first" >&2; exit 2; }
+python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" validate "$PLAN" >/dev/null 2>&1 \
+  || { echo "ERROR: the plan is invalid — run: planlib.py validate $PLAN" >&2; exit 2; }
 python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO" >/dev/null 2>&1 \
-  || { echo "ERROR: line $LINE_NO is not a task in $PLAN (or the plan is invalid: planlib.py validate)" >&2; exit 2; }
+  || { echo "ERROR: line $LINE_NO is not a task in $PLAN" >&2; exit 2; }
 
 WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 BASE_BRANCH="$(read_field base_branch)"
@@ -52,6 +54,12 @@ BASE_BRANCH="$(read_field base_branch)"
 if [[ -z "$SINCE" ]]; then
   SINCE="$(git -C "$WT" merge-base HEAD "$BASE_BRANCH" 2>/dev/null || git -C "$WT" rev-parse HEAD)"
 fi
+# Fail closed: an unknown diff base would classify an empty diff as Tier A.
+SINCE="$(git -C "$WT" rev-parse -q --verify "${SINCE}^{commit}" 2>/dev/null)" \
+  || { echo "ERROR: --since is not a commit in $WT" >&2; exit 2; }
+HEAD_NOW="$(git -C "$WT" rev-parse HEAD)"
+git -C "$WT" merge-base --is-ancestor "$SINCE" "$HEAD_NOW" \
+  || { echo "ERROR: --since ${SINCE:0:12} is not an ancestor of the worktree head ${HEAD_NOW:0:12}" >&2; exit 2; }
 
 # Committed changes since SINCE plus anything still uncommitted.
 FILES="$( { git -C "$WT" diff --name-only "$SINCE" HEAD; git -C "$WT" diff --name-only HEAD; \
@@ -68,19 +76,18 @@ raise() { # raise <tier> <reason>
 }
 
 # Tier C: path signals (case-insensitive). Fail closed: a false positive only
-# costs review; a miss lands an auth change unreviewed.
-# Every token matches inside words ("jwtverify", "clusterrolebinding",
-# "maskPIIs"), except the two that collide with ordinary words — "sso"
-# (lessons, processor) and "acl" (oracle, miracle). Those must stand alone as
-# a path word, singular or plural; a camelCase hump is a word boundary
-# ("listSSOs.ts", "manageACLs.ts").
+# costs review; a miss lands an auth change unreviewed. Every token matches
+# anywhere in the path ("jwtverify", "clusterrolebinding", "AzureADSSO",
+# "aclv2"). "sso" and "acl" also occur inside ordinary words, so a short
+# allowlist of such words ("lessons", "processor", "oracle", …) is removed
+# first; anything not on the list stays Tier C.
 C_PATHS='(auth|login|logout|session|oauth|password|passwd|credential|permission|billing|payment|stripe|paypal|invoice|pricing|checkout|subscription|refund|ledger|wallet|consent|gdpr|ccpa|privacy|personal|migration|migrate|schema|\.sql$|prisma|secret|crypto|encrypt|security|middleware|rate.?limit|webhook|alert|pagerduty|oncall|incident|prod(uction)?[-_.]?(data|db|config)|jwt|rbac|saml|pii|csp|cors|role)'
-C_WORDS='(^|[^a-z0-9])(sso|acl)s?([^a-z0-9]|$)'
+C_SHORT='(sso|acl)'
+C_SHORT_BENIGN='(lessons?|processors?|accessors?|successors?|predecessors?|compressors?|associat[a-z]*|dossiers?|crossovers?|lasso[a-z]*|oracles?|miracles?|spectacles?|tentacles?|obstacles?|pinnacles?|debacles?|receptacles?|barnacles?|manacles?|coracles?)'
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  # Split camelCase humps; an acronym keeps its plural "s" (ACLs -> ACLS).
-  words="$(printf '%s' "$f" | sed -E 's/([A-Z]{2,})s([^a-z]|$)/\1S\2/g; s/([a-z0-9])([A-Z])/\1_\2/g; s/([A-Z])([A-Z][a-z])/\1_\2/g')"
-  if printf '%s' "$f" | grep -qiE "$C_PATHS" || printf '%s\n%s' "$f" "$words" | grep -qiE "$C_WORDS"; then
+  short="$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]' | sed -E "s/$C_SHORT_BENIGN/_/g")"
+  if printf '%s' "$f" | grep -qiE "$C_PATHS" || printf '%s' "$short" | grep -qE "$C_SHORT"; then
     raise C "tier-c path: $f"
   fi
 done <<<"$FILES"
@@ -146,9 +153,9 @@ fi
 
 # Persist (tier only ratchets upward — diffs may drift into C, never out).
 # Under checkpoint.sh's state lock, written atomically.
-TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" <<'PY'
+TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" <<'PY'
 import fcntl, json, os, sys
-path, line_no, tier, since, lock = sys.argv[1:]
+path, line_no, tier, since, lock, head = sys.argv[1:]
 fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(fd, fcntl.LOCK_EX)
 s = json.load(open(path))
@@ -156,10 +163,17 @@ tiers = s.setdefault("tiers", {})
 prev = (tiers.get(line_no) or {}).get("tier", "A")
 order = {"A": 0, "B": 1, "C": 2}
 final = tier if order[tier] >= order.get(prev, 0) else prev
-tiers[line_no] = {"tier": final, "since": since}
-with open(path + ".tmp", "w") as f:
+# `head` binds the tier to the code it classified: complete refuses a tier
+# recorded for an older head.
+tiers[line_no] = {"tier": final, "since": since, "head": head}
+tmp = path + ".tmp"
+try:
+    os.unlink(tmp)
+except FileNotFoundError:
+    pass
+with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644), "w") as f:
     json.dump(s, f, indent=2)
-os.replace(path + ".tmp", path)
+os.replace(tmp, path)
 print(final)
 PY
 )"
