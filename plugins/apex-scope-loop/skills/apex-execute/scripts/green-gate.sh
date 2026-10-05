@@ -139,6 +139,37 @@ for step in "${STEPS[@]}"; do
   code=0
   run_step "$cmd" "$GATE_DIR/$MODE-$step.log" || code=$?
   printf '%s\t%s\t%s\n' "$step" "$cmd" "$code" >>"$RESULTS"
+  # A step the baseline never ran with this command (a 0.2.x baseline, or a
+  # newly detected toolchain) is baselined now at the fork SHA, so the check
+  # compares like with like instead of blaming the plan for pre-existing red.
+  if [[ "$MODE" == "check" && "$code" != "0" && -f "$BASELINE" ]]; then
+    BCMD="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("steps",{}).get(sys.argv[2]) or {}).get("cmd") or "")' "$BASELINE" "$step")"
+    if [[ "$BCMD" != "$cmd" ]]; then
+      BSHA="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("head_sha",""))' "$BASELINE")"
+      BWT="$(mktemp -d "${TMPDIR:-/tmp}/apex-gate-baseline.XXXXXX")"
+      bcode=""
+      if [[ -n "$BSHA" ]] && git -C "$WT" worktree add -q --detach "$BWT/wt" "$BSHA" 2>/dev/null; then
+        # Only when the fork itself resolves the same command: a step the plan
+        # introduced (say it added the Makefile) stays strict — any red is new.
+        FORK_CMD="$(WT="$BWT/wt" resolve_cmd "$step")"
+        if [[ "$FORK_CMD" == "$cmd" ]]; then
+          bcode=0
+          (cd "$BWT/wt" && if command -v timeout >/dev/null 2>&1; then timeout "$TIMEOUT_S" bash -c "$cmd"; else bash -c "$cmd"; fi) \
+            >"$GATE_DIR/baseline-$step.log" 2>&1 || bcode=$?
+        fi
+        git -C "$WT" worktree remove --force "$BWT/wt" >/dev/null 2>&1 || true
+      fi
+      rm -rf "$BWT"
+      python3 - "$BASELINE" "$step" "$cmd" "${bcode:-}" <<'PY'
+import datetime, json, sys
+path, step, cmd, code = sys.argv[1:]
+b = json.load(open(path))
+b.setdefault("steps", {})[step] = {"cmd": cmd, "exit": int(code) if code != "" else None,
+    "rebaselined_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+json.dump(b, open(path, "w"), indent=2)
+PY
+    fi
+  fi
 done
 
 python3 - "$MODE" "$RESULTS" "$BASELINE" "$GATE_DIR" "$HEAD_SHA" "$ran" <<'PY'

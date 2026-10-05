@@ -633,5 +633,80 @@ rc=0; out="$(cd "$GP" && "$GS" plans/g-plan.md gate-1-2 2>&1)" || rc=$?
 [ "$rc" = 2 ] && has "treating as \[gate:human\]" "$out" || fail "a partner gate with no channel did not degrade to a human gate (rc=$rc)"
 ok "gate.sh: partner notifier, human-gate fallback"
 
+# 32. checkpoint review: full SHAs only; a hard cap of 3 rounds per attempt;
+#     fail starts a new attempt; Tier C needs an adversarial APPROVE; complete
+#     only flips an unchecked task; rewind of an unchecked line changes no count.
+CK="$SMOKE_TMP/ck32"; mkdir -p "$CK/plans"; git init -q -b main "$CK"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n\nprose line\n' >"$CK/plans/c-plan.md"; git -C "$CK" add -A; git -C "$CK" commit -qm c
+( cd "$CK" && APEX_GIBSON=0 "$EX/init.sh" plans/c-plan.md >/dev/null 2>&1 ) || fail "init for the checkpoint test failed"
+CP="$EX/checkpoint.sh"; CWT="$(st "$CK" plans/c-plan.md)/worktree"
+sha() { git -C "$CWT" rev-parse HEAD; }
+expect_refusal "short review SHA" "full 40-character" indir "$CK" "$CP" plans/c-plan.md review 1 abc123 APPROVE
+for i in 1 2 3; do git -C "$CWT" commit -q --allow-empty -m "r$i"; (cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES >/dev/null) || fail "review round $i was refused"; done
+git -C "$CWT" commit -q --allow-empty -m r4
+expect_refusal "a fourth review round" "REVIEW_CAP" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE
+(cd "$CK" && "$CP" plans/c-plan.md fail 1 "cap reached" >/dev/null)
+(cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE >/dev/null) || fail "a new attempt after fail could not be reviewed"
+(cd "$CK" && "$EX/green-gate.sh" plans/c-plan.md check >/dev/null 2>&1) || true
+python3 - "$(st "$CK" plans/c-plan.md)/checkpoint.json" <<'PY'
+import json, sys
+p = sys.argv[1]; s = json.load(open(p)); s.setdefault("tiers", {})["1"] = {"tier": "C"}; json.dump(s, open(p, "w"))
+PY
+(cd "$CK" && "$CP" plans/c-plan.md approve 1 "$(sha)" "approve G12 1" >/dev/null)
+expect_refusal "Tier C without an adversarial review" "adversarial review" indir "$CK" "$CP" plans/c-plan.md complete 1 ok
+(cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE --role adversarial >/dev/null) || fail "adversarial review not recorded"
+(cd "$CK" && "$CP" plans/c-plan.md complete 1 ok >/dev/null 2>&1) || fail "complete refused a fully reviewed, approved Tier C head"
+expect_refusal "complete on a checked line" "not an unchecked task" indir "$CK" "$CP" plans/c-plan.md complete 1 ok
+expect_refusal "complete on prose" "not an unchecked task" indir "$CK" "$CP" plans/c-plan.md complete 4 ok
+C0="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["completed_tasks"])' "$(st "$CK" plans/c-plan.md)/checkpoint.json")"
+(cd "$CK" && "$CP" plans/c-plan.md rewind 4 >/dev/null)
+C1="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["completed_tasks"])' "$(st "$CK" plans/c-plan.md)/checkpoint.json")"
+[ "$C0" = "$C1" ] || fail "rewind of an unchecked line changed completed_tasks ($C0 -> $C1)"
+ok "checkpoint: SHA form, round cap, attempts, Tier C adversarial, complete/rewind targets"
+
+# 33. Provenance (spec §5.3 G): with dispatch state, a typed verdict is refused;
+#     a reviews-raw record with the same verdict at the same SHA is accepted.
+CKS="$(st "$CK" plans/c-plan.md)"; mkdir -p "$CKS/dispatch/reviews-raw"
+git -C "$CWT" commit -q --allow-empty -m p1
+expect_refusal "typed verdict with dispatch state" "needs provenance" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE
+printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer"}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag1.json"
+expect_refusal "verdict that contradicts its record" "says REQUEST_CHANGES" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE --agent-id ag1
+(cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES --agent-id ag1 >/dev/null) || fail "a verdict matching its reviews-raw record was refused"
+expect_refusal "path-like agent id" "unexpected characters" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE --agent-id ../x
+ok "checkpoint: provenance required with dispatch state"
+
+# 34. risk-tier: short tokens are whole words ("lessons" is not SSO); the
+#     decision layer can raise a tier, never lower it.
+RT="$SMOKE_TMP/rt34"; mkdir -p "$RT/plans" "$RT/scripts"; git init -q -b main "$RT"
+printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n' >"$RT/plans/r-plan.md"; git -C "$RT" add -A; git -C "$RT" commit -qm r
+( cd "$RT" && APEX_GIBSON=0 "$EX/init.sh" plans/r-plan.md >/dev/null 2>&1 ) || fail "init for the risk-tier test failed"
+RWT="$(st "$RT" plans/r-plan.md)/worktree"; B0="$(git -C "$RWT" rev-parse HEAD)"
+mkdir -p "$RWT/scripts"; echo x >"$RWT/scripts/lessons.sh"; git -C "$RWT" add -A; git -C "$RWT" commit -qm l
+has "^TIER: A" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0")" || fail "lessons.sh was classified above Tier A"
+printf '#!/bin/sh\necho "{\\"verdict\\": \\"$FAKE_TIER\\", \\"uncertain\\": false}"\n' >"$SMOKE_TMP/decide.sh"; chmod +x "$SMOKE_TMP/decide.sh"
+has "^TIER: B" "$(cd "$RT" && FAKE_TIER=B APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0" --classify)" || fail "the decision layer could not raise the tier"
+has "^TIER: B" "$(cd "$RT" && FAKE_TIER=A APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0" --classify)" || fail "the decision layer lowered a recorded tier"
+mkdir -p "$RWT/src/sso"; echo x >"$RWT/src/sso/login.py"; git -C "$RWT" add -A; git -C "$RWT" commit -qm s
+has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0")" || fail "an sso/ path was not Tier C"
+ok "risk-tier: whole-word short tokens; decision layer raises only"
+
+# 35. green-gate re-baselines a step the baseline never ran, at the fork SHA,
+#     only when the fork resolves the same command (a plan-added step stays strict).
+RB="$SMOKE_TMP/rb35"; mkdir -p "$RB/plans"; git init -q -b main "$RB"
+printf 'test:\n\t@false\n' >"$RB/Makefile"; printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n' >"$RB/plans/b-plan.md"; git -C "$RB" add -A; git -C "$RB" commit -qm b
+( cd "$RB" && "$EX/init.sh" plans/b-plan.md >/dev/null 2>&1 ) || fail "init for the re-baseline test failed"
+BL="$(st "$RB" plans/b-plan.md)/gate/baseline.json"
+python3 - "$BL" <<'PY'
+import json, sys
+p = sys.argv[1]; b = json.load(open(p)); b["steps"]["test"] = {"cmd": "", "exit": None}; json.dump(b, open(p, "w"))
+PY
+has "GATE_STEP: test PREEXISTING" "$( (cd "$RB" && "$EX/green-gate.sh" plans/b-plan.md check) 2>&1 || true)" || fail "a pre-existing red step missing from an old baseline was blamed on the plan"
+NB="$SMOKE_TMP/nb35"; mkdir -p "$NB/plans"; git init -q -b main "$NB"
+printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n' >"$NB/plans/n-plan.md"; git -C "$NB" add -A; git -C "$NB" commit -qm n
+( cd "$NB" && "$EX/init.sh" plans/n-plan.md >/dev/null 2>&1 ) || fail "init for the strict re-baseline test failed"
+NWT="$(st "$NB" plans/n-plan.md)/worktree"; printf 'test:\n\t@false\n' >"$NWT/Makefile"; git -C "$NWT" add -A; git -C "$NWT" commit -qm m
+has "GATE_STEP: test NEW_FAILURE" "$( (cd "$NB" && "$EX/green-gate.sh" plans/n-plan.md check) 2>&1 || true)" || fail "a failing step the plan itself added was excused as pre-existing"
+ok "green-gate: re-baseline at the fork only for steps the fork resolves"
+
 echo ""
-echo "smoke passed: 31/31 checks"
+echo "smoke passed: 35/35 checks"

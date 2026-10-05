@@ -12,7 +12,8 @@
 # Order (ADR-0003): every precondition is checked before anything changes —
 # repository identity (apex_guard), final gate, kill switches, the caller's
 # checkout is the base checkout on the base branch with no tracked changes
-# other than the plan file, and the green gate. Only then: flush (harness off
+# other than the plan file, the dispatch ledger (when apex-dispatch state
+# exists), and the green gate. Only then: flush (harness off
 # or --force), record the plan file, merge the worktree's exact head SHA,
 # remove the worktree, delete the branch only if fully merged.
 #
@@ -118,6 +119,16 @@ else
   [[ -n "$LAND_SHA" ]] || { echo "ERROR: neither the worktree ($WT_PATH) nor branch $WT_BRANCH exists — nothing to land." >&2; exit 1; }
 fi
 
+# 5b. apex-dispatch evidence: with dispatch state, the ledger's hash chain must
+#     verify and every completed task must carry route evidence (spec §6).
+DISPATCH_STATE="$STATE_DIR/dispatch"
+DISPATCH="$(apex_dispatch_root)"
+if [[ -d "$DISPATCH_STATE" ]]; then   # --force does not bypass the ledger
+  [[ -n "$DISPATCH" ]] || { echo "ERROR: dispatch state exists ($DISPATCH_STATE) but apex-dispatch is not installed beside apex-scope-loop — refusing to land." >&2; exit 1; }
+  "$DISPATCH/scripts/ledger.sh" verify --state "$STATE_DIR" \
+    || { echo "ERROR: the dispatch ledger does not verify (ledger.sh verify) — refusing to land." >&2; exit 1; }
+fi
+
 # 6. Harness: unreviewed code never reaches the base branch.
 if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
   if [[ -d "$WT_PATH" ]] && [[ -n "$(git -C "$WT_PATH" status --porcelain)" ]]; then
@@ -177,4 +188,9 @@ with open(p, "w") as f: json.dump(s, f, indent=2)
 PY
 
 apex_lock_release "$PLAN_HASH"
+if [[ -d "$DISPATCH_STATE" && -n "$DISPATCH" ]]; then
+  "$DISPATCH/scripts/ledger.sh" export --state "$STATE_DIR" --plan "$PLAN_ABS" \
+    || echo "[land] WARNING: ledger export failed (the landing itself succeeded)" >&2
+  "$DISPATCH/scripts/report.sh" --plan "$PLAN_ABS" --state "$STATE_DIR" || true
+fi
 echo "[land] DONE — $WT_BRANCH merged into $BASE_BRANCH and worktree removed."

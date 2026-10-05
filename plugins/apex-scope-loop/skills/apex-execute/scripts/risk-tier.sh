@@ -9,7 +9,11 @@
 #      alerting, production data → fan-out + adversarial review AND a human
 #      approval (G12) before the task can be checked off
 #
-# Usage: ./risk-tier.sh PLAN.md LINE_NO [--since SHA] [--tags t1,t2]
+# Usage: ./risk-tier.sh PLAN.md LINE_NO [--since SHA] [--tags t1,t2] [--classify]
+#   --classify  also ask the decision layer (${APEX_DECIDE_CMD}, rubric
+#               risk-tier@1) and combine as max(heuristic, decision): a
+#               decision can raise the tier, never lower it (spec §6). Absent,
+#               failing or malformed: the heuristic stands, noted in REASON.
 #   --since  diff base for this task (the HEAD_SHA from iterate.sh's brief).
 #            Default: merge-base of the worktree branch and the base branch.
 #   --tags   the task's tags; [security] or [tier:c] force Tier C.
@@ -22,11 +26,12 @@ set -euo pipefail
 PLAN="${1:?usage: risk-tier.sh PLAN.md LINE_NO [--since SHA] [--tags t1,t2]}"
 LINE_NO="${2:?line_no required}"
 shift 2
-SINCE=""; TAGS=""
+SINCE=""; TAGS=""; CLASSIFY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --since) SINCE="${2:?}"; shift 2 ;;
     --tags)  TAGS="${2-}"; shift 2 ;;
+    --classify) CLASSIFY=1; shift ;;
     *) echo "ERROR: unknown arg $1" >&2; exit 2 ;;
   esac
 done
@@ -60,10 +65,14 @@ raise() { # raise <tier> <reason>
 }
 
 # Tier C: path signals (case-insensitive).
-C_PATHS='(auth|login|logout|session|oauth|saml|sso|jwt|password|passwd|credential|permission|rbac|acl|role|billing|payment|stripe|paypal|invoice|pricing|checkout|subscription|refund|ledger|wallet|consent|gdpr|ccpa|pii|privacy|personal|migration|migrate|schema|\.sql$|prisma|secret|crypto|encrypt|security|csp|cors|middleware|rate.?limit|webhook|alert|pagerduty|oncall|incident|prod(uction)?[-_.]?(data|db|config))'
+# Short tokens (sso, jwt, acl, role, pii, csp, cors, saml, rbac) must stand
+# alone as a path word: "lessons.sh" is not single sign-on. Longer tokens
+# still match inside words (e.g. "authz", "sessions", "billing_v2").
+C_PATHS='(auth|login|logout|session|oauth|password|passwd|credential|permission|billing|payment|stripe|paypal|invoice|pricing|checkout|subscription|refund|ledger|wallet|consent|gdpr|ccpa|privacy|personal|migration|migrate|schema|\.sql$|prisma|secret|crypto|encrypt|security|middleware|rate.?limit|webhook|alert|pagerduty|oncall|incident|prod(uction)?[-_.]?(data|db|config))'
+C_WORDS='(^|[^a-z0-9])(sso|jwt|acl|acls|role|roles|pii|csp|cors|saml|rbac)([^a-z0-9]|$)'
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  if printf '%s' "$f" | grep -qiE "$C_PATHS"; then
+  if printf '%s' "$f" | grep -qiE "$C_PATHS" || printf '%s' "$f" | grep -qiE "$C_WORDS"; then
     raise C "tier-c path: $f"
   fi
 done <<<"$FILES"
@@ -86,6 +95,36 @@ esac
 [[ "$NFILES" -gt 6 ]] && raise B "diff breadth: $NFILES files (>6)"
 if printf '%s\n' "$FILES" | grep -qiE '(^|/)(api|routes?|shared|common|core|lib)/'; then
   raise B "touches a shared module or API route"
+fi
+
+# Decision layer (optional): max(heuristic, decision). The state holds
+# observed facts only (paths, sizes, tags), never another model's labels.
+if [[ "$CLASSIFY" == "1" ]]; then
+  if [[ -n "${APEX_DECIDE_CMD:-}" ]]; then
+    DSTATE="$(python3 - "$FILES" "$LINES" "$NFILES" "$TAGS" <<'PY'
+import json, sys
+files, lines, nfiles, tags = sys.argv[1:]
+print(json.dumps({"changed_paths": [f for f in files.splitlines() if f][:200], "changed_lines": int(lines or 0),
+                  "changed_files": int(nfiles or 0), "task_tags": [t for t in tags.split(",") if t]}))
+PY
+)"
+    DOUT="$(timeout "${APEX_DECIDE_TIMEOUT:-10}" bash -c "$APEX_DECIDE_CMD"' --rubric risk-tier@1 --state "$1" --json' _ "$DSTATE" 2>/dev/null || true)"
+    DTIER="$(python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+v = str(d.get("verdict", "")).strip().upper()
+print(v if v in ("A", "B", "C") and not d.get("uncertain") else "")' "$DOUT" 2>/dev/null || true)"
+    if [[ -n "$DTIER" ]]; then
+      raise "$DTIER" "decision layer risk-tier@1: $DTIER"
+    else
+      REASONS+=("decision layer: no usable answer (absent, uncertain or malformed); heuristic stands")
+    fi
+  else
+    REASONS+=("decision layer: APEX_DECIDE_CMD not set; heuristic only")
+  fi
 fi
 
 # Persist (tier only ratchets upward — diffs may drift into C, never out).
