@@ -10,3 +10,10 @@ with a new one.
 **Harness fix:** Define plans as a verified dialect and refuse everything outside it; prove soundness against the renderers with a differential fuzz (commonmark.js, markdown-it, cmark-gfm) before review instead of after; raw HTML must be refused everywhere outside fenced code
 **Plan:** apex-dispatch-plan.md
 **Tags:** #planlib #parser #markdown #backend
+
+## L-002 · 2026-10-05 · per-task-state-keyed-by-line-leaks
+**What happened:** Phase 1.4 failed two attempts (6 review rounds): each fix to the risk-tier diff base and gate exemption (per-line since, per-line base, line-keyed tiers) left a way to classify a task's code from a base chosen after it, or to exempt code under a gate line
+**Root cause:** the diff base was caller-chosen and keyed by plan line number, so commits between tasks, retries, rebases and moved lines fell outside every task's diff; gate exemption trusted the line's kind rather than the code
+**Harness fix:** Make the task diff a chain: the floor is the head at the last complete (else the fork point), every commit after it belongs to the current task, --since may only widen it, an unreachable floor falls back to merge-base; a gate line is exempt only when no code exists since the floor; classifiers search the original string (no length-changing transforms before indexing)
+**Plan:** apex-dispatch-plan.md
+**Tags:** ##risk-tier #harness #backend #gate
