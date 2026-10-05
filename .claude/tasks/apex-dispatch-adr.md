@@ -32,6 +32,11 @@ Execution decisions:
 **Q4. Review-shape corrections from the spec review (PR 13)?**
 **Decision**: Applied during build: the REVIEW stage is written by `subagent-start.sh` (not by `pre-agent.sh`); `post-bash-prune.sh` stores full logs and adds a summary via `additionalContext` instead of rewriting output (command hooks cannot rewrite Bash output); the ledger is described as tamper-evident, not tamper-proof.
 
+**Q5. G12 for Tier C tasks?**
+**Decision** (user, after Phase 1.1): batch per phase. Within a phase, a Tier C task is built, gated and reviewed as usual but not checked off; later tasks in the phase proceed on top of it. At the phase's `[gate:human]` task, the phase-end head is gated and reviewed once more (six-lens + adversarial) and recorded as the binding review for every Tier C task in the phase; the user approves that head once; the approval is recorded per task bound to that SHA, then each task is checked off. Tasks below Tier C are checked off as they finish. Phase 1.1 (approved individually, `approve G12 25` on 9cc826e) predates this decision.
+
+---
+
 ## Consequences
 
 - External providers other than `claude -p` cannot be exercised live here (`codex`, `grok`, `opencode`, `aider` are not installed); their shims are tested against fake binaries in smoke and stay feature-flagged as the spec requires.

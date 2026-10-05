@@ -17,12 +17,12 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
 
 ### Phase 0 — Spikes
 
-- [ ] **Phase 0.1** [research][docs] Run the spec §11 Phase 0 spikes live against Claude Code and record each result
+- [x] **Phase 0.1** [research][docs] Run the spec §11 Phase 0 spikes live against Claude Code and record each result
   - Acceptance: `test -f docs/research/apex-dispatch-phase0.md && grep -c '^| ' docs/research/apex-dispatch-phase0.md | awk '$1>=10{exit 0}{exit 1}'`
 
 ### Phase 1 — apex-scope-loop 0.3.0
 
-- [ ] **Phase 1.1** [backend] Plugin-relative script resolution, shared state root via --git-common-dir, optional memory seed, remove hooks-snippet.json
+- [x] **Phase 1.1** [backend] Plugin-relative script resolution, shared state root via --git-common-dir, optional memory seed, remove hooks-snippet.json
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh`
   - Blocked-by: Phase 0.1
 
@@ -46,6 +46,9 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `test -f docs/examples/non-apex-run.md && grep -q 'land.sh' docs/examples/non-apex-run.md`
   - Blocked-by: Phase 1.5
 
+- [ ] **Gate 1→2** [gate:human] Phase 1 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
+  - Acceptance: user types approve gate-1-2
+
 ### Phase 2 — apex-dispatch core
 
 - [ ] **Phase 2.1** [infra] apex-dispatch skeleton: plugin.json, marketplace registration, README, ADR-0001 (Proposed), root README row
@@ -68,6 +71,9 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh`
   - Blocked-by: Phase 2.4
 
+- [ ] **Gate 2→3** [gate:human] Phase 2 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
+  - Acceptance: user types approve gate-2-3
+
 ### Phase 3 — Governance hooks and sibling hygiene
 
 - [ ] **Phase 3.1** [security] PreToolUse hooks: pre-agent, pre-bash, pre-edit, pre-mcp
@@ -82,6 +88,9 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `for s in plugins/*/scripts/smoke.sh; do bash "$s" >/dev/null || exit 1; done`
   - Blocked-by: Phase 3.2
 
+- [ ] **Gate 3→4** [gate:human] Phase 3 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
+  - Acceptance: user types approve gate-3-4
+
 ### Phase 4 — Provider workers
 
 - [ ] **Phase 4.1** [backend][security] worker-common, worker-claude-p, worker-codex, apply.sh
@@ -91,6 +100,9 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
 - [ ] **Phase 4.2** [backend] grok/opencode/aider shims flagged off, openai-sdk stub, compile --target codex, report --compare/--decision
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh`
   - Blocked-by: Phase 4.1
+
+- [ ] **Gate 4→5** [gate:human] Phase 4 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
+  - Acceptance: user types approve gate-4-5
 
 - [ ] **Gate 4→done** [gate:auto] Every plugin smoke passes on the final head
   - Acceptance: `for s in plugins/*/scripts/smoke.sh; do bash "$s" >/dev/null || exit 1; done`
