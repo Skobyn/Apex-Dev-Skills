@@ -29,14 +29,11 @@ PLAN="${1:?usage: green-gate.sh PLAN.md baseline|check}"
 MODE="${2:?mode: baseline|check}"
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 
-PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
-PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-STATE_DIR="$REPO_ROOT/.dev-plan-state/$PLAN_HASH"
-CHECKPOINT="$STATE_DIR/checkpoint.json"
+# shellcheck source=_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+apex_resolve "$PLAN"
 [[ -f "$CHECKPOINT" ]] || { echo "ERROR: not initialized — run init.sh first" >&2; exit 2; }
 
-read_field() { grep -o "\"$1\": \"[^\"]*\"" "$CHECKPOINT" | head -1 | sed 's/.*: "//; s/"$//'; }
 WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 [[ -d "$WT" ]] || { echo "ERROR: worktree missing at $WT — re-run init.sh" >&2; exit 2; }
 

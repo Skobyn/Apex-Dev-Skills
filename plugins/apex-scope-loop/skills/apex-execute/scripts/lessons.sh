@@ -23,10 +23,9 @@ ACTION="${2:?action: fail|add|recall}"
 shift 2
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 
-PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
-PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-STATE_DIR="$REPO_ROOT/.dev-plan-state/$PLAN_HASH"
+# shellcheck source=_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+apex_resolve "$PLAN"
 LEDGER="${APEX_LESSONS_FILE:-$REPO_ROOT/.claude/apex-scope-loop/LESSONS.md}"
 
 case "$ACTION" in

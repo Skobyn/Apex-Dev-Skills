@@ -31,15 +31,13 @@ set -euo pipefail
 PLAN="${1:?usage: iterate.sh PATH_TO_PLAN.md}"
 [[ -f "$PLAN" ]] || { echo "STATUS: ERROR plan not found"; exit 1; }
 
-PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
-PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
-STATE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.dev-plan-state/$PLAN_HASH"
-CHECKPOINT="$STATE_DIR/checkpoint.json"
+# shellcheck source=_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+apex_resolve "$PLAN"
 
 [[ -f "$CHECKPOINT" ]] || { echo "STATUS: ERROR not initialized — run init.sh first"; exit 1; }
 
 # Worktree the plan is bound to (recorded by init.sh).
-read_field() { grep -o "\"$1\": \"[^\"]*\"" "$CHECKPOINT" | head -1 | sed 's/.*: "//; s/"$//'; }
 WORKTREE="$(read_field worktree_path)"
 WT_BRANCH="$(read_field worktree_branch)"
 
@@ -51,7 +49,6 @@ if [[ -n "$WORKTREE" && ! -d "$WORKTREE" ]]; then
 fi
 
 # Kill switch — checked every iteration, before anything else is dispatched.
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 for f in "$REPO_ROOT/.dev-plan-state/HALT" "$STATE_DIR/HALT" "$REPO_ROOT/gibson/HALT"; do
   if [[ -f "$f" ]]; then
     echo "STATE: $STATE_DIR"

@@ -32,7 +32,10 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 ADR_PATH="$REPO_ROOT/.claude/tasks/${SLUG}-adr.md"
 PLAN_PATH="$REPO_ROOT/.claude/plans/${SLUG}-plan.md"
-DPL_INIT="$REPO_ROOT/.claude/skills/apex-execute/scripts/init.sh"
+# apex-execute ships in the same plugin; resolve it next to this script so a
+# marketplace install works without a repo-local .claude/skills copy.
+EXEC_SCRIPTS="${APEX_EXECUTE_SCRIPTS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../apex-execute/scripts" && pwd)}"
+DPL_INIT="$EXEC_SCRIPTS/init.sh"
 
 fail() {
   echo "VALIDATION FAILED: $1" >&2
@@ -148,13 +151,13 @@ echo "branch until the final gate passes and you land it."
 echo
 echo "READY. Start execution with:"
 echo
-echo "    /loop iterate the next phase of $PLAN_PATH"
+echo "    /loop /apex-scope-loop:iterate $PLAN_PATH"
 echo
 echo "When the final gate passes, land the worktree into the base branch:"
 echo
-echo "    .claude/skills/apex-execute/scripts/land.sh $PLAN_PATH"
+echo "    $EXEC_SCRIPTS/land.sh $PLAN_PATH"
 echo
 echo "Optionally schedule continuity layer:"
 echo
-echo "    /schedule \"0 2 * * *\" .claude/skills/apex-execute/scripts/audit.sh $PLAN_PATH"
-echo "    /schedule \"0 9 * * 1\" .claude/skills/apex-execute/scripts/architecture-review.sh $PLAN_PATH"
+echo "    /schedule \"0 2 * * *\" $EXEC_SCRIPTS/audit.sh $PLAN_PATH"
+echo "    /schedule \"0 9 * * 1\" $EXEC_SCRIPTS/architecture-review.sh $PLAN_PATH"

@@ -223,10 +223,10 @@ Run alongside `/loop`:
 
 ```bash
 # Nightly progress audit
-/schedule "0 2 * * *" .claude/skills/apex-execute/scripts/audit.sh .claude/plans/{{SLUG}}-plan.md
+/schedule "0 2 * * *" ${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts/audit.sh .claude/plans/{{SLUG}}-plan.md
 
 # Weekly architecture drift review
-/schedule "0 9 * * 1" .claude/skills/apex-execute/scripts/architecture-review.sh .claude/plans/{{SLUG}}-plan.md
+/schedule "0 9 * * 1" ${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts/architecture-review.sh .claude/plans/{{SLUG}}-plan.md
 ```
 
 ---
@@ -235,8 +235,8 @@ Run alongside `/loop`:
 
 ```bash
 # Current state
-.claude/skills/apex-plan/scripts/status.sh {{SLUG}}
+${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/status.sh {{SLUG}}
 
 # Evaluate a single gate without /loop running
-.claude/skills/apex-plan/scripts/gate.sh .claude/plans/{{SLUG}}-plan.md gate-3-4
+${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/gate.sh .claude/plans/{{SLUG}}-plan.md gate-3-4
 ```

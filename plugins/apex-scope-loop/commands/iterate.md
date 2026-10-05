@@ -8,7 +8,7 @@ You are iterating one phase of the apex-execute for `$ARGUMENTS`.
 
 Invoke the `apex-execute` skill and execute one iteration:
 
-In the steps below, `$S` stands for `.claude/skills/apex-execute/scripts`, where the helper scripts live.
+In the steps below, `$S` stands for `${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts`, where the helper scripts ship with this plugin. Use that absolute path in every command; no repo-local `.claude/skills` copy is needed.
 
 1. Run `$S/iterate.sh $ARGUMENTS` to get the brief. It returns the next unchecked, unblocked task along with `WORKTREE:`, `BRANCH:`, `LINE_NO:`, `HEAD_SHA:` (this task's diff base), `HARNESS:`, `LESSONS:`, and `CONSECUTIVE_FAILURES:`. If `STATUS: HALTED` comes back, report the `HALT_REASON:` and stop. Never work around a kill switch.
 2. **Recall before you act.** If `LESSONS:` is non-zero, run `$S/lessons.sh $ARGUMENTS recall <tags>` and put the relevant lessons into every builder's prompt.

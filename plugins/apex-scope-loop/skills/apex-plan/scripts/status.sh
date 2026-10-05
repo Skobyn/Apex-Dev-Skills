@@ -69,10 +69,10 @@ fi
 
 # apex-execute checkpoint
 if [[ -f "$PLAN" ]]; then
-  PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
-  PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
-  STATE_DIR="$REPO_ROOT/.dev-plan-state/$PLAN_HASH"
-  CHECKPOINT="$STATE_DIR/checkpoint.json"
+  # Same state resolution as apex-execute (shared state root across worktrees).
+  # shellcheck source=../../apex-execute/scripts/_lib.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../apex-execute/scripts" && pwd)/_lib.sh"
+  apex_resolve "$PLAN"
 
   echo
   if [[ -f "$CHECKPOINT" ]]; then

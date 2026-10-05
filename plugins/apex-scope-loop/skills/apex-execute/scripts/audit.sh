@@ -9,10 +9,9 @@ set -euo pipefail
 PLAN="${1:?usage: audit.sh PLAN.md}"
 [[ -f "$PLAN" ]] || { echo "STATUS: ERROR plan not found"; exit 1; }
 
-PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
-PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
-STATE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.dev-plan-state/$PLAN_HASH"
-CHECKPOINT="$STATE_DIR/checkpoint.json"
+# shellcheck source=_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+apex_resolve "$PLAN"
 mkdir -p "$STATE_DIR/audits"
 
 NOW="$(date -u +%FT%TZ)"

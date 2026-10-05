@@ -81,7 +81,7 @@ Capture answers in working memory; surface them back to the user in Stage 2 as t
 Create both docs from the templates:
 
 ```bash
-.claude/skills/apex-plan/scripts/start.sh <kebab-slug> "<Title>"
+${CLAUDE_SKILL_DIR}/scripts/start.sh <kebab-slug> "<Title>"
 # Creates:
 #   .claude/tasks/<slug>-adr.md   (from resources/templates/adr-template.md)
 #   .claude/plans/<slug>-plan.md  (from resources/templates/plan-template.md)
@@ -172,14 +172,14 @@ See [resources/templates/plan-template.md](resources/templates/plan-template.md)
 Once the user confirms the plan:
 
 ```bash
-.claude/skills/apex-plan/scripts/promote-to-loop.sh <slug>
+${CLAUDE_SKILL_DIR}/scripts/promote-to-loop.sh <slug>
 ```
 
 This:
 
 1. Validates ADR status is **Accepted** (not Proposed)
 2. Validates plan exists and has at least one unchecked task
-3. Calls `.claude/skills/apex-execute/scripts/init.sh .claude/plans/<slug>-plan.md` to seed state
+3. Calls `${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts/init.sh .claude/plans/<slug>-plan.md` to seed state
 4. Prints the `/loop` command the user should run next, e.g.:
    ```
    /loop iterate the next phase of .claude/plans/<slug>-plan.md

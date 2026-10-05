@@ -6,10 +6,9 @@ set -euo pipefail
 PLAN="${1:?usage: status.sh PLAN.md}"
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found"; exit 1; }
 
-PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
-PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
-STATE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.dev-plan-state/$PLAN_HASH"
-CHECKPOINT="$STATE_DIR/checkpoint.json"
+# shellcheck source=_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+apex_resolve "$PLAN"
 
 TOTAL=$(awk '/^- \[[ x]\]/{c++} END{print c+0}' "$PLAN")
 DONE=$(awk '/^- \[x\]/{c++} END{print c+0}' "$PLAN")

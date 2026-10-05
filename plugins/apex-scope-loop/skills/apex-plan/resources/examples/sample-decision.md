@@ -36,7 +36,7 @@ A walkthrough of the `apex-plan` skill end-to-end for a small but non-trivial fe
 ### Stage 2: COMPOSE
 
 ```bash
-.claude/skills/apex-plan/scripts/start.sh per-venue-rate-limit "Per-Venue Rate Limiting"
+${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/start.sh per-venue-rate-limit "Per-Venue Rate Limiting"
 # → wrote .claude/tasks/per-venue-rate-limit-adr.md
 # → wrote .claude/plans/per-venue-rate-limit-plan.md
 ```
@@ -71,7 +71,7 @@ Plan generated with five SPARC phases. Highlights:
 ### Stage 5: EXECUTE
 
 ```bash
-.claude/skills/apex-plan/scripts/promote-to-loop.sh per-venue-rate-limit
+${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/promote-to-loop.sh per-venue-rate-limit
 
 # Validation checklist:
 # [x] ADR has every section filled

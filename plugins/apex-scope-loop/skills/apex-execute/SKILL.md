@@ -47,21 +47,21 @@ Mapping, rationale, and what was deliberately left out: [docs/GIBSON_HARNESS.md]
 
 ```bash
 # 1. Author your dev plan from the template
-cp .claude/skills/apex-execute/resources/templates/dev-plan.md docs/plans/my-plan.md
+cp ${CLAUDE_SKILL_DIR}/resources/templates/dev-plan.md docs/plans/my-plan.md
 $EDITOR docs/plans/my-plan.md
 
 # 2. Initialize state + the isolated execution worktree
-./.claude/skills/apex-execute/scripts/init.sh docs/plans/my-plan.md
+${CLAUDE_SKILL_DIR}/scripts/init.sh docs/plans/my-plan.md
 
 # 3. Start the active sense loop (self-paced) — all work lands in the worktree
-/loop ./.claude/skills/apex-execute/scripts/iterate.sh docs/plans/my-plan.md
+/loop ${CLAUDE_SKILL_DIR}/scripts/iterate.sh docs/plans/my-plan.md
 
 # 4. (Separately) schedule the continuity layer
-/schedule "nightly @ 02:00" ./.claude/skills/apex-execute/scripts/audit.sh docs/plans/my-plan.md
-/schedule "weekly @ Mon 09:00" ./.claude/skills/apex-execute/scripts/architecture-review.sh docs/plans/my-plan.md
+/schedule "nightly @ 02:00" ${CLAUDE_SKILL_DIR}/scripts/audit.sh docs/plans/my-plan.md
+/schedule "weekly @ Mon 09:00" ${CLAUDE_SKILL_DIR}/scripts/architecture-review.sh docs/plans/my-plan.md
 
 # 5. After the final gate passes, merge the worktree into the base branch
-./.claude/skills/apex-execute/scripts/land.sh docs/plans/my-plan.md
+${CLAUDE_SKILL_DIR}/scripts/land.sh docs/plans/my-plan.md
 ```
 
 Inside an active session, prefer the slash form so the model self-paces with `ScheduleWakeup`:
@@ -135,7 +135,7 @@ Example task line:
 ### 2. Initialize
 
 ```bash
-./.claude/skills/apex-execute/scripts/init.sh docs/plans/my-plan.md
+${CLAUDE_SKILL_DIR}/scripts/init.sh docs/plans/my-plan.md
 ```
 
 This creates `.dev-plan-state/<plan-hash>/checkpoint.json`, provisions the isolated worktree at `.dev-plan-state/<plan-hash>/worktree` on branch `apex-scope-loop/<slug>`, and seeds the `apex-execute` memory namespace with plan metadata. The checkpoint records `worktree_path`, `worktree_branch`, and `base_branch`.
@@ -164,10 +164,10 @@ In a separate command (one-time setup):
 
 ```bash
 # Nightly progress audit
-/schedule "0 2 * * *" ./.claude/skills/apex-execute/scripts/audit.sh docs/plans/my-plan.md
+/schedule "0 2 * * *" ${CLAUDE_SKILL_DIR}/scripts/audit.sh docs/plans/my-plan.md
 
 # Weekly architecture review
-/schedule "0 9 * * 1" ./.claude/skills/apex-execute/scripts/architecture-review.sh docs/plans/my-plan.md
+/schedule "0 9 * * 1" ${CLAUDE_SKILL_DIR}/scripts/architecture-review.sh docs/plans/my-plan.md
 ```
 
 These persist across sessions and write findings to the memory namespace.
@@ -175,7 +175,7 @@ These persist across sessions and write findings to the memory namespace.
 ### 5. Inspect State Anytime
 
 ```bash
-./.claude/skills/apex-execute/scripts/status.sh docs/plans/my-plan.md
+${CLAUDE_SKILL_DIR}/scripts/status.sh docs/plans/my-plan.md
 ```
 
 Prints: completed phases, current phase, last verdict, next scheduled run, memory namespace size.
@@ -210,7 +210,7 @@ Additional guardrails can be enforced via Claude Code hooks (`settings.json`):
 - **Pre-task**: AIDefense scan on inputs
 - **Post-task**: persist outcome to memory, commit if passing
 
-See `resources/templates/hooks-snippet.json` for a starter config.
+Enforced hook governance ships in the `apex-guardrails` and `apex-dispatch` plugins; this skill no longer carries a hooks snippet.
 
 ## Available Scripts
 
@@ -231,7 +231,6 @@ See `resources/templates/hooks-snippet.json` for a starter config.
 
 - `resources/templates/dev-plan.md` — Authoring template
 - `resources/templates/checkpoint.json` — State schema
-- `resources/templates/hooks-snippet.json` — Guardrail hooks
 - `resources/examples/sample-plan.md` — Worked example (auth refactor)
 
 ## Advanced Topics

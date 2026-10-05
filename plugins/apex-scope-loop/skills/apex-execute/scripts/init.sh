@@ -18,14 +18,16 @@ set -euo pipefail
 PLAN="${1:?usage: init.sh PATH_TO_PLAN.md}"
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 1; }
 
-PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
-PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+# shellcheck source=_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+apex_resolve "$PLAN"
 NAMESPACE="apex-execute"
 
-if [[ -z "$REPO_ROOT" ]]; then
+if ! git -C "$(dirname "$PLAN_ABS")" rev-parse --git-dir >/dev/null 2>&1 && [[ -z "${APEX_STATE_ROOT:-}" ]]; then
   if [[ "${APEX_NO_WORKTREE:-0}" == "1" ]]; then
     REPO_ROOT="$(pwd)"
+    STATE_DIR="$REPO_ROOT/.dev-plan-state/$PLAN_HASH"
+    CHECKPOINT="$STATE_DIR/checkpoint.json"
   else
     echo "ERROR: apex-execute runs the plan in a git worktree, but this is not a git repository." >&2
     echo "       Run inside a git repo, or set APEX_NO_WORKTREE=1 to opt out (not recommended)." >&2
@@ -33,7 +35,6 @@ if [[ -z "$REPO_ROOT" ]]; then
   fi
 fi
 
-STATE_DIR="$REPO_ROOT/.dev-plan-state/$PLAN_HASH"
 mkdir -p "$STATE_DIR"
 
 # --- Resolve worktree branch + base branch -----------------------------------
@@ -118,12 +119,16 @@ if [[ "${APEX_GIBSON:-1}" != "0" ]]; then
   fi
 fi
 
-# Seed memory namespace (best-effort; safe to fail if claude-flow not installed)
-if command -v npx >/dev/null 2>&1; then
-  npx -y @claude-flow/cli@latest memory store \
-    --key "plan-meta-$PLAN_HASH" \
-    --value "Plan: $(basename "$PLAN") | Tasks: $TOTAL | Worktree: ${WT_BRANCH:-none} | Initialized: $(date -u +%FT%TZ)" \
-    --namespace "$NAMESPACE" 2>/dev/null || echo "[init] (memory seed skipped — claude-flow unavailable)"
+# Seed the memory namespace — optional (ADR-0003). APEX_MEMORY_CMD is any
+# command that stores one record; it receives APEX_MEMORY_NAMESPACE,
+# APEX_MEMORY_KEY and APEX_MEMORY_VALUE in its environment. Unset = skip
+# quietly. ruflo example:
+#   APEX_MEMORY_CMD='npx -y @claude-flow/cli@latest memory store --namespace "$APEX_MEMORY_NAMESPACE" --key "$APEX_MEMORY_KEY" --value "$APEX_MEMORY_VALUE"'
+if [[ -n "${APEX_MEMORY_CMD:-}" ]]; then
+  APEX_MEMORY_NAMESPACE="$NAMESPACE" \
+  APEX_MEMORY_KEY="plan-meta-$PLAN_HASH" \
+  APEX_MEMORY_VALUE="Plan: $(basename "$PLAN") | Tasks: $TOTAL | Worktree: ${WT_BRANCH:-none} | Initialized: $(date -u +%FT%TZ)" \
+    bash -c "$APEX_MEMORY_CMD" >/dev/null 2>&1 || echo "[init] (memory seed failed — APEX_MEMORY_CMD returned non-zero; continuing)"
 fi
 
 [[ "${APEX_GIBSON:-1}" != "0" ]] && echo "[init] harness: gibson (green gate · independent review · Tier-C G12 · kill switch · ratchet). APEX_GIBSON=0 to disable."
