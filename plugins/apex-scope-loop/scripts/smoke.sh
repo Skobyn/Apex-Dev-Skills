@@ -426,6 +426,13 @@ cases = {
   "front":     ("---\ntitle: x\n---\n\n" + T, None),
   "math":      (D + "$$\nx\n$$\n\n" + T, None),
   "admon":     (D + ":::note\nx\n:::\n\n" + T, None),
+  "emptymark": (D + "-\n  [ ] **Phase 2** hidden task\n\n" + T, None),
+  "emptystar": (D + "*\n    [ ] t\n\n" + T, None),
+  "emptyord":  (D + "1.\n   [ ] t\n\n" + T, None),
+  "emptyx":    (D + "-\n  [x] t\n\n" + T, None),
+  "hrthen":    (D + "***\n*\n  [ ] t\n\n" + T, None),
+  "setext":    ("- [ ] **Phase 1.1** Ship it\n  ===\n  - Acceptance: true\n", None),
+  "bom":       ("\ufeff" + T, None),
   # controls: these validate and run Phase 1.1
   "quoted":    (D + "> ```\n> - [ ] **Phase 9** quoted example\n> ```\n\n" + T, "Phase 1.1"),
   "fenceok":   (D + "```\nmake real\n```\n\n" + T, "Phase 1.1"),

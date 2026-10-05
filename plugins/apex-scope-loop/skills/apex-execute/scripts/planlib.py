@@ -39,7 +39,9 @@ that what planlib runs is exactly what a CommonMark renderer shows as tasks
   - no line starting with '<' (HTML block, comment, tag), '$$' or ':::',
     except inside a blockquote or list item outside a task block
   - a task's block lines are indented at least 2 spaces
-  - checkboxes in any other list form are refused (blockquoted examples are allowed)
+  - a checkbox anywhere except a column-0 task is refused (including one on
+    the line after an empty list marker); blockquoted examples are allowed
+  - no byte-order mark; no setext underline inside a task block
   - no front matter, no carriage return inside a line
 Anything outside the dialect makes the plan invalid; nothing is ever hidden.
 """
@@ -130,6 +132,8 @@ def scan(lines):
     for i, l in enumerate(lines):
         if TASK_RE.match(l):
             in_block.update(block(lines, i))
+    if lines and lines[0].startswith("\ufeff"):
+        errs.append("line 1: byte-order mark; some renderers strip it and show a task planlib would not see — remove it")
     if lines and re.match(r"(?:---|\+\+\+)[ \t]*$", lines[0]):
         errs.append("line 1: front matter ('---' / '+++') may hide the plan in some renderers; remove it")
     fence = None
@@ -152,6 +156,8 @@ def scan(lines):
         in_blk = i in in_block
         if in_blk and not BLOCK_LINE_RE.match(line):
             errs.append(f"line {n}: a task's block lines must be indented at least 2 spaces")
+        if in_blk and re.fullmatch(r"[ \t]*(?:=+|-+)[ \t]*", line):
+            errs.append(f"line {n}: a setext underline turns the task above into a heading in some renderers")
         if FENCELIKE_RE.match(rest):
             m = OPEN_RE.match(line)            # matches only an unprefixed column-0 fence
             if prefixed:
@@ -168,7 +174,11 @@ def scan(lines):
             errs.append(f"line {n}: a line starting with '<' (raw HTML block, comment or tag) is not allowed in a plan")
         elif EXT_BLOCK_RE.match(rest) and (not prefixed or in_blk):
             errs.append(f"line {n}: '$$' / ':::' block syntax is not allowed in a plan")
-        if prefixed and not quoted and CHECKBOX_RE.match(rest) and not TASK_RE.match(line):
+        # Any checkbox that is not a column-0 task is refused unless it is
+        # blockquoted: prefixed list items, and a checkbox on the line after
+        # an empty list marker ("-" then "  [ ] x"), which renderers show as
+        # an open task.
+        if not quoted and CHECKBOX_RE.match(rest) and not TASK_RE.match(line):
             errs.append(f"line {n}: checkbox not in the task form '- [ ] ' at column 0 "
                         "(it would not be a task; make it one or remove the checkbox)")
     if fence:
