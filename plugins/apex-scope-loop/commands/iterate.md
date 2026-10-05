@@ -10,7 +10,7 @@ Invoke the `apex-execute` skill and execute one iteration:
 
 In the steps below, `$S` stands for `${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts`, where the helper scripts ship with this plugin. Use that absolute path in every command; no repo-local `.claude/skills` copy is needed.
 
-1. Run `$S/iterate.sh $ARGUMENTS` to get the brief. It returns the next unchecked, unblocked task along with `WORKTREE:`, `BRANCH:`, `LINE_NO:`, `HEAD_SHA:` (this task's diff base), `HARNESS:`, `LESSONS:`, and `CONSECUTIVE_FAILURES:`. If `STATUS: HALTED` comes back, report the `HALT_REASON:` and stop. Never work around a kill switch.
+1. Run `$S/iterate.sh $ARGUMENTS` to get the brief. It returns the next unchecked, unblocked task along with `WORKTREE:`, `BRANCH:`, `LINE_NO:`, `HEAD_SHA:` (the worktree head now), `TASK_BASE:` (this task's diff base, fixed when the task is first briefed), `HARNESS:`, `LESSONS:`, and `CONSECUTIVE_FAILURES:`. If `STATUS: HALTED` comes back, report the `HALT_REASON:` and stop. Never work around a kill switch.
 2. **Recall before you act.** If `LESSONS:` is non-zero, run `$S/lessons.sh $ARGUMENTS recall <tags>` and put the relevant lessons into every builder's prompt.
 3. Parse the task's tags (`[backend]`, `[security]`, etc.) and its `Swarm:` directive.
 4. **Execution is worktree-bound.** The whole plan runs inside the worktree on the brief's `WORKTREE:` line (branch `BRANCH:`). Every agent must `cd` into that worktree and make ALL code edits there, never in the base checkout. Pass the worktree path explicitly in each Agent prompt. If `WORKTREE:` is empty, init.sh was run with `APEX_NO_WORKTREE=1`, and only then do you operate in the base checkout.
@@ -19,8 +19,8 @@ In the steps below, `$S` stands for `${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/s
 When `HARNESS: gibson` (the default), steps 6–9 apply. With `HARNESS: off`, skip them and go straight to step 10.
 
 6. **Green gate.** Run `$S/green-gate.sh $ARGUMENTS check`. It needs a clean, committed worktree and fails on any step that is red now but was green at the fork point. A `PREEXISTING` red step isn't this task's failure, but report it anyway. On `GATE: FAIL`, go to step 11.
-7. **Tier.** Run `$S/risk-tier.sh $ARGUMENTS <LINE_NO> --since <HEAD_SHA> --tags <TAGS>`.
-8. **Independent review (never grade your own homework).** Dispatch the `gibson-reviewer` agent in a fresh context, separate from every builder, and pass it WORKTREE, the new head SHA (`git -C <WORKTREE> rev-parse HEAD`), SINCE=`<HEAD_SHA>`, TASK, ACCEPTANCE, and TIER.
+7. **Tier.** Run `$S/risk-tier.sh $ARGUMENTS <LINE_NO> --since <TASK_BASE>` (the task's own tags are read from the plan). Re-run it after every fix commit: `complete` refuses a tier recorded for an older head.
+8. **Independent review (never grade your own homework).** Dispatch the `gibson-reviewer` agent in a fresh context, separate from every builder, and pass it WORKTREE, the new head SHA (`git -C <WORKTREE> rev-parse HEAD`), SINCE=`<TASK_BASE>`, TASK, ACCEPTANCE, and TIER.
    - Tier A: one reviewer. Tier B: one reviewer covering all six lenses.
    - Tier C: a **fan-out**, with one `gibson-reviewer` per lens (six, in one message), then one more with `ADVERSARIAL: true` to try to refute the approvals.
    - Record each outcome with `$S/checkpoint.sh $ARGUMENTS review <LINE_NO> <sha> APPROVE|REQUEST_CHANGES`. Any REQUEST_CHANGES means the builders fix, commit, and repeat from step 6. Cap it at 3 review rounds per task; after that, treat it as a failure (step 11).

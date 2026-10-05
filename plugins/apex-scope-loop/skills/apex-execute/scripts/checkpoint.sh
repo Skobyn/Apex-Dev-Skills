@@ -39,8 +39,9 @@
 # apex-dispatch (when <state>/dispatch/ exists): a verdict is accepted only
 # with provenance — a hook-written reviews-raw record (--agent-id) or a worker
 # result.json one level inside <state>/dispatch/workers or the shim worktree
-# root (--worker) — that carries the same verdict, SHA, role and task line. The
-# role comes from the record; a record (the file, by inode) is used once.
+# root (--worker) — that carries the same verdict, SHA, role and task line, and
+# a record_id unique to the review run. The role comes from the record; a
+# record_id is used once.
 # --skip-review and the default reviewer name are refused,
 # and `complete` needs ledger evidence (ledger.sh evidence) even with
 # APEX_GIBSON=0. APEX_DISPATCH_ROOT is trusted like APEX_GIBSON: whoever sets
@@ -84,13 +85,14 @@ need_line() {
   TASK_JSON="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$1" 2>/dev/null || true)"
   [[ "$TASK_JSON" == \{* ]] || { echo "[checkpoint] REFUSED $ACTION: line $1 is not a task in $PLAN" >&2; exit 1; }
 }
-# checked: the box is ticked. gate: a **Gate …** task carrying a [gate:*] tag
-# (a tag alone, e.g. quoted in prose, does not make a code task a gate).
+# checked: the box is ticked. gate: the task line opens with **Gate …** and
+# carries a [gate:*] tag (a tag or a **Gate** quoted in prose does not make a
+# code task a gate).
 task_field() {
   python3 -c '
-import json, sys
+import json, re, sys
 t = json.loads(sys.argv[1])
-gate = (t.get("id") or "").startswith("Gate ") and any(x.startswith("gate:") for x in t["tags"])
+gate = re.match(r"- \[[ xX]\] \*\*Gate ", t["line"]) is not None and any(x.startswith("gate:") for x in t["tags"])
 print("1" if (t["checked"] if sys.argv[2] == "checked" else gate) else "0")' "$TASK_JSON" "$1"
 }
 recorded_tier() {
@@ -276,7 +278,7 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:
     [[ -n "$AGENT_ID" && -n "$WORKER" ]] && { echo "ERROR: --agent-id and --worker are exclusive" >&2; exit 1; }
     python3 - "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$VERDICT" "$REVIEWER" "$REVIEWER_NAMED" "$ROLE" "$AGENT_ID" "$WORKER" \
       "$PROVIDER" "$MODEL" "$ROUTE_ID" "$DISPATCH_STATE" "${PLAN_TOP:-$REPO_ROOT}" "${APEX_REVIEW_CAP:-3}" <<'PY'
-import hashlib, json, os, re, sys
+import json, os, re, sys
 (path, now, line_no, sha, verdict, reviewer, reviewer_named, role, agent_id, worker,
  provider, model, route_id, dstate, top, cap) = sys.argv[1:]
 def die(msg):
@@ -320,17 +322,17 @@ if os.path.isdir(dstate):
         die("apex-dispatch state exists, so a verdict needs provenance: --agent-id (hook-written reviews-raw record) "
             "or --worker DIR (worker result.json); a typed verdict is not accepted")
     try:
-        with open(rec_path, "rb") as fh:
-            st = os.fstat(fh.fileno())
-            raw = fh.read()
-        rec = json.loads(raw)
+        rec = json.load(open(rec_path))
         assert isinstance(rec, dict)
     except Exception:
         die(f"no readable provenance record at {rec_path}")
-    # A record's identity is the file and its content: case variants, aliases
-    # and hard links of one record are one record, while a new record that
-    # reuses a freed inode (or a result rewritten for a new round) is not.
-    source = f"file:{st.st_dev}:{st.st_ino}:{hashlib.sha256(raw).hexdigest()}"
+    # A record's identity is the record_id its writer (hook or shim) gives each
+    # review run: copies, links, aliases and re-serialisations of one run are
+    # one record; a new run is a new record wherever its file lands.
+    rid = str(rec.get("record_id", ""))
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", rid):
+        die("the provenance record has no record_id (8-128 of [A-Za-z0-9_-], unique per review run)")
+    source = "record:" + rid
     if rec.get("head_sha") != sha:
         die(f"the provenance record reviewed {str(rec.get('head_sha'))[:12]}, not {sha[:12]}")
     if rec.get("verdict") != verdict:

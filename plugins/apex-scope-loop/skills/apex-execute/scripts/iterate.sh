@@ -157,6 +157,32 @@ if [[ "$LOCK_RC" -eq 10 ]]; then
 fi
 
 HEAD_SHA="$(git -C "${WORKTREE:-$REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
+# The task's diff base is fixed the first time the task is briefed (a retry
+# keeps the original base, so earlier attempts' commits stay in the diff).
+# risk-tier.sh refuses a --since later than it.
+TASK_BASE="$HEAD_SHA"
+if [[ "$HEAD_SHA" != unknown ]]; then
+  TASK_BASE="$(python3 - "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" "$LINE_NO" "$HEAD_SHA" <<'PY'
+import fcntl, json, os, sys
+path, lock, line_no, head = sys.argv[1:]
+fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX)          # checkpoint.sh's state lock
+s = json.load(open(path))
+bases = s.setdefault("bases", {})
+if line_no not in bases:
+    bases[line_no] = head
+    tmp = path + ".tmp"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644), "w") as f:
+        json.dump(s, f, indent=2)
+    os.replace(tmp, path)
+print(bases[line_no])
+PY
+)" || TASK_BASE="$HEAD_SHA"
+fi
 echo "STATE: $STATE_DIR"
 echo "WORKTREE: $WORKTREE"
 echo "BRANCH: $WT_BRANCH"
@@ -171,6 +197,7 @@ echo "PATHS: $PATHS"
 echo "BUDGET: $BUDGET"
 echo "LINE_NO: $LINE_NO"
 echo "HEAD_SHA: $HEAD_SHA"
+echo "TASK_BASE: $TASK_BASE"
 echo "STAGE: BUILD"
 [[ -n "$LANES" ]] && echo "LANES: $LANES"
 if [[ "${APEX_GIBSON:-1}" != "0" ]]; then

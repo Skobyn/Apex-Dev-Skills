@@ -14,9 +14,12 @@
 #               risk-tier@1) and combine as max(heuristic, decision): a
 #               decision can raise the tier, never lower it (spec §6). Absent,
 #               failing or malformed: the heuristic stands, noted in REASON.
-#   --since  diff base for this task (the HEAD_SHA from iterate.sh's brief).
-#            Default: merge-base of the worktree branch and the base branch.
-#   --tags   the task's tags; [security] or [tier:c] force Tier C.
+#   --since  diff base for this task (TASK_BASE from iterate.sh's brief). It may
+#            be earlier than the task's recorded base, never later (a later
+#            base would hide the task's own commits). Default: the recorded
+#            base, else the merge-base of the worktree branch and the base branch.
+#   --tags   extra tags; the task's own tags are always read from the plan.
+#            [security] or [tier:c] force Tier C.
 #
 # Tier only ratchets upward: a line already recorded as C stays C.
 #
@@ -51,8 +54,17 @@ python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO" >/dev/null 2>
 WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 BASE_BRANCH="$(read_field base_branch)"
 
+# The task's own tags always count (a caller cannot drop [tier:c]).
+PLAN_TAGS="$(python3 -c 'import json,sys; print(",".join(json.loads(sys.argv[1])["tags"]))' "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO")")"
+TAGS="${TAGS:+$TAGS,}$PLAN_TAGS"
+# Recorded base: the first brief's HEAD (iterate.sh), else the first --since
+# this line was tiered with.
+FLOOR="$(python3 -c '
+import json, sys
+s = json.load(open(sys.argv[1])); ln = sys.argv[2]
+print(s.get("bases", {}).get(ln) or (s.get("tiers", {}).get(ln) or {}).get("since") or "")' "$CHECKPOINT" "$LINE_NO")"
 if [[ -z "$SINCE" ]]; then
-  SINCE="$(git -C "$WT" merge-base HEAD "$BASE_BRANCH" 2>/dev/null || git -C "$WT" rev-parse HEAD)"
+  SINCE="${FLOOR:-$(git -C "$WT" merge-base HEAD "$BASE_BRANCH" 2>/dev/null || git -C "$WT" rev-parse HEAD)}"
 fi
 # Fail closed: an unknown diff base would classify an empty diff as Tier A.
 SINCE="$(git -C "$WT" rev-parse -q --verify "${SINCE}^{commit}" 2>/dev/null)" \
@@ -60,6 +72,10 @@ SINCE="$(git -C "$WT" rev-parse -q --verify "${SINCE}^{commit}" 2>/dev/null)" \
 HEAD_NOW="$(git -C "$WT" rev-parse HEAD)"
 git -C "$WT" merge-base --is-ancestor "$SINCE" "$HEAD_NOW" \
   || { echo "ERROR: --since ${SINCE:0:12} is not an ancestor of the worktree head ${HEAD_NOW:0:12}" >&2; exit 2; }
+if [[ -n "$FLOOR" ]] && ! git -C "$WT" merge-base --is-ancestor "$SINCE" "$FLOOR" 2>/dev/null; then
+  echo "ERROR: --since ${SINCE:0:12} is later than this task's base ${FLOOR:0:12} — it would hide the task's own commits; use --since $FLOOR (TASK_BASE) or omit --since" >&2
+  exit 2
+fi
 
 # Committed changes since SINCE plus anything still uncommitted.
 FILES="$( { git -C "$WT" diff --name-only "$SINCE" HEAD; git -C "$WT" diff --name-only HEAD; \
@@ -78,16 +94,30 @@ raise() { # raise <tier> <reason>
 # Tier C: path signals (case-insensitive). Fail closed: a false positive only
 # costs review; a miss lands an auth change unreviewed. Every token matches
 # anywhere in the path ("jwtverify", "clusterrolebinding", "AzureADSSO",
-# "aclv2"). "sso" and "acl" also occur inside ordinary words, so a short
-# allowlist of such words ("lessons", "processor", "oracle", …) is removed
-# first; anything not on the list stays Tier C.
+# "aclv2"). "sso" and "acl" also occur inside ordinary words: an occurrence is
+# ignored only when it lies wholly inside one path word (split at
+# punctuation, digits and camelCase humps) that is exactly an allowlisted
+# word ("lessons", "processor", "oracle", …). "associateSSOIdentity",
+# "lessonsso" and "ProcessorSSO" stay Tier C.
 C_PATHS='(auth|login|logout|session|oauth|password|passwd|credential|permission|billing|payment|stripe|paypal|invoice|pricing|checkout|subscription|refund|ledger|wallet|consent|gdpr|ccpa|privacy|personal|migration|migrate|schema|\.sql$|prisma|secret|crypto|encrypt|security|middleware|rate.?limit|webhook|alert|pagerduty|oncall|incident|prod(uction)?[-_.]?(data|db|config)|jwt|rbac|saml|pii|csp|cors|role)'
-C_SHORT='(sso|acl)'
-C_SHORT_BENIGN='(lessons?|processors?|accessors?|successors?|predecessors?|compressors?|associat[a-z]*|dossiers?|crossovers?|lasso[a-z]*|oracles?|miracles?|spectacles?|tentacles?|obstacles?|pinnacles?|debacles?|receptacles?|barnacles?|manacles?|coracles?)'
+SHORT_HITS="$(printf '%s\n' "$FILES" | python3 -c '
+import re, sys
+BENIGN = set("""lesson lessons processor processors accessor accessors successor successors predecessor
+predecessors compressor compressors associate associates associated association associations associative
+dossier dossiers crossover crossovers lasso lassos oracle oracles miracle miracles spectacle spectacles
+tentacle tentacles obstacle obstacles pinnacle pinnacles debacle debacles receptacle receptacles barnacle
+barnacles manacle manacles coracle coracles""".split())
+WORD = re.compile(r"[A-Z]{2,}s(?![a-z])|[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+for path in sys.stdin.read().splitlines():
+    spans = [(m.start(), m.end(), m.group().lower()) for m in WORD.finditer(path)]
+    for m in re.finditer(r"(?=(sso|acl))", path.lower()):
+        a = m.start()
+        if not any(s <= a and a + 3 <= e and w in BENIGN for s, e, w in spans):
+            print(path)
+            break')"
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  short="$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]' | sed -E "s/$C_SHORT_BENIGN/_/g")"
-  if printf '%s' "$f" | grep -qiE "$C_PATHS" || printf '%s' "$short" | grep -qE "$C_SHORT"; then
+  if printf '%s' "$f" | grep -qiE "$C_PATHS" || grep -qxF -- "$f" <<<"$SHORT_HITS"; then
     raise C "tier-c path: $f"
   fi
 done <<<"$FILES"

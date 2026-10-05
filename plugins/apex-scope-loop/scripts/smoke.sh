@@ -672,18 +672,22 @@ ok "checkpoint: SHA form, round cap, attempts, Tier C adversarial, complete/rewi
 CKS="$(st "$CK" plans/c-plan.md)"; mkdir -p "$CKS/dispatch/reviews-raw"
 git -C "$CWT" commit -q --allow-empty -m p1
 expect_refusal "typed verdict with dispatch state" "needs provenance" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv
-printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer"}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag0.json"
+printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer", "record_id": "run-0000"}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag0.json"
 expect_refusal "a record that names no task line" "must name their task line" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag0
-printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer", "line": 1}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag1.json"
+printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer", "line": 1}' "$(sha)" >"$CKS/dispatch/reviews-raw/agN.json"
+expect_refusal "a record without a record_id" "no record_id" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id agN
+printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer", "line": 1, "record_id": "run-0001"}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag1.json"
 expect_refusal "verdict that contradicts its record" "says REQUEST_CHANGES" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --agent-id ag1
 expect_refusal "default reviewer name with dispatch state" "name the reviewer" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES --agent-id ag1
 expect_refusal "role relabelled against its record" "does not match" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1 --role adversarial
 (cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1 >/dev/null) || fail "a verdict matching its reviews-raw record was refused"
 expect_refusal "a provenance record used twice" "already recorded" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1
 ln "$CKS/dispatch/reviews-raw/ag1.json" "$CKS/dispatch/reviews-raw/ag1b.json"
+printf '{ "record_id": "run-0001", "line": 1, "role": "reviewer", "verdict": "REQUEST_CHANGES", "head_sha": "%s" }\n' "$(sha)" >"$CKS/dispatch/reviews-raw/ag1c.json"
+expect_refusal "a provenance record re-serialised under another name" "already recorded" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1c
 expect_refusal "a provenance record reused through a hard link" "already recorded" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1b
 expect_refusal "path-like agent id" "unexpected characters" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --agent-id ../x
-mkdir -p "$SMOKE_TMP/forged"; printf '{"head_sha": "%s", "verdict": "APPROVE", "role": "adversarial", "line": 1}' "$(sha)" >"$SMOKE_TMP/forged/result.json"
+mkdir -p "$SMOKE_TMP/forged"; printf '{"head_sha": "%s", "verdict": "APPROVE", "role": "adversarial", "line": 1, "record_id": "run-w0001"}' "$(sha)" >"$SMOKE_TMP/forged/result.json"
 expect_refusal "a worker result outside the shim directories" "not a shim worker directory" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$SMOKE_TMP/forged"
 mkdir -p "$CKS/dispatch/workers/w1/deep"; cp "$SMOKE_TMP/forged/result.json" "$CKS/dispatch/workers/w1/"; cp "$SMOKE_TMP/forged/result.json" "$CKS/dispatch/workers/w1/deep/"
 expect_refusal "a worker result nested below a worker directory" "not a shim worker directory" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$CKS/dispatch/workers/w1/deep"
@@ -697,14 +701,14 @@ t0=$SECONDS; (cd "$CK" && "$CP" plans/c-plan.md halt "lock probe" >/dev/null && 
 [ $((SECONDS - t0)) -lt 4 ] || fail "a background child of route.sh held the checkpoint lock"
 rm -f "$CKS/dispatch/active-route.json"
 rm -f "$CKS/dispatch/reviews-raw/ag1.json" "$CKS/dispatch/reviews-raw/ag1b.json"
-printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer", "line": 1, "agent": "second"}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag2.json"
+printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer", "line": 1, "record_id": "run-0002"}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag2.json"
 (cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv2 --agent-id ag2 >/dev/null) || fail "a new record (possibly on a reused inode) was refused as already recorded"
 ok "checkpoint: provenance required with dispatch state; role and line from the record; one use per record"
 
 # 34. risk-tier: short tokens are whole words ("lessons" is not SSO); the
 #     decision layer can raise a tier, never lower it.
 RT="$SMOKE_TMP/rt34"; mkdir -p "$RT/plans" "$RT/scripts"; git init -q -b main "$RT"
-for i in 1 2 3 4 5 6 7; do printf -- '- [ ] **Phase 1.%s** a\n  - Acceptance: true\n' "$i"; done >"$RT/plans/r-plan.md"; git -C "$RT" add -A; git -C "$RT" commit -qm r
+for i in 1 2 3 4 5 6 7 8 9 10; do printf -- '- [ ] **Phase 1.%s** a\n  - Acceptance: true\n' "$i"; done >"$RT/plans/r-plan.md"; git -C "$RT" add -A; git -C "$RT" commit -qm r
 ( cd "$RT" && APEX_GIBSON=0 "$EX/init.sh" plans/r-plan.md >/dev/null 2>&1 ) || fail "init for the risk-tier test failed"
 RWT="$(st "$RT" plans/r-plan.md)/worktree"; B0="$(git -C "$RWT" rev-parse HEAD)"
 mkdir -p "$RWT/scripts"; echo x >"$RWT/scripts/lessons.sh"; git -C "$RWT" add -A; git -C "$RWT" commit -qm l
@@ -725,6 +729,11 @@ has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 11 --since "$(g
 mkdir -p "$RWT/src/sso2"; echo x >"$RWT/src/sso2/index.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm z2
 has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 13 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/sso2/index.ts was not Tier C"
 expect_refusal "an unknown --since" "not a commit" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 1 --since deadbeefdeadbeef
+ln=13; for f in src/associateSSOIdentity.ts src/ProcessorSSO.ts src/lessonsso.ts; do
+  echo x >"$RWT/$f"; git -C "$RWT" add -A; git -C "$RWT" commit -qm "$f"; ln=$((ln + 2))
+  has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md "$ln" --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "$f was not Tier C (allowlist swallowed the token)"
+done
+expect_refusal "a --since later than the task's base" "later than this task's base" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 3 --since "$(git -C "$RWT" rev-parse HEAD)"
 mkdir -p "$RWT/src/sso"; echo x >"$RWT/src/sso/login.py"; git -C "$RWT" add -A; git -C "$RWT" commit -qm s
 has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0")" || fail "an sso/ path was not Tier C"
 expect_refusal "a non-numeric risk-tier line" "plan line number" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md '1,$'
@@ -805,10 +814,11 @@ git -C "$HWT" commit -q --allow-empty -m h2; (cd "$CH" && "$EX/green-gate.sh" pl
 expect_refusal "a tier recorded for an older head" "risk tier was recorded for" indir "$CH" "$CP" plans/h-plan.md complete 3 ok --skip-review n/a
 # Tasks without a **Phase**/**Gate** id are ordinary tasks.
 IX="$SMOKE_TMP/ix36"; mkdir -p "$IX/plans"; git init -q -b main "$IX"
-printf -- '- [ ] tidy something without an id\n  - Acceptance: true\n' >"$IX/plans/i-plan.md"; git -C "$IX" add -A; git -C "$IX" commit -qm i
+printf -- '- [ ] tidy something without an id\n  - Acceptance: true\n- [ ] rewrite the login handler; unblocks **Gate 2** [gate:human]\n  - Acceptance: true\n' >"$IX/plans/i-plan.md"; git -C "$IX" add -A; git -C "$IX" commit -qm i
 ( cd "$IX" && APEX_GIBSON=0 "$EX/init.sh" plans/i-plan.md >/dev/null 2>&1 ) || fail "init for the id-less test failed"
 (cd "$IX" && APEX_GIBSON=0 "$CP" plans/i-plan.md complete 1 ok >/dev/null 2>&1) && grep -q '^- \[x\] tidy' "$IX/plans/i-plan.md" || fail "an id-less task could not be completed"
 (cd "$IX" && "$CP" plans/i-plan.md rewind 1 >/dev/null 2>&1) && grep -q '^- \[ \] tidy' "$IX/plans/i-plan.md" || fail "an id-less task could not be rewound"
+expect_refusal "a code task naming a **Gate** in prose" "no green-gate\|no risk tier\|no independent review" indir "$IX" "$CP" plans/i-plan.md complete 3 ok
 ok "checkpoint: line validation, no verdict laundering, no Tier C skip, parallel-safe, resume, halt, gate ids"
 
 echo ""
