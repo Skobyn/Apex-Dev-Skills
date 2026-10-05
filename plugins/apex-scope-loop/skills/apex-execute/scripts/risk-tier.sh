@@ -63,7 +63,7 @@ TAGS="${TAGS:+$TAGS,}$PLAN_TAGS"
 # The task's diff base is the chain floor (ADR-0003; apex_floor in _lib.sh).
 # --since may only widen the diff (an ancestor of the floor), never narrow it.
 FLOOR="$(apex_floor "$WT")" \
-  || { echo "ERROR: no diff base: this run has no fork point recorded (re-run iterate.sh, or re-init the run)" >&2; exit 2; }
+  || { echo "ERROR: no diff base: this run has no fork point recorded (iterate.sh records it for a worktree run; a run without a worktree that predates the chain needs a new run)" >&2; exit 2; }
 [[ -n "$SINCE" ]] || SINCE="$FLOOR"
 SINCE="$(git -C "$WT" rev-parse -q --verify "${SINCE}^{commit}" 2>/dev/null)" \
   || { echo "ERROR: --since is not a commit in $WT" >&2; exit 2; }
@@ -76,10 +76,20 @@ fi
 # Committed changes since SINCE plus anything still uncommitted. Renames are
 # split into delete + add (an auth file moved to a bland name keeps its old
 # path in the list); paths are not octal-quoted.
+# Submodule bumps count even when .gitmodules says ignore = all; the plan file
+# and lessons ledger (edited in place when there is no worktree) do not.
 GIT=(git -c core.quotepath=false -C "$WT")
-FILES="$( { "${GIT[@]}" diff --no-renames --name-only "$SINCE" "$HEAD_NOW"; "${GIT[@]}" diff --no-renames --name-only HEAD; \
-            "${GIT[@]}" ls-files --others --exclude-standard; } 2>/dev/null | sort -u | sed '/^$/d')"
-LINES="$( { "${GIT[@]}" diff --no-renames --numstat "$SINCE" "$HEAD_NOW"; "${GIT[@]}" diff --no-renames --numstat HEAD; } 2>/dev/null \
+DIFF_OPTS=(--no-renames --ignore-submodules=none --no-ext-diff)
+EXCL=()
+for p in "$PLAN_ABS" "${LESSONS_LEDGER:-}"; do
+  [[ -n "$p" ]] || continue
+  rel="$(python3 -c 'import os,sys; r=os.path.relpath(os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])); print("" if r.startswith("..") else r)' "$p" "$WT")"
+  [[ -n "$rel" ]] && EXCL+=(":(exclude,top)$rel")
+done
+PATHSPEC=(-- . "${EXCL[@]}")
+FILES="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only HEAD "${PATHSPEC[@]}"; \
+            "${GIT[@]}" ls-files --others --exclude-standard "${PATHSPEC[@]}"; } 2>/dev/null | sort -u | sed '/^$/d')"
+LINES="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --numstat "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --numstat HEAD "${PATHSPEC[@]}"; } 2>/dev/null \
           | awk '$1 ~ /^[0-9]+$/ {s += $1 + $2} END {print s + 0}')"
 NFILES="$(printf '%s\n' "$FILES" | sed '/^$/d' | wc -l | tr -d ' ')"
 
@@ -123,7 +133,7 @@ done <<<"$FILES"
 
 # Tier C: content signals in added lines (catches risk in innocuously named files).
 C_CONTENT='(stripe|charge\(|amount_cents|price|currency|bcrypt|argon2|jwt\.|verify_?token|set-cookie|httponly|samesite|csrf|consent|date_of_birth|ssn|social_security|DROP (TABLE|COLUMN)|ALTER TABLE|DELETE FROM|TRUNCATE)'
-ADDED="$( { "${GIT[@]}" diff --no-renames -U0 "$SINCE" "$HEAD_NOW"; "${GIT[@]}" diff --no-renames -U0 HEAD; } 2>/dev/null | grep -E '^\+[^+]' || true)"
+ADDED="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null | grep -E '^\+[^+]' || true)"
 if [[ -n "$ADDED" ]] && printf '%s' "$ADDED" | grep -qiE "$C_CONTENT"; then
   hit="$(printf '%s' "$ADDED" | grep -oiE "$C_CONTENT" | head -1)"
   raise C "tier-c content signal in diff: '$hit'"

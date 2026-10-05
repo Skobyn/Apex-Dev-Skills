@@ -141,7 +141,12 @@ if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
   # Every landed commit was verified by a reviewed `complete` (the chain):
   # nothing may follow the last completion's head.
   LAND_FLOOR="$(apex_floor "$REPO_ROOT" "$LAND_SHA" || true)"
-  if [[ -z "$LAND_FLOOR" ]] || ! git -C "$REPO_ROOT" diff --quiet --no-renames "$LAND_FLOOR" "$LAND_SHA" 2>/dev/null; then
+  if [[ -z "$LAND_FLOOR" ]]; then
+    echo "ERROR: this run predates the review chain (no fork point recorded) — land.sh cannot show every commit was reviewed." >&2
+    echo "       Re-run iterate.sh once (it records the fork point), or after checking the branch yourself: land.sh $PLAN --force" >&2
+    exit 1
+  fi
+  if ! git -C "$REPO_ROOT" diff --quiet --no-renames --ignore-submodules=none "$LAND_FLOOR" "$LAND_SHA" 2>/dev/null; then
     echo "ERROR: ${WT_BRANCH} has commits after the last reviewed completion (${LAND_FLOOR:0:12}..${LAND_SHA:0:12}) — review and complete them as a task first." >&2
     exit 1
   fi
@@ -182,7 +187,11 @@ if [[ -d "$WT_PATH" ]]; then
   if git -C "$REPO_ROOT" worktree remove "$WT_PATH"; then
     echo "[land] removed worktree $WT_PATH"
   else
-    echo "[land] WARNING: could not remove worktree $WT_PATH (left in place)" >&2
+    # A surviving worktree must not be adopted by a later run as if it were
+    # new, so the run is not marked landed until it is gone.
+    echo "ERROR: merged, but could not remove the worktree $WT_PATH (locked, or it has submodules)." >&2
+    echo "       Remove it (git worktree remove --force '$WT_PATH'), then re-run land.sh to finish." >&2
+    exit 1
   fi
 fi
 git -C "$REPO_ROOT" branch -d "$WT_BRANCH" 2>/dev/null \

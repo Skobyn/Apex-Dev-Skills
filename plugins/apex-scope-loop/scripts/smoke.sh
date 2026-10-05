@@ -723,6 +723,17 @@ for f in src/jwtVerify.ts lib/userRoles.ts src/userACLs.ts src/AzureADSSO.ts src
          src/ProcessorSSO.ts src/lessonsso.ts k8s/clusterrolebinding.yaml "İİİİ/sso/associated.ts" "db/données.sql"; do
   [ "$(rt_tier "$f")" = C ] || fail "$f was not Tier C"
 done
+# A submodule bump is code even when .gitmodules says ignore = all; a
+# "-diff" attribute does not hide added lines.
+SM="$(mktemp -d "$SMOKE_TMP/sm.XXXXXX")"; mkdir -p "$SM/plans"; git init -q -b main "$SM"
+printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n' >"$SM/plans/s-plan.md"; git -C "$SM" add -A; git -C "$SM" commit -qm s
+( cd "$SM" && APEX_GIBSON=0 "$EX/init.sh" plans/s-plan.md >/dev/null 2>&1 ) || fail "init for the submodule test failed"
+SWT="$(st "$SM" plans/s-plan.md)/worktree"
+printf '[submodule "x"]\n\tpath = vendor/auth\n\turl = ./x\n\tignore = all\n' >"$SWT/.gitmodules"
+git -C "$SWT" update-index --add --cacheinfo "160000,$(git -C "$SWT" rev-parse HEAD),vendor/auth"; git -C "$SWT" add .gitmodules; git -C "$SWT" commit -qm sub
+has "^TIER: C" "$(cd "$SM" && "$EX/risk-tier.sh" plans/s-plan.md 1 --no-record)" || fail "a submodule under an auth path (ignore = all) was not Tier C"
+printf '*.py -diff\n' >"$SWT/.gitattributes"; echo 'stripe.Charge.create(amount_cents=1)' >"$SWT/pay_util.py"; git -C "$SWT" add -A; git -C "$SWT" commit -qm attr
+has "content signal" "$(cd "$SM" && "$EX/risk-tier.sh" plans/s-plan.md 1 --no-record)" || fail "a -diff attribute hid a content signal"
 for f in scripts/lessons.sh src/oracle.ts "lessons/İ.py"; do
   [ "$(rt_tier "$f")" = A ] || fail "$f was classified above Tier A"
 done
@@ -861,7 +872,28 @@ has "^TASK_BASE: $H1" "$(cn "$EX/iterate.sh" plans/n-plan.md 2>&1)" || fail "an 
 expect_refusal "landing commits no reviewed complete covered" "after the last reviewed completion" cn "$EX/land.sh" plans/n-plan.md
 cn "$CP" plans/n-plan.md rewind 1 >/dev/null
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert not s["completes"], s["completes"]' "$CNS/checkpoint.json" || fail "rewind did not move the chain back"
-ok "chain: fork point, TASK_BASE, re-classified complete, code-free gates, fail/rewind/APEX_GIBSON=0, land boundary"
+# A run that predates the chain gets its fork point from the base branch on
+# re-init, never from the worktree head (unreviewed commits stay in the diff).
+python3 - "$CNS/checkpoint.json" <<'PY'
+import json, sys
+p = sys.argv[1]; s = json.load(open(p)); s.pop("fork_sha", None); s.pop("completes", None); json.dump(s, open(p, "w"))
+PY
+(cd "$CN" && APEX_GIBSON=0 "$EX/init.sh" plans/n-plan.md >/dev/null 2>&1) || fail "re-init of a pre-chain run failed"
+python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s["fork_sha"]==sys.argv[2], s["fork_sha"]' "$CNS/checkpoint.json" "$FORK" \
+  || fail "re-init took the fork point from the worktree head"
+# Land: a worktree that cannot be removed leaves the run unlanded.
+LD="$SMOKE_TMP/ld37"; mkdir -p "$LD/plans"; git init -q -b main "$LD"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$LD/plans/l-plan.md"; git -C "$LD" add -A; git -C "$LD" commit -qm l
+( cd "$LD" && APEX_GIBSON=0 "$EX/init.sh" plans/l-plan.md >/dev/null 2>&1 ) || fail "init for the land test failed"
+LWT="$(st "$LD" plans/l-plan.md)/worktree"; echo doc >"$LWT/notes.md"; git -C "$LWT" add -A; git -C "$LWT" commit -qm d
+(cd "$LD" && "$EX/green-gate.sh" plans/l-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/l-plan.md 1 >/dev/null \
+  && "$CP" plans/l-plan.md review 1 "$(git -C "$LWT" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/l-plan.md complete 1 ok >/dev/null 2>&1) \
+  || fail "the land fixture task could not complete"
+git -C "$LD" add plans/l-plan.md; git -C "$LD" commit -qm tick
+git -C "$LD" worktree lock "$LWT"
+expect_refusal "landing with a worktree that cannot be removed" "could not remove the worktree" indir "$LD" "$EX/land.sh" plans/l-plan.md
+python3 -c 'import json,sys; assert not json.load(open(sys.argv[1]))["landed"]' "$(dirname "$LWT")/checkpoint.json" || fail "a run whose worktree survived was marked landed"
+ok "chain: fork point, TASK_BASE, re-classified complete, code-free gates, fail/rewind/APEX_GIBSON=0, land boundary, re-init, surviving worktree"
 
 echo ""
 echo "smoke passed: 37/37 checks"

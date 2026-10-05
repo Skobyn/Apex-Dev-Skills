@@ -120,7 +120,7 @@ refuse_if_halted() {
 # dirty_paths — uncommitted and untracked (not ignored) paths in the
 # worktree, minus the plan file and the lessons ledger; "?" when git fails.
 dirty_paths() {
-  { git -C "$WT" status --porcelain=v1 -z --untracked-files=all 2>/dev/null || printf '?? ?\0'; } | python3 -c '
+  { git -C "$WT" status --porcelain=v1 -z --untracked-files=all --ignore-submodules=none 2>/dev/null || printf '?? ?\0'; } | python3 -c '
 import os, sys
 wt, keep = sys.argv[1], {os.path.realpath(p) for p in sys.argv[2:] if p}
 recs = sys.stdin.buffer.read().split(b"\0")
@@ -170,7 +170,7 @@ case "$ACTION" in
     FLOOR="$(apex_floor "$WT" "$HEAD_V" || true)"
     EXEMPT=0
     if [[ "$(task_field gate)" == "1" && "$(task_field forced_c)" == "0" && "$(recorded_tier "$LINE_NO")" != "C" && -n "$FLOOR" ]] \
-       && git -C "$WT" diff --quiet --no-renames "$FLOOR" "$HEAD_V" 2>/dev/null && [[ -z "$(dirty_paths)" ]]; then
+       && git -C "$WT" diff --quiet --no-renames --ignore-submodules=none "$FLOOR" "$HEAD_V" 2>/dev/null && [[ -z "$(dirty_paths)" ]]; then
       EXEMPT=1
     fi
     if [[ -n "$SKIP_REVIEW" && -d "$DISPATCH_STATE" ]]; then
@@ -178,7 +178,7 @@ case "$ACTION" in
       exit 1
     fi
     if [[ "${APEX_GIBSON:-1}" != "0" && "$EXEMPT" == "0" ]]; then
-      [[ -n "$FLOOR" ]] || { echo "[checkpoint] REFUSED complete: no diff base — this run has no fork point recorded (re-run iterate.sh, or re-init the run)" >&2; exit 1; }
+      [[ -n "$FLOOR" ]] || { echo "[checkpoint] REFUSED complete: no diff base — this run has no fork point recorded (iterate.sh records it for a worktree run; a run without a worktree that predates the chain needs a new run)" >&2; exit 1; }
       # Recompute the tier from the whole task diff: the recorded tier (which
       # keeps a decision-layer raise) never outranks what the code shows.
       RT_OUT="$("$APEX_EXECUTE_SCRIPTS/risk-tier.sh" "$PLAN" "$LINE_NO" --since "$FLOOR" --no-record 9>&- 2>&1)" \

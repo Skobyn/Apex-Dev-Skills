@@ -124,8 +124,19 @@ COUNTS="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" counts "$PLAN_ABS")" \
 read -r TOTAL DONE <<<"$COUNTS"
 
 # The fork point: the first task's diff base (ADR-0003 chain). A re-init that
-# keeps the run keeps the recorded one.
-FORK_SHA="$(git -C "${WT_PATH:-$REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+# keeps the run keeps the recorded one. In a worktree run it is where the
+# worktree branch forked from the base branch (a reused worktree, or a run
+# that predates the chain, keeps its unreviewed commits in the diff); never
+# the worktree's HEAD. Without a worktree a fresh run forks at HEAD, and a
+# kept run that predates the chain gets none (risk-tier and complete refuse).
+if [[ -n "$WT_PATH" ]]; then
+  FORK_SHA="$(git -C "$WT_PATH" merge-base HEAD "$BASE_BRANCH" 2>/dev/null || true)"
+  [[ -n "$FORK_SHA" ]] || { echo "ERROR: the worktree $WT_PATH shares no history with $BASE_BRANCH — refusing to start a run." >&2; exit 1; }
+elif [[ "$KEEP_RUN" == "1" ]]; then
+  FORK_SHA=""
+else
+  FORK_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+fi
 
 # Written with json.dump so paths containing quotes or backslashes stay valid;
 # under checkpoint.sh's state lock, atomically.
