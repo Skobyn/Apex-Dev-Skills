@@ -30,8 +30,10 @@ The grammar is deliberately small, and nothing in it hides a line:
   Paths       comma-separated repo-relative globs (required when fanout=lanes)
   Budget      usd=<n> spawns=<n> minutes=<n>          (may only lower)
 
-Code fences and HTML comments are detected only to refuse ambiguity: a task
-line inside one, a directive inside one within a task block, or one left open
+Code fences, HTML comments and raw HTML blocks (<pre>, <script>, <style>,
+<textarea>) are detected only to refuse ambiguity: a task line inside one, a
+directive inside one within a task block, one left open, or a fence-looking
+line inside a fence that is not its exact closer at the opener's indentation
 makes the plan invalid. Rendering subtleties can therefore produce an error,
 never a task that runs or disappears unseen.
 """
@@ -85,36 +87,63 @@ def read_lines(path):
     return [l[:-1] if l.endswith("\r") else l for l in data.split("\n")]
 
 
+RAW_OPEN_RE = re.compile(r"^\s*<(pre|script|style|textarea)\b", re.I)
+
+
 def regions(lines):
-    """Lines inside code fences or HTML comments, detected generously (any
-    indentation; a comment opens at a line-start "<!--"). Used only to refuse
-    ambiguity, never to hide anything. Returns (inside, unclosed)."""
+    """Lines inside code fences, HTML comments and raw HTML blocks (<pre>,
+    <script>, <style>, <textarea>), detected generously. Used only to refuse
+    ambiguity, never to hide anything. Returns (inside, problem): problem is
+    an unclosed region, or nesting this parser will not guess at (a
+    fence-looking line inside a fence that is not its exact closer at the
+    opener's own indentation)."""
     inside = [False] * len(lines)
-    fence = None                      # (char, length, line_no)
+    fence = None                      # (char, length, indent, line_no)
     comment = None                    # line_no
+    raw = None                        # (tag, line_no)
     for i, line in enumerate(lines):
         if comment is not None:
             inside[i] = True
             if "-->" in line:
                 comment = None
             continue
+        if raw is not None:
+            inside[i] = True
+            if f"</{raw[0]}" in line.lower():
+                raw = None
+            continue
         m = FENCE_RE.match(line)
+        indent = len(line) - len(line.lstrip(" \t"))
         if fence is None:
             if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
-                fence = (m.group(1)[0], len(m.group(1)), i + 1)
+                fence = (m.group(1)[0], len(m.group(1)), indent, i + 1)
                 inside[i] = True
             elif line.lstrip().startswith("<!--"):
                 inside[i] = True
                 if "-->" not in line.lstrip()[4:]:
                     comment = i + 1
+            else:
+                rm = RAW_OPEN_RE.match(line)
+                if rm:
+                    inside[i] = True
+                    tag = rm.group(1).lower()
+                    if f"</{tag}" not in line.lower():
+                        raw = (tag, i + 1)
             continue
         inside[i] = True
-        if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2).strip():
+        if m:
+            closes = m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2).strip()
+            if not (closes and indent == fence[2]):
+                return inside, (f"line {i + 1}: fence-like line inside the code fence opened at line {fence[3]} "
+                                "(nested or differently indented fences are ambiguous; use a longer outer fence "
+                                "with its closer at the opener's indentation, or indent examples consistently)")
             fence = None
     if fence:
-        return inside, f"line {fence[2]}: code fence is never closed"
+        return inside, f"line {fence[3]}: code fence is never closed"
     if comment:
         return inside, f"line {comment}: HTML comment is never closed"
+    if raw:
+        return inside, f"line {raw[1]}: <{raw[0]}> block is never closed"
     return inside, None
 
 

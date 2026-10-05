@@ -273,7 +273,9 @@ with lk:
         if o is not None and force != "1":
             # Held by another plan, or by this plan in another session
             # (spec §5.3 D: plan_hash + session_id), unless stale.
-            other_session = bool(session) and bool(o.get("session_id")) and o.get("session_id") != session
+            # Sessions must match exactly: a caller without a session id (a
+            # shell or cron run) is a different session from one that has one.
+            other_session = (o.get("session_id") or "") != (session or "")
             if o == {} or ((o.get("id") != oid or other_session) and not stale(o)):
                 sys.exit(10)   # BUSY (an uncaught error exits 1: never mistaken for BUSY)
         same = bool(o) and o.get("id") == oid and str(o.get("line_no")) == line
