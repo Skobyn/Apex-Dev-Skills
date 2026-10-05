@@ -119,8 +119,11 @@ else
   [[ -n "$LAND_SHA" ]] || { echo "ERROR: neither the worktree ($WT_PATH) nor branch $WT_BRANCH exists — nothing to land." >&2; exit 1; }
 fi
 
-# 5b. apex-dispatch evidence: with dispatch state, the ledger's hash chain must
-#     verify and every completed task must carry route evidence (spec §6).
+# 5b. apex-dispatch: with dispatch state, the ledger's hash chain must verify
+#     (ledger.sh verify). Per-task route evidence was already required when each
+#     task was checked off (checkpoint.sh complete → ledger.sh evidence, which
+#     neither APEX_GIBSON=0 nor --skip-review waives); a verified chain means
+#     those rows were not rewritten since.
 DISPATCH_STATE="$STATE_DIR/dispatch"
 DISPATCH="$(apex_dispatch_root)"
 if [[ -d "$DISPATCH_STATE" ]]; then   # --force does not bypass the ledger
@@ -191,6 +194,6 @@ apex_lock_release "$PLAN_HASH"
 if [[ -d "$DISPATCH_STATE" && -n "$DISPATCH" ]]; then
   "$DISPATCH/scripts/ledger.sh" export --state "$STATE_DIR" --plan "$PLAN_ABS" \
     || echo "[land] WARNING: ledger export failed (the landing itself succeeded)" >&2
-  "$DISPATCH/scripts/report.sh" --plan "$PLAN_ABS" --state "$STATE_DIR" || true
+  [[ -x "$DISPATCH/scripts/report.sh" ]] && { "$DISPATCH/scripts/report.sh" --plan "$PLAN_ABS" --state "$STATE_DIR" || true; }
 fi
 echo "[land] DONE — $WT_BRANCH merged into $BASE_BRANCH and worktree removed."

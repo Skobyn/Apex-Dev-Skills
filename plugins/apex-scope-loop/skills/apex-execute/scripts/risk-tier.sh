@@ -36,6 +36,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
+[[ "$LINE_NO" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "ERROR: LINE_NO must be a plan line number, got '$LINE_NO'" >&2; exit 2; }
 
 APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
 # shellcheck source=_lib.sh
@@ -66,13 +67,15 @@ raise() { # raise <tier> <reason>
 
 # Tier C: path signals (case-insensitive).
 # Short tokens (sso, jwt, acl, role, pii, csp, cors, saml, rbac) must stand
-# alone as a path word: "lessons.sh" is not single sign-on. Longer tokens
-# still match inside words (e.g. "authz", "sessions", "billing_v2").
+# alone as a path word: "lessons.sh" is not single sign-on. A camelCase hump
+# is a word boundary ("jwtVerify.ts", "userRoles.ts", "JWTStrategy.java").
+# Longer tokens still match inside words (e.g. "authz", "sessions", "billing_v2").
 C_PATHS='(auth|login|logout|session|oauth|password|passwd|credential|permission|billing|payment|stripe|paypal|invoice|pricing|checkout|subscription|refund|ledger|wallet|consent|gdpr|ccpa|privacy|personal|migration|migrate|schema|\.sql$|prisma|secret|crypto|encrypt|security|middleware|rate.?limit|webhook|alert|pagerduty|oncall|incident|prod(uction)?[-_.]?(data|db|config))'
 C_WORDS='(^|[^a-z0-9])(sso|jwt|acl|acls|role|roles|pii|csp|cors|saml|rbac)([^a-z0-9]|$)'
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  if printf '%s' "$f" | grep -qiE "$C_PATHS" || printf '%s' "$f" | grep -qiE "$C_WORDS"; then
+  words="$(printf '%s' "$f" | sed -E 's/([a-z0-9])([A-Z])/\1_\2/g; s/([A-Z])([A-Z][a-z])/\1_\2/g')"
+  if printf '%s' "$f" | grep -qiE "$C_PATHS" || printf '%s' "$words" | grep -qiE "$C_WORDS"; then
     raise C "tier-c path: $f"
   fi
 done <<<"$FILES"
@@ -108,7 +111,16 @@ print(json.dumps({"changed_paths": [f for f in files.splitlines() if f][:200], "
                   "changed_files": int(nfiles or 0), "task_tags": [t for t in tags.split(",") if t]}))
 PY
 )"
-    DOUT="$(timeout "${APEX_DECIDE_TIMEOUT:-10}" bash -c "$APEX_DECIDE_CMD"' --rubric risk-tier@1 --state "$1" --json' _ "$DSTATE" 2>/dev/null || true)"
+    # Timeout in python: no dependency on coreutils `timeout` (absent on stock macOS).
+    DOUT="$(python3 -c '
+import subprocess, sys
+cmd, state, limit = sys.argv[1:]
+try:
+    p = subprocess.run(["bash", "-c", cmd + " --rubric risk-tier@1 --state \"$1\" --json", "_", state],
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=float(limit))
+    sys.stdout.write(p.stdout.decode("utf-8", "replace"))
+except Exception:
+    pass' "$APEX_DECIDE_CMD" "$DSTATE" "${APEX_DECIDE_TIMEOUT:-10}" 2>/dev/null || true)"
     DTIER="$(python3 -c '
 import json, sys
 try:
@@ -128,16 +140,21 @@ print(v if v in ("A", "B", "C") and not d.get("uncertain") else "")' "$DOUT" 2>/
 fi
 
 # Persist (tier only ratchets upward — diffs may drift into C, never out).
-TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" <<'PY'
-import json, sys
-path, line_no, tier, since = sys.argv[1:]
+# Under checkpoint.sh's state lock, written atomically.
+TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" <<'PY'
+import fcntl, json, os, sys
+path, line_no, tier, since, lock = sys.argv[1:]
+fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX)
 s = json.load(open(path))
 tiers = s.setdefault("tiers", {})
 prev = (tiers.get(line_no) or {}).get("tier", "A")
 order = {"A": 0, "B": 1, "C": 2}
 final = tier if order[tier] >= order.get(prev, 0) else prev
 tiers[line_no] = {"tier": final, "since": since}
-json.dump(s, open(path, "w"), indent=2)
+with open(path + ".tmp", "w") as f:
+    json.dump(s, f, indent=2)
+os.replace(path + ".tmp", path)
 print(final)
 PY
 )"

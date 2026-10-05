@@ -641,7 +641,7 @@ printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n\nprose line\n' >
 ( cd "$CK" && APEX_GIBSON=0 "$EX/init.sh" plans/c-plan.md >/dev/null 2>&1 ) || fail "init for the checkpoint test failed"
 CP="$EX/checkpoint.sh"; CWT="$(st "$CK" plans/c-plan.md)/worktree"
 sha() { git -C "$CWT" rev-parse HEAD; }
-expect_refusal "short review SHA" "full 40-character" indir "$CK" "$CP" plans/c-plan.md review 1 abc123 APPROVE
+expect_refusal "short review SHA" "not a full commit SHA" indir "$CK" "$CP" plans/c-plan.md review 1 abc123 APPROVE
 for i in 1 2 3; do git -C "$CWT" commit -q --allow-empty -m "r$i"; (cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES >/dev/null) || fail "review round $i was refused"; done
 git -C "$CWT" commit -q --allow-empty -m r4
 expect_refusal "a fourth review round" "REVIEW_CAP" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE
@@ -656,24 +656,36 @@ PY
 expect_refusal "Tier C without an adversarial review" "adversarial review" indir "$CK" "$CP" plans/c-plan.md complete 1 ok
 (cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE --role adversarial >/dev/null) || fail "adversarial review not recorded"
 (cd "$CK" && "$CP" plans/c-plan.md complete 1 ok >/dev/null 2>&1) || fail "complete refused a fully reviewed, approved Tier C head"
-expect_refusal "complete on a checked line" "not an unchecked task" indir "$CK" "$CP" plans/c-plan.md complete 1 ok
-expect_refusal "complete on prose" "not an unchecked task" indir "$CK" "$CP" plans/c-plan.md complete 4 ok
-C0="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["completed_tasks"])' "$(st "$CK" plans/c-plan.md)/checkpoint.json")"
-(cd "$CK" && "$CP" plans/c-plan.md rewind 4 >/dev/null)
-C1="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["completed_tasks"])' "$(st "$CK" plans/c-plan.md)/checkpoint.json")"
-[ "$C0" = "$C1" ] || fail "rewind of an unchecked line changed completed_tasks ($C0 -> $C1)"
+expect_refusal "complete on a checked line" "already checked" indir "$CK" "$CP" plans/c-plan.md complete 1 ok
+expect_refusal "complete on prose" "not a task" indir "$CK" "$CP" plans/c-plan.md complete 4 ok
+expect_refusal "rewind on prose" "not a task" indir "$CK" "$CP" plans/c-plan.md rewind 4
+done_n() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["completed_tasks"])' "$(st "$1" "$2")/checkpoint.json"; }
+C0="$(done_n "$CK" plans/c-plan.md)"
+(cd "$CK" && "$CP" plans/c-plan.md rewind 1 >/dev/null) || fail "rewind of a checked task failed"
+(cd "$CK" && "$CP" plans/c-plan.md rewind 1 >/dev/null) || fail "rewind of an unchecked task failed"
+C1="$(done_n "$CK" plans/c-plan.md)"
+[ "$C1" = "$((C0 - 1))" ] && grep -q '^- \[ \] \*\*Phase 1.1' "$CK/plans/c-plan.md" || fail "rewind did not uncheck once and decrement once ($C0 -> $C1)"
 ok "checkpoint: SHA form, round cap, attempts, Tier C adversarial, complete/rewind targets"
 
 # 33. Provenance (spec §5.3 G): with dispatch state, a typed verdict is refused;
 #     a reviews-raw record with the same verdict at the same SHA is accepted.
 CKS="$(st "$CK" plans/c-plan.md)"; mkdir -p "$CKS/dispatch/reviews-raw"
 git -C "$CWT" commit -q --allow-empty -m p1
-expect_refusal "typed verdict with dispatch state" "needs provenance" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE
+expect_refusal "typed verdict with dispatch state" "needs provenance" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv
 printf '{"head_sha": "%s", "verdict": "REQUEST_CHANGES", "role": "reviewer"}' "$(sha)" >"$CKS/dispatch/reviews-raw/ag1.json"
-expect_refusal "verdict that contradicts its record" "says REQUEST_CHANGES" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE --agent-id ag1
-(cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES --agent-id ag1 >/dev/null) || fail "a verdict matching its reviews-raw record was refused"
-expect_refusal "path-like agent id" "unexpected characters" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE --agent-id ../x
-ok "checkpoint: provenance required with dispatch state"
+expect_refusal "verdict that contradicts its record" "says REQUEST_CHANGES" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --agent-id ag1
+expect_refusal "default reviewer name with dispatch state" "name the reviewer" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES --agent-id ag1
+expect_refusal "role relabelled against its record" "does not match" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1 --role adversarial
+(cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1 >/dev/null) || fail "a verdict matching its reviews-raw record was refused"
+expect_refusal "a provenance record used twice" "already recorded" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" REQUEST_CHANGES rv --agent-id ag1
+expect_refusal "path-like agent id" "unexpected characters" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --agent-id ../x
+mkdir -p "$SMOKE_TMP/forged"; printf '{"head_sha": "%s", "verdict": "APPROVE", "role": "adversarial"}' "$(sha)" >"$SMOKE_TMP/forged/result.json"
+expect_refusal "a worker result outside the shim directories" "not a shim worker directory" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$SMOKE_TMP/forged"
+mkdir -p "$CKS/dispatch/workers/w1"; cp "$SMOKE_TMP/forged/result.json" "$CKS/dispatch/workers/w1/"
+(cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$CKS/dispatch/workers/w1" >/dev/null) || fail "a worker result inside the dispatch state was refused"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["reviews"]["1"]["records"][-1]; assert r["role"]=="adversarial" and r["provenance"]=="worker", r' "$CKS/checkpoint.json" || fail "the role was not taken from the worker record"
+expect_refusal "--skip-review with dispatch state" "skip-review is not accepted" indir "$CK" "$CP" plans/c-plan.md complete 1 ok --skip-review why
+ok "checkpoint: provenance required with dispatch state; role from the record; one use per record"
 
 # 34. risk-tier: short tokens are whole words ("lessons" is not SSO); the
 #     decision layer can raise a tier, never lower it.
@@ -686,9 +698,14 @@ has "^TIER: A" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0"
 printf '#!/bin/sh\necho "{\\"verdict\\": \\"$FAKE_TIER\\", \\"uncertain\\": false}"\n' >"$SMOKE_TMP/decide.sh"; chmod +x "$SMOKE_TMP/decide.sh"
 has "^TIER: B" "$(cd "$RT" && FAKE_TIER=B APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0" --classify)" || fail "the decision layer could not raise the tier"
 has "^TIER: B" "$(cd "$RT" && FAKE_TIER=A APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0" --classify)" || fail "the decision layer lowered a recorded tier"
+mkdir -p "$RWT/src"; echo x >"$RWT/src/jwtVerify.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm j; B1="$(git -C "$RWT" rev-parse HEAD~1)"
+has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 2 --since "$B1")" || fail "src/jwtVerify.ts (camelCase) was not Tier C"
+echo x >"$RWT/src/userRoles.ts"; git -C "$RWT" add -A; git -C "$RWT" commit -qm u
+has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 3 --since "$(git -C "$RWT" rev-parse HEAD~1)")" || fail "src/userRoles.ts (camelCase) was not Tier C"
 mkdir -p "$RWT/src/sso"; echo x >"$RWT/src/sso/login.py"; git -C "$RWT" add -A; git -C "$RWT" commit -qm s
 has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$B0")" || fail "an sso/ path was not Tier C"
-ok "risk-tier: whole-word short tokens; decision layer raises only"
+expect_refusal "a non-numeric risk-tier line" "plan line number" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md '1,$'
+ok "risk-tier: whole-word and camelCase short tokens; decision layer raises only"
 
 # 35. green-gate re-baselines a step the baseline never ran, at the fork SHA,
 #     only when the fork resolves the same command (a plan-added step stays strict).
@@ -708,5 +725,43 @@ NWT="$(st "$NB" plans/n-plan.md)/worktree"; printf 'test:\n\t@false\n' >"$NWT/Ma
 has "GATE_STEP: test NEW_FAILURE" "$( (cd "$NB" && "$EX/green-gate.sh" plans/n-plan.md check) 2>&1 || true)" || fail "a failing step the plan itself added was excused as pre-existing"
 ok "green-gate: re-baseline at the fork only for steps the fork resolves"
 
+# 36. checkpoint hardening: LINE_NO is a task line number (no sed address
+#     injection, no "01" key); a REQUEST_CHANGES at a head survives `fail`;
+#     Tier C never takes --skip-review; a missing tier is never waived; parallel
+#     reviews keep every record; a halt clears with `resume`, not `rewind`.
+CH="$SMOKE_TMP/ch36"; mkdir -p "$CH/plans"; git init -q -b main "$CH"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n- [ ] **Phase 1.2** [docs] b\n  - Acceptance: true\n' >"$CH/plans/h-plan.md"; git -C "$CH" add -A; git -C "$CH" commit -qm h
+( cd "$CH" && APEX_GIBSON=0 "$EX/init.sh" plans/h-plan.md >/dev/null 2>&1 ) || fail "init for the hardening test failed"
+CHS="$(st "$CH" plans/h-plan.md)"; HWT="$CHS/worktree"; hsha() { git -C "$HWT" rev-parse HEAD; }
+P0="$(cat "$CH/plans/h-plan.md")"
+for bad in '1,$' 01 0 2; do
+  expect_refusal "complete with LINE_NO '$bad'" "LINE_NO\|not a task" indir "$CH" "$CP" plans/h-plan.md complete "$bad" ok --skip-review n/a
+  expect_refusal "rewind with LINE_NO '$bad'" "LINE_NO\|not a task" indir "$CH" "$CP" plans/h-plan.md rewind "$bad"
+done
+[ "$P0" = "$(cat "$CH/plans/h-plan.md")" ] || fail "a refused LINE_NO still edited the plan"
+expect_refusal "no tier recorded, --skip-review" "no risk tier recorded" indir "$CH" "$CP" plans/h-plan.md complete 1 ok --skip-review n/a
+git -C "$HWT" commit -q --allow-empty -m h1
+(cd "$CH" && "$EX/green-gate.sh" plans/h-plan.md check >/dev/null 2>&1) || true
+python3 - "$CHS/checkpoint.json" <<'PY'
+import json, sys
+p = sys.argv[1]; s = json.load(open(p)); s.setdefault("tiers", {}).update({"1": {"tier": "C"}, "3": {"tier": "A"}}); json.dump(s, open(p, "w"))
+PY
+(cd "$CH" && "$CP" plans/h-plan.md approve 1 "$(hsha)" "approve G12 1" >/dev/null)
+expect_refusal "Tier C with --skip-review" "cannot waive" indir "$CH" "$CP" plans/h-plan.md complete 1 ok --skip-review n/a
+(cd "$CH" && "$CP" plans/h-plan.md review 3 "$(hsha)" REQUEST_CHANGES >/dev/null && "$CP" plans/h-plan.md fail 3 retry >/dev/null \
+  && "$CP" plans/h-plan.md review 3 "$(hsha)" APPROVE >/dev/null) || fail "the laundering setup failed"
+expect_refusal "a REQUEST_CHANGES laundered through fail" "requested changes" indir "$CH" "$CP" plans/h-plan.md complete 3 ok
+pids=(); for l in correctness security consent money performance maintainability; do v=APPROVE; [ "$l" = money ] && v=REQUEST_CHANGES
+  (cd "$CH" && "$CP" plans/h-plan.md review 1 "$(hsha)" "$v" "r-$l" --role "lens:$l" >/dev/null 2>&1) & pids+=($!); done
+for p in "${pids[@]}"; do wait "$p" || fail "a parallel review was refused"; done
+python3 -c 'import json,sys; r=[x for x in json.load(open(sys.argv[1]))["reviews"]["1"]["records"]]; assert len(r)==6 and sum(x["verdict"]=="REQUEST_CHANGES" for x in r)==1, len(r)' "$CHS/checkpoint.json" \
+  || fail "parallel reviews lost a record"
+for i in 1 2 3; do (cd "$CH" && "$CP" plans/h-plan.md fail 1 "f$i" >/dev/null); done
+(cd "$CH" && "$CP" plans/h-plan.md rewind 1 >/dev/null)
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["halted"]' "$CHS/checkpoint.json" || fail "rewind of an unchecked task cleared a halt"
+(cd "$CH" && "$CP" plans/h-plan.md resume "human looked" >/dev/null)
+python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert not s["halted"] and s["consecutive_failures"]==0' "$CHS/checkpoint.json" || fail "resume did not clear the halt"
+ok "checkpoint: line validation, no verdict laundering, no Tier C skip, parallel-safe, resume"
+
 echo ""
-echo "smoke passed: 35/35 checks"
+echo "smoke passed: 36/36 checks"
