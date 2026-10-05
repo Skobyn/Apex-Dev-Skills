@@ -76,16 +76,23 @@ fi
 # Committed changes since SINCE plus anything still uncommitted. Renames are
 # split into delete + add (an auth file moved to a bland name keeps its old
 # path in the list); paths are not octal-quoted.
-# Submodule bumps count even when .gitmodules says ignore = all; the plan file
-# and lessons ledger (edited in place when there is no worktree) do not.
+# Submodule bumps count even when .gitmodules says ignore = all. Only in a run
+# without a worktree (the plan and the lessons ledger are edited in place in
+# the same checkout) are those two exact files left out: the plan file when it
+# is a regular .md file, the ledger only at .claude/apex-scope-loop/LESSONS.md.
 GIT=(git -c core.quotepath=false -C "$WT")
 DIFF_OPTS=(--no-renames --ignore-submodules=none --no-ext-diff)
 EXCL=()
-for p in "$PLAN_ABS" "${LESSONS_LEDGER:-}"; do
-  [[ -n "$p" ]] || continue
-  rel="$(python3 -c 'import os,sys; r=os.path.relpath(os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])); print("" if r.startswith("..") else r)' "$p" "$WT")"
-  [[ -n "$rel" ]] && EXCL+=(":(exclude,top)$rel")
-done
+if [[ -z "$(read_field worktree_branch)" ]]; then
+  for p in "$PLAN_ABS" "${LESSONS_LEDGER:-}"; do
+    [[ -n "$p" && -f "$p" && ! -L "$p" ]] || continue
+    rel="$(python3 -c 'import os,sys; r=os.path.relpath(os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])); print("" if r.startswith("..") else r)' "$p" "$WT")"
+    [[ -n "$rel" ]] || continue
+    if [[ "$p" == "$PLAN_ABS" ]]; then [[ "$rel" == *.md ]] || continue
+    else [[ "$rel" == ".claude/apex-scope-loop/LESSONS.md" ]] || continue; fi
+    EXCL+=(":(exclude,top,literal)$rel")
+  done
+fi
 PATHSPEC=(-- . "${EXCL[@]}")
 FILES="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only HEAD "${PATHSPEC[@]}"; \
             "${GIT[@]}" ls-files --others --exclude-standard "${PATHSPEC[@]}"; } 2>/dev/null | sort -u | sed '/^$/d')"
@@ -133,9 +140,9 @@ done <<<"$FILES"
 
 # Tier C: content signals in added lines (catches risk in innocuously named files).
 C_CONTENT='(stripe|charge\(|amount_cents|price|currency|bcrypt|argon2|jwt\.|verify_?token|set-cookie|httponly|samesite|csrf|consent|date_of_birth|ssn|social_security|DROP (TABLE|COLUMN)|ALTER TABLE|DELETE FROM|TRUNCATE)'
-ADDED="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null | grep -E '^\+[^+]' || true)"
-if [[ -n "$ADDED" ]] && printf '%s' "$ADDED" | grep -qiE "$C_CONTENT"; then
-  hit="$(printf '%s' "$ADDED" | grep -oiE "$C_CONTENT" | head -1)"
+ADDED="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null | tr -d '\000' | grep -aE '^\+[^+]' || true)"
+if [[ -n "$ADDED" ]] && printf '%s' "$ADDED" | grep -aqiE "$C_CONTENT"; then
+  hit="$(printf '%s' "$ADDED" | grep -aoiE "$C_CONTENT" | head -1)"
   raise C "tier-c content signal in diff: '$hit'"
 fi
 

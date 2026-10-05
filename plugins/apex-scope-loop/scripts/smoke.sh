@@ -895,5 +895,47 @@ expect_refusal "landing with a worktree that cannot be removed" "could not remov
 python3 -c 'import json,sys; assert not json.load(open(sys.argv[1]))["landed"]' "$(dirname "$LWT")/checkpoint.json" || fail "a run whose worktree survived was marked landed"
 ok "chain: fork point, TASK_BASE, re-classified complete, code-free gates, fail/rewind/APEX_GIBSON=0, land boundary, re-init, surviving worktree"
 
+# 38. Chain hardening: no tier escapes through an environment-chosen
+#     exclusion, a binary file in the same diff, a reset onto an older
+#     commit, a replace ref, or a fork point that is no longer on the base.
+mkrun() { # mkrun DIR — a one-task docs run, initialised; prints its worktree
+  mkdir -p "$1/plans"; git init -q -b main "$1"
+  printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n- [ ] **Phase 1.2** [docs] b\n  - Acceptance: true\n' >"$1/plans/k-plan.md"
+  git -C "$1" add -A; git -C "$1" commit -qm k
+  ( cd "$1" && APEX_GIBSON=0 "$EX/init.sh" plans/k-plan.md >/dev/null 2>&1 ) || return 1
+  printf '%s\n' "$(st "$1" plans/k-plan.md)/worktree"
+}
+PAY='import stripe  # amount_cents'
+K1="$SMOKE_TMP/k1"; KW="$(mkrun "$K1")" || fail "init for check 38 failed"
+mkdir -p "$KW/src/billing"; echo "$PAY" >"$KW/src/billing/payment.py"; git -C "$KW" add -A; git -C "$KW" commit -qm pay
+has "^TIER: C" "$(cd "$K1" && APEX_LESSONS_FILE="$KW/src" "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record)" || fail "APEX_LESSONS_FILE hid code from the task diff"
+K2="$SMOKE_TMP/k2"; KW="$(mkrun "$K2")" || fail "init for check 38 failed"
+echo "$PAY" >"$KW/pay_util.py"; printf 'PNG\000\001\002' >"$KW/icon.png"; git -C "$KW" add -A; git -C "$KW" commit -qm bin
+has "^TIER: C" "$(cd "$K2" && "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record)" || fail "a binary file in the diff hid a content signal"
+K3="$SMOKE_TMP/k3"; KW="$(mkrun "$K3")" || fail "init for check 38 failed"; K3F="$(git -C "$KW" rev-parse HEAD)"
+echo "$PAY" >"$KW/pay_util.py"; git -C "$KW" add -A; git -C "$KW" commit -qm x; KX="$(git -C "$KW" rev-parse HEAD)"
+git -C "$KW" rm -q pay_util.py; echo doc >"$KW/notes.md"; git -C "$KW" add -A; git -C "$KW" commit -qm y
+(cd "$K3" && "$EX/green-gate.sh" plans/k-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/k-plan.md 1 >/dev/null \
+  && "$CP" plans/k-plan.md review 1 "$(git -C "$KW" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/k-plan.md complete 1 ok >/dev/null 2>&1) \
+  || fail "the reset fixture task could not complete"
+git -C "$KW" reset -q --hard "$KX"
+has "^TASK_BASE: $K3F" "$(cd "$K3" && "$EX/iterate.sh" plans/k-plan.md 2>&1)" || fail "a reset onto an older commit moved the floor onto that commit"
+has "^TIER: C" "$(cd "$K3" && "$EX/risk-tier.sh" plans/k-plan.md 3 --no-record)" || fail "code under a reset escaped the task diff"
+K4="$SMOKE_TMP/k4"; KW="$(mkrun "$K4")" || fail "init for check 38 failed"; K4F="$(git -C "$KW" rev-parse HEAD)"
+echo "$PAY" >"$KW/pay_util.py"; git -C "$KW" add -A; git -C "$KW" commit -qm p
+git -C "$KW" replace "$K4F" "$(git -C "$KW" commit-tree "HEAD^{tree}" -m fake)"
+has "^TIER: C" "$(cd "$K4" && "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record)" || fail "a replace ref changed what the task diff shows"
+K5="$SMOKE_TMP/k5"; KW="$(mkrun "$K5")" || fail "init for check 38 failed"
+python3 - "$(dirname "$KW")/checkpoint.json" <<'PY'
+import json, sys
+p = sys.argv[1]; s = json.load(open(p)); s.pop("fork_sha", None); s.pop("completes", None); json.dump(s, open(p, "w"))
+PY
+echo "$PAY" >"$KW/pay_util.py"; git -C "$KW" add -A; git -C "$KW" commit -qm p
+git -C "$K5" merge -q --no-ff -m hand "$(git -C "$KW" symbolic-ref --short HEAD)"
+(cd "$K5" && "$EX/iterate.sh" plans/k-plan.md >/dev/null 2>&1) || true
+git -C "$K5" reset -q --hard HEAD~1
+expect_refusal "a fork point no longer on the base branch" "not on main\|no diff base" indir "$K5" "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record
+ok "chain hardening: env exclusions, binary diffs, resets, replace refs, fork point on the base"
+
 echo ""
-echo "smoke passed: 37/37 checks"
+echo "smoke passed: 38/38 checks"

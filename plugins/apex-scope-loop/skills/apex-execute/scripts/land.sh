@@ -190,7 +190,7 @@ if [[ -d "$WT_PATH" ]]; then
     # A surviving worktree must not be adopted by a later run as if it were
     # new, so the run is not marked landed until it is gone.
     echo "ERROR: merged, but could not remove the worktree $WT_PATH (locked, or it has submodules)." >&2
-    echo "       Remove it (git worktree remove --force '$WT_PATH'), then re-run land.sh to finish." >&2
+    echo "       Unlock it (git worktree unlock '$WT_PATH') or deinit its submodules, then re-run land.sh to finish." >&2
     exit 1
   fi
 fi

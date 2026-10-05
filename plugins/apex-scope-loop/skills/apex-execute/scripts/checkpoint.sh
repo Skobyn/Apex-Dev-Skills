@@ -118,11 +118,21 @@ refuse_if_halted() {
   return 0
 }
 # dirty_paths — uncommitted and untracked (not ignored) paths in the
-# worktree, minus the plan file and the lessons ledger; "?" when git fails.
+# worktree; "?" when git fails. In a run without a worktree the plan file and
+# the lessons ledger (edited in place) are left out — as exact regular files,
+# the plan only as a .md file, the ledger only at .claude/apex-scope-loop/LESSONS.md.
 dirty_paths() {
   { git -C "$WT" status --porcelain=v1 -z --untracked-files=all --ignore-submodules=none 2>/dev/null || printf '?? ?\0'; } | python3 -c '
 import os, sys
-wt, keep = sys.argv[1], {os.path.realpath(p) for p in sys.argv[2:] if p}
+wt, has_wt, plan, ledger = sys.argv[1:]
+keep = set()
+if has_wt != "1":
+    for p in (plan, ledger):
+        if p and os.path.isfile(p) and not os.path.islink(p):
+            rel = os.path.relpath(os.path.abspath(p), os.path.abspath(wt))
+            if (p == plan and not rel.endswith(".md")) or (p != plan and rel != ".claude/apex-scope-loop/LESSONS.md"):
+                continue
+            keep.add(os.path.abspath(p))
 recs = sys.stdin.buffer.read().split(b"\0")
 i = 0
 while i < len(recs):
@@ -132,8 +142,8 @@ while i < len(recs):
     xy, path = r[:2], r[3:]
     if "R" in xy or "C" in xy:
         i += 1                                  # the source path record
-    if path == "?" or os.path.realpath(os.path.join(wt, path)) not in keep:
-        print(path)' "$WT" "$PLAN_ABS" "${LESSONS_LEDGER:-}"
+    if path == "?" or os.path.abspath(os.path.join(wt, path)) not in keep:
+        print(path)' "$WT" "$([[ -n "$(read_field worktree_branch)" ]] && echo 1 || echo 0)" "$PLAN_ABS" "${LESSONS_LEDGER:-}"
 }
 need_sha() {
   [[ "$1" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "[checkpoint] REFUSED $ACTION: '$1' is not a full commit SHA" >&2; exit 1; }

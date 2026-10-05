@@ -24,6 +24,11 @@
 # honoured when no 0.3.0 dir exists yet.
 
 APEX_EXECUTE_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The harness reads history as committed: replace refs, grafts and inherited
+# repository redirection cannot change what a diff shows.
+export GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/nonexistent/apex-scope-loop-no-grafts
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE \
+      GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
 APEX_SCOPE_LOOP_PLUGIN_ROOT="$(cd "$APEX_EXECUTE_SCRIPTS/../../.." && pwd)"
 
 apex_sha12() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi | cut -c1-12; }
@@ -115,21 +120,34 @@ apex_halt_files() {
 
 # apex_floor DIR [REV] — the current task's diff base (ADR-0003, the chain):
 # the head the last harness-on `complete` verified, else the run's fork point
-# (fork_sha, written by init.sh). When that is no longer an ancestor of REV
-# (default HEAD in DIR; after a rebase or amend) it falls back to their
-# merge-base, which only widens the diff. Prints nothing and returns 1 when no
-# floor resolves — callers refuse; the floor is never REV itself by default.
+# (fork_sha, written by init.sh). The fork point must still be on the base
+# branch. When the last verified head is not an ancestor of REV (default HEAD
+# in DIR; after a rebase, amend or reset) the floor drops back to the fork
+# point (or its merge-base with REV): never to a commit that only REV's own
+# history picked. Prints nothing and returns 1 when no floor resolves
+# (reason on stderr) — callers refuse.
 apex_floor() {
-  local dir="$1" rev="${2:-HEAD}" f
-  f="$(python3 -c '
+  local dir="$1" rev="${2:-HEAD}" last fork base f
+  { IFS= read -r last; IFS= read -r fork; IFS= read -r base; } < <(python3 -c '
 import json, sys
 s = json.load(open(sys.argv[1]))
 c = s.get("completes") or []
-print(c[-1]["head"] if c else (s.get("fork_sha") or ""))' "$CHECKPOINT" 2>/dev/null)" || return 1
-  [[ -n "$f" ]] || return 1
-  f="$(git -C "$dir" rev-parse -q --verify "${f}^{commit}" 2>/dev/null)" || return 1
-  if ! git -C "$dir" merge-base --is-ancestor "$f" "$rev" 2>/dev/null; then
-    f="$(git -C "$dir" merge-base "$f" "$rev" 2>/dev/null)" || return 1
+print(c[-1]["head"] if c else "")
+print(s.get("fork_sha") or "")
+print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
+  [[ -n "$fork" ]] || { echo "apex_floor: no fork point recorded" >&2; return 1; }
+  fork="$(git -C "$dir" rev-parse -q --verify "${fork}^{commit}" 2>/dev/null)" \
+    || { echo "apex_floor: the fork point is not a commit here" >&2; return 1; }
+  if [[ -n "$base" ]] && ! git -C "$dir" merge-base --is-ancestor "$fork" "refs/heads/$base" 2>/dev/null; then
+    echo "apex_floor: the fork point ${fork:0:12} is not on $base (the base branch was rewritten, or a merge into it was undone) — start a new run" >&2
+    return 1
+  fi
+  f="$fork"
+  if [[ -n "$last" ]] && last="$(git -C "$dir" rev-parse -q --verify "${last}^{commit}" 2>/dev/null)" \
+     && git -C "$dir" merge-base --is-ancestor "$last" "$rev" 2>/dev/null; then
+    f="$last"
+  elif ! git -C "$dir" merge-base --is-ancestor "$fork" "$rev" 2>/dev/null; then
+    f="$(git -C "$dir" merge-base "$fork" "$rev" 2>/dev/null)" || { echo "apex_floor: $rev shares no history with the fork point" >&2; return 1; }
   fi
   [[ -n "$f" ]] || return 1
   printf '%s\n' "$f"
