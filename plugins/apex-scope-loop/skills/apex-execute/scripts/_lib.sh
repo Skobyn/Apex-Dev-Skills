@@ -199,8 +199,12 @@ apex_dirty() {
   [[ -n "$st" ]] && printf '%s\n' "$st"
   # Untracked files: only committed .gitignore files hide them (not
   # .git/info/exclude or core.excludesFile); an untracked .gitignore is itself
-  # a difference from the head (modified ones show in status) unless a
-  # committed .gitignore ignores it (a tool's cache, e.g. .pytest_cache/).
+  # a difference from the head (modified ones show in status) unless committed
+  # rules ignore the directory it sits in (a tool's cache, e.g. .pytest_cache/):
+  # git never reads a .gitignore inside an ignored directory, so it hides
+  # nothing. Matching the file's own name is not enough ('.*' ignores
+  # lib/.gitignore while lib/.gitignore still hides lib/'s files). Any error
+  # reports every candidate.
   untracked="$( { apex_git "$dir" ls-files -o --exclude-per-directory=.gitignore -- . ':(exclude,top).dev-plan-state'
                  apex_git "$dir" ls-files -o -z -- ':(glob)**/.gitignore' ':(exclude,top).dev-plan-state' \
                    | python3 -c '
@@ -208,19 +212,28 @@ import subprocess, sys
 cand = [p for p in sys.stdin.buffer.read().split(b"\0") if p]
 if not cand:
     sys.exit(0)
-git = sys.argv[1:]
-tracked = set(subprocess.run(git + ["ls-files", "-z", "--", ":(glob)**/.gitignore"], capture_output=True).stdout.split(b"\0"))
-r = subprocess.run(git + ["-c", "core.excludesFile=/dev/null", "check-ignore", "-z", "-v", "-n", "--stdin"],
-                   input=b"".join(p + b"\0" for p in cand), capture_output=True)
-f = r.stdout.split(b"\0")
 ok = set()
-for i in range(0, len(f) - 3, 4):   # source, line, pattern, path
-    if f[i] in tracked:              # ignored by a committed .gitignore
-        ok.add(f[i + 3])
-for p in cand:                       # anything unanswered counts as a difference
+try:
+    git = sys.argv[1:]
+    tracked = set(subprocess.run(git + ["ls-files", "-z", "--", ":(glob)**/.gitignore"],
+                                 capture_output=True, check=True).stdout.split(b"\0"))
+    dirs = sorted({p.rsplit(b"/", 1)[0] for p in cand if b"/" in p})   # a top-level one is never trusted
+    if dirs:
+        r = subprocess.run(git + ["-c", "core.excludesFile=/dev/null", "check-ignore", "-z", "-v", "-n", "--stdin"],
+                           input=b"".join(d + b"\0" for d in dirs), capture_output=True)
+        f = r.stdout.split(b"\0")
+        ign = set()
+        for i in range(0, len(f) - 3, 4):   # source, line, pattern, path
+            if f[i] in tracked and f[i + 2] and not f[i + 2].startswith(b"!"):
+                ign.add(f[i + 3])           # the directory is ignored by a committed rule
+        ok = {p for p in cand if b"/" in p and p.rsplit(b"/", 1)[0] in ign}
+except Exception:
+    ok = set()
+for p in cand:
     if p not in ok:
         sys.stdout.buffer.write(p + b"\n")' env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-                       -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_NAMESPACE git --no-pager -C "$dir"
+                       -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_NAMESPACE git --no-pager -C "$dir" \
+                   || echo "(could not check untracked .gitignore files)"
                } 2>/dev/null | sort -u)"
   [[ -n "$untracked" ]] && printf 'untracked: %s\n' "${untracked//$'\n'/, }"
   flags="$(apex_git "$dir" ls-files -v 2>/dev/null | awk '/^([a-z]|S) / { n++; if (n <= 5) l = l " " substr($0, 3) } END { if (n) print n " path(s)" l (n > 5 ? " ..." : "") }')"
