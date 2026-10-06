@@ -89,6 +89,20 @@ elif [[ -f "$CHECKPOINT" && "${APEX_INIT_FORCE:-0}" == "1" && "$(read_field land
   fi
 fi
 
+# --- A run without a worktree never restarts below unreviewed commits --------
+# A fresh run forks at (or below) HEAD; another run in this checkout that still
+# has commits after its last reviewed completion would have them fall below
+# the new fork point (APEX_INIT_FORCE, a moved or new plan).
+if [[ "${APEX_NO_WORKTREE:-0}" == "1" && "$KEEP_RUN" != "1" && "${APEX_GIBSON:-1}" != "0" ]]; then
+  PENDING="$(apex_unreviewed_runs "$REPO_ROOT")"
+  if [[ -n "$PENDING" ]]; then
+    echo "ERROR: a run in this checkout has commits after its last reviewed completion:" >&2
+    printf '         %s\n' $PENDING >&2
+    echo "       Finish (review and complete) or rewind its tasks first; to abandon it, delete its state under $STATE_BASE (its commits stay unreviewed)." >&2
+    exit 1
+  fi
+fi
+
 # --- Create (or reuse) the isolated execution worktree -----------------------
 # Reuse only a live worktree of this repository with the expected branch
 # checked out; a deleted (prunable) worktree is recreated; an existing branch
@@ -130,12 +144,14 @@ read -r TOTAL DONE <<<"$COUNTS"
 # the worktree's HEAD. Without a worktree a fresh run forks at HEAD, and a
 # kept run that predates the chain gets none (risk-tier and complete refuse).
 if [[ -n "$WT_PATH" ]]; then
-  FORK_SHA="$(git -C "$WT_PATH" merge-base HEAD "$BASE_BRANCH" 2>/dev/null || true)"
+  FORK_SHA="$(apex_git "$WT_PATH" merge-base HEAD "$BASE_BRANCH" 2>/dev/null || true)"
   [[ -n "$FORK_SHA" ]] || { echo "ERROR: the worktree $WT_PATH shares no history with $BASE_BRANCH — refusing to start a run." >&2; exit 1; }
 elif [[ "$KEEP_RUN" == "1" ]]; then
   FORK_SHA=""
 else
-  FORK_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  # A run on a branch other than the base forks where that branch left it.
+  FORK_SHA="$(apex_git "$REPO_ROOT" merge-base HEAD "$BASE_BRANCH" 2>/dev/null \
+              || apex_git "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
 fi
 
 # Written with json.dump so paths containing quotes or backslashes stay valid;

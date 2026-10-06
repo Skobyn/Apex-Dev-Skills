@@ -63,12 +63,12 @@ TAGS="${TAGS:+$TAGS,}$PLAN_TAGS"
 # The task's diff base is the chain floor (ADR-0003; apex_floor in _lib.sh).
 # --since may only widen the diff (an ancestor of the floor), never narrow it.
 FLOOR="$(apex_floor "$WT")" \
-  || { echo "ERROR: no diff base: this run has no fork point recorded (iterate.sh records it for a worktree run; a run without a worktree that predates the chain needs a new run)" >&2; exit 2; }
+  || { echo "ERROR: no diff base (apex_floor reason above)" >&2; exit 2; }
 [[ -n "$SINCE" ]] || SINCE="$FLOOR"
-SINCE="$(git -C "$WT" rev-parse -q --verify "${SINCE}^{commit}" 2>/dev/null)" \
+SINCE="$(apex_git "$WT" rev-parse -q --verify "${SINCE}^{commit}" 2>/dev/null)" \
   || { echo "ERROR: --since is not a commit in $WT" >&2; exit 2; }
-HEAD_NOW="$(git -C "$WT" rev-parse HEAD)"
-if ! git -C "$WT" merge-base --is-ancestor "$SINCE" "$FLOOR" 2>/dev/null; then
+HEAD_NOW="$(apex_git "$WT" rev-parse HEAD)"
+if ! apex_git "$WT" merge-base --is-ancestor "$SINCE" "$FLOOR" 2>/dev/null; then
   echo "ERROR: --since ${SINCE:0:12} is later than this task's base ${FLOOR:0:12} — it would hide the task's own commits; use --since $FLOOR (TASK_BASE) or omit --since" >&2
   exit 2
 fi
@@ -80,8 +80,8 @@ fi
 # without a worktree (the plan and the lessons ledger are edited in place in
 # the same checkout) are those two exact files left out: the plan file when it
 # is a regular .md file, the ledger only at .claude/apex-scope-loop/LESSONS.md.
-GIT=(git -c core.quotepath=false -C "$WT")
-DIFF_OPTS=(--no-renames --ignore-submodules=none --no-ext-diff)
+GIT=(apex_git "$WT")
+DIFF_OPTS=(--no-color --no-renames --ignore-submodules=none --no-ext-diff)
 EXCL=()
 if [[ -z "$(read_field worktree_branch)" ]]; then
   for p in "$PLAN_ABS" "${LESSONS_LEDGER:-}"; do
@@ -133,16 +133,18 @@ for path in sys.stdin.read().splitlines():
             break')"
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  if printf '%s' "$f" | grep -qiE "$C_PATHS" || grep -qxF -- "$f" <<<"$SHORT_HITS"; then
+  if grep -aqiE "$C_PATHS" <<<"$f" || grep -aqxF -- "$f" <<<"$SHORT_HITS"; then
     raise C "tier-c path: $f"
   fi
 done <<<"$FILES"
 
 # Tier C: content signals in added lines (catches risk in innocuously named files).
 C_CONTENT='(stripe|charge\(|amount_cents|price|currency|bcrypt|argon2|jwt\.|verify_?token|set-cookie|httponly|samesite|csrf|consent|date_of_birth|ssn|social_security|DROP (TABLE|COLUMN)|ALTER TABLE|DELETE FROM|TRUNCATE)'
-ADDED="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null | tr -d '\000' | grep -aE '^\+[^+]' || true)"
-if [[ -n "$ADDED" ]] && printf '%s' "$ADDED" | grep -aqiE "$C_CONTENT"; then
-  hit="$(printf '%s' "$ADDED" | grep -aoiE "$C_CONTENT" | head -1)"
+ADDED="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null | tr -d '\000' | grep -aE '^\+' | grep -avE '^\+\+\+ (b/|/dev/null)' || true)"
+# Here-strings, not pipes: under pipefail, `printf | grep -q` on a large diff
+# fails with SIGPIPE when grep exits at an early match.
+if [[ -n "$ADDED" ]] && grep -aqiE "$C_CONTENT" <<<"$ADDED"; then
+  hit="$(grep -aoiE "$C_CONTENT" <<<"$ADDED" | head -1)"
   raise C "tier-c content signal in diff: '$hit'"
 fi
 
@@ -154,7 +156,7 @@ esac
 # Tier B: size and shared-surface signals.
 [[ "$LINES" -gt 150 ]] && raise B "diff size: $LINES changed lines (>150)"
 [[ "$NFILES" -gt 6 ]] && raise B "diff breadth: $NFILES files (>6)"
-if printf '%s\n' "$FILES" | grep -qiE '(^|/)(api|routes?|shared|common|core|lib)/'; then
+if grep -aqiE '(^|/)(api|routes?|shared|common|core|lib)/' <<<"$FILES"; then
   raise B "touches a shared module or API route"
 fi
 

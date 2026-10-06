@@ -79,7 +79,7 @@ python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)'
 
 NOW="$(date -u +%FT%TZ)"
 WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
-head_sha() { git -C "$WT" rev-parse HEAD 2>/dev/null || echo unknown; }
+head_sha() { apex_git "$WT" rev-parse HEAD 2>/dev/null || echo unknown; }
 DISPATCH_STATE="$STATE_DIR/dispatch"
 DISPATCH="$(apex_dispatch_root)"
 
@@ -122,7 +122,7 @@ refuse_if_halted() {
 # the lessons ledger (edited in place) are left out — as exact regular files,
 # the plan only as a .md file, the ledger only at .claude/apex-scope-loop/LESSONS.md.
 dirty_paths() {
-  { git -C "$WT" status --porcelain=v1 -z --untracked-files=all --ignore-submodules=none 2>/dev/null || printf '?? ?\0'; } | python3 -c '
+  { apex_git "$WT" status --porcelain=v1 -z --untracked-files=all --ignore-submodules=none 2>/dev/null || printf '?? ?\0'; } | python3 -c '
 import os, sys
 wt, has_wt, plan, ledger = sys.argv[1:]
 keep = set()
@@ -180,7 +180,7 @@ case "$ACTION" in
     FLOOR="$(apex_floor "$WT" "$HEAD_V" || true)"
     EXEMPT=0
     if [[ "$(task_field gate)" == "1" && "$(task_field forced_c)" == "0" && "$(recorded_tier "$LINE_NO")" != "C" && -n "$FLOOR" ]] \
-       && git -C "$WT" diff --quiet --no-renames --ignore-submodules=none "$FLOOR" "$HEAD_V" 2>/dev/null && [[ -z "$(dirty_paths)" ]]; then
+       && apex_git "$WT" diff --quiet --no-renames --ignore-submodules=none "$FLOOR" "$HEAD_V" 2>/dev/null && [[ -z "$(dirty_paths)" ]]; then
       EXEMPT=1
     fi
     if [[ -n "$SKIP_REVIEW" && -d "$DISPATCH_STATE" ]]; then
@@ -188,7 +188,7 @@ case "$ACTION" in
       exit 1
     fi
     if [[ "${APEX_GIBSON:-1}" != "0" && "$EXEMPT" == "0" ]]; then
-      [[ -n "$FLOOR" ]] || { echo "[checkpoint] REFUSED complete: no diff base — this run has no fork point recorded (iterate.sh records it for a worktree run; a run without a worktree that predates the chain needs a new run)" >&2; exit 1; }
+      [[ -n "$FLOOR" ]] || { echo "[checkpoint] REFUSED complete: no diff base (apex_floor reason above)" >&2; exit 1; }
       # Recompute the tier from the whole task diff: the recorded tier (which
       # keeps a decision-layer raise) never outranks what the code shows.
       RT_OUT="$("$APEX_EXECUTE_SCRIPTS/risk-tier.sh" "$PLAN" "$LINE_NO" --since "$FLOOR" --no-record 9>&- 2>&1)" \

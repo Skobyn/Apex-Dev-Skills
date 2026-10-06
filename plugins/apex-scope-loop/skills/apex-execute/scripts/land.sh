@@ -142,11 +142,11 @@ if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
   # nothing may follow the last completion's head.
   LAND_FLOOR="$(apex_floor "$REPO_ROOT" "$LAND_SHA" || true)"
   if [[ -z "$LAND_FLOOR" ]]; then
-    echo "ERROR: this run predates the review chain (no fork point recorded) — land.sh cannot show every commit was reviewed." >&2
-    echo "       Re-run iterate.sh once (it records the fork point), or after checking the branch yourself: land.sh $PLAN --force" >&2
+    echo "ERROR: land.sh cannot show every commit on $WT_BRANCH was reviewed (no diff base, above)." >&2
+    echo "       A run that predates the chain: re-run iterate.sh once (it records the fork point); otherwise check the branch yourself and land with --force." >&2
     exit 1
   fi
-  if ! git -C "$REPO_ROOT" diff --quiet --no-renames --ignore-submodules=none "$LAND_FLOOR" "$LAND_SHA" 2>/dev/null; then
+  if ! apex_git "$REPO_ROOT" diff --quiet --no-renames --ignore-submodules=none "$LAND_FLOOR" "$LAND_SHA" 2>/dev/null; then
     echo "ERROR: ${WT_BRANCH} has commits after the last reviewed completion (${LAND_FLOOR:0:12}..${LAND_SHA:0:12}) — review and complete them as a task first." >&2
     exit 1
   fi

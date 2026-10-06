@@ -164,7 +164,7 @@ HEAD_SHA="$(git -C "${WORKTREE:-$REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo 
 # fork point recorded: it is fixed once, here, at the worktree's fork from the
 # base branch (never in an APEX_NO_WORKTREE run, where that would be HEAD).
 if [[ -z "$(read_field fork_sha)" && -n "$WT_BRANCH" ]]; then
-  FORK="$(git -C "$WORKTREE" merge-base HEAD "$(read_field base_branch)" 2>/dev/null || true)"
+  FORK="$(apex_git "$WORKTREE" merge-base HEAD "$(read_field base_branch)" 2>/dev/null || true)"
   [[ -n "$FORK" ]] && python3 - "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" "$FORK" <<'PY' || true
 import fcntl, json, os, sys
 path, lock, fork = sys.argv[1:]

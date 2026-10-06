@@ -24,11 +24,24 @@
 # honoured when no 0.3.0 dir exists yet.
 
 APEX_EXECUTE_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# The harness reads history as committed: replace refs, grafts and inherited
-# repository redirection cannot change what a diff shows.
-export GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/nonexistent/apex-scope-loop-no-grafts
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE \
-      GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+
+# apex_git DIR ARGS... — git for every harness decision (diff base, task diff,
+# gate exemption, land boundary). Per call, never exported to child commands
+# (the user's gate commands keep their own git environment):
+#   - history as committed: no replace refs, no grafts, no inherited
+#     GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / object-store redirection;
+#   - fixed output whatever the user's config: no color, no pager, unquoted
+#     paths, a/ b/ prefixes, top-level paths.
+# GIT_CONFIG_COUNT / GIT_CONFIG_PARAMETERS (e.g. safe.directory) pass through;
+# the -c values here are applied after them.
+apex_git() {
+  local dir="$1"; shift
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+      -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_NAMESPACE \
+      GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/nonexistent/apex-scope-loop-no-grafts \
+    git -c color.ui=never -c color.diff=never -c core.quotepath=false -c diff.noprefix=false \
+        -c diff.mnemonicPrefix=false -c diff.relative=false --no-pager -C "$dir" "$@"
+}
 APEX_SCOPE_LOOP_PLUGIN_ROOT="$(cd "$APEX_EXECUTE_SCRIPTS/../../.." && pwd)"
 
 apex_sha12() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi | cut -c1-12; }
@@ -120,14 +133,13 @@ apex_halt_files() {
 
 # apex_floor DIR [REV] — the current task's diff base (ADR-0003, the chain):
 # the head the last harness-on `complete` verified, else the run's fork point
-# (fork_sha, written by init.sh). The fork point must still be on the base
-# branch. When the last verified head is not an ancestor of REV (default HEAD
-# in DIR; after a rebase, amend or reset) the floor drops back to the fork
-# point (or its merge-base with REV): never to a commit that only REV's own
-# history picked. Prints nothing and returns 1 when no floor resolves
-# (reason on stderr) — callers refuse.
+# (fork_sha, written by init.sh). The fork point must be an ancestor of the
+# base branch (as recorded; any ref that resolves) and of REV (default HEAD
+# in DIR). When the last verified head is not an ancestor of REV (rebase,
+# amend, reset) the floor drops back to the fork point. Prints nothing and
+# returns 1 (reason on stderr) when no floor resolves — callers refuse.
 apex_floor() {
-  local dir="$1" rev="${2:-HEAD}" last fork base f
+  local dir="$1" rev="${2:-HEAD}" last fork base basesha
   { IFS= read -r last; IFS= read -r fork; IFS= read -r base; } < <(python3 -c '
 import json, sys
 s = json.load(open(sys.argv[1]))
@@ -135,22 +147,47 @@ c = s.get("completes") or []
 print(c[-1]["head"] if c else "")
 print(s.get("fork_sha") or "")
 print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
-  [[ -n "$fork" ]] || { echo "apex_floor: no fork point recorded" >&2; return 1; }
-  fork="$(git -C "$dir" rev-parse -q --verify "${fork}^{commit}" 2>/dev/null)" \
-    || { echo "apex_floor: the fork point is not a commit here" >&2; return 1; }
-  if [[ -n "$base" ]] && ! git -C "$dir" merge-base --is-ancestor "$fork" "refs/heads/$base" 2>/dev/null; then
-    echo "apex_floor: the fork point ${fork:0:12} is not on $base (the base branch was rewritten, or a merge into it was undone) — start a new run" >&2
-    return 1
+  [[ -n "$fork" ]] || { echo "apex_floor: no fork point recorded for this run" >&2; return 1; }
+  fork="$(apex_git "$dir" rev-parse -q --verify "${fork}^{commit}" 2>/dev/null)" \
+    || { echo "apex_floor: the fork point is not a commit in this repository" >&2; return 1; }
+  if [[ -n "$base" ]]; then
+    basesha="$(apex_git "$dir" rev-parse -q --verify "${base}^{commit}" 2>/dev/null)" \
+      || { echo "apex_floor: the base branch '$base' does not resolve here" >&2; return 1; }
+    apex_git "$dir" merge-base --is-ancestor "$fork" "$basesha" 2>/dev/null \
+      || { echo "apex_floor: the fork point ${fork:0:12} is not on '$base' (the base was rewritten, or a merge into it was undone) — start a new run" >&2; return 1; }
   fi
-  f="$fork"
-  if [[ -n "$last" ]] && last="$(git -C "$dir" rev-parse -q --verify "${last}^{commit}" 2>/dev/null)" \
-     && git -C "$dir" merge-base --is-ancestor "$last" "$rev" 2>/dev/null; then
-    f="$last"
-  elif ! git -C "$dir" merge-base --is-ancestor "$fork" "$rev" 2>/dev/null; then
-    f="$(git -C "$dir" merge-base "$fork" "$rev" 2>/dev/null)" || { echo "apex_floor: $rev shares no history with the fork point" >&2; return 1; }
+  apex_git "$dir" merge-base --is-ancestor "$fork" "$rev" 2>/dev/null \
+    || { echo "apex_floor: $rev does not descend from the fork point ${fork:0:12} (history replaced) — start a new run" >&2; return 1; }
+  if [[ -n "$last" ]] && last="$(apex_git "$dir" rev-parse -q --verify "${last}^{commit}" 2>/dev/null)" \
+     && apex_git "$dir" merge-base --is-ancestor "$last" "$rev" 2>/dev/null; then
+    printf '%s\n' "$last"
+  else
+    printf '%s\n' "$fork"
   fi
-  [[ -n "$f" ]] || return 1
-  printf '%s\n' "$f"
+}
+
+# apex_unreviewed_runs DIR — for every run in this repository without a
+# worktree (not landed, harness on), print its plan when it has committed
+# changes after its floor (other than its own plan file and the lessons
+# ledger) or has no floor. A fresh run forks at HEAD, so those changes would
+# fall below it unreviewed.
+apex_unreviewed_runs() {
+  local dir="$1" cp plan rel base
+  for cp in "$STATE_BASE"/*/checkpoint.json; do
+    [[ -f "$cp" ]] || continue
+    plan="$(python3 -c '
+import json, sys
+s = json.load(open(sys.argv[1]))
+skip = s.get("worktree_branch") or s.get("landed") or s.get("harness") == "off"
+print("" if skip else (s.get("plan_path") or "?"))' "$cp" 2>/dev/null || echo "?")"
+    [[ -n "$plan" ]] || continue
+    base="$(CHECKPOINT="$cp" apex_floor "$dir" HEAD 2>/dev/null)" || { printf '%s\n' "$plan"; continue; }
+    local excl=(":(exclude,top,literal).claude/apex-scope-loop/LESSONS.md")
+    rel="$(python3 -c 'import os,sys; r=os.path.relpath(os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])); print(r if r.endswith(".md") and not r.startswith("..") else "")' "$plan" "$dir")"
+    [[ -n "$rel" ]] && excl+=(":(exclude,top,literal)$rel")
+    apex_git "$dir" diff --quiet --no-renames --ignore-submodules=none "$base" HEAD -- . "${excl[@]}" 2>/dev/null \
+      || printf '%s\n' "$plan"
+  done
 }
 
 # read_field KEY — a top-level checkpoint value as text ("" when absent or

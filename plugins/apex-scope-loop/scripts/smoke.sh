@@ -937,5 +937,50 @@ git -C "$K5" reset -q --hard HEAD~1
 expect_refusal "a fork point no longer on the base branch" "not on main\|no diff base" indir "$K5" "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record
 ok "chain hardening: env exclusions, binary diffs, resets, replace refs, fork point on the base"
 
+# 39. Classifier inputs do not depend on user git config or pipe sizes; runs
+#     without a worktree, on a feature branch or with a remote base work; a run
+#     without a worktree cannot restart below unreviewed commits; the user's
+#     gate commands keep their git environment.
+PRICE='def total(x): return x.price * 2  # charge(currency)'
+L1="$SMOKE_TMP/l1"; LW="$(mkrun "$L1")" || fail "init for check 39 failed"
+echo "$PRICE" >"$LW/util.py"; git -C "$LW" add -A; git -C "$LW" commit -qm u; git -C "$LW" config color.diff always; git -C "$LW" config color.ui always
+has "^TIER: C" "$(cd "$L1" && "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record)" || fail "color.diff=always hid a content signal"
+L2="$SMOKE_TMP/l2"; LW="$(mkrun "$L2")" || fail "init for check 39 failed"
+{ echo "$PRICE"; seq 1 20000 | sed 's/^/# /'; } >"$LW/aaa_util.py"; git -C "$LW" add -A; git -C "$LW" commit -qm big
+has "^TIER: C" "$(cd "$L2" && "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record)" || fail "a large diff with an early signal was not Tier C"
+L3="$SMOKE_TMP/l3"; mkdir -p "$L3/plans"; git init -q -b main "$L3"; printf '.dev-plan-state/\n' >"$L3/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$L3/plans/k-plan.md"; git -C "$L3" add -A; git -C "$L3" commit -qm k
+( cd "$L3" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/k-plan.md >/dev/null 2>&1 ) || fail "no-worktree init failed"
+echo "$PRICE" >"$L3/util.py"; git -C "$L3" add -A; git -C "$L3" commit -qm x
+expect_refusal "a no-worktree restart (APEX_INIT_FORCE) over unreviewed commits" "after its last reviewed completion" \
+  indir "$L3" APEX_NO_WORKTREE=1 APEX_INIT_FORCE=1 "$EX/init.sh" plans/k-plan.md
+git -C "$L3" mv plans/k-plan.md plans/k2-plan.md; git -C "$L3" commit -qm mv
+expect_refusal "a no-worktree run started under a moved plan" "after its last reviewed completion" \
+  indir "$L3" APEX_NO_WORKTREE=1 "$EX/init.sh" plans/k2-plan.md
+L4="$SMOKE_TMP/l4"; mkdir -p "$L4/plans"; git init -q -b main "$L4"; printf '.dev-plan-state/\n' >"$L4/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$L4/plans/k-plan.md"; git -C "$L4" add -A; git -C "$L4" commit -qm k
+git -C "$L4" checkout -qb feature; echo "$PRICE" >"$L4/util.py"; git -C "$L4" add -A; git -C "$L4" commit -qm f
+( cd "$L4" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/k-plan.md >/dev/null 2>&1 ) || fail "no-worktree init on a feature branch failed"
+has "^TIER: C" "$(cd "$L4" && "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record 2>&1)" || fail "a no-worktree run on a feature branch did not classify its branch's commits"
+L5="$SMOKE_TMP/l5"; mkdir -p "$L5/plans"; git init -q -b main "$L5"; printf '.dev-plan-state/\n' >"$L5/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$L5/plans/k-plan.md"; git -C "$L5" add -A; git -C "$L5" commit -qm k
+git -C "$L5" checkout -qb side; mkdir -p "$L5/src/auth"; echo 'import stripe' >"$L5/src/auth/token.py"; git -C "$L5" add src; git -C "$L5" commit -qm e; LE="$(git -C "$L5" rev-parse HEAD)"
+git -C "$L5" checkout -q main; git -C "$L5" merge -q -s ours -m ours side
+( cd "$L5" && APEX_GIBSON=0 "$EX/init.sh" plans/k-plan.md >/dev/null 2>&1 ) || fail "init for the -s ours test failed"
+LW="$(st "$L5" plans/k-plan.md)/worktree"
+git -C "$LW" reset -q --hard "$LE"; echo doc >"$LW/notes.md"; git -C "$LW" add notes.md; git -C "$LW" commit -qm n
+expect_refusal "a head that does not descend from the fork point" "no diff base" indir "$L5" "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record
+L6="$SMOKE_TMP/l6"; mkdir -p "$L6/plans"; git init -q -b main "$L6.origin"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$L6.origin/plans/k-plan.md" 2>/dev/null || { mkdir -p "$L6.origin/plans"; printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$L6.origin/plans/k-plan.md"; }
+git -C "$L6.origin" add -A; git -C "$L6.origin" commit -qm o; rm -rf "$L6"; git clone -q "$L6.origin" "$L6"
+( cd "$L6" && APEX_BASE_BRANCH=origin/main APEX_GIBSON=0 "$EX/init.sh" plans/k-plan.md >/dev/null 2>&1 ) || fail "init with a remote-only base failed"
+has "^TASK_BASE: [0-9a-f]\{40\}" "$(cd "$L6" && "$EX/iterate.sh" plans/k-plan.md 2>&1)" || fail "a run with a remote-only base has no diff base"
+L7="$SMOKE_TMP/l7"; mkdir -p "$L7/plans"; git init -q -b main "$L7"
+printf 'test:\n\t@test "$$GIT_CONFIG_COUNT" = 1\n' >"$L7/Makefile"; printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n' >"$L7/plans/k-plan.md"; git -C "$L7" add -A; git -C "$L7" commit -qm g
+( cd "$L7" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=apex.smoke GIT_CONFIG_VALUE_0=1 "$EX/init.sh" plans/k-plan.md >/dev/null 2>&1 ) || fail "init with env-supplied git config failed"
+has "GATE_STEP: test PASS" "$(cd "$L7" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=apex.smoke GIT_CONFIG_VALUE_0=1 "$EX/green-gate.sh" plans/k-plan.md check 2>&1)" \
+  || fail "a gate command lost its env-supplied git config"
+ok "classifier inputs: color config, large diffs; no-worktree feature branch, remote base, restart guard, env git config"
+
 echo ""
-echo "smoke passed: 38/38 checks"
+echo "smoke passed: 39/39 checks"
