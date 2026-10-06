@@ -188,5 +188,70 @@ assert sb["enabled"] is True and sb["failIfUnavailable"] is True and sb["allowUn
 PY
 pass "hooks.json wraps hooks (only present scripts); settings snippet has the deny rules and sandbox, no ask"
 
+# 17. provider confinement: forbidden add-only, forced append-only, no bypass flags, sandbox never loosened
+CODEX_FORCED='"exec","--json","--sandbox","workspace-write","--skip-git-repo-check","-c","approval_policy=never","--ignore-user-config"'
+printf '%s' '{"providers":[{"id":"codex","forbidden_flags":["--extra-risky"],"forced_flags":['"$CODEX_FORCED"',"--quiet"]}]}' > "$WORK/ov-prov.json"
+merged "$WORK/ov-prov.json" | python3 -c 'import json,sys; m={p["id"]:p for p in json.load(sys.stdin)["providers"]}["codex"]; assert "--extra-risky" in m["forbidden_flags"] and "-a" in m["forbidden_flags"] and "danger-full-access" in m["forbidden_flags"]; assert m["forced_flags"][-1] == "--quiet"' \
+  || fail "forbidden_flags were not unioned / forced_flags not appended"
+expect_reject "clearing forbidden_flags" '{"providers":[{"id":"codex","forbidden_flags":[]}]}' 'forbidden_flags cannot be cleared'
+expect_reject "replacing forced_flags" '{"providers":[{"id":"codex","forced_flags":["exec","--json"]}]}' 'may only append'
+expect_reject "forcing a bypass flag" '{"providers":[{"id":"codex","forced_flags":['"$CODEX_FORCED"',"--dangerously-bypass-approvals-and-sandbox"]}]}' 'layer-A bypass pattern'
+expect_reject "forcing --yolo on a new provider" '{"providers":[{"id":"yolo-cli","status":"stub","kind":"stub","family":"x","binary":null,"key_env":null,"forced_flags":["--yolo"],"forbidden_flags":[],"allowed_classes":["docs"],"max_tier":"cheap","roles_allowed":["docs"],"reports_usage":false,"sandbox_mode":null,"min_acceptance":0.7,"acceptance_window":20,"hosts":[],"enabled":false}]}' 'layer-A bypass pattern'
+expect_reject "forcing a forbidden flag" '{"providers":[{"id":"codex","forced_flags":['"$CODEX_FORCED"',"-a"]}]}' 'is in forbidden_flags'
+expect_reject "forcing danger-full-access" '{"providers":[{"id":"codex","forced_flags":['"$CODEX_FORCED"',"--sandbox","danger-full-access"]}]}' 'layer-A bypass pattern'
+expect_reject "loosening sandbox_mode" '{"providers":[{"id":"grok","sandbox_mode":"workspace-write"}]}' 'may not loosen or remove the sandbox mode'
+expect_reject "sandbox_mode danger-full-access" '{"providers":[{"id":"codex","sandbox_mode":"danger-full-access"}]}' 'disables provider confinement'
+expect_reject "changing a provider binary" '{"providers":[{"id":"codex","binary":"/tmp/codex"}]}' 'providers\[codex\].binary: an overlay may not change'
+pass "overlay: forbidden_flags add-only, forced_flags append-only, no bypass/forbidden forced flags, sandbox never loosened, binary fixed"
+
+# 18. hard-rule referents: tiers, provider identity, role restrictions
+expect_reject "changing a tier model" '{"tiers":[{"id":"strong","model":"sonnet"}]}' 'tiers\[strong\].model: an overlay may not change'
+expect_reject "changing a tier effort" '{"tiers":[{"id":"strong","effort":"low"}]}' 'tiers\[strong\].effort: an overlay may not change'
+expect_reject "changing a tier rank" '{"tiers":[{"id":"cheap","rank":9}]}' 'tiers\[cheap\].rank: an overlay may not change'
+expect_reject "changing a provider kind" '{"providers":[{"id":"claude-p","kind":"in-session"}]}' 'providers\[claude-p\].kind: an overlay may not change'
+expect_reject "changing a provider family" '{"providers":[{"id":"codex","family":"anthropic"}]}' 'providers\[codex\].family: an overlay may not change'
+expect_reject "making a read-only role writable" '{"roles":[{"id":"researcher","read_only":false}]}' 'may not make a read-only role writable'
+expect_reject "granting a role a tool" '{"roles":[{"id":"docs","tools":["Read","Grep","Glob","Edit","Write","MultiEdit","Bash"]}]}' 'roles\[docs\].tools: an overlay may not grant Bash'
+expect_reject "dropping a disallowed tool" '{"roles":[{"id":"docs","disallowed_tools":["Agent","NotebookEdit"]}]}' 'roles\[docs\].disallowed_tools: an overlay may not remove Bash'
+TIER_REST='"maxTurns":10,"context_budget_tokens":1000,"price_usd_per_mtok":{"input":1,"output":1,"cache_read":0.1,"cache_write":1}'
+expect_reject "new tier above max with a weaker model" '{"tiers":[{"id":"ultra","rank":4,"model":"haiku","effort":"xhigh",'"$TIER_REST"'}]}' 'monotonic with model strength'
+expect_reject "new tier above max with lower effort" '{"tiers":[{"id":"ultra","rank":4,"model":"fable","effort":"low",'"$TIER_REST"'}]}' 'monotonic with effort'
+printf '%s' '{"tiers":[{"id":"ultra","rank":4,"model":"fable","effort":"xhigh",'"$TIER_REST"'}]}' > "$WORK/ov-tier.json"
+merged "$WORK/ov-tier.json" >/dev/null 2>&1 || fail "a monotonic new tier was rejected"
+pass "overlay: tier model/effort/rank, provider kind/family and role restrictions are fixed; new tiers stay monotonic"
+
+# 19. appended route_floor rules may only match or tighten (rules combine by max)
+expect_reject "weaker Tier C diversity" '{"hard_rules":[{"id":"my-c","kind":"route_floor","match":"all","description":"x","when":{"risk_tier":"C"},"then":{"review_diversity":"off"}}]}' 'weaker than hard rule tier-c-floor'
+expect_reject "weaker Tier B review shape" '{"hard_rules":[{"id":"my-b","kind":"route_floor","match":"all","description":"x","when":{"risk_tier":"B"},"then":{"review_shape":"solo"}}]}' 'weaker than hard rule tier-b-review'
+expect_reject "lower floor for security tags" '{"hard_rules":[{"id":"my-sec","kind":"route_floor","match":"any","description":"x","when":{"tags_any":["security"]},"then":{"tier_floor":"cheap"}}]}' 'weaker than hard rule tier-c-floor'
+printf '%s' '{"hard_rules":[{"id":"my-b-strict","kind":"route_floor","match":"all","description":"x","when":{"risk_tier":"B"},"then":{"review_diversity":"block"}}]}' > "$WORK/ov-rule.json"
+merged "$WORK/ov-rule.json" >/dev/null 2>&1 || fail "a stricter appended hard rule was rejected"
+grep -q 'combine by max (strictest wins)' "$ADR" || fail "ADR-0001 does not state that matching hard rules combine by max"
+pass "overlay: appended route_floor rules may only match or tighten; ADR states max (strictest wins)"
+
+# 20. escalation: review rounds and the halt rung stay at 3 or below
+expect_reject "raising max_review_rounds" '{"escalation":{"max_review_rounds":4}}' 'max_review_rounds: 4 is above 3'
+expect_reject "moving the halt rung up" '{"escalation":{"rungs":[{"id":"halt","at_failures":5}]}}' 'halt rung at_failures 5 is above 3'
+printf '%s' '{"escalation":{"max_review_rounds":2}}' > "$WORK/ov-esc.json"
+merged "$WORK/ov-esc.json" >/dev/null 2>&1 || fail "a stricter max_review_rounds was rejected"
+pass "overlay: escalation may be made stricter, never looser"
+
+# 21. roles a hard rule's review shape needs cannot be disabled
+expect_reject "disabling adversarial-reviewer" '{"disabled":[{"section":"roles","id":"adversarial-reviewer","reason":"cost"}]}' 'roles\[adversarial-reviewer\]: required by hard rule tier-c-floor'
+expect_reject "switching reviewer off" '{"roles":[{"id":"reviewer","enabled":false}]}' 'roles\[reviewer\]: required by hard rule'
+pass "overlay: reviewer and adversarial-reviewer cannot be disabled"
+
+# 22. agents/ is fully generated; --check is byte-exact
+rm -rf "$WORK/copy2"; cp -R "$PLUGIN_ROOT" "$WORK/copy2"
+printf -- '---\nname: x\ndescription: hand-written\n---\nbody\n' > "$WORK/copy2/agents/x.md"
+if bash "$WORK/copy2/scripts/compile.sh" --check >/dev/null 2>"$WORK/foreign.err"; then fail "--check passed with a hand-written agents/x.md"; fi
+grep -q 'not generated: agents/x.md' "$WORK/foreign.err" || fail "--check did not name the hand-written agents/x.md: $(cat "$WORK/foreign.err")"
+rm "$WORK/copy2/agents/x.md"
+python3 -c 'import sys; p=sys.argv[1]; b=open(p,"rb").read(); open(p,"wb").write(b.replace(b"\n", b"\r\n"))' "$WORK/copy2/agents/builder.md"
+if bash "$WORK/copy2/scripts/compile.sh" --check >/dev/null 2>"$WORK/crlf.err"; then fail "--check passed with a CRLF agents/builder.md"; fi
+grep -q 'stale: agents/builder.md' "$WORK/crlf.err" || fail "--check did not name the CRLF agents/builder.md"
+grep -qF 'Generated agents omit `model:`** deliberately' "$ADR" || fail "ADR-0001 does not record why generated agents omit model:"
+pass "--check flags any non-generated agents/*.md and detects a CRLF artifact"
+
 echo ""
 echo "smoke passed: $N/$N checks"

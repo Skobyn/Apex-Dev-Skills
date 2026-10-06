@@ -12,7 +12,10 @@ governance checks below, and renders the committed artifacts:
   hooks/hooks.json                 only hook scripts present under hooks/
 
 Artifacts are built from the default policy only; an overlay is applied at
-runtime by readers (see --print-merged).
+runtime by readers (see --print-merged). An overlay may configure policy
+within the hard rules but never weaken confinement or change what a hard rule
+refers to (see overlay_checks). agents/ is fully generated: --check flags any
+agents/*.md that is not an expected artifact, and comparisons are byte-exact.
 
 Usage: compile.py <plugin-root> [--check] [--print-merged] [--overlay PATH]
 Exit: 0 ok, 1 invalid policy/overlay or stale artifacts, 2 usage.
@@ -31,6 +34,22 @@ EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 REVIEWER_DISALLOWED = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Agent", "mcp__*"]
 REVIEWER_ROLES = {"reviewer", "adversarial-reviewer", "diagnoser"}
 EFFORT_ORDER = ["low", "medium", "high", "xhigh"]
+MODEL_STRENGTH = {"haiku": 0, "sonnet": 1, "opus": 2, "fable": 2}
+# Layer A bypass patterns (spec 5.3 A): a provider may never be forced to pass one.
+BYPASS_PREFIXES = ("--dangerously-", "--yolo", "--always-approve", "--full-auto")
+BYPASS_SUBSTRINGS = ("danger-full-access",)
+# Provider sandbox modes from strictest to loosest; an overlay may keep or
+# tighten a default provider's mode, never loosen it.
+SANDBOX_LOOSENESS = {"read-only": 0, "strict": 0, "workspace-write": 1, "danger-full-access": 2}
+MAX_REVIEW_ROUNDS = 3   # spec 5.3 G: three review rounds max, in code
+MAX_HALT_FAILURES = 3   # spec 5.2 step 8: failures=3 -> HALT
+# Strictness orders for route_floor `then` values (higher = stricter). Matching
+# hard rules combine by max: the strictest value of every matching rule wins.
+SHAPE_ORDER = ["none", "solo", "six-lens", "fanout6+adversarial"]
+DIVERSITY_ORDER = ["off", "warn", "block"]
+FANOUT_ORDER = ["lanes", "single"]
+# Roles a hard rule's review shape needs; they cannot be disabled.
+SHAPE_ROLES = {"solo": ["reviewer"], "six-lens": ["reviewer"], "fanout6+adversarial": ["reviewer", "adversarial-reviewer"]}
 HOOK_TIMEOUT = 10
 SUBAGENT_MATCHER = "^(apex-dispatch|apex-scope-loop):"
 # Hook script -> (event, matcher) registrations, from spec section 5.1. A
@@ -149,6 +168,8 @@ def merge_policy(default, overlay, sections, src="overlay"):
             merged[name] = deep_merge(merged.get(name, {}), over)
         elif rule == "by-id":
             merged[name] = [] if over == [] else merge_by_id(merged.get(name, []), over)
+            if name == "providers" and over:
+                errs += provider_flag_rules(default.get(name, []), over, merged[name], src)
         elif rule == "add-only":
             if over == []:
                 errs.append("overlay %s: %s cannot be cleared (hard rules outrank the overlay)" % (src, name))
@@ -177,6 +198,30 @@ def merge_policy(default, overlay, sections, src="overlay"):
     if errs:
         raise PolicyError(errs)
     return merged
+
+
+def provider_flag_rules(base, over, merged, src):
+    """forbidden_flags of a default provider is add-only (the overlay's list is
+    unioned onto the default's); forced_flags may only be appended to (the
+    default's flags must stay as an unchanged prefix)."""
+    errs = []
+    dflt = {e["id"]: e for e in base if isinstance(e, dict)}
+    out = {e["id"]: e for e in merged}
+    for o in over:
+        pid = o["id"]
+        if pid not in dflt:
+            continue
+        d, m = dflt[pid], out[pid]
+        if "forbidden_flags" in o and isinstance(o["forbidden_flags"], list):
+            if o["forbidden_flags"] == [] and d.get("forbidden_flags"):
+                errs.append("overlay %s: providers[%s].forbidden_flags cannot be cleared (add-only: an overlay may add forbidden flags, never remove them)" % (src, pid))
+            else:
+                m["forbidden_flags"] = list(d.get("forbidden_flags", [])) + [f for f in o["forbidden_flags"] if f not in d.get("forbidden_flags", [])]
+        if "forced_flags" in o and isinstance(o["forced_flags"], list):
+            df = d.get("forced_flags", [])
+            if o["forced_flags"][:len(df)] != df:
+                errs.append("overlay %s: providers[%s].forced_flags cannot remove or replace the default forced flags; the overlay may only append (keep %s as the prefix)" % (src, pid, json.dumps(df)))
+    return errs
 
 
 def prune_refs(value, spec, defs, removed):
@@ -375,10 +420,156 @@ def governance_checks(p):
         errs.append("escalation.rungs: the last rung must halt")
     if rungs and rungs[0]["action"] != "effort_up":
         errs.append("escalation.rungs: the first rung must raise effort before model")
+    if p["escalation"]["max_review_rounds"] > MAX_REVIEW_ROUNDS:
+        errs.append("escalation.max_review_rounds: %d is above %d (three review rounds max)" % (p["escalation"]["max_review_rounds"], MAX_REVIEW_ROUNDS))
+    if rungs and rungs[-1]["at_failures"] > MAX_HALT_FAILURES:
+        errs.append("escalation.rungs: the halt rung at_failures %d is above %d (failures=3 halts)" % (rungs[-1]["at_failures"], MAX_HALT_FAILURES))
+    # Tier ranks are monotonic with model strength and effort.
+    by_rank = sorted(p["tiers"], key=lambda t: t["rank"])
+    for lo, hi in zip(by_rank, by_rank[1:]):
+        if MODEL_STRENGTH[lo["model"]] > MODEL_STRENGTH[hi["model"]]:
+            errs.append("tiers: tier %s (rank %d, %s) is above tier %s (rank %d, %s) but uses a weaker model; rank must be monotonic with model strength" % (hi["id"], hi["rank"], hi["model"], lo["id"], lo["rank"], lo["model"]))
+        if EFFORT_ORDER.index(lo["effort"]) > EFFORT_ORDER.index(hi["effort"]):
+            errs.append("tiers: tier %s (rank %d, effort %s) is above tier %s (rank %d, effort %s) but uses a lower effort; rank must be monotonic with effort" % (hi["id"], hi["rank"], hi["effort"], lo["id"], lo["rank"], lo["effort"]))
+    # Provider confinement: no forced flag may bypass layer A or a forbidden flag.
+    for pr in p["providers"]:
+        where = "providers[%s]" % pr["id"]
+        forbidden = set(pr["forbidden_flags"])
+        for f in pr["forced_flags"]:
+            if f.startswith(BYPASS_PREFIXES) or any(x in f for x in BYPASS_SUBSTRINGS):
+                errs.append("%s: forced flag %s matches a layer-A bypass pattern" % (where, json.dumps(f)))
+            elif f in forbidden or f.split("=", 1)[0] in forbidden:
+                errs.append("%s: forced flag %s is in forbidden_flags" % (where, json.dumps(f)))
+        if pr["sandbox_mode"] is not None and any(x in pr["sandbox_mode"] for x in BYPASS_SUBSTRINGS):
+            errs.append("%s: sandbox_mode %s disables provider confinement" % (where, json.dumps(pr["sandbox_mode"])))
+    # Roles a hard rule's review shape needs cannot be disabled.
+    enabled = {r["id"] for r in p["roles"] if r["enabled"]}
+    for h in p["hard_rules"]:
+        shape = h.get("then", {}).get("review_shape")
+        for role in SHAPE_ROLES.get(shape, []):
+            if role not in enabled:
+                errs.append("roles[%s]: required by hard rule %s (review_shape %s) and cannot be disabled" % (role, h["id"], shape))
     return errs
 
 
-def validate_policy(policy, schema, where):
+def _rank(order, v):
+    return order.index(v) if v in order else -1
+
+
+def _when_overlaps(a, b):
+    """True when two route_floor `when` objects share a condition (equal value,
+    or intersecting tags_any); identical conditions always overlap."""
+    if a == b:
+        return True
+    for k in set(a) & set(b):
+        if k == "tags_any":
+            if set(a[k]) & set(b[k]):
+                return True
+        elif a[k] == b[k]:
+            return True
+    return False
+
+
+def _weaker_then(new, old, tiers):
+    """Names of `then` keys where `new` is weaker than `old` (route_floor rules
+    combine by max, so an appended rule may only match or tighten)."""
+    rank = {t["id"]: t["rank"] for t in tiers}
+    weak = []
+    for k in set(new) & set(old):
+        n, o = new[k], old[k]
+        if k == "review_shape":
+            bad = _rank(SHAPE_ORDER, n) < _rank(SHAPE_ORDER, o)
+        elif k == "review_diversity":
+            bad = _rank(DIVERSITY_ORDER, n) < _rank(DIVERSITY_ORDER, o)
+        elif k == "fanout":
+            bad = _rank(FANOUT_ORDER, n) < _rank(FANOUT_ORDER, o)
+        elif k == "tier_floor":
+            bad = rank.get(n, -1) < rank.get(o, -1)
+        elif k == "tier_ceiling":
+            bad = rank.get(n, 1 << 30) > rank.get(o, 1 << 30)
+        elif k == "tier_floor_rungs_above_last":
+            bad = n < o
+        elif k == "classes_only":
+            bad = not set(n) <= set(o)
+        else:  # class, reviewer_family, external_builders, human_gate: must match
+            bad = n != o
+        if bad:
+            weak.append(k)
+    return sorted(weak)
+
+
+def overlay_checks(default, merged):
+    """An overlay may configure policy within the hard rules but never weaken
+    confinement or change what a hard rule refers to. `default` is the
+    validated default policy; `merged` the validated overlay-merged policy."""
+    errs = []
+    dmap = lambda sec: {e["id"]: e for e in default[sec]}
+    # Tiers: the referents of the hard floors (strong = opus/high, ...).
+    dt = dmap("tiers")
+    for t in merged["tiers"]:
+        d = dt.get(t["id"])
+        for k in ("model", "effort", "rank") if d else ():
+            if t[k] != d[k]:
+                errs.append("tiers[%s].%s: an overlay may not change %s (default %s); a hard rule refers to it" % (t["id"], k, json.dumps(t[k]), json.dumps(d[k])))
+    # Providers: identity and confinement.
+    dp = dmap("providers")
+    for pr in merged["providers"]:
+        d = dp.get(pr["id"])
+        if not d:
+            continue
+        where = "providers[%s]" % pr["id"]
+        for k in ("kind", "family", "binary"):
+            if pr[k] != d[k]:
+                errs.append("%s.%s: an overlay may not change %s (default %s)" % (where, k, json.dumps(pr[k]), json.dumps(d[k])))
+        missing = [f for f in d["forbidden_flags"] if f not in pr["forbidden_flags"]]
+        if missing:
+            errs.append("%s.forbidden_flags: an overlay may not remove %s (add-only)" % (where, ", ".join(missing)))
+        if pr["forced_flags"][:len(d["forced_flags"])] != d["forced_flags"]:
+            errs.append("%s.forced_flags: an overlay may not remove or replace the default forced flags (append only)" % where)
+        if pr["sandbox_mode"] != d["sandbox_mode"]:
+            old, new = d["sandbox_mode"], pr["sandbox_mode"]
+            if old is None or new is None or old not in SANDBOX_LOOSENESS or new not in SANDBOX_LOOSENESS \
+                    or SANDBOX_LOOSENESS[new] > SANDBOX_LOOSENESS[old]:
+                errs.append("%s.sandbox_mode: an overlay may not loosen or remove the sandbox mode (%s -> %s; order read-only|strict < workspace-write < danger-full-access)" % (where, json.dumps(old), json.dumps(new)))
+    # Roles: read-only stays read-only; tools only shrink; disallowed only grow.
+    dr = dmap("roles")
+    for r in merged["roles"]:
+        d = dr.get(r["id"])
+        if not d:
+            continue
+        where = "roles[%s]" % r["id"]
+        if d["read_only"] and not r["read_only"]:
+            errs.append("%s.read_only: an overlay may not make a read-only role writable" % where)
+        added = [t for t in r["tools"] if t not in d["tools"]]
+        if added:
+            errs.append("%s.tools: an overlay may not grant %s (tools may only be removed)" % (where, ", ".join(added)))
+        dropped = [t for t in d["disallowed_tools"] if t not in r["disallowed_tools"]]
+        if dropped:
+            errs.append("%s.disallowed_tools: an overlay may not remove %s (add-only)" % (where, ", ".join(dropped)))
+    # Appended route_floor rules may not be weaker than a default rule they overlap.
+    dh = [h for h in default["hard_rules"] if h["kind"] == "route_floor"]
+    known = {h["id"] for h in default["hard_rules"]}
+    for h in merged["hard_rules"]:
+        if h["id"] in known or h["kind"] != "route_floor":
+            continue
+        for d in dh:
+            if _when_overlaps(h["when"], d["when"]):
+                weak = _weaker_then(h["then"], d["then"], merged["tiers"])
+                if weak:
+                    errs.append("hard_rules[%s]: weaker than hard rule %s on an overlapping condition (%s); matching hard rules combine by max, so an added rule may only match or tighten" % (h["id"], d["id"], ", ".join(weak)))
+    # Escalation: stricter, never looser.
+    me, de = merged["escalation"], default["escalation"]
+    if me["max_review_rounds"] > de["max_review_rounds"]:
+        errs.append("escalation.max_review_rounds: an overlay may lower it, not raise it above %d" % de["max_review_rounds"])
+    halt = lambda e: max((r["at_failures"] for r in e["rungs"] if r["action"] == "halt"), default=0)
+    if halt(me) > halt(de):
+        errs.append("escalation.rungs: an overlay may not move the halt rung above at_failures %d" % halt(de))
+    return errs
+
+
+def validate_policy(policy, schema, where, extra=None):
+    """Schema, references, then governance (plus `extra`, e.g. overlay_checks)
+    on a schema-valid policy; every problem is reported together."""
     errs, refs = [], []
     validate(policy, schema["root"], "policy", schema["defs"], errs, refs)
     if errs:
@@ -387,7 +578,9 @@ def validate_policy(policy, schema, where):
         ids = {e.get("id") for e in policy.get(section, []) if isinstance(e, dict)}
         if value not in ids:
             errs.append("%s: unknown %s reference %s" % (path, section.rstrip("s") if section != "classes" else "class", json.dumps(value)))
-    errs += governance_checks(policy) if not errs else []
+    if not errs:
+        errs += governance_checks(policy)
+        errs += extra(policy) if extra else []
     if errs:
         raise PolicyError(["%s: %s" % (where, e) for e in errs])
 
@@ -493,7 +686,14 @@ def build(plugin_root, inputs):
     return out
 
 
-def generated_agents_on_disk(plugin_root):
+def read_text(path):
+    """Byte-exact read: no newline translation, so a CRLF artifact is stale."""
+    with open(path, encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def agents_on_disk(plugin_root):
+    """[(agents/<f>.md, carries the generated marker)] for every agents/*.md."""
     d = os.path.join(plugin_root, "agents")
     if not os.path.isdir(d):
         return []
@@ -501,9 +701,7 @@ def generated_agents_on_disk(plugin_root):
     for f in sorted(os.listdir(d)):
         p = os.path.join(d, f)
         if f.endswith(".md") and os.path.isfile(p):
-            with open(p, encoding="utf-8") as fh:
-                if GENERATED_MARK in fh.read():
-                    found.append("agents/" + f)
+            found.append(("agents/" + f, GENERATED_MARK in read_text(p)))
     return found
 
 
@@ -566,7 +764,9 @@ def main(argv):
             overlay = load_json(overlay_path, "overlay")
             secs = inputs["sections"]["sections"]
             merged = apply_disabled(merge_policy(inputs["default"], overlay, secs, overlay_path), secs, inputs["schema"])
-            validate_policy(merged, inputs["schema"], "merged policy (overlay %s)" % overlay_path)
+            default_policy = apply_disabled(merge_policy(inputs["default"], {}, secs), secs, inputs["schema"])
+            validate_policy(merged, inputs["schema"], "merged policy (overlay %s)" % overlay_path,
+                            extra=lambda m: overlay_checks(default_policy, m))
     except PolicyError as e:
         for line in e.errors:
             print("compile: " + line, file=sys.stderr)
@@ -575,7 +775,9 @@ def main(argv):
         sys.stdout.write(dumps(merged if merged is not None else json.loads(artifacts["resources/compiled/policy.json"])))
         return 0
     expected = set(artifacts)
-    orphans = [a for a in generated_agents_on_disk(root) if a not in expected]
+    on_disk = agents_on_disk(root)
+    orphans = [a for a, marked in on_disk if marked and a not in expected]
+    foreign = [a for a, marked in on_disk if not marked and a not in expected]
     if check:
         problems = []
         for rel in sorted(artifacts):
@@ -583,10 +785,10 @@ def main(argv):
             if not os.path.isfile(p):
                 problems.append("missing: " + rel)
                 continue
-            with open(p, encoding="utf-8") as f:
-                if f.read() != artifacts[rel]:
-                    problems.append("stale: " + rel)
+            if read_text(p) != artifacts[rel]:
+                problems.append("stale: " + rel)
         problems += ["orphaned: " + a for a in orphans]
+        problems += ["not generated: %s (agents/ is fully generated; remove it)" % a for a in foreign]
         for line in problems:
             print("compile --check: " + line, file=sys.stderr)
         if problems:
@@ -598,12 +800,9 @@ def main(argv):
     for rel, text in sorted(artifacts.items()):
         p = os.path.join(root, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        cur = None
-        if os.path.isfile(p):
-            with open(p, encoding="utf-8") as f:
-                cur = f.read()
+        cur = read_text(p) if os.path.isfile(p) else None
         if cur != text:
-            with open(p, "w", encoding="utf-8") as f:
+            with open(p, "w", encoding="utf-8", newline="") as f:
                 f.write(text)
             written += 1
             print("compile: wrote " + rel)
@@ -611,7 +810,9 @@ def main(argv):
         os.remove(os.path.join(root, a))
         print("compile: removed " + a)
     print("compile: %d artifacts, %d written, %d removed%s" % (len(artifacts), written, len(orphans), "; overlay valid" if merged is not None else ""))
-    return 0
+    for a in foreign:
+        print("compile: %s is not a generated artifact; agents/ is fully generated, remove it" % a, file=sys.stderr)
+    return 1 if foreign else 0
 
 
 if __name__ == "__main__":
