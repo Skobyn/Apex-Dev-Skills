@@ -133,9 +133,9 @@ Full mapping, and what was deliberately left out (cross-vendor routing, GitHub c
 ## Compatibility
 
 - **Claude Code:** 2.0+ (requires `/loop`, `/schedule`, AskUserQuestion, ScheduleWakeup, Agent)
-- **ruflo plugin suite:** required — supplies the `memory_*`, `swarm_init`, `agent_spawn`, and `hooks_route` MCP tools the EXECUTE loop dispatches through (`ruflo init`)
-- **`@claude-flow/cli`:** v3.6 major+minor when `iterate.sh` dispatches via claude-flow's `swarm_init`/`agent_spawn` (consumed at runtime via `npx`; not declared as a plugin dependency)
-- **Python:** 3.11+ (matches the apex repo's overall toolchain; `start.sh` and `promote-to-loop.sh` are bash but the surrounding apex project uses `uv run`)
+- **git:** 2.40+ (the clean-worktree check builds its comparison checkout with `--attr-source=HEAD`; older git makes the gate fail closed on files git converts on checkout)
+- **bash** 4+ and **python3** 3.8+ (stdlib only)
+- **ruflo / `@claude-flow/cli`:** optional — used only when `APEX_MEMORY_CMD` seeds memory or a plan's advisory `Swarm:` directive is run through it
 
 ## Namespace coordination
 
@@ -156,12 +156,13 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 13 structural checks (frontmatter, namespace declaration, ADR status, script executability, README sections, and the Gibson harness surface). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 42 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, and the clean-worktree inventory). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 
 - [ADR-0001 — apex-scope-loop plugin contract](docs/adrs/0001-apex-scope-loop-contract.md) — Status: **Proposed**. Defines surface, namespace, compatibility, and smoke contract.
 - [ADR-0002 — Adopt The Gibson's harness disciplines](docs/adrs/0002-gibson-harness.md) — Status: **Proposed**. Green gate, independent review, Tier C / G12, ratchet, kill switch.
+- [ADR-0003 — Portability, the per-run guarantee, and apex-dispatch as a consumer](docs/adrs/0003-portability-and-dispatch-consumer.md) — Status: **Proposed**. ruflo optional, template profiles, the chain and epochs, landing without merge machinery, the clean-worktree contract and what lies outside it.
 
 ## Migration from `.claude/skills/`
 

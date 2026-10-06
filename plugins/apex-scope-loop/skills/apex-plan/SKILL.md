@@ -168,7 +168,7 @@ How gates interact with `/loop iterate`:
 
 - **`[gate:auto]`** — iterate.sh treats this like any other task; the model runs the Acceptance check and advances on pass
 - **`[gate:human]`** — the model recognizes the tag, halts (sets `halted: true` in checkpoint with `halt_reason: "awaiting human gate <id>"`), presents the decision in **Ask Contract** form (what I'm asking / what it does / why / risks, all in plain language), prints "Awaiting human approval — reply 'approve <gate-id>' to continue," and exits the loop
-- **`[gate:partner:<email>]`** — the model writes a durable inbox item via `POST /api/agent-coordination/inbox` (`kind: "phase-gate-approval"`, `forUser: <email>`), then halts with `halt_reason: "awaiting partner gate <id>"`
+- **`[gate:partner:<email>]`** — the gate posts a JSON notice (`kind: "phase-gate-approval"`, `forUser: <email>`) to `$APEX_PARTNER_NOTIFY_CMD` on stdin (`gh issue create`, a webhook, Slack; the apex profile defaults to the Apex inbox), then halts with `halt_reason: "awaiting partner gate <id>"`. Without a notifier it degrades to a `[gate:human]` approval.
 
 Use `scripts/gate.sh <plan-path> <gate-id>` for explicit gate evaluation outside the loop (e.g., a human running it to check what's blocking).
 

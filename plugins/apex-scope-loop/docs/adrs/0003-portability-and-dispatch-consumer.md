@@ -8,7 +8,7 @@
 
 ## Context
 
-apex-scope-loop 0.2.0 ran only where ruflo was installed and the repo looked like an Apex repo. Its harness bound reviews and the green gate to a head SHA, but did not say which diff a review covered, what "the worktree is the head" means, or what `land.sh` may merge. apex-dispatch (a separate plugin) will drive single tasks through these scripts. It needs a stable contract for state, records and refusals.
+apex-scope-loop 0.2.0 assumed ruflo (now optional) was installed and the repo looked like an Apex repo. Its harness bound reviews and the green gate to a head SHA, but did not say which diff a review covered, what "the worktree is the head" means, or what `land.sh` may merge. apex-dispatch (a separate plugin) will drive single tasks through these scripts. It needs a stable contract for state, records and refusals.
 
 ## Decision
 
@@ -81,7 +81,7 @@ False "dirty" reports fail closed and are accepted. Examples: macOS case-insensi
 
 ## Consequences
 
-- apex-scope-loop runs in a plain Claude Code install with no ruflo.
+- apex-scope-loop runs in a plain Claude Code install; ruflo is optional.
 - Gate and land checks read every tracked file: seconds on large repos (about 3–7 s for 50–60k files in tests).
 - The claim is narrower and stated: per run, under the head's own committed rules. Anything outside it is the operator's or Phase 3's.
 - Review-loop cost is high for Tier C harness work. Feedback for loosening it is in `.claude/apex-scope-loop/REVIEW-LOOP-FEEDBACK.md` of the development repo.
