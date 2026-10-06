@@ -48,6 +48,25 @@
       ]
     },
     {
+      "name": "apex-dispatch",
+      "description": "Route and govern delegation: a compiled routing policy picks the tier, provider, fan-out and review shape for each task or ad-hoc ask; PreToolUse/SubagentStop hooks enforce it; provider shims run external workers; every route, spawn, worker run and verdict lands in a hash-chained ledger. Drives apex-scope-loop as its execution engine.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-dispatch",
+      "keywords": [
+        "routing",
+        "delegation",
+        "governance",
+        "hooks",
+        "ledger",
+        "multi-provider",
+        "apex"
+      ]
+    },
+    {
       "name": "apex-guardrails",
       "description": "Deterministic runtime guardrails via PreToolUse hooks: hard-block edits to sensitive paths, deny destructive bash, scan tool inputs for secrets, and compile a declarative YAML policy into enforced matcher config.",
       "author": {
