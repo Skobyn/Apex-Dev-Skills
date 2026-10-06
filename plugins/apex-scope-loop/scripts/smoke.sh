@@ -1273,6 +1273,16 @@ BG="$SMOKE_TMP/bg"; mkdir -p "$BG/data"; git init -q -b main "$BG"; printf '*.lo
 python3 -c 'import sys
 for i in range(12000): open("%s/data/f%06d%s.log" % (sys.argv[1], i, "x" * 60), "w").close()' "$BG"
 [ -z "$(source "$EX/_lib.sh"; timeout 120 bash -c 'source "$1/_lib.sh"; apex_dirty "$2"' _ "$EX" "$BG" || echo stalled)" ] || fail "the inventory stalled or misreported a directory with 12000 ignored files"
+# Attributes that convert bytes (ident) make git status vouch for other bytes
+# of the same size: those files are compared with what a checkout writes.
+ID="$SMOKE_TMP/id"; mkdir -p "$ID"; git init -q -b main "$ID"; printf 'v.py ident\n' >"$ID/.gitattributes"
+printf 'v = "$Id$"\nprint("head")\n' >"$ID/v.py"; git -C "$ID" add -A; git -C "$ID" commit -qm i; git -C "$ID" worktree add -q "$SMOKE_TMP/idwt" 2>/dev/null
+[ -z "$(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/idwt")" ] || fail "a clean worktree with an ident file was reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/idwt")"
+python3 -c 'import sys
+p = sys.argv[1]; b = open(p, "rb").read(); first, rest = b.split(b"\n", 1)
+new = b"v = \"$Id: \"; print(\"NOT HEAD\"); x = \""
+open(p, "wb").write(new + b" " * (len(first) - len(new) - 1) + b"$\n" + rest)' "$SMOKE_TMP/idwt/v.py"
+has "v.py (differs from what the head checks out)" "$(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/idwt")" || fail "the gate missed same-size bytes that git status cleans to the head (ident)"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"

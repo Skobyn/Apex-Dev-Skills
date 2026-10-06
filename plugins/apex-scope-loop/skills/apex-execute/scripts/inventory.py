@@ -4,8 +4,10 @@ not accounted for by the head, one per line (nothing when the tree is clean).
 
 A positive inventory, independent of what git chooses to look at: the tree is
 walked directly (os.walk, symlinks not followed) and each entry must be
-  - an index path (its content is git status's job; a directory where the
-    index has a file is reported),
+  - an index path (its content is git status's job, except files whose
+    attributes convert their bytes -- ident, working-tree-encoding, text/eol
+    -- which are compared byte for byte with what a checkout writes; a
+    directory where the index has a file is reported),
   - a directory (walked: one leading to index paths, or an untracked one
     that committed rules do not ignore -- an empty directory holds nothing),
   - a gitlink (not walked; apex_dirty checks submodules itself), or
@@ -21,9 +23,11 @@ run below it answer from it. Any error is reported too.
 GIT is the git command to run in TOP (argv), e.g. git --no-pager -C TOP.
 """
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import unicodedata
 
 CHUNK = 8192   # bytes of paths per check-ignore round trip: its answers stay far below a pipe buffer
@@ -56,11 +60,15 @@ def main():
 
     staged = subprocess.run(git + ["ls-files", "-z", "--stage"], capture_output=True, check=True).stdout
     files, links, dirs = set(), set(), set()
+    blobs = {}   # regular files: path -> blob id
     for e in staged.split(b"\0"):
         if not e:
             continue
         meta, path = e.split(b"\t", 1)
-        (links if meta.startswith(b"160000 ") else files).add(path)
+        mode, sha = meta.split(b" ")[:2]
+        (links if mode == b"160000" else files).add(path)
+        if mode in (b"100644", b"100755"):
+            blobs[path] = sha
         parts = path.split(b"/")
         for i in range(1, len(parts)):
             dirs.add(b"/".join(parts[:i]))
@@ -145,6 +153,41 @@ def main():
                     report(r, "")
     ci.stdin.close()
     ci.wait(timeout=60)
+
+    # Content git status cannot vouch for. status compares a file only after
+    # running it back through the conversions its attributes ask for (ident,
+    # working-tree-encoding, text/eol), and those are many-to-one: other bytes
+    # can clean to the same blob ('$Id: <payload> $'). Files with such an
+    # attribute are compared byte for byte with what a checkout of their blob
+    # writes (checkout-index into a private directory). Filter drivers are git config, not head
+    # content.
+    attrs = subprocess.run(git + ["check-attr", "-z", "--stdin", "ident", "working-tree-encoding", "text", "eol"],
+                           input=b"".join(p + b"\0" for p in blobs), capture_output=True, check=True).stdout.split(b"\0")
+    converted = set()
+    for i in range(0, len(attrs) - 2, 3):
+        path, attr, val = attrs[i], attrs[i + 1], attrs[i + 2]
+        if val in (b"unspecified", b"unset"):
+            continue
+        if attr == b"text" or attr == b"eol" or attr == b"working-tree-encoding" or (attr == b"ident" and val == b"set"):
+            converted.add(path)
+    if converted:
+        # One checkout of exactly those index entries into a private
+        # directory (checkout-index applies the same conversions a checkout
+        # does); the worktree is never written.
+        tmp = tempfile.mkdtemp(prefix="apex-inventory.")
+        try:
+            subprocess.run(git + ["checkout-index", "-z", "--stdin", "--prefix=" + tmp + "/"],
+                           input=b"".join(p + b"\0" for p in sorted(converted)),
+                           capture_output=True, check=True)
+            for path in sorted(converted):
+                p = os.path.join(top, path)
+                if os.path.islink(p) or not os.path.isfile(p):
+                    continue   # a type change or deletion: git status reports it
+                with open(p, "rb") as f, open(os.path.join(os.fsencode(tmp), path), "rb") as g:
+                    if f.read() != g.read():
+                        report(path, "differs from what the head checks out")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     signal.alarm(0)
     out.sort()
     for line in out[:20]:
