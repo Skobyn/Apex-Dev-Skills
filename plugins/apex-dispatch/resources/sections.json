@@ -6,9 +6,10 @@
     "subtract": "The disabled list: entries {section?, id, reason} merge by (section, id), then each named entry is removed from its by-id section after the merge. A reason is required. section may be omitted when the id exists in exactly one by-id section."
   },
   "field_rules": {
-    "providers": "For a default provider an overlay may not change kind, family or binary; forbidden_flags is add-only (the overlay's list is unioned onto the default's, [] is refused); forced_flags may only be appended to (the default flags stay as the prefix); sandbox_mode may only stay or tighten (read-only|strict < workspace-write < danger-full-access). No provider may force a layer-A bypass flag (--dangerously-*, --yolo*, --always-approve*, --full-auto*), danger-full-access, or one of its forbidden flags.",
-    "tiers": "For a default tier an overlay may not change model, effort or rank. Across all tiers, rank is monotonic with model strength (haiku < sonnet < opus = fable) and effort (low < medium < high < xhigh).",
+    "providers": "Allowlist. An overlay may name only providers the default defines (no new ids) and may set only: enabled; allowed_classes and roles_allowed narrowed to a subset of the default; max_tier lowered; min_acceptance raised; forbidden_flags added to (unioned onto the default's, [] refused). Every other field is refused.",
+    "tiers": "Not overlayable: an overlay may not change, add, clear or disable a tier. The default's ranks are monotonic with model strength (haiku < sonnet < opus = fable) and effort (low < medium < high < xhigh).",
     "roles": "For a default role an overlay may not make a read-only role writable, grant a tool the default does not, or remove a disallowed tool. Roles a hard rule's review shape needs (reviewer; adversarial-reviewer for fanout6+adversarial) cannot be disabled.",
+    "hard_rules": "Append only. An appended route_floor rule may not set tier_ceiling and may not be weaker than a default rule whose `when` it overlaps.",
     "escalation": "max_review_rounds <= 3 and the halt rung's at_failures <= 3; an overlay may only lower either."
   },
   "sections": [

@@ -155,6 +155,8 @@ def check_overlay_shape(overlay, sections, src):
 
 def merge_policy(default, overlay, sections, src="overlay"):
     errs = check_overlay_shape(overlay, sections, src)
+    if not errs and overlay:
+        errs = overlay_allowlist(default, overlay, src)
     if errs:
         raise PolicyError(errs)
     merged = copy.deepcopy(default)
@@ -169,7 +171,7 @@ def merge_policy(default, overlay, sections, src="overlay"):
         elif rule == "by-id":
             merged[name] = [] if over == [] else merge_by_id(merged.get(name, []), over)
             if name == "providers" and over:
-                errs += provider_flag_rules(default.get(name, []), over, merged[name], src)
+                union_forbidden(default.get(name, []), over, merged[name])
         elif rule == "add-only":
             if over == []:
                 errs.append("overlay %s: %s cannot be cleared (hard rules outrank the overlay)" % (src, name))
@@ -200,28 +202,63 @@ def merge_policy(default, overlay, sections, src="overlay"):
     return merged
 
 
-def provider_flag_rules(base, over, merged, src):
-    """forbidden_flags of a default provider is add-only (the overlay's list is
-    unioned onto the default's); forced_flags may only be appended to (the
-    default's flags must stay as an unchanged prefix)."""
+# Provider fields an overlay may set on a default provider (an allowlist: any
+# other field is refused). New provider ids come only from the default policy.
+PROVIDER_OVERLAY_FIELDS = {"id", "enabled", "allowed_classes", "roles_allowed", "max_tier", "min_acceptance", "forbidden_flags"}
+
+
+def overlay_allowlist(default, overlay, src):
+    """Positive checks on the raw overlay. Providers: only enabled, narrowing
+    allowed_classes/roles_allowed, lowering max_tier, raising min_acceptance
+    and adding forbidden_flags; no new ids; never cleared. Tiers: not
+    overlayable at all (no change, no new tier, no disabling)."""
     errs = []
-    dflt = {e["id"]: e for e in base if isinstance(e, dict)}
+    if "tiers" in overlay:
+        errs.append("overlay %s: tiers cannot be changed, added or cleared by an overlay (tiers are the referents of the hard floors; they come only from the default policy)" % src)
+    for d in overlay.get("disabled", []):
+        if d.get("section") == "tiers" or (d.get("section") is None and any(t["id"] == d.get("id") for t in default["tiers"])):
+            errs.append("overlay %s: disabled entry '%s': tiers cannot be disabled by an overlay" % (src, d.get("id")))
+    if "providers" not in overlay:
+        return errs
+    if overlay["providers"] == []:
+        return errs + ["overlay %s: providers cannot be cleared by an overlay (disable a provider with enabled: false)" % src]
+    dp = {e["id"]: e for e in default["providers"]}
+    trank = {t["id"]: t["rank"] for t in default["tiers"]}
+    for o in overlay["providers"]:
+        pid = o["id"]
+        where = "overlay %s: providers[%s]" % (src, pid)
+        d = dp.get(pid)
+        if d is None:
+            errs.append("%s: an overlay may not add a provider (new providers come only from the plugin's default policy)" % where)
+            continue
+        for k in sorted(set(o) - PROVIDER_OVERLAY_FIELDS):
+            errs.append("%s.%s: an overlay may not set this field (allowed: %s)" % (where, k, ", ".join(sorted(PROVIDER_OVERLAY_FIELDS - {"id"}))))
+        if "enabled" in o and not isinstance(o["enabled"], bool):
+            errs.append("%s.enabled: must be true or false" % where)
+        for k in ("allowed_classes", "roles_allowed"):
+            if k in o:
+                if not isinstance(o[k], list) or not set(o[k]) <= set(d[k]):
+                    errs.append("%s.%s: an overlay may only narrow it to a subset of the default %s" % (where, k, json.dumps(d[k])))
+        if "max_tier" in o and trank.get(o["max_tier"], 1 << 30) > trank[d["max_tier"]]:
+            errs.append("%s.max_tier: an overlay may only lower it (default %s)" % (where, json.dumps(d["max_tier"])))
+        if "min_acceptance" in o:
+            v = o["min_acceptance"]
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or v < d["min_acceptance"]:
+                errs.append("%s.min_acceptance: an overlay may only raise it (default %s)" % (where, d["min_acceptance"]))
+        if "forbidden_flags" in o:
+            if not isinstance(o["forbidden_flags"], list) or (o["forbidden_flags"] == [] and d["forbidden_flags"]):
+                errs.append("%s.forbidden_flags: add-only; an overlay may add forbidden flags, never clear or remove them" % where)
+    return errs
+
+
+def union_forbidden(base, over, merged):
+    """forbidden_flags of a provider is the default's list plus the overlay's."""
+    dflt = {e["id"]: e for e in base}
     out = {e["id"]: e for e in merged}
     for o in over:
-        pid = o["id"]
-        if pid not in dflt:
-            continue
-        d, m = dflt[pid], out[pid]
-        if "forbidden_flags" in o and isinstance(o["forbidden_flags"], list):
-            if o["forbidden_flags"] == [] and d.get("forbidden_flags"):
-                errs.append("overlay %s: providers[%s].forbidden_flags cannot be cleared (add-only: an overlay may add forbidden flags, never remove them)" % (src, pid))
-            else:
-                m["forbidden_flags"] = list(d.get("forbidden_flags", [])) + [f for f in o["forbidden_flags"] if f not in d.get("forbidden_flags", [])]
-        if "forced_flags" in o and isinstance(o["forced_flags"], list):
-            df = d.get("forced_flags", [])
-            if o["forced_flags"][:len(df)] != df:
-                errs.append("overlay %s: providers[%s].forced_flags cannot remove or replace the default forced flags; the overlay may only append (keep %s as the prefix)" % (src, pid, json.dumps(df)))
-    return errs
+        if o["id"] in dflt and isinstance(o.get("forbidden_flags"), list):
+            df = dflt[o["id"]]["forbidden_flags"]
+            out[o["id"]]["forbidden_flags"] = list(df) + [f for f in o["forbidden_flags"] if f not in df]
 
 
 def prune_refs(value, spec, defs, removed):
@@ -552,6 +589,8 @@ def overlay_checks(default, merged):
     for h in merged["hard_rules"]:
         if h["id"] in known or h["kind"] != "route_floor":
             continue
+        if "tier_ceiling" in h["then"]:
+            errs.append("hard_rules[%s].then.tier_ceiling: an overlay-appended rule may not set a tier ceiling (it could undercut a default rule's tier floor)" % h["id"])
         for d in dh:
             if _when_overlaps(h["when"], d["when"]):
                 weak = _weaker_then(h["then"], d["then"], merged["tiers"])

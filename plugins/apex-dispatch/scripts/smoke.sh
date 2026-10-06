@@ -135,7 +135,7 @@ expect_reject() {  # $1 label, $2 overlay JSON, $3 expected stderr fragment
 expect_reject "disabled without reason" '{"disabled":[{"id":"researcher"}]}' 'has no reason'
 expect_reject "unknown class reference" '{"tag_classes":[{"id":"x-tags","tags":["x"],"class":"no-such-class"}]}' 'unknown class reference "no-such-class"'
 expect_reject "unknown role in roster" '{"classes":[{"id":"docs","roster":["ghost"]}]}' 'unknown role reference "ghost"'
-expect_reject "bad model alias" '{"tiers":[{"id":"cheap","model":"gpt-4"}]}' 'is not one of'
+expect_reject "bad enum value" '{"classes":[{"id":"docs","brief":"freeform"}]}' 'is not one of'
 expect_reject "clearing hard rules" '{"hard_rules":[]}' 'cannot be cleared'
 expect_reject "unknown section" '{"routes":[]}' "unknown section 'routes'"
 expect_reject "uncalibrated may lower cost" '{"semantic":{"uncalibrated_may_lower_cost":true}}' 'must be false'
@@ -188,37 +188,48 @@ assert sb["enabled"] is True and sb["failIfUnavailable"] is True and sb["allowUn
 PY
 pass "hooks.json wraps hooks (only present scripts); settings snippet has the deny rules and sandbox, no ask"
 
-# 17. provider confinement: forbidden add-only, forced append-only, no bypass flags, sandbox never loosened
-CODEX_FORCED='"exec","--json","--sandbox","workspace-write","--skip-git-repo-check","-c","approval_policy=never","--ignore-user-config"'
-printf '%s' '{"providers":[{"id":"codex","forbidden_flags":["--extra-risky"],"forced_flags":['"$CODEX_FORCED"',"--quiet"]}]}' > "$WORK/ov-prov.json"
-merged "$WORK/ov-prov.json" | python3 -c 'import json,sys; m={p["id"]:p for p in json.load(sys.stdin)["providers"]}["codex"]; assert "--extra-risky" in m["forbidden_flags"] and "-a" in m["forbidden_flags"] and "danger-full-access" in m["forbidden_flags"]; assert m["forced_flags"][-1] == "--quiet"' \
-  || fail "forbidden_flags were not unioned / forced_flags not appended"
-expect_reject "clearing forbidden_flags" '{"providers":[{"id":"codex","forbidden_flags":[]}]}' 'forbidden_flags cannot be cleared'
-expect_reject "replacing forced_flags" '{"providers":[{"id":"codex","forced_flags":["exec","--json"]}]}' 'may only append'
-expect_reject "forcing a bypass flag" '{"providers":[{"id":"codex","forced_flags":['"$CODEX_FORCED"',"--dangerously-bypass-approvals-and-sandbox"]}]}' 'layer-A bypass pattern'
-expect_reject "forcing --yolo on a new provider" '{"providers":[{"id":"yolo-cli","status":"stub","kind":"stub","family":"x","binary":null,"key_env":null,"forced_flags":["--yolo"],"forbidden_flags":[],"allowed_classes":["docs"],"max_tier":"cheap","roles_allowed":["docs"],"reports_usage":false,"sandbox_mode":null,"min_acceptance":0.7,"acceptance_window":20,"hosts":[],"enabled":false}]}' 'layer-A bypass pattern'
-expect_reject "forcing a forbidden flag" '{"providers":[{"id":"codex","forced_flags":['"$CODEX_FORCED"',"-a"]}]}' 'is in forbidden_flags'
-expect_reject "forcing danger-full-access" '{"providers":[{"id":"codex","forced_flags":['"$CODEX_FORCED"',"--sandbox","danger-full-access"]}]}' 'layer-A bypass pattern'
-expect_reject "loosening sandbox_mode" '{"providers":[{"id":"grok","sandbox_mode":"workspace-write"}]}' 'may not loosen or remove the sandbox mode'
-expect_reject "sandbox_mode danger-full-access" '{"providers":[{"id":"codex","sandbox_mode":"danger-full-access"}]}' 'disables provider confinement'
-expect_reject "changing a provider binary" '{"providers":[{"id":"codex","binary":"/tmp/codex"}]}' 'providers\[codex\].binary: an overlay may not change'
-pass "overlay: forbidden_flags add-only, forced_flags append-only, no bypass/forbidden forced flags, sandbox never loosened, binary fixed"
+# 17. providers: an overlay may only toggle enabled, narrow classes/roles, lower max_tier,
+#     raise min_acceptance and add forbidden flags; nothing else, and no new provider ids
+printf '%s' '{"providers":[{"id":"codex","enabled":false,"forbidden_flags":["--extra-risky"],"allowed_classes":["docs","tests"],"roles_allowed":["tester"],"max_tier":"cheap","min_acceptance":0.9}]}' > "$WORK/ov-prov.json"
+merged "$WORK/ov-prov.json" 2>"$WORK/prov.err" | python3 -c 'import json,sys; m={p["id"]:p for p in json.load(sys.stdin)["providers"]}["codex"]; assert m["forbidden_flags"][-1] == "--extra-risky" and "-a" in m["forbidden_flags"] and "danger-full-access" in m["forbidden_flags"]; assert m["enabled"] is False and m["allowed_classes"] == ["docs","tests"] and m["max_tier"] == "cheap" and m["min_acceptance"] == 0.9' \
+  || fail "allowed provider overlay edits were not accepted/applied: $(cat "$WORK/prov.err")"
+# reviewer probes: appended forced flags that override earlier ones
+expect_reject "claude-p bypassPermissions" '{"providers":[{"id":"claude-p","forced_flags":["-p","--setting-sources","user","--permission-mode","dontAsk","--permission-prompts","none","--output-format","json","--permission-mode","bypassPermissions"]}]}' 'providers\[claude-p\].forced_flags: an overlay may not set this field'
+expect_reject "claude-p setting sources + allowedTools" '{"providers":[{"id":"claude-p","forced_flags":["-p","--setting-sources","user,project,local","--allowedTools","Bash"]}]}' 'providers\[claude-p\].forced_flags: an overlay may not set this field'
+expect_reject "grok sandbox off" '{"providers":[{"id":"grok","forced_flags":["-p","--sandbox","strict","--worktree","--no-subagents","--output-format","streaming-messages-json","--sandbox","off"]}]}' 'providers\[grok\].forced_flags: an overlay may not set this field'
+expect_reject "codex add-dir /" '{"providers":[{"id":"codex","forced_flags":["exec","--add-dir","/"]}]}' 'providers\[codex\].forced_flags: an overlay may not set this field'
+expect_reject "codex network access" '{"providers":[{"id":"codex","forced_flags":["exec","-c","sandbox_workspace_write.network_access=true"]}]}' 'providers\[codex\].forced_flags: an overlay may not set this field'
+# reviewer probes: new provider ids
+expect_reject "new claude-p2 provider" '{"providers":[{"id":"claude-p2","status":"verified","kind":"subprocess","family":"anthropic-separate-session","binary":"claude","key_env":null,"forced_flags":["-p","--permission-mode","bypassPermissions"],"forbidden_flags":[],"allowed_classes":["docs"],"max_tier":"cheap","roles_allowed":["docs"],"reports_usage":true,"sandbox_mode":null,"min_acceptance":0.7,"acceptance_window":20,"hosts":[],"enabled":true}]}' 'providers\[claude-p2\]: an overlay may not add a provider'
+expect_reject "new in-session provider running codex" '{"providers":[{"id":"evil","status":"verified","kind":"in-session","family":"anthropic","binary":"codex","key_env":null,"forced_flags":[],"forbidden_flags":[],"allowed_classes":["docs"],"max_tier":"cheap","roles_allowed":["docs"],"reports_usage":true,"sandbox_mode":null,"min_acceptance":0.7,"acceptance_window":20,"hosts":[],"enabled":true}]}' 'providers\[evil\]: an overlay may not add a provider'
+# any non-allowlisted field on a default provider
+for f in '"binary":"/tmp/codex"' '"kind":"in-session"' '"family":"anthropic"' '"sandbox_mode":"read-only"' '"hosts":["evil.example"]' '"key_env":"OTHER_KEY"' '"reports_usage":false' '"status":"verified"' '"acceptance_window":1'; do
+  k="${f%%\":*}"; k="${k#\"}"
+  expect_reject "setting provider $k" '{"providers":[{"id":"codex",'"$f"'}]}' "providers\\[codex\\].$k: an overlay may not set this field"
+done
+expect_reject "widening allowed_classes" '{"providers":[{"id":"grok","allowed_classes":["docs","tests","feature"]}]}' 'allowed_classes: an overlay may only narrow'
+expect_reject "widening roles_allowed" '{"providers":[{"id":"codex","roles_allowed":["builder","provider-runner"]}]}' 'roles_allowed: an overlay may only narrow'
+expect_reject "raising max_tier" '{"providers":[{"id":"codex","max_tier":"max"}]}' 'max_tier: an overlay may only lower it'
+expect_reject "lowering min_acceptance" '{"providers":[{"id":"codex","min_acceptance":0.1}]}' 'min_acceptance: an overlay may only raise it'
+expect_reject "clearing forbidden_flags" '{"providers":[{"id":"codex","forbidden_flags":[]}]}' 'forbidden_flags: add-only'
+expect_reject "clearing providers" '{"providers":[]}' 'providers cannot be cleared'
+pass "overlay: providers allowlist (enabled, narrow classes/roles, lower max_tier, raise min_acceptance, add forbidden flags); no new providers"
 
-# 18. hard-rule referents: tiers, provider identity, role restrictions
-expect_reject "changing a tier model" '{"tiers":[{"id":"strong","model":"sonnet"}]}' 'tiers\[strong\].model: an overlay may not change'
-expect_reject "changing a tier effort" '{"tiers":[{"id":"strong","effort":"low"}]}' 'tiers\[strong\].effort: an overlay may not change'
-expect_reject "changing a tier rank" '{"tiers":[{"id":"cheap","rank":9}]}' 'tiers\[cheap\].rank: an overlay may not change'
-expect_reject "changing a provider kind" '{"providers":[{"id":"claude-p","kind":"in-session"}]}' 'providers\[claude-p\].kind: an overlay may not change'
-expect_reject "changing a provider family" '{"providers":[{"id":"codex","family":"anthropic"}]}' 'providers\[codex\].family: an overlay may not change'
+# 18. tiers are not overlayable at all; role restrictions hold
+expect_reject "changing a tier model" '{"tiers":[{"id":"strong","model":"sonnet"}]}' 'tiers cannot be changed, added or cleared'
+expect_reject "changing a tier budget" '{"tiers":[{"id":"cheap","maxTurns":5}]}' 'tiers cannot be changed, added or cleared'
+expect_reject "adding a tier" '{"tiers":[{"id":"ultra","rank":4,"model":"fable","effort":"xhigh","maxTurns":10,"context_budget_tokens":1000,"price_usd_per_mtok":{"input":1,"output":1,"cache_read":0.1,"cache_write":1}}]}' 'tiers cannot be changed, added or cleared'
+expect_reject "disabling a tier" '{"disabled":[{"section":"tiers","id":"max","reason":"cost"}]}' 'tiers cannot be disabled'
 expect_reject "making a read-only role writable" '{"roles":[{"id":"researcher","read_only":false}]}' 'may not make a read-only role writable'
 expect_reject "granting a role a tool" '{"roles":[{"id":"docs","tools":["Read","Grep","Glob","Edit","Write","MultiEdit","Bash"]}]}' 'roles\[docs\].tools: an overlay may not grant Bash'
 expect_reject "dropping a disallowed tool" '{"roles":[{"id":"docs","disallowed_tools":["Agent","NotebookEdit"]}]}' 'roles\[docs\].disallowed_tools: an overlay may not remove Bash'
-TIER_REST='"maxTurns":10,"context_budget_tokens":1000,"price_usd_per_mtok":{"input":1,"output":1,"cache_read":0.1,"cache_write":1}'
-expect_reject "new tier above max with a weaker model" '{"tiers":[{"id":"ultra","rank":4,"model":"haiku","effort":"xhigh",'"$TIER_REST"'}]}' 'monotonic with model strength'
-expect_reject "new tier above max with lower effort" '{"tiers":[{"id":"ultra","rank":4,"model":"fable","effort":"low",'"$TIER_REST"'}]}' 'monotonic with effort'
-printf '%s' '{"tiers":[{"id":"ultra","rank":4,"model":"fable","effort":"xhigh",'"$TIER_REST"'}]}' > "$WORK/ov-tier.json"
-merged "$WORK/ov-tier.json" >/dev/null 2>&1 || fail "a monotonic new tier was rejected"
-pass "overlay: tier model/effort/rank, provider kind/family and role restrictions are fixed; new tiers stay monotonic"
+python3 -c '
+import json, sys
+t = sorted(json.load(open(sys.argv[1]))["tiers"], key=lambda x: x["rank"])
+S = {"haiku": 0, "sonnet": 1, "opus": 2, "fable": 2}; E = ["low", "medium", "high", "xhigh"]
+assert all(S[a["model"]] <= S[b["model"]] and E.index(a["effort"]) <= E.index(b["effort"]) for a, b in zip(t, t[1:]))
+' "$PLUGIN_ROOT/resources/dispatch.default.json" || fail "default tiers are not monotonic in model strength and effort"
+pass "overlay: tiers cannot be changed, added, cleared or disabled; role restrictions hold; default tiers monotonic"
 
 # 19. appended route_floor rules may only match or tighten (rules combine by max)
 expect_reject "weaker Tier C diversity" '{"hard_rules":[{"id":"my-c","kind":"route_floor","match":"all","description":"x","when":{"risk_tier":"C"},"then":{"review_diversity":"off"}}]}' 'weaker than hard rule tier-c-floor'
@@ -227,7 +238,8 @@ expect_reject "lower floor for security tags" '{"hard_rules":[{"id":"my-sec","ki
 printf '%s' '{"hard_rules":[{"id":"my-b-strict","kind":"route_floor","match":"all","description":"x","when":{"risk_tier":"B"},"then":{"review_diversity":"block"}}]}' > "$WORK/ov-rule.json"
 merged "$WORK/ov-rule.json" >/dev/null 2>&1 || fail "a stricter appended hard rule was rejected"
 grep -q 'combine by max (strictest wins)' "$ADR" || fail "ADR-0001 does not state that matching hard rules combine by max"
-pass "overlay: appended route_floor rules may only match or tighten; ADR states max (strictest wins)"
+expect_reject "appended tier_ceiling" '{"hard_rules":[{"id":"my-ceil","kind":"route_floor","match":"all","description":"x","when":{"role":"builder"},"then":{"tier_ceiling":"cheap"}}]}' 'may not set a tier ceiling'
+pass "overlay: appended route_floor rules may only match or tighten (no tier_ceiling); ADR states max (strictest wins)"
 
 # 20. escalation: review rounds and the halt rung stay at 3 or below
 expect_reject "raising max_review_rounds" '{"escalation":{"max_review_rounds":4}}' 'max_review_rounds: 4 is above 3'
