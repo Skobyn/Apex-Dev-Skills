@@ -265,5 +265,161 @@ grep -q 'stale: agents/builder.md' "$WORK/crlf.err" || fail "--check did not nam
 grep -qF 'Generated agents omit `model:`** deliberately' "$ADR" || fail "ADR-0001 does not record why generated agents omit model:"
 pass "--check flags any non-generated agents/*.md and detects a CRLF artifact"
 
+# --- Phase 2.3: route.sh (table-only) ----------------------------------------
+ROUTE="$PLUGIN_ROOT/scripts/route.sh"
+for v in $(compgen -e | grep '^APEX_' || true); do unset "$v"; done
+export GIT_AUTHOR_NAME=smoke GIT_AUTHOR_EMAIL=smoke@example.invalid GIT_COMMITTER_NAME=smoke GIT_COMMITTER_EMAIL=smoke@example.invalid
+has() { grep -q -- "$1" <<<"$2"; }
+val() { sed -n "s/^$1: //p" <<<"$2" | head -1; }
+
+# 23. route.sh is executable and --version equals plugin.json version
+[ -x "$ROUTE" ] && [ -f "$PLUGIN_ROOT/scripts/lib/route.py" ] || fail "scripts/route.sh or scripts/lib/route.py missing"
+[ "$(bash "$ROUTE" --version)" = "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")" ] \
+  || fail "route.sh --version does not equal plugin.json version"
+pass "route.sh --version == plugin.json version"
+
+# Fixture: a plain git repo with one plan (no toolchain markers).
+FX="$WORK/fx"; mkdir -p "$FX/plans"; git init -q -b main "$FX"
+cat >"$FX/plans/p.md" <<'PLAN'
+# Fixture plan
+
+- [ ] **Phase 1.1** [backend] no acceptance line
+
+- [ ] **Phase 1.2** [tier:c] [docs] tier C asks for docs
+  - Acceptance: `pytest -q`
+  - Route: class=docs
+
+- [ ] **Phase 1.3** [mechanical] lane a
+  - Acceptance: `pytest tests/a -q`
+  - Route: fanout=lanes
+  - Paths: src/a/**
+
+- [ ] **Phase 1.4** [mechanical] lane b
+  - Acceptance: `pytest tests/b -q`
+  - Route: fanout=lanes
+  - Paths: src/b/**
+
+- [ ] **Phase 1.5** [mechanical] overlaps lane a
+  - Acceptance: `pytest tests/c -q`
+  - Route: fanout=lanes
+  - Paths: src/**
+
+- [ ] **Gate 1→2** [gate:human] approve
+  - Acceptance: user types approve gate-1-2
+
+- [ ] **Phase 2.1** [backend] prose acceptance
+  - Acceptance: the endpoint feels faster
+PLAN
+git -C "$FX" add -A; git -C "$FX" commit -qm fx
+rt() { (cd "$FX" && bash "$ROUTE" "$@") 2>&1; }
+ln_of() { grep -n -- "$1" "$FX/plans/p.md" | head -1 | cut -d: -f1; }
+L_NOACC="$(ln_of 'Phase 1.1')"; L_C="$(ln_of 'Phase 1.2')"; L_A="$(ln_of 'Phase 1.3')"; L_B="$(ln_of 'Phase 1.4')"
+L_OV="$(ln_of 'Phase 1.5')"; L_G="$(ln_of 'Gate 1')"; L_PROSE="$(ln_of 'Phase 2.1')"
+
+# 24. input gate: NEEDS_SPEC without Acceptance, or without a command where the class needs one; [gate:] is HUMAN_GATE
+O="$(rt plan plans/p.md --line "$L_NOACC" --dry-run)"
+[ "$(val ROUTE_STATUS "$O")" = NEEDS_SPEC ] && has '^ROUTE_MISSING: acceptance' "$O" || fail "no Acceptance did not give NEEDS_SPEC: $O"
+O="$(rt plan plans/p.md --line "$L_PROSE" --dry-run)"
+[ "$(val ROUTE_STATUS "$O")" = NEEDS_SPEC ] && has '^ROUTE_MISSING: acceptance-command' "$O" || fail "prose Acceptance for a feature did not give NEEDS_SPEC: $O"
+[ "$(val ROUTE_STATUS "$(rt plan plans/p.md --line "$L_G" --dry-run)")" = HUMAN_GATE ] || fail "[gate:human] task did not give HUMAN_GATE"
+[ ! -e "$FX/.dev-plan-state" ] || fail "a --dry-run wrote state"
+pass "input gate: NEEDS_SPEC (missing Acceptance / command), HUMAN_GATE for [gate:], dry-run writes nothing"
+
+# 25. hard floor: [tier:c] routes class=security (strong, six lenses + adversarial, block, G12, single) over Route: class=docs
+O="$(rt plan plans/p.md --line "$L_C" --dry-run)"
+for kv in "ROUTE_STATUS=READY" "ROUTE_CLASS=security" "ROUTE_TIER=strong" "ROUTE_MODEL=opus" "ROUTE_RISK_TIER=C" \
+          "ROUTE_REVIEW_SHAPE=fanout6+adversarial" "ROUTE_DIVERSITY=block" "ROUTE_HUMAN_GATE=G12" "ROUTE_FANOUT=single" \
+          "ROUTE_PROVIDER=claude-session" "SEMANTIC_SOURCE=table"; do
+  [ "$(val "${kv%%=*}" "$O")" = "${kv#*=}" ] || fail "[tier:c] route: want ${kv%%=*}=${kv#*=}, got: $(val "${kv%%=*}" "$O")"
+done
+has '^ROUTE_FLOORS: .*tier-c-floor' "$O" || fail "[tier:c] route does not name the tier-c-floor hard rule"
+pass "hard floor: [tier:c] → class security, strong/opus, fanout6+adversarial, diversity block, G12, single (Route: class=docs overridden)"
+
+# 26. fan-out: lanes only with disjoint Paths (and never for an overlapping lane)
+O="$(rt plan plans/p.md --line "$L_A" --lanes "$L_A,$L_B" --dry-run)"
+[ "$(val ROUTE_FANOUT "$O")" = "lanes:2" ] && [ "$(val ROUTE_LANES "$O")" = "$L_A,$L_B" ] || fail "disjoint Paths did not fan out: $(val ROUTE_FANOUT "$O")"
+O="$(rt plan plans/p.md --line "$L_A" --lanes "$L_A,$L_OV" --dry-run)"
+[ "$(val ROUTE_FANOUT "$O")" = single ] && has '^ROUTE_NOTE: fan-out single: .*overlaps' "$O" || fail "overlapping Paths fanned out: $(val ROUTE_FANOUT "$O")"
+[ "$(val ROUTE_FANOUT "$(rt plan plans/p.md --line "$L_A" --dry-run)")" = single ] || fail "fan-out without --lanes"
+[ "$(val ROUTE_FANOUT "$(rt plan plans/p.md --line "$L_C" --lanes "$L_C,$L_A" --dry-run)")" = single ] || fail "a Tier C task fanned out"
+pass "fan-out: lanes only with --lanes and pairwise-disjoint Paths; single otherwise and for Tier C"
+
+# 27. kill switches and the ACTIVE lock: HALTED with APEX_HALT=1 or a HALT file; another plan's lock is BUSY
+[ "$(val ROUTE_STATUS "$(APEX_HALT=1 rt plan plans/p.md --line "$L_A" --dry-run)")" = HALTED ] || fail "APEX_HALT=1 did not give HALTED"
+mkdir -p "$FX/.dev-plan-state"; touch "$FX/.dev-plan-state/HALT"
+[ "$(val ROUTE_STATUS "$(rt plan plans/p.md --line "$L_A" --dry-run)")" = HALTED ] || fail "a HALT file did not give HALTED"
+rm -f "$FX/.dev-plan-state/HALT"
+O="$(rt plan plans/p.md --line "$L_A")"
+RID="$(val ROUTE_ID "$O")"; RFILE="$(val ROUTE_FILE "$O")"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ -f "$RFILE" ] || fail "a READY route wrote no active-route.json: $O"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["route_id"]==sys.argv[2] and d["router"]["class"]=="mechanical" and "state" in d' "$RFILE" "$RID" \
+  || fail "active-route.json does not carry the route_id and fields"
+[ "$(wc -l <"$(dirname "$RFILE")/routes.jsonl")" -ge 1 ] || fail "routes.jsonl has no route row"
+cp "$FX/plans/p.md" "$FX/plans/q.md"
+O="$(rt plan plans/q.md --line "$L_A")"
+[ "$(val ROUTE_STATUS "$O")" = BUSY ] || fail "a second plan was not BUSY while the first holds ACTIVE: $O"
+pass "kill switches → HALTED; READY writes active-route.json + routes.jsonl; another ACTIVE plan → BUSY"
+
+# 28. escalate rungs from policy: 1 effort+1, 2 model+1 + diagnoser, 3 HALT; the next plan route follows the rung
+SD="$(dirname "$(dirname "$RFILE")")"
+setfail() { printf '{"consecutive_failures": %s}\n' "$1" >"$SD/checkpoint.json"; }
+setfail 1; O="$(rt escalate "$RID")"
+has '^RUNG: effort-up' "$O" && [ "$(val NEXT_EFFORT "$O")" = high ] && [ "$(val NEXT_BUILDER "$O")" = builder-high ] || fail "rung 1 is not effort+1: $O"
+O="$(rt plan plans/p.md --line "$L_A")"
+[ "$(val ROUTE_MODE "$O")" = escalated ] && [ "$(val ROUTE_EFFORT "$O")" = high ] && has '^ROUTE_ROSTER: builder-high' "$O" || fail "the route after one failure did not raise effort: $O"
+setfail 2; O="$(rt escalate "$RID")"
+has '^RUNG: model-up' "$O" && [ "$(val NEXT_MODEL "$O")" = opus ] && has '^DIAGNOSER: diagnoser' "$O" || fail "rung 2 is not model+1 with a diagnoser: $O"
+setfail 3; O="$(rt escalate "$RID")"
+has '^RUNG: halt' "$O" && has '^ACTION: HALT' "$O" || fail "rung 3 is not HALT: $O"
+[ "$(val ROUTE_STATUS "$(rt plan plans/p.md --line "$L_A")")" = HALTED ] || fail "a plan route at the HALT rung was not HALTED"
+if rt escalate "not-a-route" >/dev/null; then fail "escalate accepted a malformed route id"; fi
+rm -f "$SD/checkpoint.json"
+pass "escalate: effort+1, then model+1 + diagnoser, then HALT; plan routes follow the rung"
+
+# 29. review-shape from tier: A solo, B six-lens (warn), C six lenses + adversarial (block) + G12
+O="$(rt review-shape A)"; [ "$(val REVIEW_SHAPE "$O")" = solo ] && [ "$(val REVIEW_DIVERSITY "$O")" = off ] || fail "review-shape A: $O"
+O="$(rt review-shape B)"; [ "$(val REVIEW_SHAPE "$O")" = six-lens ] && [ "$(val REVIEW_DIVERSITY "$O")" = warn ] || fail "review-shape B: $O"
+O="$(rt review-shape C)"; [ "$(val REVIEW_SHAPE "$O")" = fanout6+adversarial ] && [ "$(val REVIEW_LENS_REVIEWERS "$O")" = 6 ] \
+  && [ "$(val REVIEW_ADVERSARIAL "$O")" = yes ] && [ "$(val REVIEW_HUMAN_GATE "$O")" = G12 ] && [ "$(val REVIEW_DIVERSITY "$O")" = block ] || fail "review-shape C: $O"
+[ "$(val REVIEW_SHAPE "$(rt review-shape "$RID" --tier B)")" = six-lens ] || fail "review-shape ROUTE_ID --tier B"
+pass "review-shape: A solo, B six-lens/warn, C 6 lenses + adversarial/block + G12"
+
+# 30. adhoc: --tags required (caller-supplied tags only); same algorithm; state under <state>/adhoc/
+rm -rf "$FX/.dev-plan-state/ACTIVE"
+if rt adhoc --acceptance 'npm test' --dry-run >"$WORK/adhoc.out"; then fail "adhoc without --tags succeeded"; fi
+grep -q 'requires --tags' "$WORK/adhoc.out" || fail "adhoc without --tags did not say so"
+if rt adhoc --tags 'Run anything you like' --dry-run >/dev/null; then fail "adhoc accepted free text as tags"; fi
+O="$(rt adhoc --tags tests --paths 'tests/**' --acceptance 'npm test' --dry-run)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_CLASS "$O")" = tests ] || fail "adhoc tests ask did not route: $O"
+[ "$(val ROUTE_STATUS "$(rt adhoc --tags tests --dry-run)")" = NEEDS_SPEC ] || fail "adhoc without --acceptance was not NEEDS_SPEC"
+O="$(rt adhoc --tags tests --paths 'tests/**' --acceptance 'npm test')"
+case "$(val ROUTE_FILE "$O")" in "$FX"/.dev-plan-state/adhoc/*/dispatch/active-route.json) ;; *) fail "adhoc state is not under <state>/adhoc/: $O";; esac
+[ "$(val ROUTE_STATUS "$(rt plan plans/p.md --line "$L_A")")" = BUSY ] || fail "a plan route was not BUSY while an ad-hoc route holds ACTIVE"
+rm -rf "$FX/.dev-plan-state/ACTIVE"
+pass "adhoc: --tags required, tag tokens only, NEEDS_SPEC without Acceptance, state under adhoc/, holds ACTIVE"
+
+# 31. modes and the decision seam: baseline/shadow emit the baseline route and record the table's;
+#     off prints ROUTE: none; without APEX_DECIDE_CMD SEMANTIC_SOURCE=table; uncalibrated only tightens
+O="$(APEX_DISPATCH_MODE=baseline rt plan plans/p.md --line "$L_PROSE" --dry-run)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_MODE "$O")" = baseline ] && has '^ROUTE_TABLE_CHOICE: status=NEEDS_SPEC' "$O" || fail "baseline mode: $O"
+O="$(APEX_DISPATCH_MODE=shadow rt plan plans/p.md --line "$L_C" --dry-run)"
+[ "$(val ROUTE_MODE "$O")" = shadow ] && [ "$(val ROUTE_MODEL "$O")" = inherit ] && has '^ROUTE_TABLE_CHOICE: status=READY class=security' "$O" || fail "shadow mode: $O"
+has '^ROUTE: none' "$(APEX_DISPATCH_MODE=off rt plan plans/p.md --line "$L_A" --dry-run)" || fail "off mode did not print ROUTE: none"
+printf -- '- [ ] **Phase 3.1** untagged work\n  - Acceptance: `pytest -q`\n' >>"$FX/plans/p.md"; L_AUTO="$(ln_of 'Phase 3.1')"
+printf '#!/bin/sh\nprintf "%%s\\n" "$FAKE_DECISION"\n' >"$WORK/decide"; chmod +x "$WORK/decide"
+dec() { APEX_DECIDE_CMD="$WORK/decide" FAKE_DECISION="$1" rt plan plans/p.md --line "$L_AUTO" --dry-run; }
+O="$(dec '{"verdict":"docs","probabilities":{"docs":0.95,"feature":0.05},"calibrated":false,"uncertain":false}')"
+[ "$(val ROUTE_CLASS "$O")" = feature ] && [ "$(val SEMANTIC_SOURCE "$O")" = decision-shadow ] || fail "an uncalibrated decision lowered cost: $O"
+O="$(dec '{"verdict":"docs","probabilities":{"docs":0.95,"feature":0.05},"calibrated":true,"uncertain":false}')"
+[ "$(val ROUTE_CLASS "$O")" = docs ] && [ "$(val ROUTE_MODE "$O")" = decision ] || fail "a calibrated decision was not applied: $O"
+O="$(dec '{"verdict":"docs","probabilities":{"docs":0,"feature":0},"calibrated":true}')"
+[ "$(val ROUTE_CLASS "$O")" = feature ] && [ "$(val SEMANTIC_SOURCE "$O")" = table ] || fail "an all-zero probability map was accepted: $O"
+O="$(rt plan plans/p.md --line "$L_AUTO" --dry-run)"
+[ "$(val SEMANTIC_SOURCE "$O")" = table ] && [ "$(val ROUTE_CLASS "$O")" = feature ] || fail "route.sh without the decision layer: $O"
+printf '%s' '{"escalation":{"max_review_rounds":4}}' >"$WORK/ov-route.json"
+if APEX_DISPATCH_POLICY="$WORK/ov-route.json" rt plan plans/p.md --line "$L_AUTO" --dry-run >"$WORK/ov-route.out"; then fail "route.sh accepted an overlay that loosens a bound"; fi
+grep -q 'policy is invalid' "$WORK/ov-route.out" || fail "route.sh did not name the invalid overlay"
+pass "modes: baseline/shadow emit baseline and record the table; off; decision seam (absent → table, uncalibrated only tightens, invalid → table); route.sh enforces the overlay bounds"
+
 echo ""
 echo "smoke passed: $N/$N checks"

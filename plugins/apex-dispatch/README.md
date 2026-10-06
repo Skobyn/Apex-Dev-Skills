@@ -2,7 +2,7 @@
 
 **Route and govern every delegation.** A compiled routing policy picks the tier, provider, fan-out and review shape for each task or ad-hoc ask; PreToolUse/SubagentStop hooks enforce it; provider shims run external workers; every route, spawn, worker run and verdict lands in a hash-chained ledger. Drives apex-scope-loop as its execution engine.
 
-> **Status: 0.1.0, under construction.** Shipped so far: the manifest, the contract, the routing policy with its overlay and schema, `compile.sh`, the generated agents and the settings snippet. Routing (`route.sh`), the hook scripts, provider workers and the ledger land in later phases of the apex-dispatch plan; see [ADR-0001](docs/adrs/0001-apex-dispatch-contract.md).
+> **Status: 0.1.0, under construction.** Shipped so far: the manifest, the contract, the routing policy with its overlay and schema, `compile.sh`, the generated agents, the settings snippet and table-only routing (`route.sh`). The hook scripts, provider workers and the hash-chained ledger land in later phases of the apex-dispatch plan; see [ADR-0001](docs/adrs/0001-apex-dispatch-contract.md).
 
 ## What it is
 
@@ -42,10 +42,28 @@ Hard rules outrank verdicts. No new model-judged gates.
 - `hooks/hooks.json` registers only hook scripts that exist under `hooks/`, through a fixed event and matcher table; policy never changes registration. With no hook scripts yet it is `{"hooks": {}}`.
 - `agents/` is fully generated and never edited by hand: `--check` flags any `agents/*.md` that is not an expected artifact, and compares bytes exactly. Edit the policy and recompile. Generated agents deliberately carry no `model:` line (it would be a default, not a pin; the model is enforced at spawn time). `reviewer-exec` is opt-in, so it is not generated while it is disabled in the default policy.
 
+## Routing (`scripts/route.sh`)
+
+```bash
+route.sh plan PLAN --line N [--base SHA] [--lanes L1,L2] [--dry-run]   # one plan task (iterate.sh calls this)
+route.sh adhoc --tags CSV [--paths GLOBS] [--acceptance CMD] [--dry-run] # an ad-hoc ask: caller-supplied tags only
+route.sh escalate ROUTE_ID          # next rung; checkpoint.sh fail prefixes each line with ESCALATE_ROUTE:
+route.sh review-shape TIER          # or: review-shape ROUTE_ID --tier TIER
+route.sh --version                  # == plugin.json version
+```
+
+A pure function of trusted features (tags, Acceptance presence and whether it holds a runnable command, `Route:`/`Paths:`/`Budget:` directives, the persisted risk tier or the tag floor, consecutive failures, toolchain markers on disk) plus the merged policy; no free text enters the state object. In order: kill switches (`APEX_HALT=1`, the HALT files apex-scope-loop honours, a halted checkpoint, the escalation HALT rung) → `HALTED`; another `ACTIVE` owner → `BUSY`; no Acceptance, or no command where the class needs one → `NEEDS_SPEC` with `ROUTE_MISSING`; a `[gate:…]` task → `HUMAN_GATE`; hard floors (`hard_rules`); the class (`Route: class=` unless below a floor, else `tag_classes`, else `auto` → feature); the decision seam for a class still `auto`; tier → model, effort, provider (`claude-session` unless the policy, the class and an installed binary allow another); fan-out (lanes only with `--lanes`, a lanes class, `fanout=lanes` and pairwise-disjoint `Paths`; never Tier C); review shape from the risk tier (A solo, B six-lens, C six lenses + adversarial, diversity block, G12); the escalation rung after a failure.
+
+It prints a `KEY: VALUE` block: `ROUTE_STATUS` (`READY|NEEDS_SPEC|HUMAN_GATE|HALTED|BUSY`), `ROUTE_ID`, `ROUTE_MODE` (`table|decision|escalated|baseline|shadow`), `ROUTE_CLASS`, `ROUTE_TIER`, `ROUTE_RISK_TIER`, `ROUTE_MODEL`, `ROUTE_EFFORT`, `ROUTE_PROVIDER`, `ROUTE_ROSTER`, `ROUTE_FANOUT`, `ROUTE_LANES`, `ROUTE_REVIEW_SHAPE`, `ROUTE_DIVERSITY`, `ROUTE_HUMAN_GATE`, `ROUTE_BUDGET_USD/SPAWNS/MINUTES`, `ROUTE_MISSING`, `ROUTE_FLOORS`, `SEMANTIC_SOURCE`, and `ROUTE_NOTE` lines. Every status exits 0. Without `--dry-run` a READY route is written atomically to `<state>/dispatch/active-route.json` (`<state>` is the plan's state dir, or `<state-base>/adhoc/<id>/` for an ad-hoc ask) and appended to `<state>/dispatch/routes.jsonl`, a plain append-only log that the hash-chained `ledger.sh` replaces in the next phase. `--dry-run` writes nothing and ignores the `ACTIVE` lock.
+
+- **Decision seam:** with `APEX_DECIDE_CMD` set, a class still `auto` is asked of `$APEX_DECIDE_CMD --rubric dispatch/task-class@1 --state <json> --json` within `semantic.timeout_ms`; an invalid, failed or timed-out answer is `SEMANTIC_SOURCE: table`; an uncalibrated answer may only move the route safer or more expensive (`decision-shadow` otherwise); `uncertain` raises the tier to `semantic.uncertain_tier`. Without it routing is table-only.
+- **`APEX_DISPATCH_MODE`:** `baseline` emits the 0.2.0 route (the orchestrator's own choice) and records the table's choice as `ROUTE_TABLE_CHOICE`; `shadow` also runs the decision seam, logs it, and emits the baseline route; `off` prints `ROUTE: none`.
+- **Dependencies:** route.sh resolves `.dev-plan-state/`, the kill switches, the `ACTIVE` lock and plan parsing through the sibling apex-scope-loop (`APEX_SCOPE_LOOP_ROOT` overrides the lookup).
+
 ## Compatibility
 
 - **Claude Code:** 2.1.251+ (hook fields this plugin relies on are verified by `doctor.sh` when it ships)
-- **apex-scope-loop:** 0.3.0+ as a sibling plugin (`APEX_SCOPE_LOOP_ROOT` overrides the lookup); without it apex-dispatch degrades to route + govern + ledger
+- **apex-scope-loop:** 0.3.0+ as a sibling plugin (`APEX_SCOPE_LOOP_ROOT` overrides the lookup); `route.sh` uses its state resolution, kill switches, `ACTIVE` lock and plan parser, and exits 1 without it
 - **git** 2.40+, **bash** 4+, **python3** 3.8+ (stdlib only)
 - **ruflo:** not used
 
@@ -67,7 +85,7 @@ On disk it writes only under `<state>/dispatch/` and `<state>/adhoc/`, inside th
 bash plugins/apex-dispatch/scripts/smoke.sh
 ```
 
-The smoke script checks the plugin contract (manifest keys, no enumerated surfaces, marketplace registration, README sections, ADR status, script executability) and the compiled policy: `compile.sh --check` passes, a stale artifact is caught, the overlay rules hold, invalid overlays are rejected, generated reviewers have no Bash and builders no `Agent`, `hooks.json` wraps `hooks`, and the settings snippet carries the deny rules. Route dry-runs, hook contracts and ledger verify come in later phases.
+The smoke script checks the plugin contract (manifest keys, no enumerated surfaces, marketplace registration, README sections, ADR status, script executability) and the compiled policy: `compile.sh --check` passes, a stale artifact is caught, the overlay rules hold, invalid overlays are rejected, generated reviewers have no Bash and builders no `Agent`, `hooks.json` wraps `hooks`, and the settings snippet carries the deny rules. It also runs `route.sh` against a fixture repo: `--version` equals `plugin.json`; NEEDS_SPEC without Acceptance or a command; HUMAN_GATE for `[gate:]`; `class=security` floor for `[tier:c]`; lanes only with disjoint Paths; HALTED with `APEX_HALT=1` or a HALT file; BUSY under another plan's or an ad-hoc lock; escalate rungs; review shapes; `adhoc` requires `--tags`; baseline/shadow/off; the decision seam absent, uncalibrated, calibrated and invalid. Hook contracts and ledger verify come in later phases.
 
 ## Architecture Decisions
 

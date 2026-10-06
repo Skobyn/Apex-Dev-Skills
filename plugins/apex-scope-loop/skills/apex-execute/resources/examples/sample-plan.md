@@ -40,7 +40,7 @@ that touches `Authorization` headers or refresh flows.
   - Blocked-by: phase-1.2
 
 - [ ] **Phase 2.2** [backend][security] Implement refresh-token rotation with Redis-backed single-use enforcement
-  - Acceptance: integration test asserts old refresh token rejected with 401 after rotation
+  - Acceptance: `pytest tests/integration/auth/test_refresh_rotation.py` passes (old refresh token rejected with 401 after rotation)
   - Blocked-by: phase-2.1
 
 - [ ] **Phase 2.3** [perf] Benchmark JWT verify p99 vs. legacy session lookup

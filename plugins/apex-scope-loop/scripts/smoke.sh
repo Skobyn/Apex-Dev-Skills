@@ -115,6 +115,11 @@ ok "no .claude/skills paths; hooks-snippet.json removed"
 # base checkout and from inside the plan worktree, lands on ONE state dir.
 # The functional checks must not inherit the caller's loop configuration.
 for v in $(compgen -e | grep '^APEX_' || true); do unset "$v"; done
+# The sibling apex-dispatch (shipped in this marketplace) routes every iterate
+# and writes <state>/dispatch/, which puts checkpoint.sh into provenance mode.
+# The scope-loop checks run with routing off (the 0.2.0 brief); checks 26 and
+# 29 turn it back on to cover the integration, and 33 builds dispatch state itself.
+export APEX_DISPATCH_MODE=off
 SMOKE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/apex-scope-loop-smoke.XXXXXX")"
 trap 'git -C "$SMOKE_TMP/repo" worktree prune >/dev/null 2>&1 || true; rm -rf "$SMOKE_TMP"' EXIT
 [ -n "${SMOKE_KEEP:-}" ] && trap - EXIT
@@ -503,10 +508,15 @@ K="$SMOKE_TMP/lockrepo"; mkdir -p "$K/plans"; git init -q -b main "$K"
 # A valid copy of the check-25 plan (its Phase 1.5 names an unknown gate on purpose).
 sed '/Phase 1.5/,$d' "$P25" >"$K/plans/a-plan.md"; cp "$K/plans/a-plan.md" "$K/plans/b-plan.md"; git -C "$K" add -A; git -C "$K" commit -qm k
 ( cd "$K" && APEX_GIBSON=0 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 && APEX_GIBSON=0 "$EX/init.sh" plans/b-plan.md >/dev/null 2>&1 ) || fail "init for the lock test failed"
-OUT_A="$(brief "$K" plans/a-plan.md)"
-for want in "^STATUS: READY" "^STAGE: BUILD" "^ROUTE_DIRECTIVE: class=tests" "^PATHS: tests/a/\*\*" "^BUDGET: usd=2" "^LANES: " "^ROUTE: none"; do
+OUT_A="$(APEX_DISPATCH_MODE= brief "$K" plans/a-plan.md)"
+# With the sibling apex-dispatch installed (this marketplace ships it), the
+# brief carries its ROUTE block; APEX_DISPATCH_MODE=off is the 0.2.0 brief.
+DISPATCH_SIBLING="$(source "$EX/_lib.sh" && apex_dispatch_root)"
+if [ -n "$DISPATCH_SIBLING" ]; then ROUTE_WANT="^ROUTE_STATUS: READY"; else ROUTE_WANT="^ROUTE: none"; fi
+for want in "^STATUS: READY" "^STAGE: BUILD" "^ROUTE_DIRECTIVE: class=tests" "^PATHS: tests/a/\*\*" "^BUDGET: usd=2" "^LANES: " "$ROUTE_WANT"; do
   has "$want" "$OUT_A" || fail "iterate brief lacks $want"
 done
+has "^ROUTE: none" "$(APEX_DISPATCH_MODE=off brief "$K" plans/a-plan.md)" || fail "APEX_DISPATCH_MODE=off did not give ROUTE: none"
 has '^STATUS: BUSY' "$(brief "$K" plans/b-plan.md)" || fail "a second plan was not BUSY while the first holds the ACTIVE lock"
 has '^STATUS: READY' "$(brief "$K" plans/a-plan.md)" || fail "the lock owner could not re-acquire"
 has '^STATUS: READY' "$(APEX_FORCE_UNLOCK=1 brief "$K" plans/b-plan.md)" || fail "APEX_FORCE_UNLOCK did not reclaim the lock"
@@ -542,7 +552,7 @@ has '^STATUS: READY' "$(CLAUDE_CODE_SESSION_ID=sessA brief "$K" plans/a-plan.md)
 has '^STATUS: BUSY' "$(CLAUDE_CODE_SESSION_ID=sessB brief "$K" plans/a-plan.md)" || fail "a second session took over the same plan's lock"
 has '^STATUS: READY' "$(CLAUDE_CODE_SESSION_ID=sessA brief "$K" plans/a-plan.md)" || fail "session A could not re-acquire its own lock"
 has '^STATUS: BUSY' "$(CLAUDE_CODE_SESSION_ID= brief "$K" plans/a-plan.md)" || fail "a caller without a session id took over a session's lock"
-ok "iterate: ACTIVE lock (atomic, fail-closed, owner- and session-checked), brief fields, ROUTE: none, invalid plans refused"
+ok "iterate: ACTIVE lock (atomic, fail-closed, owner- and session-checked), brief fields, ROUTE block (or ROUTE: none), invalid plans refused"
 
 # 27. land.sh handles a plan path that git quotes (spaces).
 Q="$SMOKE_TMP/quoted repo"; mkdir -p "$Q/my plans"; git init -q -b main "$Q"
@@ -597,7 +607,8 @@ expect_refusal "promote a plan with a non-canonical directive" "directive not in
 printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  - Blocked-by: Phase 1.2\n- [ ] **Phase 1.2** b\n  - Acceptance: true\n  - Blocked-by: Phase 1.1\n' >"$PR/.claude/plans/p-plan.md"
 expect_refusal "promote a cyclic plan" "Blocked-by cycle" indir "$PR" APEX_GIBSON=0 "$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh" p
 printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n- [ ] **Gate 1→2** [gate:human] approve\n  - Acceptance: user types approve gate-1-2\n' >"$PR/.claude/plans/p-plan.md"
-has "Route dry-run: skipped" "$(cd "$PR" && APEX_GIBSON=0 "$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh" p 2>&1)" || fail "a valid plan did not promote"
+if [ -n "$DISPATCH_SIBLING" ]; then ROUTE_DRY="Route dry-run: every unchecked task routes"; else ROUTE_DRY="Route dry-run: skipped"; fi
+has "$ROUTE_DRY" "$(cd "$PR" && APEX_DISPATCH_MODE= APEX_GIBSON=0 "$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh" p 2>&1)" || fail "a valid plan did not promote"
 ok "promote-to-loop: planlib validation, cycles, gate semantics, route dry-run seam"
 
 export GG_SH="$EX/green-gate.sh"

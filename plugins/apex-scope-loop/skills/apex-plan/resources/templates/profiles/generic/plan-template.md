@@ -106,7 +106,7 @@ Translate the ADR's pseudocode section into module stubs, type signatures, and i
   - Blocked-by: phase-2.1
 
 - [ ] **Phase 2.3** [frontend][architect] Scaffold UI component tree (if user-facing)
-  - Acceptance: every Surface Matrix row marked "yes" in the ADR has a stub component; the frontend typecheck passes
+  - Acceptance: every Surface Matrix row marked "yes" in the ADR has a stub component; the frontend typecheck (`{typecheck command}`) passes
   - Swarm: hierarchical 3 [architect, coder, reviewer]
   - Blocked-by: phase-2.1
 

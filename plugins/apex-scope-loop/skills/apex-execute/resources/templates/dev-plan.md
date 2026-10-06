@@ -42,7 +42,7 @@ section to detect drift in the code.
   - Blocked-by: phase-1.2
 
 - [ ] **Phase 2.2** [backend][security] Wire authn/authz boundary
-  - Acceptance: integration test rejects unauthorized requests with 401/403
+  - Acceptance: `{integration test command}` passes (unauthorized requests rejected with 401/403)
   - Blocked-by: phase-2.1
 
 - [ ] **Phase 2.3** [perf] Add benchmarks for hot paths

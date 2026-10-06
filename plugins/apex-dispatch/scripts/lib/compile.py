@@ -758,6 +758,40 @@ def find_overlay():
     return p if os.path.isfile(p) else None
 
 
+def load_inputs(plugin_root):
+    res = os.path.join(plugin_root, "resources")
+    return {
+        "default": load_json(os.path.join(res, "dispatch.default.json"), "default policy"),
+        "sections": load_json(os.path.join(res, "sections.json"), "sections registry"),
+        "schema": load_json(os.path.join(res, "schema.json"), "schema"),
+    }
+
+
+def merged_with_overlay(inputs, overlay_path):
+    """The default policy merged with the overlay at overlay_path, disabled
+    entries subtracted, validated with the schema, governance and overlay
+    bounds (overlay_checks). Raises PolicyError naming every problem."""
+    overlay = load_json(overlay_path, "overlay")
+    secs = inputs["sections"]["sections"]
+    merged = apply_disabled(merge_policy(inputs["default"], overlay, secs, overlay_path), secs, inputs["schema"])
+    default_policy = apply_disabled(merge_policy(inputs["default"], {}, secs), secs, inputs["schema"])
+    validate_policy(merged, inputs["schema"], "merged policy (overlay %s)" % overlay_path,
+                    extra=lambda m: overlay_checks(default_policy, m))
+    return merged
+
+
+def runtime_policy(plugin_root, overlay_path=None):
+    """What runtime readers (route.sh, hooks) use: the committed
+    resources/compiled/policy.json, or, when this repo has an overlay
+    (overlay_path, else find_overlay()), the default merged with it through
+    the same merge as --print-merged. Raises PolicyError."""
+    if overlay_path is None:
+        overlay_path = find_overlay()
+    if overlay_path is None:
+        return load_json(os.path.join(plugin_root, "resources", "compiled", "policy.json"), "compiled policy")
+    return merged_with_overlay(load_inputs(plugin_root), overlay_path)
+
+
 def main(argv):
     if not argv:
         print("usage: compile.py <plugin-root> [--check] [--print-merged] [--overlay PATH]", file=sys.stderr)
@@ -788,24 +822,14 @@ def main(argv):
     if check and printing:
         print("compile: --check and --print-merged are exclusive", file=sys.stderr)
         return 2
-    res = os.path.join(root, "resources")
     try:
-        inputs = {
-            "default": load_json(os.path.join(res, "dispatch.default.json"), "default policy"),
-            "sections": load_json(os.path.join(res, "sections.json"), "sections registry"),
-            "schema": load_json(os.path.join(res, "schema.json"), "schema"),
-        }
+        inputs = load_inputs(root)
         artifacts = build(root, inputs)
         if overlay_path is None and printing:
             overlay_path = find_overlay()
         merged = None
         if overlay_path is not None:
-            overlay = load_json(overlay_path, "overlay")
-            secs = inputs["sections"]["sections"]
-            merged = apply_disabled(merge_policy(inputs["default"], overlay, secs, overlay_path), secs, inputs["schema"])
-            default_policy = apply_disabled(merge_policy(inputs["default"], {}, secs), secs, inputs["schema"])
-            validate_policy(merged, inputs["schema"], "merged policy (overlay %s)" % overlay_path,
-                            extra=lambda m: overlay_checks(default_policy, m))
+            merged = merged_with_overlay(inputs, overlay_path)
     except PolicyError as e:
         for line in e.errors:
             print("compile: " + line, file=sys.stderr)
