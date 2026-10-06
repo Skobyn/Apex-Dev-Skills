@@ -36,7 +36,7 @@ The guarantee covers **one run, against the base it forked from**:
 - moves the fork to the base tip;
 - clears `completes[]`;
 - bumps `epoch`;
-- reopens the last completed task by id.
+- when no task remains open, reopens the last completed task by id.
 
 Tiers, reviews and G12 approvals count only in the current epoch. Review rounds are not reset by a refork: a refork cannot be used to dodge the round cap.
 
@@ -73,11 +73,12 @@ False "dirty" reports fail closed and are accepted. Examples: macOS case-insensi
 
 ### 5. Records apex-dispatch relies on
 
-- **Review records.** `checkpoint.sh review LINE SHA VERDICT [--role adversarial] [--agent-id ID]` stores `{attempt, epoch, sha, verdict, reviewer, role, provenance, record_id, route}`. With dispatch state present, a verdict needs provenance: a hook-written `reviews-raw` record with a `record_id` (used once) and `line`. The role comes from the record.
-- **Review rounds.** Rounds are distinct SHAs per attempt, capped at 3 (`REVIEW_CAP`). Two consecutive failures print `ESCALATE` (with an `ESCALATE_ROUTE` seam). Three halt the run.
+- **Review records.** `checkpoint.sh review LINE SHA VERDICT [--role adversarial] [--agent-id ID]` stores `{attempt, epoch, sha, verdict, reviewer, role, provider, model, agent_id, route, provenance, source}`; a record's id is kept in `source` as `record:<record_id>`. With dispatch state present, a verdict needs provenance: a hook-written `reviews-raw` record with a `record_id` (used once) and `line`. The role comes from the record.
+- **Review rounds.** Rounds are distinct SHAs per attempt, capped by `APEX_REVIEW_CAP` (default 3; a refusal starts with `REVIEW_CAP:`).
+- **Failed attempts.** `checkpoint.sh fail` counts consecutive failures: two print `ESCALATE` (`APEX_ESCALATE_AFTER`, with an `ESCALATE_ROUTE` seam) and three halt the run (`APEX_ERROR_BUDGET`).
 - **Tier records.** `risk-tier.sh LINE` records `{tier, since, head, epoch}`. `--no-record` prints `TIER:`/`HEAD:`. `--classify` takes the maximum of the heuristic and the decision layer, and only raises.
 - **Iterate briefs.** `iterate.sh` prints `TASK_BASE` (the floor) and route fields. `BUSY`, `BLOCKED`, `NEEDS_SPEC` and `HUMAN_GATE` are terminal brief states.
-- **Operator overrides** are recorded in `operator_overrides[]` with the operator's literal words. They never look like a review.
+- **Operator overrides are not yet recorded by the scripts.** `land.sh --force` and `APEX_GIBSON=0` leave no record; `refork` stores its reason in `reforks[]`. Until a later phase adds an `operator_overrides[]` writer, an orchestrator that waives a review records the operator's literal words in the checkpoint by hand, and never as a review verdict. Consumers must not treat a missing record as "no override happened".
 
 ## Consequences
 
