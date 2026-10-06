@@ -59,7 +59,7 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `bash plugins/apex-dispatch/scripts/compile.sh --check`
   - Blocked-by: Phase 2.1
 
-- [ ] **Phase 2.3** [backend] route.sh table-only: kill switches, input gate, hard floors, class table, semantic fill seam, tiers, fan-out, escalation, review-shape, adhoc, baseline/shadow
+- [x] **Phase 2.3** [backend] route.sh table-only: kill switches, input gate, hard floors, class table, semantic fill seam, tiers, fan-out, escalation, review-shape, adhoc, baseline/shadow
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh`
   - Blocked-by: Phase 2.2
 
