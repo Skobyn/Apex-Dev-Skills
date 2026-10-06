@@ -190,7 +190,11 @@ def main():
     if differ:
         tmp = tempfile.mkdtemp(prefix="apex-inventory.")
         try:
-            subprocess.run(git + ["checkout-index", "-z", "--stdin", "--prefix=" + tmp + "/"],
+            # Attributes from the head only: an untracked .gitattributes (even
+            # one committed rules ignore) must not decide what a checkout of
+            # the head writes. --attr-source needs git 2.40; older git fails
+            # here, which is reported.
+            subprocess.run(git + ["--attr-source=HEAD", "checkout-index", "-z", "--stdin", "--prefix=" + tmp + "/"],
                            input=b"".join(p + b"\0" for p in differ), capture_output=True, check=True)
             for path in differ:
                 if not same(os.path.join(top, path), os.path.join(os.fsencode(tmp), path)):

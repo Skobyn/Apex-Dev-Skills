@@ -1291,6 +1291,12 @@ printf 'fail=1\nif [ "$fail" = 1 ]; then exit 1; fi\n' >"$CR/gate.sh"; git -C "$
 printf 'fail=1\r\nif [ "$fail" = 1 ]; then exit 1; fi\n' >"$CR/gate.sh"; git -C "$CR" add gate.sh
 [ -z "$(git -C "$CR" status --porcelain)" ] || fail "the crlf fixture is not hidden from git status (fixture broken)"
 has "gate.sh (differs from the head)" "$(source "$EX/_lib.sh"; apex_dirty "$CR")" || fail "the gate missed CRLF bytes a crlf attribute hides from git status"
+# What "a checkout of the head" writes comes from the head's attributes: an
+# ignored, untracked .gitattributes cannot redefine it.
+GA="$SMOKE_TMP/ga"; mkdir -p "$GA"; git init -q -b main "$GA"; printf '.*\n!/.gitignore\n' >"$GA/.gitignore"; printf 'a\nb\n' >"$GA/data.txt"
+git -C "$GA" add -A; git -C "$GA" commit -qm g; printf 'data.txt eol=crlf\n' >"$GA/.gitattributes"; rm -f "$GA/data.txt"; git -C "$GA" checkout -- data.txt; git -C "$GA" add data.txt
+[ -z "$(git -C "$GA" status --porcelain)" ] || fail "the ignored-.gitattributes fixture is not hidden from git status (fixture broken)"
+has "data.txt (differs from the head)" "$(source "$EX/_lib.sh"; apex_dirty "$GA")" || fail "an ignored .gitattributes redefined what a checkout of the head writes"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
