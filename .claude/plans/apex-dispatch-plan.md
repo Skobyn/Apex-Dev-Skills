@@ -42,7 +42,7 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q '"version": "0.3.0"' plugins/apex-scope-loop/.claude-plugin/plugin.json`
   - Blocked-by: Phase 1.4
 
-- [ ] **Phase 1.6** [tests][docs] Non-apex walkthrough on a uv/pytest fixture repo with no .claude/skills copy
+- [x] **Phase 1.6** [tests][docs] Non-apex walkthrough on a uv/pytest fixture repo with no .claude/skills copy
   - Acceptance: `test -f docs/examples/non-apex-run.md && grep -q 'land.sh' docs/examples/non-apex-run.md`
   - Blocked-by: Phase 1.5
 
