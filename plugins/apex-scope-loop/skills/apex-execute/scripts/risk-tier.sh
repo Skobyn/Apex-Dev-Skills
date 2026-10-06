@@ -220,7 +220,8 @@ order = {"A": 0, "B": 1, "C": 2}
 final = tier if order[tier] >= order.get(prev, 0) else prev
 # `head` binds the tier to the code it classified: complete refuses a tier
 # recorded for an older head.
-tiers[line_no] = {"tier": final, "since": since, "head": head}
+epoch = s.get("epoch", 0)               # the tier still ratchets across a refork
+tiers[line_no] = {"tier": final, "since": since, "head": head, "epoch": epoch}
 tmp = path + ".tmp"
 try:
     os.unlink(tmp)

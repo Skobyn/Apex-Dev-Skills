@@ -217,7 +217,10 @@ elif g.get("head_sha") != head:
     problems.append(f"green gate ran on {g.get('head_sha','?')[:12]}, worktree head is {head[:12]} — re-run green-gate.sh check")
 elif g.get("result") not in ("PASS", "SKIPPED"):
     problems.append(f"green gate is {g.get('result')} — zero new failures vs. baseline required")
+epoch = s.get("epoch", 0)           # bumped by refork: earlier tiers and reviews saw a narrower diff
 trec = s.get("tiers", {}).get(line_no) or {}
+if trec and trec.get("epoch", 0) != epoch:
+    trec = {}
 recorded = trec.get("tier")
 if recorded is None:
     problems.append(f"no risk tier recorded — run: risk-tier.sh PLAN LINE --since {floor[:12]} (TASK_BASE)")
@@ -242,7 +245,7 @@ if any(x.get("verdict") != "APPROVE" for x in at_head):
 if skip and tier == "C":
     problems.append("Tier C: --skip-review cannot waive the review and adversarial pass")
 elif not skip:
-    recs = [x for x in at_head if x.get("attempt", 1) == attempt]
+    recs = [x for x in at_head if x.get("attempt", 1) == attempt and x.get("epoch", 0) == epoch]
     if not recs:
         problems.append("no independent review recorded for the worktree head "
                         f"{head[:12]} in this attempt — dispatch the reviewer, then: checkpoint.sh PLAN review LINE SHA VERDICT")
@@ -270,7 +273,7 @@ PY
     sed -i.bak "${LINE_NO}s/^- \[ \]/- [x]/" "$PLAN" && rm -f "${PLAN}.bak"
     python3 -c "$PY_SAVE"'
 import sys
-path, now, verdict, line_no, skip, head, harness, remaining = sys.argv[1:]
+path, now, verdict, line_no, skip, head, harness, remaining, task_id = sys.argv[1:]
 with open(path) as f: s = json.load(f)
 s["completed_tasks"] = s.get("completed_tasks", 0) + 1
 # Retired: a reviewed completion left no task. Only a completion sets it;
@@ -280,7 +283,7 @@ s["retired"] = harness == "1" and remaining == "0"
 # The chain advances only past code the harness verified (APEX_GIBSON=0
 # completions leave their code in the diff of the next task).
 if harness == "1" and head != "unknown":
-    s.setdefault("completes", []).append({"line": int(line_no), "head": head, "at": now})
+    s.setdefault("completes", []).append({"line": int(line_no), "id": task_id, "head": head, "at": now})
 s["last_verdict"] = {"line_no": int(line_no), "result": "pass", "reason": verdict, "at": now}
 if skip:
     s.setdefault("skipped_reviews", {})[line_no] = {"reason": skip, "at": now}
@@ -288,7 +291,8 @@ s["last_iteration_at"] = now
 s["current_phase"] = None
 s["consecutive_failures"] = 0
 save(path, s)' "$CHECKPOINT" "$NOW" "$VERDICT" "$LINE_NO" "$SKIP_REVIEW" "$HEAD_V" "$([[ "${APEX_GIBSON:-1}" != "0" ]] && echo 1 || echo 0)" \
-      "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$PLAN" 2>/dev/null || echo "?")"
+      "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$PLAN" 2>/dev/null || echo "?")" \
+      "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("id") or "")' "$TASK_JSON")"
     apex_lock_stage "$PLAN_HASH" DONE   # this plan's lock becomes reclaimable until its next iterate
     echo "[checkpoint] complete @ line $LINE_NO ($VERDICT)"
     ;;
@@ -450,7 +454,7 @@ if sha not in rounds:
         die(f"REVIEW_CAP: {len(rounds)} review rounds already in this attempt ({', '.join(x[:12] for x in rounds)}); "
             "record `checkpoint.sh PLAN fail LINE REASON` and retry")
     rounds.append(sha)
-r.setdefault("records", []).append({"attempt": attempt, "sha": sha, "verdict": verdict, "reviewer": reviewer,
+r.setdefault("records", []).append({"attempt": attempt, "epoch": s.get("epoch", 0), "sha": sha, "verdict": verdict, "reviewer": reviewer,
     "role": role, "provider": provider, "model": model, "agent_id": agent_id, "route": route_id,
     "provenance": provenance, "source": source, "at": now})
 r.update({"sha": sha, "verdict": verdict, "reviewer": reviewer, "round": rounds.index(sha) + 1, "at": now})
@@ -523,13 +527,17 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON"
     # reopened.
     REOPEN=""
     if [[ "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$PLAN" 2>/dev/null)" == "0" ]]; then
+      # The last completed task, found by its id (plan edits move lines).
       REOPEN="$(python3 -c '
 import json, sys
+sys.path.insert(0, sys.argv[2])
+import planlib
 s = json.load(open(sys.argv[1]))
 c = s.get("completes") or []
-lv = s.get("last_verdict") or {}
-print(c[-1]["line"] if c else lv.get("line_no", ""))' "$CHECKPOINT")"
-      [[ "$REOPEN" =~ ^[1-9][0-9]*$ ]] || { echo "[checkpoint] REFUSED refork: no task is unchecked and the last completed one is unknown — rewind a task first" >&2; exit 1; }
+tid = c[-1].get("id") if c else None
+lines = [t["line_no"] for t in planlib.parse(sys.argv[3]) if tid and t.get("id") == tid and t["checked"]]
+print(lines[0] if len(lines) == 1 else "")' "$CHECKPOINT" "$APEX_EXECUTE_SCRIPTS" "$PLAN")"
+      [[ "$REOPEN" =~ ^[1-9][0-9]*$ ]] || { echo "[checkpoint] REFUSED refork: no task is unchecked and the last completed task cannot be found by its id — rewind a task first" >&2; exit 1; }
       need_line "$REOPEN"
       [[ "$(task_field checked)" == "1" ]] || { echo "[checkpoint] REFUSED refork: line $REOPEN is not checked — rewind a task first" >&2; exit 1; }
       sed -i.bak "${REOPEN}s/^- \[[xX]\]/- [ ]/" "$PLAN" && rm -f "${PLAN}.bak"
@@ -542,6 +550,7 @@ s.setdefault("reforks", []).append({"reason": reason, "old_fork": s.get("fork_sh
                                     "completes": s.get("completes") or [], "reopened_line": reopen or None, "at": now})
 s["fork_sha"] = base_tip
 s["completes"] = []
+s["epoch"] = s.get("epoch", 0) + 1   # tiers and reviews recorded before this saw a narrower diff
 s["retired"] = False
 if reopen:
     s["completed_tasks"] = max(0, s.get("completed_tasks", 0) - 1)

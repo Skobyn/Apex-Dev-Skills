@@ -1105,19 +1105,39 @@ oursrun() { # oursrun DIR MODE — MODE: ours | normal | ours-touch | refork | d
   [ "$how" = refork ] && { (cd "$d" && "$CP" plans/o-plan.md refork "base moved under limits.txt" >/dev/null 2>&1) || { echo "refork-failed"; return 0; }; }
   echo b >"$w/b.md"; git -C "$w" add -A; git -C "$w" commit -qm b; done_task 3 || { echo "task2-failed"; return 0; }
   git -C "$d" add plans/o-plan.md; git -C "$d" commit -qm tick2
-  (cd "$d" && "$EX/land.sh" plans/o-plan.md 2>&1 | grep -v '^\[land\]' ; exit "${PIPESTATUS[0]}"); echo "land-rc=$?"
+  local rc=0; (cd "$d" && "$EX/land.sh" plans/o-plan.md 2>&1 | grep -v '^\[land\]' ; exit "${PIPESTATUS[0]}") || rc=$?; echo "land-rc=$rc"
 }
 O1="$(oursrun "$SMOKE_TMP/o1" ours)"
-has "land-rc=0" "$O1" && grep -q 'max_items = 9' "$SMOKE_TMP/o1/limits.txt" || fail "an -s ours merge reverted a base change at land: $(printf '%s' "$O1" | tail -2)"
+has "merged main since its fork point" "$O1" && ! has "land-rc=0" "$O1" && grep -q 'max_items = 9' "$SMOKE_TMP/o1/limits.txt" \
+  || fail "a run branch that merged the base (-s ours) landed without a refork: $(printf '%s' "$O1" | tail -2)"
 O2="$(oursrun "$SMOKE_TMP/o2" normal)"
-has "land-rc=0" "$O2" && grep -q 'max_items = 9' "$SMOKE_TMP/o2/limits.txt" || fail "a reviewed normal merge of the base did not land: $(printf '%s' "$O2" | tail -2)"
+has "merged main since its fork point" "$O2" && ! has "land-rc=0" "$O2" || fail "a run branch that merged the base landed without a refork: $(printf '%s' "$O2" | tail -2)"
 O3="$(oursrun "$SMOKE_TMP/o3" ours-touch)"
-has "changed the same paths" "$O3" && ! has "land-rc=0" "$O3" || fail "an -s ours merge plus an edit to the same file landed: $(printf '%s' "$O3" | tail -2)"
+! has "land-rc=0" "$O3" || fail "an -s ours merge plus an edit to the same file landed: $(printf '%s' "$O3" | tail -2)"
 O4="$(oursrun "$SMOKE_TMP/o4" refork)"
 has "land-rc=0" "$O4" && grep -q 'max_items = 9' "$SMOKE_TMP/o4/limits.txt" && grep -q 'note = b' "$SMOKE_TMP/o4/limits.txt" \
   || fail "a reforked, re-reviewed run did not land both sides: $(printf '%s' "$O4" | tail -2)"
 O5="$(oursrun "$SMOKE_TMP/o5" driver)"
 has "land-rc=0" "$O5" && ! grep -rq backdoor "$SMOKE_TMP/o5" --include='*.txt' --include='*.md' || fail "a merge driver touched the landed tree: $(printf '%s' "$O5" | tail -2)"
+# A refork starts a new review epoch: the approval of the narrower diff no longer counts.
+O6="$SMOKE_TMP/o6"; oursrun "$O6" ours >/dev/null
+git -C "$(st "$O6" plans/o-plan.md)/worktree" merge -q -s ours -m resync main
+(cd "$O6" && "$CP" plans/o-plan.md refork "base moved" >/dev/null 2>&1) || fail "refork after an -s ours merge failed"
+expect_refusal "a completion after refork that reuses the pre-refork review" "no risk tier\|no independent review" indir "$O6" "$CP" plans/o-plan.md complete 3 ok
+# Disjoint changes land whatever their number or names; a path with a newline changed on both sides is refused.
+D1="$SMOKE_TMP/d1"; mkdir -p "$D1/plans"; git init -q -b main "$D1"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$D1/plans/d-plan.md"; printf 'x\n' >"$D1/$(printf 'a\nb.txt')"; git -C "$D1" add -A; git -C "$D1" commit -qm d
+( cd "$D1" && "$EX/init.sh" plans/d-plan.md >/dev/null 2>&1 ) || fail "init for the disjoint test failed"
+DW="$(st "$D1" plans/d-plan.md)/worktree"; echo r >"$DW/$(printf 'a\nb.txt')"; git -C "$DW" commit -qam r
+(cd "$D1" && "$EX/green-gate.sh" plans/d-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/d-plan.md 1 >/dev/null \
+  && "$CP" plans/d-plan.md review 1 "$(git -C "$DW" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/d-plan.md complete 1 ok >/dev/null 2>&1) || fail "the disjoint fixture task could not complete"
+git -C "$D1" add plans/d-plan.md; git -C "$D1" commit -qm tick
+echo b >"$D1/$(printf 'a\nb.txt')"; git -C "$D1" commit -qam base-edit
+expect_refusal "a newline path changed on both sides" "changed on both sides" indir "$D1" "$EX/land.sh" plans/d-plan.md
+git -C "$D1" reset -q --hard HEAD~1; mkdir -p "$D1/vendor"; for i in $(seq 1 3000); do echo "$i" >"$D1/vendor/f$i.txt"; done
+git -C "$D1" add vendor; git -C "$D1" commit -qm vendor
+(cd "$D1" && "$EX/land.sh" plans/d-plan.md >/dev/null 2>&1) && [ -f "$D1/vendor/f3000.txt" ] && [ "$(cat "$D1/$(printf 'a\nb.txt')")" = r ] \
+  || fail "a run did not land beside 3000 disjoint base changes"
 G1="$SMOKE_TMP/g1"; mkdir -p "$G1/plans"; git init -q -b main "$G1"
 printf 'test:\n\t@grep -q GOOD impl.txt\n' >"$G1/Makefile"; echo GOOD >"$G1/impl.txt"; printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n' >"$G1/plans/g-plan.md"
 git -C "$G1" add -A; git -C "$G1" commit -qm g
@@ -1130,6 +1150,9 @@ has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)"
 git -C "$GW" config --unset status.showUntrackedFiles
 mkdir -p "$(git -C "$GW" rev-parse --git-common-dir)/info"; echo extra.txt >>"$(git -C "$GW" rev-parse --git-common-dir)/info/exclude"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate ignored an untracked file hidden by .git/info/exclude"
+: >"$(git -C "$GW" rev-parse --git-common-dir)/info/exclude"; printf '*\n' >"$GW/.gitignore"
+has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate ignored untracked files hidden by an untracked .gitignore"
+rm -f "$GW/.gitignore"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"

@@ -198,8 +198,10 @@ apex_dirty() {
     || { echo "git status failed in $dir"; return 0; }
   [[ -n "$st" ]] && printf '%s\n' "$st"
   # Untracked files: only committed .gitignore files hide them (not
-  # .git/info/exclude or core.excludesFile).
-  untracked="$(apex_git "$dir" ls-files -o --exclude-per-directory=.gitignore -- . ':(exclude,top).dev-plan-state' 2>/dev/null)"
+  # .git/info/exclude or core.excludesFile); an untracked .gitignore is itself
+  # a difference from the head (modified ones show in status).
+  untracked="$( { apex_git "$dir" ls-files -o --exclude-per-directory=.gitignore -- . ':(exclude,top).dev-plan-state'
+                 apex_git "$dir" ls-files -o -- ':(glob)**/.gitignore' ':(exclude,top).dev-plan-state'; } 2>/dev/null | sort -u)"
   [[ -n "$untracked" ]] && printf 'untracked: %s\n' "${untracked//$'\n'/, }"
   flags="$(apex_git "$dir" ls-files -v 2>/dev/null | awk '/^([a-z]|S) / { n++; if (n <= 5) l = l " " substr($0, 3) } END { if (n) print n " path(s)" l (n > 5 ? " ..." : "") }')"
   if [[ -n "$flags" ]]; then
