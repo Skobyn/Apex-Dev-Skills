@@ -7,14 +7,14 @@ walked directly (os.walk, symlinks not followed) and each entry must be
   - an index path whose bytes are its blob's bytes or exactly what a
     checkout of the blob writes (every regular file is compared; a directory
     where the index has a file is reported),
-  - a directory (walked: one leading to index paths, or an untracked one
-    that committed rules do not ignore -- an empty directory holds nothing),
+  - a directory leading to index paths (walked),
   - a gitlink (not walked; apex_dirty checks submodules itself), or
   - ignored by a committed .gitignore: git check-ignore names a tracked
     .gitignore and a non-negated pattern as the deciding rule (so an
     untracked .gitignore, .git/info/exclude or core.excludesFile never
     decides); ignored directories are not walked.
-Anything else is reported: untracked files, symlinks and special files,
+Anything else is reported: untracked files and directories (even empty
+ones, and their contents), symlinks and special files,
 directories that cannot be listed, and any entry named .git (any case) other
 than TOP's own .git -- git never looks inside such a path, and git commands
 run below it answer from it. Any error is reported too.
@@ -148,7 +148,8 @@ def main():
                 if ign:
                     continue
                 if isdir:
-                    stack.append(r)   # an untracked directory: report what it holds (an empty one holds nothing)
+                    report(r + b"/", "an untracked directory")   # even an empty one: exists/isdir/namespace imports see it
+                    stack.append(r)   # and what it holds
                 else:
                     report(r, "")
     ci.stdin.close()

@@ -1049,13 +1049,13 @@ mkdir -p "$F5/src/auth"; echo 'import stripe' >"$F5/src/auth/login.py"; git -C "
 sed -i.bak 's/^- \[ \] \*\*Phase 1.2/- [x] **Phase 1.2/' "$F5/plans/a-plan.md" && rm -f "$F5/plans/a-plan.md.bak"
 expect_refusal "a restart after a box ticked by hand" "below the new run's fork point" indir "$F5" APEX_NO_WORKTREE=1 APEX_INIT_FORCE=1 "$EX/init.sh" plans/a-plan.md
 # A properly finished run whose plan was archived does not block the next run.
-F6="$SMOKE_TMP/f6"; mkdir -p "$F6/plans/done"; git init -q -b main "$F6"; printf '.dev-plan-state/\n' >"$F6/.gitignore"
+F6="$SMOKE_TMP/f6"; mkdir -p "$F6/plans"; git init -q -b main "$F6"; printf '.dev-plan-state/\n' >"$F6/.gitignore"
 printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F6/plans/a-plan.md"; git -C "$F6" add -A; git -C "$F6" commit -qm a
 ( cd "$F6" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for the archive test failed"
 echo doc >"$F6/notes.md"; git -C "$F6" add notes.md; git -C "$F6" commit -qm d
 (cd "$F6" && "$EX/green-gate.sh" plans/a-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/a-plan.md 1 >/dev/null \
   && "$CP" plans/a-plan.md review 1 "$(git -C "$F6" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/a-plan.md complete 1 ok >/dev/null 2>&1) || fail "the archive fixture could not finish"
-git -C "$F6" add -A; git -C "$F6" commit -qm tick; git -C "$F6" mv plans/a-plan.md plans/done/a-plan.md; echo more >>"$F6/notes.md"; git -C "$F6" add -A; git -C "$F6" commit -qm archive
+git -C "$F6" add -A; git -C "$F6" commit -qm tick; mkdir -p "$F6/plans/done"; git -C "$F6" mv plans/a-plan.md plans/done/a-plan.md; echo more >>"$F6/notes.md"; git -C "$F6" add -A; git -C "$F6" commit -qm archive
 printf -- '- [ ] **Phase 1.1** [docs] b\n  - Acceptance: true\n' >"$F6/plans/b-plan.md"; git -C "$F6" add -A; git -C "$F6" commit -qm b
 ( cd "$F6" && "$EX/init.sh" plans/b-plan.md >/dev/null 2>&1 ) || fail "a finished run with an archived plan blocked the next run"
 # A run without a worktree completes only on its own branch; a live run's
@@ -1297,6 +1297,8 @@ GA="$SMOKE_TMP/ga"; mkdir -p "$GA"; git init -q -b main "$GA"; printf '.*\n!/.gi
 git -C "$GA" add -A; git -C "$GA" commit -qm g; printf 'data.txt eol=crlf\n' >"$GA/.gitattributes"; rm -f "$GA/data.txt"; git -C "$GA" checkout -- data.txt; git -C "$GA" add data.txt
 [ -z "$(git -C "$GA" status --porcelain)" ] || fail "the ignored-.gitattributes fixture is not hidden from git status (fixture broken)"
 has "data.txt (differs from the head)" "$(source "$EX/_lib.sh"; apex_dirty "$GA")" || fail "an ignored .gitattributes redefined what a checkout of the head writes"
+# An untracked directory is not in the head even when it is empty.
+mkdir -p "$GA/reports"; has "reports/ (an untracked directory)" "$(source "$EX/_lib.sh"; apex_dirty "$GA")" || fail "the gate missed an empty untracked directory"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
