@@ -31,3 +31,10 @@ with a new one.
 **Harness fix:** When relaxing a guard for a legitimate case, state the invariant in terms of capability (what can this input hide/change?) and add a smoke case for the adversarial neighbour of the legitimate one (here: committed '.*' + '!/.gitignore').
 **Plan:** apex-dispatch-plan.md
 **Tags:** #backend #harness #gate #security
+
+## L-005 · 2026-10-06 · a-positive-check-must-be-positive-all-the-way-down
+**What happened:** inventory.py walked the tree positively but still trusted git status for content, then patched that with an allowlist of converting attributes (ident, encoding, text, eol); the legacy 'crlf' attribute was missing and a CRLF-rewritten script faked a green gate.
+**Root cause:** Half of the check (presence) was made independent of git's view; the other half (content) still enumerated git's exceptions, the same failure mode as attempts 7-8.
+**Harness fix:** When a check is redesigned as an inventory, make every axis an inventory: compare the bytes of every tracked regular file with what a checkout writes, rather than listing the cases where git's comparison differs.
+**Plan:** apex-dispatch-plan.md
+**Tags:** #backend #harness #gate #security
