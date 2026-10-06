@@ -354,11 +354,13 @@ RID="$(val ROUTE_ID "$O")"; RFILE="$(val ROUTE_FILE "$O")"
 [ "$(val ROUTE_STATUS "$O")" = READY ] && [ -f "$RFILE" ] || fail "a READY route wrote no active-route.json: $O"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["route_id"]==sys.argv[2] and d["router"]["class"]=="mechanical" and "state" in d' "$RFILE" "$RID" \
   || fail "active-route.json does not carry the route_id and fields"
-[ "$(wc -l <"$(dirname "$RFILE")/routes.jsonl")" -ge 1 ] || fail "routes.jsonl has no route row"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; assert [x["event"] for x in r]==["route"] and r[0]["route_id"]==sys.argv[2] and r[0]["source"]=="cli" and r[0]["seq"]==0' "$(dirname "$RFILE")/ledger.jsonl" "$RID" \
+  || fail "the READY route did not append one route row to ledger.jsonl"
+[ ! -e "$(dirname "$RFILE")/routes.jsonl" ] || fail "route.sh still writes routes.jsonl"
 cp "$FX/plans/p.md" "$FX/plans/q.md"
 O="$(rt plan plans/q.md --line "$L_A")"
 [ "$(val ROUTE_STATUS "$O")" = BUSY ] || fail "a second plan was not BUSY while the first holds ACTIVE: $O"
-pass "kill switches → HALTED; READY writes active-route.json + routes.jsonl; another ACTIVE plan → BUSY"
+pass "kill switches → HALTED; READY writes active-route.json + a ledger route row; another ACTIVE plan → BUSY"
 
 # 28. escalate rungs from policy: 1 effort+1, 2 model+1 + diagnoser, 3 HALT; the next plan route follows the rung
 SD="$(dirname "$(dirname "$RFILE")")"
@@ -393,7 +395,7 @@ O="$(rt adhoc --tags tests --paths 'tests/**' --acceptance 'npm test' --dry-run)
 [ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_CLASS "$O")" = tests ] || fail "adhoc tests ask did not route: $O"
 [ "$(val ROUTE_STATUS "$(rt adhoc --tags tests --dry-run)")" = NEEDS_SPEC ] || fail "adhoc without --acceptance was not NEEDS_SPEC"
 O="$(rt adhoc --tags tests --paths 'tests/**' --acceptance 'npm test')"
-case "$(val ROUTE_FILE "$O")" in "$FX"/.dev-plan-state/adhoc/*/dispatch/active-route.json) ;; *) fail "adhoc state is not under <state>/adhoc/: $O";; esac
+case "$(val ROUTE_FILE "$O")" in "$FX"/.dev-plan-state/adhoc/*/dispatch-shadow/active-route.json) ;; *) fail "adhoc state is not under <state>/adhoc/: $O";; esac
 [ "$(val ROUTE_STATUS "$(rt plan plans/p.md --line "$L_A")")" = BUSY ] || fail "a plan route was not BUSY while an ad-hoc route holds ACTIVE"
 rm -rf "$FX/.dev-plan-state/ACTIVE"
 pass "adhoc: --tags required, tag tokens only, NEEDS_SPEC without Acceptance, state under adhoc/, holds ACTIVE"
@@ -420,6 +422,182 @@ printf '%s' '{"escalation":{"max_review_rounds":4}}' >"$WORK/ov-route.json"
 if APEX_DISPATCH_POLICY="$WORK/ov-route.json" rt plan plans/p.md --line "$L_AUTO" --dry-run >"$WORK/ov-route.out"; then fail "route.sh accepted an overlay that loosens a bound"; fi
 grep -q 'policy is invalid' "$WORK/ov-route.out" || fail "route.sh did not name the invalid overlay"
 pass "modes: baseline/shadow emit baseline and record the table; off; decision seam (absent → table, uncalibrated only tightens, invalid → table); route.sh enforces the overlay bounds"
+
+# --- Phase 2.4: ledger.sh, report.sh, doctor.sh ------------------------------
+LEDGER="$PLUGIN_ROOT/scripts/ledger.sh"; REPORT="$PLUGIN_ROOT/scripts/report.sh"; DOCTOR="$PLUGIN_ROOT/scripts/doctor.sh"
+for f in "$LEDGER" "$REPORT" "$DOCTOR"; do [ -x "$f" ] || fail "$(basename "$f") missing or not executable"; done
+[ -f "$PLUGIN_ROOT/resources/ledger-events.json" ] || fail "missing resources/ledger-events.json"
+lg() { (cd "$FX" && bash "$LEDGER" "$@") 2>&1; }
+HEAD_FX="$(git -C "$FX" rev-parse HEAD)"
+
+# 32. append validates against the event schema and stamps the chain fields
+LS="$WORK/ls"; mkdir -p "$LS"
+RX="r-0123456789ab-L5-1"
+lg append route '{"route_id":"'"$RX"'","status":"READY","origin":"plan","router":{"class":"docs","tier":"cheap","provider":"claude-session"},"line":5}' --state "$LS" --source cli --route-mode table >/dev/null || fail "a valid route row was refused"
+lg append spawn_request '{"role":"builder","model":"haiku"}' --state "$LS" --source hook --route-id "$RX" >/dev/null || fail "a valid spawn_request row was refused"
+lg append worker_run '{"provider":"codex","role":"builder","exit_code":0,"usage":{"input":1000,"output":100}}' --state "$LS" --source shim --route-id "$RX" >/dev/null || fail "a valid worker_run row was refused"
+lg append spawn '{"agent_id":"ag-1","role":"builder","usage":{"input":1000000},"resolved_model":"claude-sonnet-5-5"}' --state "$LS" --source hook --route-id "$RX" >/dev/null || fail "a valid spawn row was refused"
+lg append verdict '{"role":"reviewer","verdict":"APPROVE"}' --state "$LS" --source hook --route-id "$RX" >/dev/null || fail "a valid verdict row was refused"
+lg append escalate '{"prior_route_id":"'"$RX"'","failures":1,"rung":"effort-up","action":"effort_up"}' --state "$LS" --source cli >/dev/null || fail "a valid escalate row was refused"
+for bad in "bogus|{}|hook|unknown event" "verdict|{\"role\":\"reviewer\",\"verdict\":\"LGTM\"}|hook|is not one of" \
+           "worker_run|{\"provider\":\"codex\",\"role\":\"builder\"}|shim|missing required field exit_code" \
+           "hook_error|{\"hook\":\"x\",\"error\":\"y\"}|model|source must be one of" \
+           "hook_error|{\"hook\":\"x\",\"error\":\"y\",\"hash\":\"00\"}|hook|stamped by the ledger"; do
+  IFS='|' read -r ev js src want <<<"$bad"
+  if lg append "$ev" "$js" --state "$LS" --source "$src" --route-id "$RX" >"$WORK/lg.out"; then fail "ledger accepted an invalid $ev row"; fi
+  grep -q -- "$want" "$WORK/lg.out" || fail "invalid $ev row refused without naming '$want': $(cat "$WORK/lg.out")"
+done
+LJ="$LS/dispatch-shadow/ledger.jsonl"
+python3 - "$LJ" <<'PY' || fail "ledger rows lack the stamped fields or the chain links"
+import hashlib, json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert [r["event"] for r in rows] == ["route", "spawn_request", "worker_run", "spawn", "verdict", "escalate"], rows
+prev = "0" * 64
+for i, r in enumerate(rows):
+    for k in ("seq", "event", "ts", "source", "route_id", "head_sha", "route_mode", "prev_hash", "hash", "doctor_profile"):
+        assert k in r, (i, k)
+    assert r["seq"] == i and r["prev_hash"] == prev
+    body = json.dumps({k: v for k, v in r.items() if k != "hash"}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    assert hashlib.sha256(body.encode()).hexdigest() == r["hash"]
+    prev = r["hash"]
+assert rows[1]["route_id"] == "r-0123456789ab-L5-1" and rows[1]["source"] == "hook" and rows[2]["source"] == "shim"
+assert rows[0]["head_sha"] and len(rows[0]["head_sha"]) == 40
+PY
+lg verify --state "$LS" | grep -q '^ledger verify: OK — 6 rows' || fail "verify did not pass the sample chain"
+pass "ledger append: schema-validated (event, enums, required fields, source, no caller-supplied hash); rows stamped and chained"
+
+# 33. verify names the first bad row: tampered, rehashed, deleted, reordered, truncated
+vbad() {  # $1 label, $2 python edit of the rows list, $3 expected stderr fragment
+  rm -rf "$WORK/lt"; cp -R "$LS" "$WORK/lt"
+  python3 -c '
+import hashlib, json, sys
+p = sys.argv[1]; rows = [json.loads(l) for l in open(p)]
+def rehash(r):
+    r["hash"] = hashlib.sha256(json.dumps({k: v for k, v in r.items() if k != "hash"}, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+'"$2"'
+open(p, "w").write("".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows))' "$WORK/lt/dispatch-shadow/ledger.jsonl"
+  if lg verify --state "$WORK/lt" >"$WORK/v.out"; then fail "verify passed a $1 ledger"; fi
+  grep -q -- "$3" "$WORK/v.out" || fail "verify did not name the $1 row: $(cat "$WORK/v.out")"
+}
+vbad "tampered" 'rows[2]["exit_code"] = 1' 'row 3 (seq 2): tampered'
+vbad "rewritten-and-rehashed" 'rows[2]["exit_code"] = 1; rehash(rows[2])' 'row 4 (seq 3): tampered — prev_hash'
+vbad "deleted" 'del rows[2]' 'row 3: deleted'
+vbad "reordered" 'rows[2], rows[3] = rows[3], rows[2]' 'row 3: reordered'
+vbad "truncated" 'rows.pop()' 'truncated: ledger.head records seq 5'
+vbad "rewritten last row" 'rows[5]["rung"] = "x"; rehash(rows[5])' 'does not match ledger.head'
+rm -rf "$WORK/lt"; cp -R "$LS" "$WORK/lt"; printf '{"seq": 6, "torn' >>"$WORK/lt/dispatch-shadow/ledger.jsonl"
+if lg verify --state "$WORK/lt" >"$WORK/v.out"; then fail "verify passed a torn last line"; fi
+grep -q 'row 7: incomplete last line' "$WORK/v.out" || fail "verify did not name the torn row: $(cat "$WORK/v.out")"
+if lg append hook_error '{"hook":"x","error":"y"}' --state "$WORK/lt" --source hook >/dev/null; then fail "append extended a torn ledger"; fi
+pass "verify: fails tampered, rehashed, deleted, reordered, truncated and torn ledgers naming the first bad row; append refuses a torn tail"
+
+# 34. route.sh plan (not --dry-run) appended verifiable route rows; evidence semantics (spec §5.3 G)
+lg verify --state "$SD" >/dev/null || fail "the fixture plan's ledger (route + escalate rows from route.sh) does not verify: $(lg verify --state "$SD")"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; ev=[x["event"] for x in r]; assert ev.count("route")>=2 and ev.count("escalate")==3, ev; assert all(x["source"]=="cli" for x in r); assert r[0]["route_mode"]=="table" and r[0]["head_sha"]==sys.argv[2], r[0]' \
+  "$SD/dispatch-shadow/ledger.jsonl" "$HEAD_FX" || fail "route.sh/escalate rows are not stamped as expected"
+if lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" >"$WORK/e.out"; then fail "evidence passed with a route row but no spawn row"; fi
+grep -q 'no spawn_request/spawn/worker_run row' "$WORK/e.out" || fail "evidence without spawns: $(cat "$WORK/e.out")"
+lg append spawn_request '{"role":"builder","model":"sonnet"}' --state "$SD" --source hook --route-id "r-000000000000-L${L_A}-1" >/dev/null
+if lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" >/dev/null; then fail "evidence accepted a spawn row for another route"; fi
+lg append spawn_request '{"role":"builder","model":"sonnet"}' --state "$SD" --source hook --route-id "$RID" >/dev/null
+lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" | grep -q '^ledger evidence: OK' || fail "evidence refused route + spawn rows at HEAD: $(lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX")"
+if lg evidence --state "$SD" --line "$L_B" --head "$HEAD_FX" >"$WORK/e.out"; then fail "evidence passed for a line with no route row"; fi
+grep -q "no READY route row for plan line $L_B" "$WORK/e.out" || fail "evidence for an unrouted line: $(cat "$WORK/e.out")"
+git -C "$FX" commit -q --allow-empty -m next; HEAD2="$(git -C "$FX" rev-parse HEAD)"
+lg evidence --state "$SD" --line "$L_A" --head "$HEAD2" >/dev/null || fail "evidence refused a HEAD that descends from the route's head"
+git -C "$FX" checkout -q --orphan side; git -C "$FX" commit -q --allow-empty -m side; HSIDE="$(git -C "$FX" rev-parse HEAD)"; git -C "$FX" checkout -q main
+if lg evidence --state "$SD" --line "$L_A" --head "$HSIDE" >"$WORK/e.out"; then fail "evidence passed for a HEAD whose history lacks the route's head"; fi
+grep -q "on HEAD's history" "$WORK/e.out" || fail "evidence off-history: $(cat "$WORK/e.out")"
+rm -rf "$WORK/lt"; cp -R "$SD" "$WORK/lt"; sed -i.bak '1s/"table"/"decision"/' "$WORK/lt/dispatch-shadow/ledger.jsonl"
+if lg evidence --state "$WORK/lt" --line "$L_A" --head "$HEAD_FX" >"$WORK/e.out"; then fail "evidence passed on a tampered chain"; fi
+grep -q 'chain does not verify' "$WORK/e.out" || fail "evidence on a tampered chain: $(cat "$WORK/e.out")"
+[ "$(lg evidence --state "$SD" --line x --head "$HEAD_FX" >/dev/null; echo $?)" = 2 ] || fail "evidence --line x was not a usage error"
+grep -qF 'at least one `spawn_request`, `spawn` or `worker_run` row carries' "$PLUGIN_ROOT/README.md" || fail "README does not define ledger evidence"
+pass "route.sh appends verifiable route/escalate rows; evidence = chain + READY route for the line on HEAD's history + a spawn/worker row for that route"
+
+# 35. enforcement switch (transitional): <state>/dispatch/ only with APEX_DISPATCH_ENFORCE=1 or hooks/subagent-stop.sh;
+#     escalate --state; iterate.sh fails closed on BUSY; tier-c-floor tags
+[ ! -e "$SD/dispatch" ] && [ -d "$SD/dispatch-shadow" ] || fail "route.sh created <state>/dispatch/ without enforcement"
+rm -rf "$FX/.dev-plan-state/ACTIVE"
+O="$(APEX_DISPATCH_ENFORCE=1 rt adhoc --tags docs --acceptance 'npm test')"
+case "$(val ROUTE_FILE "$O")" in "$FX"/.dev-plan-state/adhoc/*/dispatch/active-route.json) ;; *) fail "APEX_DISPATCH_ENFORCE=1 did not write <state>/dispatch/: $O";; esac
+[ "$(val ROUTE_ENFORCED "$O")" = yes ] || fail "ROUTE_ENFORCED is not yes under APEX_DISPATCH_ENFORCE=1"
+lg verify --state "$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")" >/dev/null || fail "the enforced ad-hoc ledger does not verify"
+rm -rf "$FX/.dev-plan-state/ACTIVE"
+rm -rf "$WORK/copy3"; mkdir -p "$WORK/copy3/hooks"; touch "$WORK/copy3/hooks/subagent-stop.sh"
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger; assert ledger.enforcing(sys.argv[2]) and not ledger.enforcing(sys.argv[3])' \
+  "$PLUGIN_ROOT/scripts/lib" "$WORK/copy3" "$WORK" || fail "enforcing() does not follow hooks/subagent-stop.sh"
+O="$(cd / && bash "$ROUTE" escalate "$RID" --state "$SD" 2>&1)"
+has '^RUNG: ' "$O" && has "^PRIOR_ROUTE: $RID" "$O" || fail "route.sh escalate --state did not use the given state dir: $O"
+grep -q 'escalate "$RID" --state "$STATE_DIR"' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/checkpoint.sh" || fail "checkpoint.sh fail does not pass --state to route.sh escalate"
+grep -q 'BUSY) *echo "STATUS: BUSY"; exit 0' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/iterate.sh" || fail "iterate.sh has no BUSY arm for ROUTE_STATUS"
+printf -- '- [ ] **Phase 4.1** [auth] login flow\n  - Acceptance: `pytest -q`\n  - Route: fanout=lanes\n  - Paths: src/auth/**\n' >>"$FX/plans/p.md"; L_AUTH="$(ln_of 'Phase 4.1')"
+O="$(rt plan plans/p.md --line "$L_AUTH" --dry-run)"
+[ "$(val ROUTE_CLASS "$O")" = security ] && [ "$(val ROUTE_HUMAN_GATE "$O")" = G12 ] || fail "[auth] did not hit the tier-c-floor: $O"
+[ "$(val ROUTE_FANOUT "$(rt plan plans/p.md --line "$L_A" --lanes "$L_A,$L_AUTH" --dry-run)")" = single ] || fail "an [auth] task was accepted as a lane"
+python3 -c 'import json,sys; r=[x for x in json.load(open(sys.argv[1]))["hard_rules"] if x["id"]=="tier-c-floor"][0]; assert {"auth","pii","money","billing"} <= set(r["when"]["tags_any"])' "$PLUGIN_ROOT/resources/compiled/policy.json" || fail "tier-c-floor lacks auth/pii/money/billing"
+grep -q 'APEX_DISPATCH_ENFORCE' "$PLUGIN_ROOT/README.md" && grep -q 'APEX_DISPATCH_ENFORCE' "$ADR" || fail "README/ADR do not document the enforcement switch"
+pass "enforcement switch: dispatch-shadow/ unless APEX_DISPATCH_ENFORCE=1 or hooks/subagent-stop.sh; escalate --state; iterate BUSY arm; [auth] → tier-c-floor"
+
+# 36. export-trace writes apex-agent-observability's exact line shape; export writes task summaries
+lg export-trace --state "$LS" --out "$WORK/trace.jsonl" >/dev/null || fail "export-trace failed"
+python3 - "$WORK/trace.jsonl" <<'PY' || fail "export-trace lines do not match the AgentTrace shape"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 6
+for r in rows:
+    assert list(r) == ["ts", "event", "session", "subagent_id", "parent_id", "tool", "token_estimate", "edge"], list(r)
+    assert isinstance(r["token_estimate"], int)
+ev = [r["event"] for r in rows]
+assert ev[1] == "PreToolUse" and ev[3] == "SubagentStart" and rows[3]["edge"] == "r-0123456789ab-L5-1->ag-1"
+PY
+lg export --state "$LS" --out "$WORK/summary.jsonl" >/dev/null || fail "export failed"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; assert r[0]["kind"]=="ledger_head" and r[1]["task"]==5 and r[1]["spawns"]==3 and r[1]["verdicts"]==["APPROVE"]' "$WORK/summary.jsonl" || fail "export summary rows wrong"
+if lg export-trace --state "$WORK/lt" >/dev/null 2>&1; then fail "export-trace exported a tampered chain"; fi
+pass "export-trace: AgentTrace line shape (ts,event,session,subagent_id,parent_id,tool,token_estimate,edge); export: per-task summary"
+
+# 37. report.sh summarises the sample: routes, spawns, verdicts, USD from real usage x price, unverified bucket
+O="$(bash "$REPORT" --state "$LS")"
+has '^REPORT_CHAIN: OK' "$O" && has '^REPORT_ROUTES_BY_CLASS: docs=1' "$O" && has '^REPORT_SPAWNS: spawn=1, spawn_request=1, worker_run=1' "$O" \
+  && has '^REPORT_VERDICTS: APPROVE=1' "$O" && has '^REPORT_ESCALATIONS: effort-up=1' "$O" || fail "report.sh summary: $O"
+has '^REPORT_USD_ESTIMATED: 3.0000 (1 priced rows' "$O" || fail "report.sh USD is not real usage x the sonnet price: $O"
+has '^REPORT_UNVERIFIED: 1 row' "$O" || fail "report.sh did not bucket the usage row without a resolved model: $O"
+bash "$REPORT" --state "$LS" --json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["unverified"]["count"]==1 and d["routes"]["by_mode"]=={"table":1}' || fail "report.sh --json"
+has '^REPORT_ROUTES: ' "$(cd "$FX" && bash "$REPORT" --plan plans/p.md)" || fail "report.sh --plan did not resolve the plan's state"
+has '^REPORT_CHAIN: BROKEN' "$(bash "$REPORT" --state "$WORK/lt")" || fail "report.sh did not flag a broken chain"
+[ "$(bash "$REPORT" >/dev/null 2>&1; echo $?)" = 2 ] || fail "report.sh without --state/--plan is not a usage error"
+pass "report.sh: routes by class/tier/provider/mode, spawns, verdicts, escalations, USD from usage x price, unverified bucket, --json, --plan"
+
+# 38. doctor.sh writes doctor.json with a status per check; claude absent/old → fail (JSON still written)
+mkdir -p "$WORK/fakebin"; printf '#!/bin/sh\n[ "$1" = --version ] && echo "2.1.300 (Claude Code)"; exit 0\n' >"$WORK/fakebin/claude"; chmod +x "$WORK/fakebin/claude"
+printf '#!/bin/sh\necho "2.1.100 (Claude Code)"\n' >"$WORK/fakebin/claude-old"; chmod +x "$WORK/fakebin/claude-old"
+doc() { (cd "$FX" && env -u CLAUDE_CODE_SUBAGENT_MODEL "$@" bash "$DOCTOR" --state "$WORK/ds" --repo "$FX") >"$WORK/doc.out" 2>&1; }
+dj() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); c={x["id"]:x["status"] for x in d["checks"]}; exec(sys.argv[2])' "$WORK/ds/dispatch-shadow/doctor.json" "$1"; }
+RC=0; doc APEX_CLAUDE_BIN="$WORK/fakebin/claude" || RC=$?
+[ "$RC" = 0 ] || fail "doctor.sh with claude 2.1.300 exited $RC: $(cat "$WORK/doc.out")"
+dj '
+assert d["status"] in ("ok", "warn") and c["claude-binary"] == "ok" and d["claude_version"] == "2.1.300", d
+assert all(x["status"] in ("ok", "warn", "fail", "unverified", "skipped") and x["detail"] for x in d["checks"])
+for k in ("scope-loop-sibling", "compile-check", "subagent-model-env", "settings-snippet", "provider-forced-flags-probe",
+          "probe:agent-id-in-tool-stdin", "probe:updatedinput-model", "installed-version", "compiled-version"):
+    assert k in c, k
+assert c["scope-loop-sibling"] == "ok" and c["compile-check"] == "ok" and c["subagent-model-env"] == "ok"
+assert c["settings-snippet"] == "warn" and c["probe:agent-id-in-tool-stdin"] == "unverified" and c["provider-forced-flags-probe"] == "unverified"
+assert d["profile"] and d["providers"]["claude-session"]["available"] is True
+' || fail "doctor.json (claude present) wrong: $(cat "$WORK/doc.out")"
+has '^DOCTOR_FILE: .*/dispatch-shadow/doctor.json' "$(cat "$WORK/doc.out")" || fail "doctor did not print DOCTOR_FILE"
+[ ! -e "$WORK/ds/dispatch" ] || fail "doctor.sh created <state>/dispatch/ without enforcement"
+RC=0; doc APEX_CLAUDE_BIN="$WORK/no-such-claude" || RC=$?
+[ "$RC" = 1 ] && dj 'assert d["status"] == "fail" and c["claude-binary"] == "fail" and d["claude_version"] is None' || fail "doctor.sh without claude: rc=$RC $(cat "$WORK/doc.out")"
+RC=0; doc APEX_CLAUDE_BIN="$WORK/fakebin/claude-old" || RC=$?
+[ "$RC" = 1 ] && dj 'assert c["claude-binary"] == "fail" and d["claude_version"] == "2.1.100"' || fail "doctor.sh accepted claude 2.1.100"
+RC=0; doc APEX_CLAUDE_BIN="$WORK/fakebin/claude" CLAUDE_CODE_SUBAGENT_MODEL=haiku || RC=$?
+[ "$RC" = 1 ] && dj 'assert c["subagent-model-env"] == "fail"' || fail "doctor.sh did not fail on CLAUDE_CODE_SUBAGENT_MODEL"
+mkdir -p "$FX/.claude"; python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); json.dump({"permissions": s["permissions"]}, open(sys.argv[2], "w"))' "$PLUGIN_ROOT/resources/settings-snippet.json" "$FX/.claude/settings.json"
+doc APEX_CLAUDE_BIN="$WORK/fakebin/claude" || true
+dj 'assert c["settings-snippet"] == "ok"' || fail "doctor.sh did not see the applied settings snippet"
+[ "$(bash "$DOCTOR" --bogus >/dev/null 2>&1; echo $?)" = 2 ] || fail "doctor.sh --bogus is not a usage error"
+pass "doctor.sh: doctor.json with per-check status; claude absent/old and CLAUDE_CODE_SUBAGENT_MODEL fail; snippet warn/ok; live probes unverified"
 
 echo ""
 echo "smoke passed: $N/$N checks"

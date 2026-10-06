@@ -323,7 +323,7 @@
   },
   "hard_rules": [
     {
-      "description": "Tier C, or security or migration tags, route as class security: strong floor, six lenses plus adversarial, diversity block, single fan-out, no external builders, human gate G12 through checkpoint approve.",
+      "description": "Tier C, or security, migration, auth, pii, money or billing tags, route as class security: strong floor, six lenses plus adversarial, diversity block, single fan-out, no external builders, human gate G12 through checkpoint approve.",
       "id": "tier-c-floor",
       "kind": "route_floor",
       "match": "any",
@@ -341,7 +341,11 @@
         "tags_any": [
           "security",
           "migration",
-          "tier:c"
+          "tier:c",
+          "auth",
+          "pii",
+          "money",
+          "billing"
         ]
       }
     },

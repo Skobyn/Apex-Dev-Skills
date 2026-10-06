@@ -323,7 +323,9 @@ r["attempt"] = r.get("attempt", 1) + 1
 r["rounds"] = []
 save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:-2}" "${APEX_ERROR_BUDGET:-3}"
     # apex-dispatch decides the next rung (effort+1, model+1, diagnoser, HALT).
+    # (<state>/dispatch-shadow/ holds the route while apex-dispatch is not enforcing.)
     ROUTE_FILE="$DISPATCH_STATE/active-route.json"
+    [[ -f "$ROUTE_FILE" ]] || ROUTE_FILE="$STATE_DIR/dispatch-shadow/active-route.json"
     if [[ -f "$ROUTE_FILE" ]]; then
       RID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("route_id",""))' "$ROUTE_FILE" 2>/dev/null || true)"
       if [[ -z "$DISPATCH" ]]; then
@@ -331,7 +333,7 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:
       elif [[ -z "$RID" ]]; then
         echo "ESCALATE_ROUTE: error $ROUTE_FILE has no route_id"
       else
-        "$DISPATCH/scripts/route.sh" escalate "$RID" 9>&- 2>&1 | sed 's/^/ESCALATE_ROUTE: /' || echo "ESCALATE_ROUTE: error route.sh escalate $RID failed"
+        "$DISPATCH/scripts/route.sh" escalate "$RID" --state "$STATE_DIR" 9>&- 2>&1 | sed 's/^/ESCALATE_ROUTE: /' || echo "ESCALATE_ROUTE: error route.sh escalate $RID failed"
       fi
     fi
     ;;

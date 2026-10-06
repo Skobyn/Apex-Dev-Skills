@@ -77,7 +77,8 @@ False "dirty" reports fail closed and are accepted. Examples: macOS case-insensi
 - **Review rounds.** Rounds are distinct SHAs per attempt, capped by `APEX_REVIEW_CAP` (default 3; a refusal starts with `REVIEW_CAP:`).
 - **Failed attempts.** `checkpoint.sh fail` counts consecutive failures: two print `ESCALATE` (`APEX_ESCALATE_AFTER`, with an `ESCALATE_ROUTE` seam) and three halt the run (`APEX_ERROR_BUDGET`).
 - **Tier records.** `risk-tier.sh LINE` records `{tier, since, head, epoch}`. `--no-record` prints `TIER:`/`HEAD:`. `--classify` takes the maximum of the heuristic and the decision layer, and only raises.
-- **Iterate briefs.** `iterate.sh` prints `TASK_BASE` (the floor) and route fields. `BUSY`, `BLOCKED`, `NEEDS_SPEC` and `HUMAN_GATE` are terminal brief states.
+- **Dispatch state.** Only `<state>/dispatch/` puts `checkpoint.sh` into provenance mode (and makes `complete` call `ledger.sh evidence`, `land.sh` call `ledger.sh verify`). apex-dispatch writes `<state>/dispatch-shadow/` instead while it is not enforcing (its ADR-0001 enforcement switch), which this plugin does not treat as dispatch state. `checkpoint.sh fail` relays `route.sh escalate ROUTE_ID --state STATE_DIR` from either directory's `active-route.json`.
+- **Iterate briefs.** `iterate.sh` prints `TASK_BASE` (the floor) and route fields. `BUSY`, `BLOCKED`, `NEEDS_SPEC` and `HUMAN_GATE` are terminal brief states (a route's `ROUTE_STATUS: BUSY` included).
 - **Operator overrides are not yet recorded by the scripts.** `land.sh --force` and `APEX_GIBSON=0` leave no record; `refork` stores its reason in `reforks[]`. Until a later phase adds an `operator_overrides[]` writer, an orchestrator that waives a review records the operator's literal words in the checkpoint by hand, and never as a review verdict. Consumers must not treat a missing record as "no override happened".
 
 ## Consequences

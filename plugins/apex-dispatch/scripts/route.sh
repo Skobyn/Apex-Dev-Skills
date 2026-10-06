@@ -5,16 +5,20 @@
 # Usage:
 #   route.sh plan PLAN --line N [--base SHA] [--lanes L1,L2] [--dry-run]
 #   route.sh adhoc --tags CSV [--paths GLOBS] [--acceptance CMD] [--dry-run]
-#   route.sh escalate ROUTE_ID          next rung (checkpoint.sh fail prefixes ESCALATE_ROUTE:)
+#   route.sh escalate ROUTE_ID [--state DIR]  next rung (checkpoint.sh fail passes its state dir
+#                                       and prefixes ESCALATE_ROUTE:)
 #   route.sh review-shape TIER          A solo | B six-lens | C six lenses + adversarial + G12
 #   route.sh review-shape ROUTE_ID --tier TIER
 #   route.sh --version                  == .claude-plugin/plugin.json version
 #
 # ROUTE_STATUS: READY | NEEDS_SPEC | HUMAN_GATE | HALTED | BUSY. Every status
 # exits 0; an error (bad policy, unreadable plan) exits 1; usage exits 2.
-# Without --dry-run a READY route is written to <state>/dispatch/active-route.json
-# (atomic) and appended to <state>/dispatch/routes.jsonl (Phase 2.4's ledger.sh
-# replaces that log). <state> is the plan's state dir, or <state-base>/adhoc/<id>.
+# Without --dry-run a READY route is written to <D>/active-route.json (atomic) and
+# appended as a `route` row to the hash-chained <D>/ledger.jsonl (scripts/lib/ledger.py).
+# <D> is <state>/dispatch/ when enforcing (APEX_DISPATCH_ENFORCE=1, or hooks/subagent-stop.sh
+# shipped, or <state>/dispatch/ already exists), else <state>/dispatch-shadow/ — only
+# <state>/dispatch/ puts checkpoint.sh into provenance mode. <state> is the plan's
+# state dir, or <state-base>/adhoc/<id>.
 #
 # Environment:
 #   APEX_DISPATCH_MODE=baseline  emit the 0.2.0 route; record what the table chose
@@ -23,11 +27,12 @@
 #   APEX_DECIDE_CMD              decision CLI for fields still `auto` (absent: SEMANTIC_SOURCE=table)
 #   APEX_HALT=1, HALT files      the same kill switches as apex-scope-loop (apex_halt_files)
 #   APEX_SCOPE_LOOP_ROOT         the sibling apex-scope-loop (path resolution, ACTIVE lock, planlib)
+#   APEX_DISPATCH_ENFORCE=1      write <state>/dispatch/ (provenance mode) before hooks ship
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROUTE_PY="$PLUGIN_ROOT/scripts/lib/route.py"
-usage() { sed -n '4,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '4,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "route: python3 is required" >&2; exit 1; }
 py() { python3 -B "$ROUTE_PY" "$PLUGIN_ROOT" "$@"; }
 
@@ -160,9 +165,22 @@ case "$SUB" in
     ;;
 
   escalate)
-    [[ $# -eq 1 ]] || usage
-    repo_state_base
-    py escalate "$1" --state-base "$STATE_BASE"
+    RID=""; ESTATE=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --state) ESTATE="${2:?--state needs a value}"; shift 2 ;;
+        -*) echo "route: unknown argument $1" >&2; usage ;;
+        *) [[ -z "$RID" ]] || usage; RID="$1"; shift ;;
+      esac
+    done
+    [[ -n "$RID" ]] || usage
+    if [[ -n "$ESTATE" ]]; then
+      [[ -d "$ESTATE" ]] || { echo "route: --state $ESTATE is not a directory" >&2; exit 1; }
+      py escalate "$RID" --state "$ESTATE"
+    else
+      repo_state_base
+      py escalate "$RID" --state-base "$STATE_BASE"
+    fi
     ;;
 
   review-shape)

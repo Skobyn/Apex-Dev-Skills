@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "description": "The apex-dispatch ledger event schema. ledger.sh append validates each row's caller-supplied fields against `required` (field -> type) and `enums`, then stamps the fields in `stamped`. Types: string, integer, number, boolean, object, array; a trailing '|null' allows null. Extra fields are kept as given.",
+  "sources": ["hook", "shim", "cli"],
+  "stamped": ["seq", "event", "ts", "source", "route_id", "head_sha", "route_mode", "doctor_profile", "prev_hash", "hash"],
+  "route_modes": ["baseline", "table", "decision", "shadow", "escalated"],
+  "events": {
+    "route": {
+      "description": "route.sh emitted (or, in baseline/shadow mode, computed) a route.",
+      "required": {"route_id": "string", "status": "string", "origin": "string", "router": "object"},
+      "enums": {"status": ["READY", "NEEDS_SPEC", "HUMAN_GATE", "HALTED", "BUSY"], "origin": ["plan", "adhoc"]}
+    },
+    "spawn_request": {
+      "description": "pre-agent.sh allowed an Agent/Task spawn for the active route.",
+      "required": {"route_id": "string", "role": "string", "model": "string"}
+    },
+    "spawn": {
+      "description": "subagent-start.sh registered a running subagent (agent_id -> role -> route_id); post-agent.sh may add usage and resolved_model.",
+      "required": {"route_id": "string", "agent_id": "string", "role": "string"}
+    },
+    "worker_run": {
+      "description": "A provider shim (bin/worker-*.sh) finished a run.",
+      "required": {"route_id": "string", "provider": "string", "role": "string", "exit_code": "integer"}
+    },
+    "verdict": {
+      "description": "A reviewer verdict captured by subagent-stop.sh or a shim result.json, bound to a head.",
+      "required": {"route_id": "string", "role": "string", "verdict": "string"},
+      "enums": {"verdict": ["APPROVE", "REQUEST_CHANGES"]}
+    },
+    "escalate": {
+      "description": "route.sh escalate chose the next rung of the escalation ladder.",
+      "required": {"prior_route_id": "string", "failures": "integer", "rung": "string", "action": "string"},
+      "enums": {"action": ["effort_up", "model_up", "halt"]}
+    },
+    "hook_error": {
+      "description": "A hook failed open (unparseable stdin, internal error).",
+      "required": {"hook": "string", "error": "string"}
+    },
+    "hook_advisory": {
+      "description": "A hook allowed something it noted (e.g. an open route with no progress).",
+      "required": {"hook": "string", "advisory": "string"}
+    },
+    "human_gate": {
+      "description": "A human gate was opened or answered (G12, budget exhaustion).",
+      "required": {"gate": "string", "decision": "string"},
+      "enums": {"decision": ["opened", "approved", "rejected", "cleared"]}
+    },
+    "baseline": {
+      "description": "ledger.sh baseline capture: the environment a baseline/shadow comparison is measured against.",
+      "required": {"label": "string"}
+    },
+    "decision_shadow": {
+      "description": "An uncalibrated decision-layer answer logged beside the deterministic choice.",
+      "required": {"rubric": "string", "deterministic_choice": "string", "decision_choice": "string|null"}
+    }
+  }
+}

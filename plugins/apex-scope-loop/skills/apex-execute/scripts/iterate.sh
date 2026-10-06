@@ -242,6 +242,7 @@ if [[ -n "$DISPATCH" && "${APEX_DISPATCH_MODE:-}" != "off" ]]; then
     NEEDS_SPEC) echo "STATUS: NEEDS_SPEC"; exit 0 ;;
     HUMAN_GATE) echo "STATUS: HUMAN_GATE"; exit 0 ;;
     HALTED)     echo "STATUS: HALTED"; exit 0 ;;
+    BUSY)       echo "STATUS: BUSY"; exit 0 ;;   # another ACTIVE owner: fail closed, never READY
   esac
 else
   echo "ROUTE: none"

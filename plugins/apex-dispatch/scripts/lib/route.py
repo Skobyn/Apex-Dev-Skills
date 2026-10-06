@@ -34,6 +34,9 @@ import shlex  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger  # noqa: E402  (the single ledger writer, scripts/lib/ledger.py)
+
 EFFORTS = ["low", "medium", "high", "xhigh"]
 SHAPES = ["none", "solo", "six-lens", "fanout6+adversarial"]
 DIVERSITY = ["off", "warn", "block"]
@@ -155,28 +158,23 @@ def write_json_atomic(path, obj):
     os.replace(tmp, path)
 
 
-def append_jsonl(path, obj):
-    """Minimal append-only route log (Phase 2.3). Phase 2.4's ledger.sh
-    replaces it with the hash-chained ledger."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, sort_keys=True) + "\n")
+def ledger_rows(state_dir):
+    """Rows of the ledger the next append writes (read only; ledger.sh verify checks the chain)."""
+    return ledger.read_rows(state_dir, write=True)
 
 
-def read_jsonl(path):
-    rows = []
+def ledger_append(state_dir, event, data, route_id=None, route_mode=None, head_sha=None):
+    """Append through the one ledger writer (hash chain, flock). A ledger that
+    refuses the row is an error: a route that is not ledgered is not emitted."""
     try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        rows.append(json.loads(line))
-                    except ValueError:
-                        pass
-    except FileNotFoundError:
-        pass
-    return rows
+        return ledger.append(state_dir, event, data, "cli", route_id=route_id, route_mode=route_mode,
+                             head_sha=head_sha)
+    except ledger.LedgerError as e:
+        die("ledger refused the %s row: %s" % (event, e))
+
+
+def git_head(repo):
+    return ledger._git_head(repo)
 
 
 def emit(block):
@@ -581,11 +579,10 @@ def route_block(status, route_id, mode, r, sem_src, extra=()):
 
 
 def finish(args, pol, feats, task, r, kind, ident, state_dir, extra_record):
-    """Step 9: mode handling, the ROUTE block, active-route.json, routes.jsonl."""
+    """Step 9: mode handling, the ROUTE block, active-route.json, the ledger `route` row."""
     mode = dispatch_mode()
     status = r["status"]
-    dstate = os.path.join(state_dir, "dispatch")
-    routes_log = os.path.join(dstate, "routes.jsonl")
+    dstate = ledger.dispatch_dir(state_dir, write=True)
     if kind == "plan":
         prefix = "r-%s-L%s-" % (ident, task["line_no"])
     else:
@@ -593,7 +590,7 @@ def finish(args, pol, feats, task, r, kind, ident, state_dir, extra_record):
     if args.get("dry_run"):
         route_id = prefix + "0"
     else:
-        seq = 1 + sum(1 for row in read_jsonl(routes_log) if str(row.get("route_id", "")).startswith(prefix)
+        seq = 1 + sum(1 for row in ledger_rows(state_dir) if str(row.get("route_id", "")).startswith(prefix)
                       and row.get("event") == "route")
         route_id = prefix + str(seq)
     if mode in ("baseline", "shadow"):
@@ -620,21 +617,24 @@ def finish(args, pol, feats, task, r, kind, ident, state_dir, extra_record):
         extra.append(("ROUTE_DIAGNOSER_PROVIDER", r["diagnoser_provider"]))
     written = None
     record = {"event": "route", "route_id": route_id, "route_mode": out_mode, "status": emit_status, "ts": now(),
-              "source": kind, "state": feats, "router": {k: v for k, v in emitted.items() if k not in ("notes",)},
+              "origin": kind, "state": feats, "router": {k: v for k, v in emitted.items() if k not in ("notes",)},
               "notes": emitted.get("notes", []), "decision": r.get("decision"),
               "decision_choice": r.get("decision_choice"), "semantic_source": sem_src}
     if table is not None:
         record["table_choice"] = {k: v for k, v in table.items() if k != "decision"}
     record.update(extra_record)
+    if not args.get("dry_run") and (emit_status == "READY" or table is not None):
+        row = ledger_append(state_dir, "route", {k: v for k, v in record.items() if k not in ("event", "ts")},
+                            route_id=route_id, route_mode=out_mode, head_sha=git_head(args.get("repo")))
+        record.update({"head_sha": row["head_sha"], "ledger_seq": row["seq"], "ledger_hash": row["hash"]})
     if not args.get("dry_run") and emit_status == "READY":
         written = os.path.join(dstate, "active-route.json")
         write_json_atomic(written, record)
-    if not args.get("dry_run") and (emit_status == "READY" or table is not None):
-        append_jsonl(routes_log, record)
     if emit_status != "READY":
         route_id = "none"
     if written:
         extra.append(("ROUTE_FILE", written))
+        extra.append(("ROUTE_ENFORCED", os.path.basename(dstate) == "dispatch"))
     emit(route_block(emit_status, route_id, out_mode, emitted, sem_src, extra))
 
 
@@ -694,7 +694,7 @@ def cmd_plan(plugin_root, argv):
     feats = features(pol, task, cp, a.get("repo"), "plan")
     prior = None
     if failures:
-        rows = [row for row in read_jsonl(os.path.join(a["state"], "dispatch", "routes.jsonl"))
+        rows = [row for row in ledger_rows(a["state"])
                 if row.get("event") == "route" and row.get("status") == "READY"
                 and str(row.get("route_id", "")).startswith("r-%s-L%d-" % (a["plan_hash"], line))]
         prior = rows[-1] if rows else None
@@ -709,6 +709,12 @@ def cmd_plan(plugin_root, argv):
                 want.append(int(x))
         if line not in want:
             want.insert(0, line)
+        # Tier C tags plus every tag a hard rule that forces fanout=single names
+        # (tier-c-floor: security, migration, auth, pii, money, billing, ...).
+        single_tags = set(TIER_C_TAGS)
+        for rule in pol.hard_rules:
+            if (rule.get("then") or {}).get("fanout") == "single":
+                single_tags |= set((rule.get("when") or {}).get("tags_any") or [])
         picked = []
         for ln in want:
             t = by_line.get(ln)
@@ -716,8 +722,8 @@ def cmd_plan(plugin_root, argv):
                 return None, "lane line %s is not an open task" % ln
             if not t["paths"] or not t["acceptance"]:
                 return None, "lane line %s lacks Paths or Acceptance" % ln
-            if set(t["tags"]) & (TIER_C_TAGS | {"migration"}):
-                return None, "lane line %s is Tier C" % ln
+            if set(t["tags"]) & single_tags:
+                return None, "lane line %s is Tier C (or carries a tag a single-fan-out hard rule names)" % ln
             if not all(planlib.disjoint(t["paths"], o["paths"]) for o in picked):
                 return None, "lane line %s overlaps another lane's Paths" % ln
             picked.append(t)
@@ -791,31 +797,32 @@ def locate(route_id, state_base):
 
 
 def find_route(state_dir, route_id):
-    act = read_json(os.path.join(state_dir, "dispatch", "active-route.json"), {}) or {}
+    act = read_json(os.path.join(ledger.dispatch_dir(state_dir, write=True), "active-route.json"), {}) or {}
     if act.get("route_id") == route_id:
         return act
-    for row in reversed(read_jsonl(os.path.join(state_dir, "dispatch", "routes.jsonl"))):
+    for row in reversed(ledger_rows(state_dir)):
         if row.get("route_id") == route_id and row.get("event") == "route":
             return row
     return None
 
 
 def cmd_escalate(plugin_root, argv):
-    a, pos = parse_opts(argv, set(), {"--state-base"})
+    a, pos = parse_opts(argv, set(), {"--state-base", "--state"})
     if len(pos) != 1:
-        die("usage: route.sh escalate ROUTE_ID", 2)
+        die("usage: route.sh escalate ROUTE_ID [--state DIR]", 2)
     route_id = pos[0]
-    kind, state_dir, line = locate(route_id, a["state_base"])
+    kind, state_dir, line = locate(route_id, a.get("state_base") or "")
+    if a.get("state"):   # the caller's own state dir (checkpoint.sh fail) wins over resolving from $PWD
+        state_dir = a["state"]
     rec = find_route(state_dir, route_id)
     if rec is None:
         die("route %s is not recorded under %s" % (route_id, state_dir))
     pol = Policy(load_policy(plugin_root))
-    log = os.path.join(state_dir, "dispatch", "routes.jsonl")
     if kind == "plan":
         cp = read_json(os.path.join(state_dir, "checkpoint.json"), {}) or {}
         failures = int(cp.get("consecutive_failures", 0) or 0) or 1
     else:
-        failures = 1 + sum(1 for row in read_jsonl(log) if row.get("event") == "escalate"
+        failures = 1 + sum(1 for row in ledger_rows(state_dir) if row.get("event") == "escalate"
                            and row.get("prior_route_id") == route_id)
     prior = rec.get("table_choice") or rec.get("router") or {}
     ctx = escalation_ctx(pol, failures, prior)
@@ -845,8 +852,9 @@ def cmd_escalate(plugin_root, argv):
         out += [("ACTION", "HALT — record it: checkpoint.sh PLAN halt \"escalation ladder exhausted\"; "
                            "the Ask Contract (what, what it does, why, risks) goes to the human")]
     emit(out)
-    append_jsonl(log, {"event": "escalate", "ts": now(), "prior_route_id": route_id, "failures": failures,
-                       "rung": rung["id"], "action": rung["action"], "next": nxt, "line": line})
+    ledger_append(state_dir, "escalate", {"prior_route_id": route_id, "failures": failures, "rung": rung["id"],
+                                          "action": rung["action"], "next": nxt, "line": line},
+                  route_id=route_id, route_mode="escalated")
 
 
 def generic_review(risk):
