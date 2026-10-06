@@ -32,7 +32,7 @@ drift between code and intent without having to read the full ADR.
 |-----------|---------|
 | `Swarm: single [{agent-type}]` | One `Agent` tool invocation; orchestrator picks subagent_type |
 | `Swarm: multi {count} [{t1}, {t2}, ...]` | N parallel `Agent` calls **in one message** |
-| `Swarm: hierarchical {count} [{t1}, {t2}, ...]` | `mcp__claude-flow__swarm_init` + N spawns, queen-led |
+| `Swarm: hierarchical {count} [{t1}, {t2}, ...]` | optional: `mcp__claude-flow__swarm_init` + N spawns, queen-led (advisory without ruflo) |
 | `Swarm: mesh {count} [{t1}, {t2}, ...]` | Peer-to-peer mesh topology, no queen |
 
 If `Swarm:` is omitted, the orchestrator uses **hierarchical 6 [architect, coder, tester, reviewer, researcher, analyst]**.
@@ -59,7 +59,7 @@ Gates are checkbox tasks, just like phases. The line between Phase N and Phase N
 >   - Blocked-by: phase-X.Y         (optional)
 > ```
 >
-> **Tags route topology** (see `apex-execute/docs/SWARM_TOPOLOGIES.md`):
+> **Tags route topology** (see `apex-execute/docs/legacy/SWARM_TOPOLOGIES.md`):
 > `[backend]` `[frontend]` `[security]` `[perf]` `[ml-serving]` `[infra]`
 > `[research]` `[docs]` `[tests]` `[refactor]` `[tier:c]` `[gate:auto]` `[gate:human]` `[gate:partner:{email}]`
 >

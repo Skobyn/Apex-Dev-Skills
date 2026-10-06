@@ -15,7 +15,7 @@ It combines the two things the research says actually work:
 1. **Interview** — stack, project type, audience, governance level, license, dev-environment provisioning. Informed by discovery; proposes defaults rather than asking open questions.
 2. **Plan & gate** — shows the exact file list and provisioning steps it will run; waits for your approval.
 3. **Scaffold + steering** — generates the governed file set (stack-aware) + AGENTS.md (cross-tool source of truth) + CLAUDE.md bridge + bootstrap ADR.
-4. **Dev environment** — installs/configures the standard must-haves: **ruflo** (orchestration/MCP/memory) and the **Apex-Dev-Skills** plugin suite. Idempotent.
+4. **Dev environment** — installs/configures the standard must-haves: the **Apex-Dev-Skills** plugin suite and, optionally, **ruflo** (orchestration/MCP/memory). Idempotent.
 5. **Verify & finalize** — a fresh-context auditor checks for secret leaks, broken tests, un-passable CI, and dangling placeholders; then `git init`, install, test, lint, and a first Conventional Commit.
 
 ## Supported stacks
@@ -43,10 +43,10 @@ So the sweep stays reliable without depending on a cron that may never fire.
 
 After scaffolding, Apex Project Start (optionally) installs and configures the standard must-haves — idempotently, updating if already present:
 
-- **[ruflo](https://github.com/ruvnet/ruflo)** — multi-agent orchestration layer: `npx ruflo@latest init --yes`, registers the MCP server, runs `ruflo doctor`. Needs Node 20+; routes `ANTHROPIC_API_KEY` through `.env` (never a committed key).
-- **[Apex-Dev-Skills](https://github.com/Skobyn/Apex-Dev-Skills)** (marketplace `apex-dev-skills`) — installs/updates its 7 Claude Code plugins (`apex-scope-loop`, `apex-guardrails`, `apex-agent-team`, `apex-legacy-comprehension`, `apex-contracts-reliability`, `apex-agent-observability`, `apex-rag-memory`). ruflo installs first, since `apex-scope-loop` depends on it.
+- **[ruflo](https://github.com/ruvnet/ruflo)** *(optional)* — multi-agent orchestration layer: `npx ruflo@latest init --yes`, registers the MCP server, runs `ruflo doctor`. Needs Node 20+; routes `ANTHROPIC_API_KEY` through `.env` (never a committed key).
+- **[Apex-Dev-Skills](https://github.com/Skobyn/Apex-Dev-Skills)** (marketplace `apex-dev-skills`) — installs/updates its 7 Claude Code plugins (`apex-scope-loop`, `apex-guardrails`, `apex-agent-team`, `apex-legacy-comprehension`, `apex-contracts-reliability`, `apex-agent-observability`, `apex-rag-memory`). None of them need the optional ruflo layer; `apex-scope-loop` seeds memory through it only when `APEX_MEMORY_CMD` is set.
 
-Choose **both / ruflo only / Apex skills only / skip** during the interview.
+Choose **both / ruflo only / Apex skills only / skip** during the interview (ruflo is optional).
 
 ## Components
 
@@ -59,7 +59,7 @@ apex-project-start/
 ├── skills/
 │   ├── repo-scaffold/         # directory skeletons + governed file set + per-stack refs
 │   ├── steering-docs/         # AGENTS.md / CLAUDE.md / ADR authoring
-│   └── dev-environment/       # ruflo + Apex-Dev-Skills provisioning (idempotent)
+│   └── dev-environment/       # Apex-Dev-Skills + optional ruflo provisioning (idempotent)
 ├── agents/
 │   └── apex-project-auditor.md     # fresh-context pre-commit verifier
 └── README.md

@@ -254,7 +254,7 @@ fi
 # Seed the memory namespace — optional (ADR-0003). APEX_MEMORY_CMD is any
 # command that stores one record; it receives APEX_MEMORY_NAMESPACE,
 # APEX_MEMORY_KEY and APEX_MEMORY_VALUE in its environment. Unset = skip
-# quietly. ruflo example:
+# quietly. Optional ruflo example:
 #   APEX_MEMORY_CMD='npx -y @claude-flow/cli@latest memory store --namespace "$APEX_MEMORY_NAMESPACE" --key "$APEX_MEMORY_KEY" --value "$APEX_MEMORY_VALUE"'
 if [[ -n "${APEX_MEMORY_CMD:-}" ]]; then
   APEX_MEMORY_NAMESPACE="$NAMESPACE" \

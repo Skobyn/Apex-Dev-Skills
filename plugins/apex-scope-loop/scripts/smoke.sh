@@ -486,7 +486,7 @@ for b in bad:
 sys.exit(1 if bad else 0)
 PY
 # The shipped templates and examples stay inside the dialect.
-for t in "$EX/../resources/examples/sample-plan.md" "$EX/../resources/templates/dev-plan.md" "$PLUGIN_ROOT/skills/apex-plan/resources/templates/plan-template.md"; do
+for t in "$EX/../resources/examples/sample-plan.md" "$EX/../resources/templates/dev-plan.md" "$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles/generic/plan-template.md" "$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles/apex/plan-template.md"; do
   python3 "$PL" validate "$t" >/dev/null 2>&1 || fail "shipped template no longer validates: $t"
 done
 printf -- '- [x] **Phase 1.1** a\n  - Acceptance: true\n```\n- [ ] **Phase 9** example\n```\n' >"$SMOKE_TMP/rem.md"
