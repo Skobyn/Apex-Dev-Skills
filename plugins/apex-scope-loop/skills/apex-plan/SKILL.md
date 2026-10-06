@@ -83,13 +83,20 @@ Create both docs from the templates:
 ```bash
 ${CLAUDE_SKILL_DIR}/scripts/start.sh <kebab-slug> "<Title>"
 # Creates:
-#   .claude/tasks/<slug>-adr.md   (from resources/templates/adr-template.md)
-#   .claude/plans/<slug>-plan.md  (from resources/templates/plan-template.md)
+#   .claude/tasks/<slug>-adr.md   (from resources/templates/profiles/<profile>/adr-template.md)
+#   .claude/plans/<slug>-plan.md  (from resources/templates/profiles/<profile>/plan-template.md)
 ```
 
 `start.sh` substitutes slug, title, date, author email (from `git config user.email`), and seeds the ADR with the answers captured in Stage 1.
 
-The ADR template has SPARC-shaped sections — see [resources/templates/adr-template.md](resources/templates/adr-template.md):
+**Template profiles.** The templates live in two profiles under `resources/templates/profiles/`:
+
+- `generic/` — project-neutral wording; partner gates notify through `$APEX_PARTNER_NOTIFY_CMD` and otherwise fall back to a human approval phrase.
+- `apex/` — the Apex Insights templates (Apex surfaces, data paths and the Apex inbox for partner gates).
+
+Both share the same SPARC skeleton, Ask Contract and gate semantics. `start.sh` picks the profile automatically: `APEX_PLAN_PROFILE=generic|apex` wins when set; otherwise `apex` when `.claude/agent-coord-config.json` exists in the repo root, else `generic`. Any other `APEX_PLAN_PROFILE` value is an error. It prints the chosen profile.
+
+The ADR template has SPARC-shaped sections — see [profiles/generic/adr-template.md](resources/templates/profiles/generic/adr-template.md) (or the [apex](resources/templates/profiles/apex/adr-template.md) variant):
 
 - **Context (SPARC: Specification)** — requirements, constraints, success metrics
 - **Decision** — broken into **Pseudocode (SPARC)**, **Architecture (SPARC)**, **Data Model**, **API Surface**
@@ -97,7 +104,7 @@ The ADR template has SPARC-shaped sections — see [resources/templates/adr-temp
 - **Risks & Mitigations**
 - **Consequences** — positive / negative / neutral
 
-The plan template (see [resources/templates/plan-template.md](resources/templates/plan-template.md)) maps SPARC phases to apex-execute format with per-phase swarm directives and inter-phase gates.
+The plan template (see [profiles/generic/plan-template.md](resources/templates/profiles/generic/plan-template.md), or the [apex](resources/templates/profiles/apex/plan-template.md) variant) maps SPARC phases to apex-execute format with per-phase swarm directives and inter-phase gates.
 
 ## Stage 3: OPTIMIZE
 
@@ -133,11 +140,11 @@ Each task line uses the apex-execute format (parsed by `iterate.sh`):
   - Blocked-by: phase-X.Y   (optional)
 ```
 
-The **Swarm:** line is read by the orchestrator (the model running `/loop`) when dispatching agents. Three modes:
+The **Swarm:** line is advisory. The orchestrator (the model running `/loop`) reads it when dispatching agents, and falls back to plain Claude Code subagents when nothing more is available. Three modes:
 
 - `Swarm: single [<agent-type>]` — one Agent tool invocation with the named subagent
 - `Swarm: multi <count> [<type1>, <type2>, ...]` — N parallel Agents in one message
-- `Swarm: hierarchical <count> [<type1>, <type2>, ...]` — queen-led swarm via `mcp__claude-flow__swarm_init` + spawns
+- `Swarm: hierarchical <count> [<type1>, <type2>, ...]` — a coordinated group; maps to apex-dispatch `fanout`, or an optional ruflo/claude-flow swarm if installed
 
 **Risk tiers** (from The Gibson; see `apex-execute/docs/GIBSON_HARNESS.md`): tag any task that touches money, auth, consent/PII, security boundaries, schema/migrations, incident alerting, or production data with `[tier:c]` (or `[security]`). apex-execute classifies every diff anyway, and a diff can drift *into* Tier C during execution. Tagging at plan time makes the human G12 approval visible to the user before the loop starts, so it doesn't arrive as a surprise halt. Also make sure the target repo's gate commands are known: note them in the plan's Design Intent, or add `.agents/gate.json`.
 
@@ -165,7 +172,7 @@ How gates interact with `/loop iterate`:
 
 Use `scripts/gate.sh <plan-path> <gate-id>` for explicit gate evaluation outside the loop (e.g., a human running it to check what's blocking).
 
-See [resources/templates/plan-template.md](resources/templates/plan-template.md) for the full structure with all SPARC phases and example gates.
+See [profiles/generic/plan-template.md](resources/templates/profiles/generic/plan-template.md) (or the [apex](resources/templates/profiles/apex/plan-template.md) variant) for the full structure with all SPARC phases and example gates.
 
 ## Stage 5: EXECUTE
 
@@ -218,16 +225,18 @@ Before promoting, the skill verifies:
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/start.sh <slug> "<Title>"` | Bootstrap ADR + plan from templates with author/date/slug substitutions |
+| `scripts/start.sh <slug> "<Title>"` | Bootstrap ADR + plan from the selected template profile (`APEX_PLAN_PROFILE`, else auto) with author/date/slug substitutions |
 | `scripts/promote-to-loop.sh <slug>` | Run validation checklist, hand off to apex-execute's init.sh |
 | `scripts/gate.sh <plan> <gate-id>` | Evaluate a single gate (auto/human/partner) outside the loop |
 | `scripts/status.sh <slug>` | Print ADR status, plan completion %, current gate, next phase |
 
 ## Resources
 
-- `resources/templates/adr-template.md` — SPARC-shaped ADR with spec + pseudocode + architecture sections
-- `resources/templates/plan-template.md` — Phased plan with per-phase Swarm directives and inter-phase gates
-- `resources/templates/feedback-interview.md` — The 4–6 question prompts for Stage 1 (SCOPE)
+Templates come in two profiles, `resources/templates/profiles/generic/` (default) and `resources/templates/profiles/apex/` (when `.claude/agent-coord-config.json` exists or `APEX_PLAN_PROFILE=apex`). Each profile holds:
+
+- `adr-template.md` — SPARC-shaped ADR with spec + pseudocode + architecture sections
+- `plan-template.md` — Phased plan with per-phase Swarm directives and inter-phase gates
+- `feedback-interview.md` — The 4–6 question prompts for Stage 1 (SCOPE)
 - `resources/examples/sample-decision.md` — Worked example: a small feature decision + plan end-to-end
 
 ## Anti-patterns

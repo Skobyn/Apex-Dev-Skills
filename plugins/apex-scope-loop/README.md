@@ -29,16 +29,21 @@ The result is a system that **thinks alongside you**: it watches reality, persis
 
 ## Prerequisites
 
-> **apex-scope-loop builds on [ruflo](https://github.com/ruvnet/ruflo). The ruflo plugin suite is required, not optional.**
-
 | Requirement | Why |
 |---|---|
-| **ruflo plugin suite** *(required)* | Provides the `memory_*`, `swarm_init`, `agent_spawn`, and `hooks_route` MCP tools that the EXECUTE loop uses to dispatch swarms and accumulate cross-session memory. Set it up with `ruflo init`. |
 | **Claude Code 2.0+** *(required)* | Needs `/loop`, `/schedule`, `AskUserQuestion`, `ScheduleWakeup`, and `Agent`. |
-| `@claude-flow/cli` v3.6+ *(runtime, via `npx`)* | Used by `iterate.sh` when a phase dispatches a claude-flow swarm. Consumed at runtime; not a declared dependency. |
 | Python 3.11+ *(optional)* | Matches the surrounding apex toolchain; plugin scripts themselves are bash. |
+| A memory store *(optional, via `APEX_MEMORY_CMD`)* | Seeds a plan record into the `apex-scope-loop` namespace. Unset means the seed is skipped quietly. |
 
-Without ruflo's MCP tools the authoring phases still work, but the autonomous EXECUTE loop has nothing to dispatch to — so install ruflo first.
+The loop runs on plain Claude Code subagents. Nothing else needs installing.
+
+Memory seeding is optional and happens only when `APEX_MEMORY_CMD` is set. `init.sh` runs it with `APEX_MEMORY_NAMESPACE`, `APEX_MEMORY_KEY` and `APEX_MEMORY_VALUE` in its environment. With the optional [ruflo](https://github.com/ruvnet/ruflo) CLI, for example (APEX_MEMORY_CMD):
+
+```bash
+export APEX_MEMORY_CMD='npx -y @claude-flow/cli@latest memory store --namespace "$APEX_MEMORY_NAMESPACE" --key "$APEX_MEMORY_KEY" --value "$APEX_MEMORY_VALUE"'
+```
+
+`Swarm:` directives in a plan are advisory (optional ruflo/claude-flow swarms, or apex-dispatch `fanout` once available). Without them, each task runs as a single subagent.
 
 ## Install
 
@@ -134,7 +139,7 @@ Full mapping, and what was deliberately left out (cross-vendor routing, GitHub c
 
 ## Namespace coordination
 
-This plugin claims the AgentDB / memory namespace **`apex-scope-loop`**, following the kebab-case `<plugin-stem>-<intent>` convention from ruflo-agentdb ADR-0001 §"Namespace convention". Sub-keys:
+This plugin claims the AgentDB / memory namespace **`apex-scope-loop`**, following the kebab-case `<plugin-stem>-<intent>` convention (borrowed from the optional ruflo-agentdb ADR-0001 §"Namespace convention"). Sub-keys:
 
 | Key prefix | Holds |
 |---|---|

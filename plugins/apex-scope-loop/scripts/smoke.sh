@@ -1304,5 +1304,22 @@ touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
 ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head (submodules included) and allows ignored tool caches"
 
+# 42. Portability (ADR-0003): version 0.3.0, ADR-0003 present, reviewer cannot
+#     edit, ruflo optional (no required ruflo/claude-flow reference outside
+#     docs/legacy/), apex-plan template profiles.
+grep -q '"version": "0.3.0"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.3.0"
+ADR3="$PLUGIN_ROOT/docs/adrs/0003-portability-and-dispatch-consumer.md"
+[ -f "$ADR3" ] && grep -qE "^- \*\*Status:\*\* (Proposed|Accepted)" "$ADR3" || fail "ADR-0003 missing or without a Status"
+grep -qE "^disallowedTools:.*Edit.*Write.*NotebookEdit" "$GR" || fail "gibson-reviewer does not disallow Edit/Write/NotebookEdit"
+MARKET_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
+RUFLO_HITS="$(grep -rIn -i 'ruflo\|claude-flow\|hooks_route\|swarm_init' "$PLUGIN_ROOT" "$MARKET_ROOT/plugins/apex-project-start" "$MARKET_ROOT/README.md" 2>/dev/null \
+  | grep -v '/docs/legacy/' | grep -v '/scripts/smoke.sh:' | grep -iv 'optional\|APEX_MEMORY_CMD' || true)"
+[ -z "$RUFLO_HITS" ] || fail "ruflo/claude-flow referenced as required outside docs/legacy/: $(printf '%s' "$RUFLO_HITS" | head -3)"
+for prof in generic apex; do for t in adr-template.md plan-template.md; do
+  [ -f "$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles/$prof/$t" ] || fail "apex-plan profile $prof lacks $t"
+done; done
+! grep -qi 'getapexinsights\|apex-app' "$PLUGIN_ROOT"/skills/apex-plan/resources/templates/profiles/generic/*.md || fail "the generic apex-plan profile carries Apex-specific vocabulary"
+ok "portability: version 0.3.0, ADR-0003, read-only reviewer edits, ruflo optional, apex-plan profiles"
+
 echo ""
-echo "smoke passed: 41/41 checks"
+echo "smoke passed: 42/42 checks"

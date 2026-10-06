@@ -29,7 +29,7 @@ keep it set for the loop) to run with the pre-0.2 behavior.
 
 - **Cross-vendor runner routing** (Grok, Codex, Devin as merge captain) and
   Mission Control dispatch. apex-scope-loop runs inside one Claude Code session
-  on ruflo swarms. Law 5 is approximated with a *fresh-context, separate
+  on plain subagents (optional ruflo swarms are not required). Law 5 is approximated with a *fresh-context, separate
   agent* reviewer. The Gibson treats a fresh-context adversarial pass as a
   degraded-mode fallback for when no second vendor is available (its docs/11),
   and it specifies a different *session*. A subagent in the same session is

@@ -1,7 +1,7 @@
 {
   "name": "apex-scope-loop",
   "description": "Decide → plan → loop: SPARC-shaped ADR + phased plan authoring, with autonomous /loop + /schedule execution, per-phase swarm dispatch, and The Gibson's harness gates (baseline green gate, independent review, Tier-C human approval).",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "Apex Insights",
     "url": "https://getapexinsights.com"

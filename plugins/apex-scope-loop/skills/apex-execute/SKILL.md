@@ -39,7 +39,7 @@ Mapping, rationale, and what was deliberately left out: [docs/GIBSON_HARNESS.md]
 ## Prerequisites
 
 - Claude Code 2.0+ with `/loop` and `/schedule` skills enabled
-- RuFlo / claude-flow CLI installed (`npx @claude-flow/cli@latest doctor --fix`)
+- Optional: a memory store wired through `APEX_MEMORY_CMD` (for example the ruflo / claude-flow CLI). Unset means memory seeding is skipped
 - A development plan in markdown checklist format (see `resources/templates/dev-plan.md`)
 - Project-level memory namespace configured (default: `apex-execute`)
 
@@ -84,7 +84,7 @@ Active-session, fast cadence (60s–30min). Watches reality; doesn't persist pas
 | **Drift detect** | 600–1800s | Compare current metrics vs. baseline; flag regressions |
 | **Swarm health** | 300–1200s | `swarm_status` + `swarm_health`; restart dead workers |
 
-See [docs/LOOP_PATTERNS.md](docs/LOOP_PATTERNS.md) for delay-tuning rules (cache-window awareness).
+See [docs/legacy/LOOP_PATTERNS.md](docs/legacy/LOOP_PATTERNS.md) for delay-tuning rules (cache-window awareness).
 
 ### Layer 2: Continuity (`/schedule`)
 
@@ -112,7 +112,7 @@ Each plan phase is dispatched to a fresh hierarchical-mesh swarm (queen-led, 6�
 6. Stores trajectory + outcome in AgentDB via `memory_store` with namespace `apex-execute`
 7. Marks the task complete in the plan (`checkpoint.sh complete` refuses if the harness evidence doesn't match the head SHA); commits the code to the worktree branch via hook (the base branch is untouched until `land.sh`)
 
-See [docs/SWARM_TOPOLOGIES.md](docs/SWARM_TOPOLOGIES.md) for topology-per-phase mapping.
+See [docs/legacy/SWARM_TOPOLOGIES.md](docs/legacy/SWARM_TOPOLOGIES.md) for the legacy topology-per-phase mapping (optional swarms; plain subagents work without it).
 
 ## Step-by-Step Guide
 
@@ -235,10 +235,10 @@ Enforced hook governance ships in the `apex-guardrails` and `apex-dispatch` plug
 
 ## Advanced Topics
 
-- [LOOP_PATTERNS.md](docs/LOOP_PATTERNS.md) — Sense-layer recipes with delay tuning
+- [LOOP_PATTERNS.md](docs/legacy/LOOP_PATTERNS.md) — Sense-layer recipes with delay tuning (legacy)
 - [SCHEDULE_PATTERNS.md](docs/SCHEDULE_PATTERNS.md) — Continuity-layer recipes with cron
 - [GIBSON_HARNESS.md](docs/GIBSON_HARNESS.md) — Harness laws adopted from The Gibson and how each is enforced
-- [SWARM_TOPOLOGIES.md](docs/SWARM_TOPOLOGIES.md) — Phase-tag → topology mapping
+- [SWARM_TOPOLOGIES.md](docs/legacy/SWARM_TOPOLOGIES.md) — Phase-tag → topology mapping (legacy)
 
 ## Troubleshooting
 

@@ -22,7 +22,7 @@ section to detect drift in the code.
 >   - Blocked-by: phase-X.Y   (optional)
 > ```
 >
-> **Tags** route the swarm topology — see `docs/SWARM_TOPOLOGIES.md`:
+> **Tags** route the swarm topology — see `docs/legacy/SWARM_TOPOLOGIES.md`:
 > `[backend]` `[frontend]` `[security]` `[perf]` `[ml-serving]` `[infra]`
 > `[research]` `[docs]` `[tests]` `[refactor]`
 
