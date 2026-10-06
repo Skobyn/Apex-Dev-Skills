@@ -253,8 +253,8 @@ elif not skip:
         problems.append("Tier C: an adversarial review (--role adversarial) approving this exact head is required")
 if tier == "C":
     a = s.get("approvals", {}).get(line_no)
-    if not a or a.get("sha") != head:
-        problems.append("Tier C: human approval (G12) for this exact head SHA is required — halt and ask with the Ask Contract")
+    if not a or a.get("sha") != head or a.get("epoch", 0) != epoch:
+        problems.append("Tier C: human approval (G12) for this exact head SHA in this epoch is required — halt and ask with the Ask Contract")
 if problems:
     print("[checkpoint] REFUSED complete @ line " + line_no + ":", file=sys.stderr)
     for p in problems:
@@ -474,7 +474,7 @@ PY
 import sys
 path, now, line_no, sha, phrase = sys.argv[1:]
 s = json.load(open(path))
-s.setdefault("approvals", {})[line_no] = {"gate": "G12", "sha": sha, "phrase": phrase, "at": now}
+s.setdefault("approvals", {})[line_no] = {"gate": "G12", "sha": sha, "epoch": s.get("epoch", 0), "phrase": phrase, "at": now}
 if s.get("halted") and str(s.get("halt_reason", "")).startswith("awaiting human gate G12"):
     s["halted"] = False
     s["halt_reason"] = None
@@ -550,7 +550,7 @@ s.setdefault("reforks", []).append({"reason": reason, "old_fork": s.get("fork_sh
                                     "completes": s.get("completes") or [], "reopened_line": reopen or None, "at": now})
 s["fork_sha"] = base_tip
 s["completes"] = []
-s["epoch"] = s.get("epoch", 0) + 1   # tiers and reviews recorded before this saw a narrower diff
+s["epoch"] = s.get("epoch", 0) + 1   # tiers, reviews and G12 approvals recorded before this saw a narrower diff
 s["retired"] = False
 if reopen:
     s["completed_tasks"] = max(0, s.get("completed_tasks", 0) - 1)

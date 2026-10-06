@@ -199,9 +199,29 @@ apex_dirty() {
   [[ -n "$st" ]] && printf '%s\n' "$st"
   # Untracked files: only committed .gitignore files hide them (not
   # .git/info/exclude or core.excludesFile); an untracked .gitignore is itself
-  # a difference from the head (modified ones show in status).
+  # a difference from the head (modified ones show in status) unless a
+  # committed .gitignore ignores it (a tool's cache, e.g. .pytest_cache/).
   untracked="$( { apex_git "$dir" ls-files -o --exclude-per-directory=.gitignore -- . ':(exclude,top).dev-plan-state'
-                 apex_git "$dir" ls-files -o -- ':(glob)**/.gitignore' ':(exclude,top).dev-plan-state'; } 2>/dev/null | sort -u)"
+                 apex_git "$dir" ls-files -o -z -- ':(glob)**/.gitignore' ':(exclude,top).dev-plan-state' \
+                   | python3 -c '
+import subprocess, sys
+cand = [p for p in sys.stdin.buffer.read().split(b"\0") if p]
+if not cand:
+    sys.exit(0)
+git = sys.argv[1:]
+tracked = set(subprocess.run(git + ["ls-files", "-z", "--", ":(glob)**/.gitignore"], capture_output=True).stdout.split(b"\0"))
+r = subprocess.run(git + ["-c", "core.excludesFile=/dev/null", "check-ignore", "-z", "-v", "-n", "--stdin"],
+                   input=b"".join(p + b"\0" for p in cand), capture_output=True)
+f = r.stdout.split(b"\0")
+ok = set()
+for i in range(0, len(f) - 3, 4):   # source, line, pattern, path
+    if f[i] in tracked:              # ignored by a committed .gitignore
+        ok.add(f[i + 3])
+for p in cand:                       # anything unanswered counts as a difference
+    if p not in ok:
+        sys.stdout.buffer.write(p + b"\n")' env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+                       -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_NAMESPACE git --no-pager -C "$dir"
+               } 2>/dev/null | sort -u)"
   [[ -n "$untracked" ]] && printf 'untracked: %s\n' "${untracked//$'\n'/, }"
   flags="$(apex_git "$dir" ls-files -v 2>/dev/null | awk '/^([a-z]|S) / { n++; if (n <= 5) l = l " " substr($0, 3) } END { if (n) print n " path(s)" l (n > 5 ? " ..." : "") }')"
   if [[ -n "$flags" ]]; then

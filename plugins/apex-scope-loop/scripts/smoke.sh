@@ -1124,6 +1124,38 @@ O6="$SMOKE_TMP/o6"; oursrun "$O6" ours >/dev/null
 git -C "$(st "$O6" plans/o-plan.md)/worktree" merge -q -s ours -m resync main
 (cd "$O6" && "$CP" plans/o-plan.md refork "base moved" >/dev/null 2>&1) || fail "refork after an -s ours merge failed"
 expect_refusal "a completion after refork that reuses the pre-refork review" "no risk tier\|no independent review" indir "$O6" "$CP" plans/o-plan.md complete 3 ok
+# ...and neither does a G12 approval given before the refork.
+python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); h=sys.argv[2]
+s.setdefault("approvals",{})["3"]={"gate":"G12","sha":h,"epoch":s.get("epoch",0)-1,"phrase":"pre-refork","at":"x"}
+s.setdefault("tiers",{})["3"]={"tier":"C","since":"","head":h,"epoch":s.get("epoch",0)}; json.dump(s,open(p,"w"))' \
+  "$(st "$O6" plans/o-plan.md)/checkpoint.json" "$(git -C "$(st "$O6" plans/o-plan.md)/worktree" rev-parse HEAD)"
+expect_refusal "a Tier C completion after refork that reuses the pre-refork G12" "G12) for this exact head SHA in this epoch" indir "$O6" "$CP" plans/o-plan.md complete 3 ok
+# A base submodule bump survives land even when .gitmodules says ignore = all.
+U1="$SMOKE_TMP/u1"; mkdir -p "$U1/plans" "$U1/s"; git init -q -b main "$U1"
+UA="$(git -C "$U1" commit-tree "$(git -C "$U1" mktree </dev/null)" -m a)"; UB="$(git -C "$U1" commit-tree "$(git -C "$U1" mktree </dev/null)" -p "$UA" -m b)"
+printf '[submodule "s"]\n\tpath = s\n\turl = ./s.git\n\tignore = all\n' >"$U1/.gitmodules"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$U1/plans/u-plan.md"; git -C "$U1" add .gitmodules plans
+git -C "$U1" update-index --add --cacheinfo "160000,$UA,s"; git -C "$U1" commit -qm u
+( cd "$U1" && "$EX/init.sh" plans/u-plan.md >/dev/null 2>&1 ) || fail "init for the submodule test failed"
+UW="$(st "$U1" plans/u-plan.md)/worktree"; echo a >"$UW/a.md"; git -C "$UW" add a.md; git -C "$UW" commit -qm a
+(cd "$U1" && "$EX/green-gate.sh" plans/u-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/u-plan.md 1 >/dev/null \
+  && "$CP" plans/u-plan.md review 1 "$(git -C "$UW" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/u-plan.md complete 1 ok >/dev/null 2>&1) || fail "the submodule fixture task could not complete"
+git -C "$U1" add plans/u-plan.md; git -C "$U1" commit -qm tick; git -C "$U1" update-index --cacheinfo "160000,$UB,s"; git -C "$U1" commit -qm bump
+(cd "$U1" && "$EX/land.sh" plans/u-plan.md >/dev/null 2>&1) && [ "$(git -C "$U1" rev-parse HEAD:s)" = "$UB" ] \
+  || fail "land reverted a base submodule bump hidden by submodule ignore = all"
+# land re-run after the teardown failed (a locked worktree) finishes instead of refusing.
+L1="$SMOKE_TMP/l1"; mkdir -p "$L1/plans"; git init -q -b main "$L1"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$L1/plans/l-plan.md"; git -C "$L1" add -A; git -C "$L1" commit -qm l
+( cd "$L1" && "$EX/init.sh" plans/l-plan.md >/dev/null 2>&1 ) || fail "init for the land re-run test failed"
+LW="$(st "$L1" plans/l-plan.md)/worktree"; echo a >"$LW/a.md"; git -C "$LW" add a.md; git -C "$LW" commit -qm a
+(cd "$L1" && "$EX/green-gate.sh" plans/l-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/l-plan.md 1 >/dev/null \
+  && "$CP" plans/l-plan.md review 1 "$(git -C "$LW" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/l-plan.md complete 1 ok >/dev/null 2>&1) || fail "the land re-run fixture task could not complete"
+git -C "$L1" add plans/l-plan.md; git -C "$L1" commit -qm tick; git -C "$L1" worktree lock "$LW"
+expect_refusal "a land whose worktree is locked" "could not remove the worktree" indir "$L1" "$EX/land.sh" plans/l-plan.md
+git -C "$L1" worktree unlock "$LW"
+(cd "$L1" && "$EX/land.sh" plans/l-plan.md >/dev/null 2>&1) && [ ! -d "$LW" ] && [ -f "$L1/a.md" ] \
+  && [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("landed"))' "$(st "$L1" plans/l-plan.md)/checkpoint.json")" = True ] \
+  || fail "re-running land after an unlocked worktree did not finish the teardown"
 # Disjoint changes land whatever their number or names; a path with a newline changed on both sides is refused.
 D1="$SMOKE_TMP/d1"; mkdir -p "$D1/plans"; git init -q -b main "$D1"
 printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$D1/plans/d-plan.md"; printf 'x\n' >"$D1/$(printf 'a\nb.txt')"; git -C "$D1" add -A; git -C "$D1" commit -qm d
@@ -1153,10 +1185,15 @@ has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)"
 : >"$(git -C "$GW" rev-parse --git-common-dir)/info/exclude"; printf '*\n' >"$GW/.gitignore"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate ignored untracked files hidden by an untracked .gitignore"
 rm -f "$GW/.gitignore"
+printf '.cache/\n' >"$GW/.gitignore"; git -C "$GW" add .gitignore; git -C "$GW" commit -qm ignore-cache; mkdir -p "$GW/.cache"; printf '*\n' >"$GW/.cache/.gitignore"
+! has ".cache" "$(source "$EX/_lib.sh"; apex_dirty "$GW")" || fail "the gate counted a tool cache's .gitignore that a committed .gitignore ignores"
+mkdir -p "$GW/lib"; printf '*\n' >"$GW/lib/.gitignore"; echo x >"$GW/lib/evil.py"
+has "lib/.gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$GW")" || fail "the gate missed an untracked .gitignore that is not itself ignored"
+rm -rf "$GW/lib"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
-ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers); the gate binds to a clean head"
+ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head and allows ignored tool caches"
 
 echo ""
 echo "smoke passed: 41/41 checks"

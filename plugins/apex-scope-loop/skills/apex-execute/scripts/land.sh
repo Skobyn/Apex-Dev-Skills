@@ -133,6 +133,11 @@ if [[ -d "$DISPATCH_STATE" ]]; then   # --force does not bypass the ledger
     || { echo "ERROR: the dispatch ledger does not verify (ledger.sh verify) — refusing to land." >&2; exit 1; }
 fi
 
+# A re-run after step 10 failed: the base already holds the run head, so only
+# the teardown is left.
+LANDED_ALREADY=""
+apex_git "$REPO_ROOT" merge-base --is-ancestor "$LAND_SHA" HEAD 2>/dev/null && LANDED_ALREADY=1
+
 # 6. Harness: unreviewed code never reaches the base branch.
 if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
   if [[ -d "$WT_PATH" ]] && [[ -n "$(apex_dirty "$WT_PATH")" ]]; then
@@ -149,6 +154,7 @@ if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
   fi
   if ! apex_git "$REPO_ROOT" diff --quiet --no-renames --ignore-submodules=none "$LAND_FLOOR" "$LAND_SHA" 2>/dev/null; then
     echo "ERROR: ${WT_BRANCH} has commits after the last reviewed completion (${LAND_FLOOR:0:12}..${LAND_SHA:0:12}) — review and complete them as a task first." >&2
+    echo "       (If they merge $BASE_BRANCH: run checkpoint.sh $PLAN refork \"<why>\" — it reopens a task whose review covers the run against the current base.)" >&2
     exit 1
   fi
   if ! "$APEX_EXECUTE_SCRIPTS/green-gate.sh" "$PLAN" check; then
@@ -179,8 +185,8 @@ land_check() { # land_check BASE_TIP — prints why landing onto BASE_TIP is ref
     return 0
   fi
   dir="$(mktemp -d "${TMPDIR:-/tmp}/apex-land.XXXXXX")"
-  apex_git "$REPO_ROOT" diff-tree -r -z --name-only --no-renames "$FORK_SHA" "$LAND_SHA" >"$dir/r" 2>/dev/null || echo "?" >"$dir/r"
-  apex_git "$REPO_ROOT" diff-tree -r -z --name-only --no-renames "$FORK_SHA" "$tip" >"$dir/b" 2>/dev/null || echo "?" >"$dir/b"
+  apex_git "$REPO_ROOT" diff-tree -r -z --name-only --no-renames --ignore-submodules=none "$FORK_SHA" "$LAND_SHA" >"$dir/r" 2>/dev/null || echo "?" >"$dir/r"
+  apex_git "$REPO_ROOT" diff-tree -r -z --name-only --no-renames --ignore-submodules=none "$FORK_SHA" "$tip" >"$dir/b" 2>/dev/null || echo "?" >"$dir/b"
   python3 - "$dir/r" "$dir/b" "$PLAN_REL" "$LEDGER_REL" <<'PY'
 import sys
 def paths(f):
@@ -205,7 +211,7 @@ if len(clash) > 20:
 PY
   rm -rf "$dir"
 }
-if [[ "$FORCE" != "--force" ]]; then
+if [[ "$FORCE" != "--force" && -z "$LANDED_ALREADY" ]]; then
   [[ -n "$FORK_SHA" ]] || { echo "ERROR: this run has no fork point recorded — re-run iterate.sh once, or land with --force after checking the branch." >&2; exit 1; }
   WHY="$(land_check "$(apex_git "$REPO_ROOT" rev-parse HEAD)")"
   if [[ -n "$WHY" ]]; then
@@ -221,6 +227,7 @@ fi
 
 # 7. Flush uncommitted worktree changes (reachable only with the harness off or --force).
 if [[ -d "$WT_PATH" ]] && [[ -n "$(git -C "$WT_PATH" status --porcelain)" ]]; then
+  [[ -z "$LANDED_ALREADY" ]] || { echo "ERROR: $BASE_BRANCH already holds $WT_BRANCH but its worktree has new changes — commit them on a new run, or discard them, then re-run land.sh." >&2; exit 1; }
   git -C "$WT_PATH" add -A
   git -C "$WT_PATH" commit -m "apex-scope-loop: flush working changes before landing $WT_BRANCH"
   LAND_SHA="$(git -C "$WT_PATH" rev-parse HEAD)"
@@ -240,7 +247,9 @@ fi
 #    changes (6b), with the base tip and the run head as parents, then a
 #    fast-forward of the base checkout (refused if the base moved meanwhile).
 MSG="apex-scope-loop: merge $WT_BRANCH into $BASE_BRANCH (final gate passed)"
-if [[ "$FORCE" == "--force" ]]; then
+if [[ -n "$LANDED_ALREADY" ]]; then
+  echo "[land] $BASE_BRANCH already holds $WT_BRANCH (${LAND_SHA:0:12}) — finishing the teardown."
+elif [[ "$FORCE" == "--force" ]]; then
   echo "[land] --force: merging $WT_BRANCH (${LAND_SHA:0:12}) into $BASE_BRANCH with git merge ..."
   git -C "$REPO_ROOT" merge --no-ff "$LAND_SHA" -m "$MSG" \
     || { echo "ERROR: merge hit conflicts. Resolve in $REPO_ROOT, commit, then re-run land.sh." >&2; exit 1; }
@@ -258,7 +267,7 @@ else
   ix read-tree "${LAND_SHA}^{tree}"
   # Every path the base changed since the fork point (now including this
   # land's plan record) takes the base tip's entry, or is removed.
-  apex_git "$REPO_ROOT" diff-tree -r -z --no-renames --raw "$FORK_SHA" "$BASE_TIP" | python3 -c '
+  apex_git "$REPO_ROOT" diff-tree -r -z --no-renames --ignore-submodules=none --raw "$FORK_SHA" "$BASE_TIP" | python3 -c '
 import sys
 data = sys.stdin.buffer.read().split(b"\0")
 out = []
