@@ -208,14 +208,14 @@ print("" if skip else (s.get("plan_path") or "?"), "1" if s.get("retired") else 
       continue
     fi
     if ! base="$(CHECKPOINT="$cp" apex_floor "$dir" "$rev" 2>/dev/null)"; then
-      printf '%s\t%s\t%s\n' "$sd" "$plan" "no diff base (it predates the review chain, or its history was replaced)"
+      printf '%s\t%s\t%s\n' "$sd" "$plan" "no diff base against the new fork point (it predates the review chain, its history was replaced, or it is on another line of history)"
       continue
     fi
     excl=(":(exclude,top,literal).claude/apex-scope-loop/LESSONS.md")
     rel="$(python3 -c 'import os,sys; r=os.path.relpath(os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])); print(r if r.endswith(".md") and not r.startswith("..") else "")' "$plan" "$dir")"
     [[ -n "$rel" ]] && excl+=(":(exclude,top,literal)$rel")
     apex_git "$dir" diff --quiet --no-renames --ignore-submodules=none "$base" "$rev" -- . "${excl[@]}" 2>/dev/null \
-      || printf '%s\t%s\t%s\n' "$sd" "$plan" "commits after its last reviewed completion (${base:0:12})"
+      || printf '%s\t%s\t%s\n' "$sd" "$plan" "changes after its diff base ${base:0:12} that no review covered"
   done
 }
 

@@ -174,6 +174,13 @@ case "$ACTION" in
     [[ "$(task_field checked)" == "0" ]] || { echo "[checkpoint] REFUSED complete: line $LINE_NO is already checked" >&2; exit 1; }
     refuse_if_halted
     HEAD_V="$(head_sha)"   # the head this completion verifies (and records)
+    # A run without a worktree verifies completions on its own branch only.
+    if [[ -z "$(read_field worktree_branch)" && "${APEX_GIBSON:-1}" != "0" ]]; then
+      RUN_BRANCH="$(read_field run_branch)"
+      CUR_BRANCH="$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+      [[ -n "$RUN_BRANCH" ]] || { echo "[checkpoint] REFUSED complete: this run has no recorded branch — re-run init.sh on the run's branch (it records it)" >&2; exit 1; }
+      [[ "$CUR_BRANCH" == "$RUN_BRANCH" ]] || { echo "[checkpoint] REFUSED complete: this run is on '$RUN_BRANCH', the checkout is on '${CUR_BRANCH:-a detached HEAD}' — complete it on its own branch" >&2; exit 1; }
+    fi
     # The task's code is everything since the chain floor (ADR-0003). A gate
     # line is exempt from the checks only when it adds no code at all and
     # nothing marks it Tier C.

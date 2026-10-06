@@ -952,10 +952,10 @@ L3="$SMOKE_TMP/l3"; mkdir -p "$L3/plans"; git init -q -b main "$L3"; printf '.de
 printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$L3/plans/k-plan.md"; git -C "$L3" add -A; git -C "$L3" commit -qm k
 ( cd "$L3" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/k-plan.md >/dev/null 2>&1 ) || fail "no-worktree init failed"
 echo "$PRICE" >"$L3/util.py"; git -C "$L3" add -A; git -C "$L3" commit -qm x
-expect_refusal "a no-worktree restart (APEX_INIT_FORCE) over unreviewed commits" "after its last reviewed completion" \
+expect_refusal "a no-worktree restart (APEX_INIT_FORCE) over unreviewed commits" "below the new run's fork point" \
   indir "$L3" APEX_NO_WORKTREE=1 APEX_INIT_FORCE=1 "$EX/init.sh" plans/k-plan.md
 git -C "$L3" mv plans/k-plan.md plans/k2-plan.md; git -C "$L3" commit -qm mv
-expect_refusal "a no-worktree run started under a moved plan" "after its last reviewed completion" \
+expect_refusal "a no-worktree run started under a moved plan" "below the new run's fork point" \
   indir "$L3" APEX_NO_WORKTREE=1 "$EX/init.sh" plans/k2-plan.md
 L4="$SMOKE_TMP/l4"; mkdir -p "$L4/plans"; git init -q -b main "$L4"; printf '.dev-plan-state/\n' >"$L4/.gitignore"
 printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$L4/plans/k-plan.md"; git -C "$L4" add -A; git -C "$L4" commit -qm k
@@ -1024,19 +1024,19 @@ echo doc >"$F4/notes.md"; git -C "$F4" add notes.md; git -C "$F4" commit -qm d
 printf -- '- [ ] **Phase 1.2** [backend] c\n  - Acceptance: true\n' >>"$F4/plans/a-plan.md"
 mkdir -p "$F4/src/auth"; echo 'import stripe' >"$F4/src/auth/login.py"; git -C "$F4" add -A; git -C "$F4" commit -qm reopen
 printf -- '- [ ] **Phase 1.1** [docs] b\n  - Acceptance: true\n' >"$F4/plans/b-plan.md"; git -C "$F4" add -A; git -C "$F4" commit -qm b
-expect_refusal "a new run after a finished plan was reopened" "after its last reviewed completion" indir "$F4" APEX_NO_WORKTREE=1 "$EX/init.sh" plans/b-plan.md
+expect_refusal "a new run after a finished plan was reopened" "below the new run's fork point" indir "$F4" APEX_NO_WORKTREE=1 "$EX/init.sh" plans/b-plan.md
 F2="$SMOKE_TMP/f2"; mkdir -p "$F2/plans"; git init -q -b main "$F2"; printf '.dev-plan-state/\n' >"$F2/.gitignore"
 printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F2/plans/a-plan.md"; git -C "$F2" add -A; git -C "$F2" commit -qm a
 ( cd "$F2" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for the harness-off test failed"
 mkdir -p "$F2/src/auth"; echo 'import stripe' >"$F2/src/auth/login.py"; git -C "$F2" add -A; git -C "$F2" commit -qm x
 (cd "$F2" && APEX_GIBSON=0 "$CP" plans/a-plan.md complete 1 ok >/dev/null 2>&1) || fail "APEX_GIBSON=0 complete failed"
 printf -- '- [ ] **Phase 1.1** [docs] b\n  - Acceptance: true\n' >"$F2/plans/b-plan.md"; git -C "$F2" add -A; git -C "$F2" commit -qm b
-expect_refusal "a new run after a last task completed with the harness off" "after its last reviewed completion" indir "$F2" APEX_NO_WORKTREE=1 "$EX/init.sh" plans/b-plan.md
+expect_refusal "a new run after a last task completed with the harness off" "below the new run's fork point" indir "$F2" APEX_NO_WORKTREE=1 "$EX/init.sh" plans/b-plan.md
 F3="$SMOKE_TMP/f3"; mkdir -p "$F3/plans"; git init -q -b main "$F3"; printf '.dev-plan-state/\n' >"$F3/.gitignore"
 printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F3/plans/a-plan.md"; git -C "$F3" add -A; git -C "$F3" commit -qm a
 ( cd "$F3" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for the mode-switch test failed"
 mkdir -p "$F3/src/auth"; echo 'import stripe' >"$F3/src/auth/login.py"; git -C "$F3" add -A; git -C "$F3" commit -qm x
-expect_refusal "a restart in worktree mode over unreviewed commits" "after its last reviewed completion" indir "$F3" APEX_INIT_FORCE=1 "$EX/init.sh" plans/a-plan.md
+expect_refusal "a restart in worktree mode over unreviewed commits" "below the new run's fork point" indir "$F3" APEX_INIT_FORCE=1 "$EX/init.sh" plans/a-plan.md
 # Only a reviewed completion retires a run: a box ticked by hand does not.
 F5="$SMOKE_TMP/f5"; mkdir -p "$F5/plans"; git init -q -b main "$F5"; printf '.dev-plan-state/\n' >"$F5/.gitignore"
 printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n- [ ] **Phase 1.2** [backend] b\n  - Acceptance: true\n' >"$F5/plans/a-plan.md"; git -C "$F5" add -A; git -C "$F5" commit -qm a
@@ -1058,7 +1058,22 @@ echo doc >"$F6/notes.md"; git -C "$F6" add notes.md; git -C "$F6" commit -qm d
 git -C "$F6" add -A; git -C "$F6" commit -qm tick; git -C "$F6" mv plans/a-plan.md plans/done/a-plan.md; echo more >>"$F6/notes.md"; git -C "$F6" add -A; git -C "$F6" commit -qm archive
 printf -- '- [ ] **Phase 1.1** [docs] b\n  - Acceptance: true\n' >"$F6/plans/b-plan.md"; git -C "$F6" add -A; git -C "$F6" commit -qm b
 ( cd "$F6" && "$EX/init.sh" plans/b-plan.md >/dev/null 2>&1 ) || fail "a finished run with an archived plan blocked the next run"
-ok "trusted external diff, control-character paths, many matches, finished/reopened/harness-off/hand-ticked no-worktree runs, archived plans, mode switch"
+# A run without a worktree completes only on its own branch; a live run's
+# worktree branch is never another run's base.
+F7="$SMOKE_TMP/f7"; mkdir -p "$F7/plans"; git init -q -b main "$F7"; printf '.dev-plan-state/\n' >"$F7/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F7/plans/a-plan.md"; git -C "$F7" add -A; git -C "$F7" commit -qm a
+( cd "$F7" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for the branch test failed"
+mkdir -p "$F7/src/auth"; echo 'import stripe' >"$F7/src/auth/login.py"; git -C "$F7" add src; git -C "$F7" commit -qm x
+git -C "$F7" checkout -qb side HEAD~1; echo doc >"$F7/notes.md"; git -C "$F7" add notes.md; git -C "$F7" commit -qm d
+(cd "$F7" && "$EX/green-gate.sh" plans/a-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/a-plan.md 1 >/dev/null; "$CP" plans/a-plan.md review 1 "$(git -C "$F7" rev-parse HEAD)" APPROVE >/dev/null) || true
+expect_refusal "a no-worktree completion on another branch" "complete it on its own branch" indir "$F7" "$CP" plans/a-plan.md complete 1 ok
+F8="$SMOKE_TMP/f8"; mkdir -p "$F8/plans"; git init -q -b main "$F8"; printf '.dev-plan-state/\n' >"$F8/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F8/plans/a-plan.md"; printf -- '- [ ] **Phase 1.1** [docs] b\n  - Acceptance: true\n' >"$F8/plans/b-plan.md"
+git -C "$F8" add -A; git -C "$F8" commit -qm ab
+( cd "$F8" && "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "init for the base-branch test failed"
+F8B="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worktree_branch"])' "$(st "$F8" plans/a-plan.md)/checkpoint.json")"
+expect_refusal "a base branch that is another live run's worktree branch" "worktree branch of another run" indir "$F8" APEX_BASE_BRANCH="$F8B" "$EX/init.sh" plans/b-plan.md
+ok "trusted external diff, control-character paths, many matches, finished/reopened/harness-off/hand-ticked no-worktree runs, archived plans, mode switch, run branch, live-run base"
 
 echo ""
 echo "smoke passed: 40/40 checks"

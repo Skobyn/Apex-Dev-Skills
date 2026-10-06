@@ -89,6 +89,33 @@ elif [[ -f "$CHECKPOINT" && "${APEX_INIT_FORCE:-0}" == "1" && "$(read_field land
   fi
 fi
 
+# --- A base branch is never another live run's worktree branch ---------------
+# (a run forked from it would put that run's unreviewed commits below its fork)
+for cp in "$STATE_BASE"/*/checkpoint.json; do
+  [[ -f "$cp" && "$cp" != "$CHECKPOINT" ]] || continue
+  if python3 -c '
+import json, sys
+s = json.load(open(sys.argv[1]))
+b = s.get("worktree_branch") or ""
+sys.exit(0 if b and not s.get("landed") and sys.argv[2] in (b, "refs/heads/" + b) else 1)' "$cp" "$BASE_BRANCH" 2>/dev/null; then
+    echo "ERROR: the base '$BASE_BRANCH' is the worktree branch of another run that has not landed ($(dirname "$cp"))." >&2
+    echo "       Land that run first, or fork from its base branch instead." >&2
+    exit 1
+  fi
+done
+
+# --- A run without a worktree is tied to the branch it starts on -------------
+# Its completions are verified on that branch only, so a completion on another
+# branch cannot retire the run while its own commits sit elsewhere.
+RUN_BRANCH=""
+if [[ "${APEX_NO_WORKTREE:-0}" == "1" ]]; then
+  RUN_BRANCH="$(git -C "$REPO_ROOT" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+  if [[ -z "$RUN_BRANCH" && "${APEX_GIBSON:-1}" != "0" ]]; then
+    echo "ERROR: a run without a worktree needs a branch checked out (HEAD is detached)." >&2
+    exit 1
+  fi
+fi
+
 # --- No run restarts below another run's unreviewed commits ------------------
 # A fresh run (either mode) forks at or below HEAD / the base tip; a run
 # without a worktree in this checkout that still has commits after its last
@@ -165,9 +192,10 @@ fi
 # Written with json.dump so paths containing quotes or backslashes stay valid;
 # under checkpoint.sh's state lock, atomically.
 python3 - "$CHECKPOINT" "$PLAN_ABS" "$PLAN_HASH" "$NAMESPACE" "$TOTAL" "$DONE" "$WT_PATH" "$WT_BRANCH" "$BASE_BRANCH" \
-  "$([[ "${APEX_GIBSON:-1}" == "0" ]] && echo off || echo gibson)" "$CALLER_COMMON" "$KEEP_RUN" "$FORK_SHA" "$STATE_DIR/.checkpoint.lock" <<'PY'
+  "$([[ "${APEX_GIBSON:-1}" == "0" ]] && echo off || echo gibson)" "$CALLER_COMMON" "$KEEP_RUN" "$FORK_SHA" "$STATE_DIR/.checkpoint.lock" \
+  "$RUN_BRANCH" <<'PY'
 import datetime, fcntl, json, os, sys
-path, plan, h, ns, total, done, wt, br, base, harness, common, keep, fork, lock = sys.argv[1:]
+path, plan, h, ns, total, done, wt, br, base, harness, common, keep, fork, lock, run_branch = sys.argv[1:]
 lfd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(lfd, fcntl.LOCK_EX)
 prev = {}
@@ -180,7 +208,7 @@ fresh = {
     "worktree_path": wt, "worktree_branch": br, "base_branch": base, "git_common_dir": common, "landed": False,
     "harness": harness, "consecutive_failures": 0, "tiers": {}, "reviews": {}, "approvals": {},
     "last_verdict": None, "last_iteration_at": None, "halted": False, "halt_reason": None,
-    "fork_sha": fork or None, "completes": [],
+    "fork_sha": fork or None, "completes": [], "run_branch": run_branch or None,
 }
 # Structural fields always come from this init; run history survives a re-init.
 structural = ("plan_path", "plan_hash", "namespace", "total_tasks", "completed_tasks",
@@ -191,6 +219,8 @@ for k, v in prev.items():
         out[k] = v
 if not out.get("fork_sha"):
     out["fork_sha"] = fork or None
+if not out.get("run_branch"):
+    out["run_branch"] = run_branch or None
 tmp = path + ".tmp"
 try:
     os.unlink(tmp)
