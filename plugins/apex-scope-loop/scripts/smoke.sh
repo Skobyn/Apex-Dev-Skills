@@ -1193,10 +1193,22 @@ rm -rf "$GW/lib"
 printf 'build\n' >>"$GW/.gitignore"; git -C "$GW" commit -qam ignore-build; mkdir -p "$GW/:build"; printf '*\n' >"$GW/:build/.gitignore"; echo x >"$GW/:build/t.py"
 has ":build/.gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$GW")" || fail "the gate trusted an untracked .gitignore in a directory whose name is pathspec magic (:build)"
 rm -rf "$GW/:build"
+# Submodules: files in one that is not checked out, and files hidden by a
+# populated one's untracked .gitignore, are differences from the head.
+SM="$SMOKE_TMP/sm"; mkdir -p "$SM"; git init -q -b main "$SM"; echo r >"$SM/r.txt"
+git init -q -b main "$SM/sub"; echo s >"$SM/sub/s.txt"; git -C "$SM/sub" add -A; git -C "$SM/sub" commit -qm s
+git -C "$SM" add r.txt 2>/dev/null; git -C "$SM" update-index --add --cacheinfo "160000,$(git -C "$SM/sub" rev-parse HEAD),sub"
+git -C "$SM" update-index --add --cacheinfo "160000,$(git -C "$SM/sub" rev-parse HEAD),empty"; git -C "$SM" commit -qm sm >/dev/null 2>&1
+mkdir -p "$SM/empty"   # what a checkout leaves for a submodule it does not check out
+[ -z "$(source "$EX/_lib.sh"; apex_dirty "$SM")" ] || fail "a clean repository with submodules was reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$SM")"
+printf '*\n' >"$SM/sub/.gitignore"; echo x >"$SM/sub/conftest.py"
+has "submodule sub: untracked: .gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed files hidden by an untracked .gitignore in a populated submodule"
+rm -f "$SM/sub/.gitignore" "$SM/sub/conftest.py"; echo x >"$SM/empty/conftest.py"
+has "submodule directory that is not checked out: empty" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed files in a submodule directory that is not checked out"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
-ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head and allows ignored tool caches"
+ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head (submodules included) and allows ignored tool caches"
 
 echo ""
 echo "smoke passed: 41/41 checks"

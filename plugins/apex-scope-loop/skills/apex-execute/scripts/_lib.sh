@@ -191,9 +191,9 @@ print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
 # apex_dirty DIR — why DIR's working tree is not exactly its HEAD: changes and
 # untracked files whatever status.* config says, submodule changes, and index
 # entries flagged skip-worktree or assume-unchanged (they hide edits from
-# status). Prints nothing when clean.
+# status), and the same inside every submodule. Prints nothing when clean.
 apex_dirty() {
-  local dir="$1" st flags untracked
+  local dir="$1" depth="${2:-0}" st flags untracked gl sub rel
   st="$(apex_git "$dir" status --porcelain --untracked-files=no --ignore-submodules=none 2>/dev/null)" \
     || { echo "git status failed in $dir"; return 0; }
   [[ -n "$st" ]] && printf '%s\n' "$st"
@@ -245,6 +245,27 @@ for p in cand:
       printf 'flagged skip-worktree/assume-unchanged (edits hidden from status): %s\n' "$flags"
     fi
   fi
+  # Gitlinks: neither status nor ls-files looks at files in a submodule
+  # directory that is not checked out (a worktree never checks submodules
+  # out), nor at untracked files a populated submodule's own .gitignore
+  # hides. An unpopulated one must be empty; a populated one gets the same
+  # checks.
+  while IFS= read -r -d '' gl; do
+    [[ "$gl" == "(fail)" ]] && { echo "could not list the submodules in $dir"; continue; }
+    [[ "$gl" == 160000\ * ]] || continue
+    rel="${gl#*$'\t'}"; sub="$dir/$rel"
+    if [[ -L "$sub" ]]; then
+      printf 'submodule path is a symlink: %s\n' "$rel"
+    elif [[ ! -d "$sub" ]]; then
+      continue
+    elif [[ ! -e "$sub/.git" ]]; then
+      [[ -z "$(ls -A "$sub" 2>/dev/null)" ]] || printf 'files in a submodule directory that is not checked out: %s\n' "$rel"
+    elif (( depth >= 8 )); then
+      printf 'submodules nested too deep to check: %s\n' "$rel"
+    else
+      apex_dirty "$sub" "$((depth + 1))" | sed "s|^|submodule $rel: |"
+    fi
+  done < <(apex_git "$dir" ls-files -z --stage 2>/dev/null || printf '(fail)\0')
   return 0
 }
 
