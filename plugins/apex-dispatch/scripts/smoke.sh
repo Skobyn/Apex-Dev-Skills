@@ -428,19 +428,30 @@ LEDGER="$PLUGIN_ROOT/scripts/ledger.sh"; REPORT="$PLUGIN_ROOT/scripts/report.sh"
 for f in "$LEDGER" "$REPORT" "$DOCTOR"; do [ -x "$f" ] || fail "$(basename "$f") missing or not executable"; done
 [ -f "$PLUGIN_ROOT/resources/ledger-events.json" ] || fail "missing resources/ledger-events.json"
 lg() { (cd "$FX" && bash "$LEDGER" "$@") 2>&1; }
+# In-process writer (what route.py, the hooks and the shims use): lgpy STATE EVENT JSON SOURCE [ROUTE_ID] [ROUTE_MODE]
+lgpy() { (cd "$FX" && python3 -c 'import json, sys; sys.path.insert(0, sys.argv[1]); import ledger
+a = sys.argv[2:] + ["", ""]
+print(ledger.append(a[0], a[1], json.loads(a[2]), a[3], route_id=a[4] or None, route_mode=a[5] or None)["seq"])' "$PLUGIN_ROOT/scripts/lib" "$@") 2>&1; }
 HEAD_FX="$(git -C "$FX" rev-parse HEAD)"
 
 # 32. append validates against the event schema and stamps the chain fields
 LS="$WORK/ls"; mkdir -p "$LS"
 RX="r-0123456789ab-L5-1"
-lg append route '{"route_id":"'"$RX"'","status":"READY","origin":"plan","router":{"class":"docs","tier":"cheap","provider":"claude-session"},"line":5}' --state "$LS" --source cli --route-mode table >/dev/null || fail "a valid route row was refused"
-lg append spawn_request '{"role":"builder","model":"haiku"}' --state "$LS" --source hook --route-id "$RX" >/dev/null || fail "a valid spawn_request row was refused"
-lg append worker_run '{"provider":"codex","role":"builder","exit_code":0,"usage":{"input":1000,"output":100}}' --state "$LS" --source shim --route-id "$RX" >/dev/null || fail "a valid worker_run row was refused"
-lg append spawn '{"agent_id":"ag-1","role":"builder","usage":{"input":1000000},"resolved_model":"claude-sonnet-5-5"}' --state "$LS" --source hook --route-id "$RX" >/dev/null || fail "a valid spawn row was refused"
-lg append verdict '{"role":"reviewer","verdict":"APPROVE"}' --state "$LS" --source hook --route-id "$RX" >/dev/null || fail "a valid verdict row was refused"
+lgpy "$LS" route '{"route_id":"'"$RX"'","status":"READY","origin":"plan","router":{"class":"docs","tier":"cheap","provider":"claude-session"},"line":5}' cli "" table >/dev/null || fail "a valid route row was refused"
+lgpy "$LS" spawn_request '{"role":"builder","model":"haiku"}' hook "$RX" >/dev/null || fail "a valid spawn_request row was refused"
+lgpy "$LS" worker_run '{"provider":"codex","role":"builder","exit_code":0,"usage":{"input":1000,"output":100}}' shim "$RX" >/dev/null || fail "a valid worker_run row was refused"
+lgpy "$LS" spawn '{"agent_id":"ag-1","role":"builder","usage":{"input":1000000},"resolved_model":"claude-sonnet-5-5"}' hook "$RX" >/dev/null || fail "a valid spawn row was refused"
+lgpy "$LS" verdict '{"role":"reviewer","verdict":"APPROVE"}' hook "$RX" >/dev/null || fail "a valid verdict row was refused"
+for ev in route spawn_request spawn worker_run verdict; do   # provenance rows never come through the CLI
+  if lg append "$ev" '{"role":"builder","model":"haiku","agent_id":"x","provider":"codex","exit_code":0,"verdict":"APPROVE","status":"READY","origin":"plan","router":{}}' --state "$LS" --source hook --route-id "$RX" >"$WORK/lg.out"; then
+    fail "ledger.sh append accepted provenance event $ev"; fi
+  grep -q "$ev is a provenance event" "$WORK/lg.out" || fail "CLI refusal of $ev does not say why: $(cat "$WORK/lg.out")"
+done
+if lgpy "$LS" verdict '{"role":"reviewer","verdict":"LGTM"}' hook "$RX" >"$WORK/lg.out"; then fail "an out-of-enum verdict was accepted"; fi
+grep -q 'is not one of' "$WORK/lg.out" || fail "out-of-enum verdict: $(cat "$WORK/lg.out")"
 lg append escalate '{"prior_route_id":"'"$RX"'","failures":1,"rung":"effort-up","action":"effort_up"}' --state "$LS" --source cli >/dev/null || fail "a valid escalate row was refused"
-for bad in "bogus|{}|hook|unknown event" "verdict|{\"role\":\"reviewer\",\"verdict\":\"LGTM\"}|hook|is not one of" \
-           "worker_run|{\"provider\":\"codex\",\"role\":\"builder\"}|shim|missing required field exit_code" \
+for bad in "bogus|{}|hook|unknown event" "human_gate|{\"gate\":\"G12\",\"decision\":\"maybe\"}|cli|is not one of" \
+           "escalate|{\"prior_route_id\":\"x\",\"rung\":\"r\",\"action\":\"halt\"}|cli|missing required field failures" \
            "hook_error|{\"hook\":\"x\",\"error\":\"y\"}|model|source must be one of" \
            "hook_error|{\"hook\":\"x\",\"error\":\"y\",\"hash\":\"00\"}|hook|stamped by the ledger"; do
   IFS='|' read -r ev js src want <<<"$bad"
@@ -464,7 +475,7 @@ assert rows[1]["route_id"] == "r-0123456789ab-L5-1" and rows[1]["source"] == "ho
 assert rows[0]["head_sha"] and len(rows[0]["head_sha"]) == 40
 PY
 lg verify --state "$LS" | grep -q '^ledger verify: OK — 6 rows' || fail "verify did not pass the sample chain"
-pass "ledger append: schema-validated (event, enums, required fields, source, no caller-supplied hash); rows stamped and chained"
+pass "ledger append: schema-validated (event, enums, required fields, source, no caller-supplied hash); CLI refuses provenance events; rows stamped and chained"
 
 # 33. verify names the first bad row: tampered, rehashed, deleted, reordered, truncated
 vbad() {  # $1 label, $2 python edit of the rows list, $3 expected stderr fragment
@@ -489,7 +500,24 @@ rm -rf "$WORK/lt"; cp -R "$LS" "$WORK/lt"; printf '{"seq": 6, "torn' >>"$WORK/lt
 if lg verify --state "$WORK/lt" >"$WORK/v.out"; then fail "verify passed a torn last line"; fi
 grep -q 'row 7: incomplete last line' "$WORK/v.out" || fail "verify did not name the torn row: $(cat "$WORK/v.out")"
 if lg append hook_error '{"hook":"x","error":"y"}' --state "$WORK/lt" --source hook >/dev/null; then fail "append extended a torn ledger"; fi
-pass "verify: fails tampered, rehashed, deleted, reordered, truncated and torn ledgers naming the first bad row; append refuses a torn tail"
+# append must not hide a truncation or a rewritten tail that verify catches
+for edit in 'rows.pop()' 'rows[5]["rung"] = "x"; rehash(rows[5])'; do
+  vbad "pre-append" "$edit" 'ledger.head'
+  if lg append hook_error '{"hook":"x","error":"y"}' --state "$WORK/lt" --source hook >"$WORK/a.out"; then fail "append extended a ledger whose head disagrees ($edit)"; fi
+  grep -q 'refusing to append' "$WORK/a.out" || fail "append refusal does not say why: $(cat "$WORK/a.out")"
+  if lg verify --state "$WORK/lt" >/dev/null; then fail "verify passed after a refused append ($edit)"; fi
+done
+rm -rf "$WORK/lt"; cp -R "$LS" "$WORK/lt"; rm "$WORK/lt/dispatch-shadow/ledger.head"
+if lg verify --state "$WORK/lt" >/dev/null; then fail "verify passed with ledger.head removed"; fi
+if lg append hook_error '{"hook":"x","error":"y"}' --state "$WORK/lt" --source hook >/dev/null; then fail "append extended a ledger without its head"; fi
+# the benign crash (row written, head not yet replaced) verifies and the next append repairs the head
+rm -rf "$WORK/lt"; cp -R "$LS" "$WORK/lt"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; json.dump({"seq": r[-2]["seq"], "hash": r[-2]["hash"]}, open(sys.argv[2], "w"))' "$WORK/lt/dispatch-shadow/ledger.jsonl" "$WORK/lt/dispatch-shadow/ledger.head"
+lg verify --state "$WORK/lt" >/dev/null || fail "verify failed the benign head-one-behind crash state"
+lg append hook_error '{"hook":"x","error":"y"}' --state "$WORK/lt" --source hook >/dev/null || fail "append refused the benign crash state"
+python3 -c 'import json,sys; h=json.load(open(sys.argv[1])); assert h["seq"]==6' "$WORK/lt/dispatch-shadow/ledger.head" || fail "append did not repair the head"
+lg verify --state "$WORK/lt" | grep -q 'OK — 7 rows, chain intact$' || fail "verify after repair"
+pass "verify: fails tampered, rehashed, deleted, reordered, truncated, torn and head-less ledgers; append refuses them too; a crash between row and head is repaired"
 
 # 34. route.sh plan (not --dry-run) appended verifiable route rows; evidence semantics (spec §5.3 G)
 lg verify --state "$SD" >/dev/null || fail "the fixture plan's ledger (route + escalate rows from route.sh) does not verify: $(lg verify --state "$SD")"
@@ -497,23 +525,35 @@ python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; ev=[x
   "$SD/dispatch-shadow/ledger.jsonl" "$HEAD_FX" || fail "route.sh/escalate rows are not stamped as expected"
 if lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" >"$WORK/e.out"; then fail "evidence passed with a route row but no spawn row"; fi
 grep -q 'no spawn_request/spawn/worker_run row' "$WORK/e.out" || fail "evidence without spawns: $(cat "$WORK/e.out")"
-lg append spawn_request '{"role":"builder","model":"sonnet"}' --state "$SD" --source hook --route-id "r-000000000000-L${L_A}-1" >/dev/null
+lgpy "$SD" spawn_request '{"role":"builder","model":"sonnet"}' hook "r-000000000000-L${L_A}-1" >/dev/null
 if lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" >/dev/null; then fail "evidence accepted a spawn row for another route"; fi
-lg append spawn_request '{"role":"builder","model":"sonnet"}' --state "$SD" --source hook --route-id "$RID" >/dev/null
+lgpy "$SD" spawn_request '{"role":"builder","model":"sonnet"}' cli "$RID" >/dev/null
+if lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" >/dev/null; then fail "evidence accepted a spawn row written with source cli"; fi
+lgpy "$SD" spawn_request '{"role":"builder","model":"sonnet"}' hook "$RID" >/dev/null
 lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" | grep -q '^ledger evidence: OK' || fail "evidence refused route + spawn rows at HEAD: $(lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX")"
 if lg evidence --state "$SD" --line "$L_B" --head "$HEAD_FX" >"$WORK/e.out"; then fail "evidence passed for a line with no route row"; fi
 grep -q "no READY route row for plan line $L_B" "$WORK/e.out" || fail "evidence for an unrouted line: $(cat "$WORK/e.out")"
+PH="$(basename "$SD")"; RT='{"status":"READY","origin":"plan","router":{}'
+lgpy "$SD" route "$RT"',"line":'"$L_B"'}' cli "r-$PH-L$L_OV-1" table >/dev/null; lgpy "$SD" spawn '{"agent_id":"a9","role":"builder"}' hook "r-$PH-L$L_OV-1" >/dev/null
+for ln in "$L_B" "$L_OV"; do
+  if lg evidence --state "$SD" --line "$ln" --head "$HEAD_FX" >/dev/null; then fail "evidence accepted a route whose id and line field disagree (line $ln)"; fi
+done
+lgpy "$SD" route "$RT"'}' cli "r-000000000000-L$L_G-1" table >/dev/null; lgpy "$SD" spawn '{"agent_id":"a8","role":"builder"}' hook "r-000000000000-L$L_G-1" >/dev/null
+if lg evidence --state "$SD" --line "$L_G" --head "$HEAD_FX" >/dev/null; then fail "evidence accepted another plan's route"; fi
+lg evidence --state "$SD" --line "$L_G" --head "$HEAD_FX" --plan-hash 000000000000 >/dev/null || fail "evidence --plan-hash did not select that plan"
+if lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" --plan-hash 000000000000 >/dev/null; then fail "evidence --plan-hash for another plan accepted this plan's route"; fi
 git -C "$FX" commit -q --allow-empty -m next; HEAD2="$(git -C "$FX" rev-parse HEAD)"
 lg evidence --state "$SD" --line "$L_A" --head "$HEAD2" >/dev/null || fail "evidence refused a HEAD that descends from the route's head"
 git -C "$FX" checkout -q --orphan side; git -C "$FX" commit -q --allow-empty -m side; HSIDE="$(git -C "$FX" rev-parse HEAD)"; git -C "$FX" checkout -q main
 if lg evidence --state "$SD" --line "$L_A" --head "$HSIDE" >"$WORK/e.out"; then fail "evidence passed for a HEAD whose history lacks the route's head"; fi
 grep -q "on HEAD's history" "$WORK/e.out" || fail "evidence off-history: $(cat "$WORK/e.out")"
 rm -rf "$WORK/lt"; cp -R "$SD" "$WORK/lt"; sed -i.bak '1s/"table"/"decision"/' "$WORK/lt/dispatch-shadow/ledger.jsonl"
-if lg evidence --state "$WORK/lt" --line "$L_A" --head "$HEAD_FX" >"$WORK/e.out"; then fail "evidence passed on a tampered chain"; fi
+if lg evidence --state "$WORK/lt" --plan-hash "$PH" --line "$L_A" --head "$HEAD_FX" >"$WORK/e.out"; then fail "evidence passed on a tampered chain"; fi
 grep -q 'chain does not verify' "$WORK/e.out" || fail "evidence on a tampered chain: $(cat "$WORK/e.out")"
 [ "$(lg evidence --state "$SD" --line x --head "$HEAD_FX" >/dev/null; echo $?)" = 2 ] || fail "evidence --line x was not a usage error"
-grep -qF 'at least one `spawn_request`, `spawn` or `worker_run` row carries' "$PLUGIN_ROOT/README.md" || fail "README does not define ledger evidence"
-pass "route.sh appends verifiable route/escalate rows; evidence = chain + READY route for the line on HEAD's history + a spawn/worker row for that route"
+grep -qiF 'at least one `spawn_request`, `spawn` or `worker_run` row written with source `hook` or `shim` carries' "$PLUGIN_ROOT/README.md" || fail "README does not define ledger evidence"
+for f in "$PLUGIN_ROOT/README.md" "$ADR"; do grep -q 'not proof against a determined orchestrator' "$f" || fail "$(basename "$f") does not state the evidence limit"; done
+pass "route.sh appends verifiable route/escalate rows; evidence = chain + this plan's READY route for the line (id and line agree) on HEAD's history + a hook/shim spawn row for it"
 
 # 35. enforcement switch (transitional): <state>/dispatch/ only with APEX_DISPATCH_ENFORCE=1 or hooks/subagent-stop.sh;
 #     escalate --state; iterate.sh fails closed on BUSY; tier-c-floor tags
@@ -524,6 +564,11 @@ case "$(val ROUTE_FILE "$O")" in "$FX"/.dev-plan-state/adhoc/*/dispatch/active-r
 [ "$(val ROUTE_ENFORCED "$O")" = yes ] || fail "ROUTE_ENFORCED is not yes under APEX_DISPATCH_ENFORCE=1"
 lg verify --state "$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")" >/dev/null || fail "the enforced ad-hoc ledger does not verify"
 rm -rf "$FX/.dev-plan-state/ACTIVE"
+mkdir -p "$WORK/enf"; printf '{"worktree_path": "%s"}\n' "$FX" >"$WORK/enf/checkpoint.json"
+APEX_DISPATCH_ENFORCE=1 lg append hook_advisory '{"hook":"x","advisory":"y"}' --state "$WORK/enf" --source hook >/dev/null || fail "enforced append failed"
+[ -d "$WORK/enf/dispatch" ] && python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["dispatch_enforced"] is True' "$WORK/enf/checkpoint.json" \
+  || fail "creating <state>/dispatch/ did not record dispatch_enforced in checkpoint.json"
+for f in checkpoint.sh land.sh; do grep -q 'dispatch_enforced' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/$f" || fail "$f does not refuse a dispatch-enforced run whose dispatch/ is gone"; done
 rm -rf "$WORK/copy3"; mkdir -p "$WORK/copy3/hooks"; touch "$WORK/copy3/hooks/subagent-stop.sh"
 python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger; assert ledger.enforcing(sys.argv[2]) and not ledger.enforcing(sys.argv[3])' \
   "$PLUGIN_ROOT/scripts/lib" "$WORK/copy3" "$WORK" || fail "enforcing() does not follow hooks/subagent-stop.sh"

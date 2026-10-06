@@ -3,8 +3,9 @@
 
 The single writer of <state>/dispatch/ledger.jsonl (<state>/dispatch-shadow/ while not enforcing,
 see enforcing()). route.py imports it
-(`import ledger; ledger.append(...)`); hooks, shims and the CLI go through
-scripts/ledger.sh, which runs this file.
+(`import ledger; ledger.append(...)`); hooks and shims will import it too.
+Provenance events (route, spawn_request, spawn, worker_run, verdict) are written
+in-process only; scripts/ledger.sh (the CLI) refuses them.
 
 Row format. Every row is one JSON object on one line. The caller's fields are
 validated against resources/ledger-events.json, then these are stamped:
@@ -46,6 +47,7 @@ import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
+import time  # noqa: E402
 
 GENESIS = "0" * 64
 LEDGER = "ledger.jsonl"
@@ -218,6 +220,58 @@ def _last_row(path):
         raise LedgerError("the ledger's last row is not JSON; run ledger.sh verify")
 
 
+def check_head(head, last):
+    """Refuse to extend a ledger whose head anchor disagrees with its last row
+    (a truncation or a rewritten tail that the next append would hide). The one
+    benign case, a crash between the row write and the head replace (head one
+    row behind, and the last row chains onto it; or no head yet after seq 0),
+    is accepted: the append that follows rewrites the head."""
+    if head is None:
+        if last.get("seq") == 0 and last.get("prev_hash") == GENESIS:
+            return
+        raise LedgerError("%s is missing but the ledger has %s rows: refusing to append; run ledger.sh verify"
+                          % (HEAD, last.get("seq", -1) + 1))
+    if (head.get("seq"), head.get("hash")) == (last.get("seq"), last.get("hash")):
+        return
+    if head.get("seq") == last.get("seq", 0) - 1 and last.get("prev_hash") == head.get("hash"):
+        return
+    raise LedgerError("%s records seq %s but the last row is seq %s (%s): the ledger was truncated or its tail "
+                      "rewritten; refusing to append; run ledger.sh verify"
+                      % (HEAD, head.get("seq"), last.get("seq"), str(last.get("hash"))[:12]))
+
+
+def mark_enforced(state_dir):
+    """Record dispatch_enforced: true in the run's checkpoint.json the first time
+    <state>/dispatch/ is created, so apex-scope-loop can refuse complete/land if
+    the directory later disappears. Takes checkpoint.sh's state lock without
+    blocking (a caller may already hold it, e.g. checkpoint.sh fail -> route.sh
+    escalate); gives up after ~3 s with a warning rather than deadlock."""
+    cp = os.path.join(state_dir, "checkpoint.json")
+    if not os.path.isfile(cp):
+        return
+    fd = os.open(os.path.join(state_dir, ".checkpoint.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        for _ in range(30):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            print("ledger: warning: checkpoint lock busy; dispatch_enforced not recorded in %s" % cp, file=sys.stderr)
+            return
+        s = read_json(cp)
+        if not isinstance(s, dict) or s.get("dispatch_enforced") is True:
+            return
+        s["dispatch_enforced"] = True
+        tmp = cp + ".tmp.ledger.%d" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(s, f, indent=2)
+        os.replace(tmp, cp)
+    finally:
+        os.close(fd)
+
+
 def append(state_dir, event, data, source, route_id=None, head_sha=None, route_mode=None, root=None):
     """Validate, stamp and append one row; return the stamped row."""
     data = dict(data or {})
@@ -241,19 +295,23 @@ def append(state_dir, event, data, source, route_id=None, head_sha=None, route_m
     elif not (isinstance(data["head_sha"], str) and SHA_RE.match(data["head_sha"])):
         raise LedgerError("head_sha must be a full hex SHA (got %r)" % data["head_sha"])
     doc = read_json(os.path.join(ddir, "doctor.json"), {}) or {}
+    created = not os.path.isdir(ddir)
     os.makedirs(ddir, exist_ok=True)
+    if created and os.path.basename(ddir) == "dispatch":
+        mark_enforced(state_dir)
     lock_fd = os.open(os.path.join(ddir, LOCK), os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         path = os.path.join(ddir, LEDGER)
         last = _last_row(path)
+        head = read_json(os.path.join(ddir, HEAD))
         if last is not None:
             if row_hash(last) != last.get("hash"):
                 raise LedgerError("the ledger's last row does not hash to its recorded hash; run ledger.sh verify")
+            check_head(head, last)
             seq, prev = int(last.get("seq", -1)) + 1, last["hash"]
         else:
-            head = read_json(os.path.join(ddir, HEAD))
-            if head:
+            if head is not None:
                 raise LedgerError("the ledger is empty but %s records seq %s: it was truncated" % (HEAD, head.get("seq")))
             seq, prev = 0, GENESIS
         row = dict(data)
@@ -337,6 +395,8 @@ def verify(state_dir):
                                  "(an earlier row was rewritten and rehashed)" % (n, seq, n - 1))
         prev = row["hash"]
         rows.append(row)
+    if head is None and len(rows) > 1:
+        return False, rows, "%s is missing but the ledger has %d rows (the anchor that detects truncation was removed)" % (HEAD, len(rows))
     if head is not None:
         hs = head.get("seq")
         if not rows:
@@ -346,6 +406,8 @@ def verify(state_dir):
                                  % (HEAD, hs, rows[-1]["seq"], rows[-1]["seq"] + 1, hs))
         if hs == rows[-1]["seq"] and head.get("hash") != rows[-1]["hash"]:
             return False, rows, "row %d (seq %s): its hash does not match %s (last row rewritten)" % (len(rows), hs, HEAD)
+        if hs == rows[-1]["seq"] - 1 and head.get("hash") == rows[-1]["prev_hash"]:
+            return True, rows, "%d rows, chain intact (%s one row behind: a crash after the last append; the next append repairs it)" % (len(rows), HEAD)
         if isinstance(hs, int) and hs < rows[-1]["seq"]:
             return False, rows, "%s records seq %s but the chain continues to seq %s (rows appended outside ledger.sh)" % (
                 HEAD, hs, rows[-1]["seq"])
@@ -354,11 +416,21 @@ def verify(state_dir):
 
 # ---------------------------------------------------------------- evidence ----
 
+ROUTE_ID_PLAN = re.compile(r"^r-([0-9a-f]{12})-L([0-9]{1,9})-[0-9]{1,6}$")
+PLAN_HASH_RE = re.compile(r"^[0-9a-f]{12}$")
+SPAWN_SOURCES = ("hook", "shim")
+
+
 def _route_line(row):
-    if isinstance(row.get("line"), int):
-        return row["line"]
-    m = re.match(r"^r-[0-9a-f]{12}-L([0-9]+)-[0-9]+$", str(row.get("route_id") or ""))
-    return int(m.group(1)) if m else None
+    """The plan line a route row names: from its route id, cross-checked with its
+    `line` field when present (a disagreement names no line)."""
+    m = ROUTE_ID_PLAN.match(str(row.get("route_id") or ""))
+    if not m:
+        return None
+    n = int(m.group(2))
+    if "line" in row and row["line"] != n:
+        return None
+    return n
 
 
 def _is_ancestor(repo, ancestor, head):
@@ -374,44 +446,61 @@ def _is_ancestor(repo, ancestor, head):
     return None
 
 
-def evidence(state_dir, line, head):
+def _on_history(repo, sha, head):
+    return not sha or sha == head or _is_ancestor(repo, sha, head) is True
+
+
+def evidence(state_dir, line, head, plan_hash=None):
     """Ledger evidence that plan line LINE was done through a routed delegation
     (spec §5.3 G). Exit-0 conditions, all required:
       1. the chain verifies;
-      2. a `route` row with status READY names the line (its `line` field, or the
-         L<line> part of an r-<plan-hash>-L<line>-<n> route id);
-      3. that route's recorded head_sha is HEAD or an ancestor of HEAD (the route
-         was computed on this history, not on a discarded fork); a route row
-         without a head_sha is accepted on condition 4 alone;
-      4. at least one spawn_request, spawn or worker_run row carries that
-         route's route_id (the work was delegated, not done inline).
+      2. a `route` row with status READY whose route id is r-<PLAN_HASH>-L<LINE>-<n>
+         for THIS plan (PLAN_HASH = --plan-hash, else the state dir's name), and
+         whose `line`/`plan_hash` fields, when present, agree with the id;
+      3. that route's recorded head_sha is HEAD or an ancestor of HEAD (computed on
+         this history, not on a discarded fork); a row without head_sha passes 3;
+      4. at least one spawn_request, spawn or worker_run row with source hook or
+         shim carries that route's route_id, and its head_sha (when recorded) is
+         HEAD or an ancestor of HEAD.
+    Provenance rows cannot be appended through the ledger.sh CLI; they are
+    written in-process (route.py, hooks, shims). Until pre-bash.sh (Phase 3)
+    denies direct python invocation of ledger.py, this raises the bar to
+    deliberate tampering; it is not proof against a determined orchestrator.
     Returns (ok, message)."""
+    plan_hash = plan_hash or os.path.basename(os.path.normpath(state_dir))
+    if not PLAN_HASH_RE.match(plan_hash):
+        return False, "cannot tell which plan %s belongs to (pass --plan-hash)" % state_dir
     ok, rows, msg = verify(state_dir)
     if not ok:
         return False, "chain does not verify: " + msg
-    routes = [r for r in rows if r.get("event") == "route" and r.get("status") == "READY" and _route_line(r) == line]
+    routes = []
+    for r in rows:
+        if r.get("event") != "route" or r.get("status") != "READY":
+            continue
+        m = ROUTE_ID_PLAN.match(str(r.get("route_id") or ""))
+        if not m or m.group(1) != plan_hash or _route_line(r) != line:
+            continue
+        if "plan_hash" in r and r["plan_hash"] != plan_hash:
+            continue
+        routes.append(r)
     if not routes:
-        return False, "no READY route row for plan line %d" % line
+        return False, "no READY route row for plan line %d of plan %s" % (line, plan_hash)
     repo = state_repo(state_dir)
     on_history, notes = [], []
     for r in routes:
-        rh = r.get("head_sha")
-        if not rh or rh == head:
-            on_history.append(r)
-            continue
-        anc = _is_ancestor(repo, rh, head)
-        if anc:
+        if _on_history(repo, r.get("head_sha"), head):
             on_history.append(r)
         else:
-            notes.append("%s was routed at %s, %s" % (r.get("route_id"), rh[:12],
-                                                      "not an ancestor of HEAD" if anc is False else "not resolvable in " + repo))
+            notes.append("%s was routed at %s, not on HEAD's history" % (r.get("route_id"), str(r.get("head_sha"))[:12]))
     if not on_history:
         return False, "no route row for line %d is on HEAD's history (%s)" % (line, "; ".join(notes))
     ids = {r.get("route_id") for r in on_history}
-    spawns = [r for r in rows if r.get("event") in SPAWN_EVENTS and r.get("route_id") in ids]
+    cand = [r for r in rows if r.get("event") in SPAWN_EVENTS and r.get("route_id") in ids]
+    spawns = [r for r in cand if r.get("source") in SPAWN_SOURCES and _on_history(repo, r.get("head_sha"), head)]
     if not spawns:
-        return False, ("route(s) %s for line %d have no spawn_request/spawn/worker_run row (work done inline?)"
-                       % (",".join(sorted(i for i in ids if i)), line))
+        why = " (%d row(s) rejected: source not hook/shim or head not on HEAD's history)" % len(cand) if cand else ""
+        return False, ("route(s) %s for line %d have no spawn_request/spawn/worker_run row from a hook or shim%s "
+                       "(work done inline?)" % (",".join(sorted(i for i in ids if i)), line, why))
     used = sorted({r.get("route_id") for r in spawns})
     return True, "line %d: route %s, %d spawn/worker row(s), chain intact (%d rows)" % (line, ",".join(used), len(spawns), len(rows))
 
@@ -550,6 +639,10 @@ def main(argv):
             if len(pos) != 2 or not o.get("state") or not o.get("source"):
                 return _usage("usage: ledger.sh append EVENT JSON|- --state DIR --source hook|shim|cli "
                               "[--route-id R] [--head SHA] [--route-mode M]")
+            if schema(root)["events"].get(pos[0], {}).get("provenance"):
+                print("ledger: %s is a provenance event: it is written in-process by route.py, the hooks and the "
+                      "shims (scripts/lib/ledger.py), never through the ledger.sh CLI" % pos[0], file=sys.stderr)
+                return 1
             raw = sys.stdin.read() if pos[1] == "-" else pos[1]
             try:
                 data = json.loads(raw)
@@ -571,14 +664,16 @@ def main(argv):
             print("ledger verify: FAIL — %s (%s)" % (msg, ledger_path(o["state"])), file=sys.stderr)
             return 1
         if cmd == "evidence":
-            o, pos = _opts(rest, {"--state", "--line", "--head"})
+            o, pos = _opts(rest, {"--state", "--line", "--head", "--plan-hash"})
             if pos or not o.get("state") or not o.get("line") or not o.get("head"):
-                return _usage("usage: ledger.sh evidence --state DIR --line N --head SHA")
+                return _usage("usage: ledger.sh evidence --state DIR --line N --head SHA [--plan-hash H]")
             if not re.fullmatch(r"[1-9][0-9]{0,8}", o["line"]):
                 return _usage("--line must be a plan line number")
             if not SHA_RE.match(o["head"]):
                 return _usage("--head must be a full hex SHA")
-            ok, msg = evidence(o["state"], int(o["line"]), o["head"])
+            if o.get("plan_hash") and not PLAN_HASH_RE.match(o["plan_hash"]):
+                return _usage("--plan-hash must be 12 hex characters")
+            ok, msg = evidence(o["state"], int(o["line"]), o["head"], o.get("plan_hash"))
             if ok:
                 print("ledger evidence: OK — %s" % msg)
                 return 0

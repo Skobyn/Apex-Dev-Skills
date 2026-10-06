@@ -27,7 +27,14 @@ FAMILIES = ("haiku", "sonnet", "opus", "fable")
 
 
 def prices(root):
-    pol = ledger.read_json(os.path.join(root, "resources", "compiled", "policy.json"), {}) or {}
+    """Tier prices from the overlay-merged policy (compile.runtime_policy, the
+    same merge route.py reads); the compiled default only if the merge fails."""
+    try:
+        import compile as policy_compiler  # scripts/lib/compile.py, not the builtin
+        pol = policy_compiler.runtime_policy(root)
+    except Exception as e:  # an invalid overlay: report still runs, and says so
+        print("report: warning: merged policy unavailable (%s); using the compiled default prices" % e, file=sys.stderr)
+        pol = ledger.read_json(os.path.join(root, "resources", "compiled", "policy.json"), {}) or {}
     out = {}
     for t in sorted(pol.get("tiers", []), key=lambda x: x.get("rank", 0)):
         out.setdefault(t.get("model"), t.get("price_usd_per_mtok") or {})

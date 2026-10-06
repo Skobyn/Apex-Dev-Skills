@@ -127,6 +127,9 @@ fi
 #     those rows were not rewritten since.
 DISPATCH_STATE="$STATE_DIR/dispatch"
 DISPATCH="$(apex_dispatch_root)"
+if [[ ! -d "$DISPATCH_STATE" && "$(read_field dispatch_enforced)" == "True" ]]; then
+  echo "ERROR: this run was dispatch-enforced (checkpoint dispatch_enforced) but $DISPATCH_STATE is gone — refusing to land." >&2; exit 1
+fi
 if [[ -d "$DISPATCH_STATE" ]]; then   # --force does not bypass the ledger
   [[ -n "$DISPATCH" ]] || { echo "ERROR: dispatch state exists ($DISPATCH_STATE) but apex-dispatch is not installed beside apex-scope-loop — refusing to land." >&2; exit 1; }
   "$DISPATCH/scripts/ledger.sh" verify --state "$STATE_DIR" \

@@ -83,6 +83,12 @@ WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 head_sha() { apex_git "$WT" rev-parse HEAD 2>/dev/null || echo unknown; }
 DISPATCH_STATE="$STATE_DIR/dispatch"
 DISPATCH="$(apex_dispatch_root)"
+# apex-dispatch records dispatch_enforced when it first creates <state>/dispatch/;
+# removing the directory afterwards must not drop the run out of provenance mode.
+if [[ ( "$ACTION" == review || "$ACTION" == complete ) && ! -d "$DISPATCH_STATE" && "$(read_field dispatch_enforced)" == "True" ]]; then
+  echo "[checkpoint] REFUSED $ACTION: this run was dispatch-enforced (checkpoint dispatch_enforced) but $DISPATCH_STATE is gone" >&2
+  exit 1
+fi
 
 need_line() {
   [[ "$1" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "ERROR: LINE_NO must be a plan line number, got '$1'" >&2; exit 1; }
@@ -266,7 +272,7 @@ PY
     # waived by APEX_GIBSON=0).
     if [[ -d "$DISPATCH_STATE" && "$EXEMPT" == "0" ]]; then
       [[ -n "$DISPATCH" ]] || { echo "[checkpoint] REFUSED complete: dispatch state exists ($DISPATCH_STATE) but apex-dispatch is not installed beside apex-scope-loop (APEX_DISPATCH_ROOT)" >&2; exit 1; }
-      "$DISPATCH/scripts/ledger.sh" evidence --state "$STATE_DIR" --line "$LINE_NO" --head "$HEAD_V" 9>&- \
+      "$DISPATCH/scripts/ledger.sh" evidence --state "$STATE_DIR" --plan-hash "$PLAN_HASH" --line "$LINE_NO" --head "$HEAD_V" 9>&- \
         || { echo "[checkpoint] REFUSED complete: ledger evidence missing or the hash chain is broken (ledger.sh evidence)" >&2; exit 1; }
     fi
     # Flip "- [ ]" to "- [x]" on that line (BSD/macOS sed)

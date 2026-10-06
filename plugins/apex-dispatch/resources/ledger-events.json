@@ -1,28 +1,33 @@
 {
   "version": 1,
-  "description": "The apex-dispatch ledger event schema. ledger.sh append validates each row's caller-supplied fields against `required` (field -> type) and `enums`, then stamps the fields in `stamped`. Types: string, integer, number, boolean, object, array; a trailing '|null' allows null. Extra fields are kept as given.",
+  "description": "The apex-dispatch ledger event schema. ledger.sh append validates each row's caller-supplied fields against `required` (field -> type) and `enums`, then stamps the fields in `stamped`. Events marked `provenance` are written in-process only (route.py, hooks, shims importing scripts/lib/ledger.py); the ledger.sh CLI refuses them. Types: string, integer, number, boolean, object, array; a trailing '|null' allows null. Extra fields are kept as given.",
   "sources": ["hook", "shim", "cli"],
   "stamped": ["seq", "event", "ts", "source", "route_id", "head_sha", "route_mode", "doctor_profile", "prev_hash", "hash"],
   "route_modes": ["baseline", "table", "decision", "shadow", "escalated"],
   "events": {
     "route": {
+      "provenance": true,
       "description": "route.sh emitted (or, in baseline/shadow mode, computed) a route.",
       "required": {"route_id": "string", "status": "string", "origin": "string", "router": "object"},
       "enums": {"status": ["READY", "NEEDS_SPEC", "HUMAN_GATE", "HALTED", "BUSY"], "origin": ["plan", "adhoc"]}
     },
     "spawn_request": {
+      "provenance": true,
       "description": "pre-agent.sh allowed an Agent/Task spawn for the active route.",
       "required": {"route_id": "string", "role": "string", "model": "string"}
     },
     "spawn": {
+      "provenance": true,
       "description": "subagent-start.sh registered a running subagent (agent_id -> role -> route_id); post-agent.sh may add usage and resolved_model.",
       "required": {"route_id": "string", "agent_id": "string", "role": "string"}
     },
     "worker_run": {
+      "provenance": true,
       "description": "A provider shim (bin/worker-*.sh) finished a run.",
       "required": {"route_id": "string", "provider": "string", "role": "string", "exit_code": "integer"}
     },
     "verdict": {
+      "provenance": true,
       "description": "A reviewer verdict captured by subagent-stop.sh or a shim result.json, bound to a head.",
       "required": {"route_id": "string", "role": "string", "verdict": "string"},
       "enums": {"verdict": ["APPROVE", "REQUEST_CHANGES"]}

@@ -3,11 +3,14 @@
 #
 # Usage:
 #   ledger.sh append EVENT JSON|- --state DIR --source hook|shim|cli [--route-id R] [--head SHA] [--route-mode M]
+#                                                non-provenance events only; route, spawn_request, spawn,
+#                                                worker_run and verdict are written in-process (lib/ledger.py)
 #   ledger.sh verify --state DIR                 walk the chain; exit 1 naming the first bad row
-#   ledger.sh evidence --state DIR --line N --head SHA
+#   ledger.sh evidence --state DIR --line N --head SHA [--plan-hash H]
 #                                                exit 0 only when the chain verifies, a READY route row
-#                                                names line N on HEAD's history, and a spawn_request/
-#                                                spawn/worker_run row carries that route's id
+#                                                r-<H>-L<N>-k (H = this plan) is on HEAD's history, and a
+#                                                hook- or shim-written spawn_request/spawn/worker_run row
+#                                                carries that route's id
 #   ledger.sh export-trace --state DIR [--out F] apex-agent-observability trace lines (stdout without --out)
 #   ledger.sh export --state DIR [--plan PLAN] [--out F]
 #                                                per-task summary rows (default <state>/dispatch/export/summary.jsonl)
@@ -20,6 +23,6 @@ set -euo pipefail
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 command -v python3 >/dev/null 2>&1 || { echo "ledger: python3 is required" >&2; exit 1; }
 case "${1:-}" in
-  ""|-h|--help) sed -n '4,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  ""|-h|--help) sed -n '4,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
 exec python3 -B "$PLUGIN_ROOT/scripts/lib/ledger.py" "$PLUGIN_ROOT" "$@"
