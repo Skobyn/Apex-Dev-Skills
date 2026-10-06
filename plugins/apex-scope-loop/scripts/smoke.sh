@@ -1282,7 +1282,15 @@ python3 -c 'import sys
 p = sys.argv[1]; b = open(p, "rb").read(); first, rest = b.split(b"\n", 1)
 new = b"v = \"$Id: \"; print(\"NOT HEAD\"); x = \""
 open(p, "wb").write(new + b" " * (len(first) - len(new) - 1) + b"$\n" + rest)' "$SMOKE_TMP/idwt/v.py"
-has "v.py (differs from what the head checks out)" "$(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/idwt")" || fail "the gate missed same-size bytes that git status cleans to the head (ident)"
+has "v.py (differs from the head)" "$(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/idwt")" || fail "the gate missed same-size bytes that git status cleans to the head (ident)"
+# Every tracked file is compared, not a list of converting attributes: the
+# legacy crlf attribute cleans CRLF away, and git add refreshes the stat.
+CR="$SMOKE_TMP/cr"; mkdir -p "$CR"; git init -q -b main "$CR"; printf 'gate.sh crlf=input\n' >"$CR/.gitattributes"
+printf 'fail=1\nif [ "$fail" = 1 ]; then exit 1; fi\n' >"$CR/gate.sh"; git -C "$CR" add -A; git -C "$CR" commit -qm c
+[ -z "$(source "$EX/_lib.sh"; apex_dirty "$CR")" ] || fail "a clean repository with a crlf attribute was reported dirty"
+printf 'fail=1\r\nif [ "$fail" = 1 ]; then exit 1; fi\n' >"$CR/gate.sh"; git -C "$CR" add gate.sh
+[ -z "$(git -C "$CR" status --porcelain)" ] || fail "the crlf fixture is not hidden from git status (fixture broken)"
+has "gate.sh (differs from the head)" "$(source "$EX/_lib.sh"; apex_dirty "$CR")" || fail "the gate missed CRLF bytes a crlf attribute hides from git status"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
