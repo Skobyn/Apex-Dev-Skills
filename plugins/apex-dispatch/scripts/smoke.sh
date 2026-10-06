@@ -568,6 +568,10 @@ mkdir -p "$WORK/enf"; printf '{"worktree_path": "%s"}\n' "$FX" >"$WORK/enf/check
 APEX_DISPATCH_ENFORCE=1 lg append hook_advisory '{"hook":"x","advisory":"y"}' --state "$WORK/enf" --source hook >/dev/null || fail "enforced append failed"
 [ -d "$WORK/enf/dispatch" ] && python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["dispatch_enforced"] is True' "$WORK/enf/checkpoint.json" \
   || fail "creating <state>/dispatch/ did not record dispatch_enforced in checkpoint.json"
+mkdir -p "$WORK/enf2"; printf '{"worktree_path": "%s"}\n' "$FX" >"$WORK/enf2/checkpoint.json"
+APEX_DISPATCH_ENFORCE=1 "$PLUGIN_ROOT/scripts/doctor.sh" --state "$WORK/enf2" >/dev/null 2>&1 || true
+[ -d "$WORK/enf2/dispatch" ] && python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["dispatch_enforced"] is True' "$WORK/enf2/checkpoint.json" \
+  || fail "doctor.sh created <state>/dispatch/ without recording dispatch_enforced"
 for f in checkpoint.sh land.sh; do grep -q 'dispatch_enforced' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/$f" || fail "$f does not refuse a dispatch-enforced run whose dispatch/ is gone"; done
 rm -rf "$WORK/copy3"; mkdir -p "$WORK/copy3/hooks"; touch "$WORK/copy3/hooks/subagent-stop.sh"
 python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger; assert ledger.enforcing(sys.argv[2]) and not ledger.enforcing(sys.argv[3])' \

@@ -104,6 +104,12 @@ def dispatch_dir(state_dir, write=False, root=None):
     chain) or when writing while enforcing; otherwise <state>/dispatch-shadow/."""
     d = os.path.join(state_dir, "dispatch")
     if os.path.isdir(d) or (write and enforcing(root)):
+        if write:
+            # Whoever first writes the enforced directory (append, route.sh,
+            # doctor.sh) records dispatch_enforced in the run checkpoint, so
+            # apex-scope-loop refuses complete/land if it later disappears.
+            os.makedirs(d, exist_ok=True)
+            mark_enforced(state_dir)
         return d
     return os.path.join(state_dir, "dispatch-shadow")
 
@@ -295,10 +301,7 @@ def append(state_dir, event, data, source, route_id=None, head_sha=None, route_m
     elif not (isinstance(data["head_sha"], str) and SHA_RE.match(data["head_sha"])):
         raise LedgerError("head_sha must be a full hex SHA (got %r)" % data["head_sha"])
     doc = read_json(os.path.join(ddir, "doctor.json"), {}) or {}
-    created = not os.path.isdir(ddir)
     os.makedirs(ddir, exist_ok=True)
-    if created and os.path.basename(ddir) == "dispatch":
-        mark_enforced(state_dir)
     lock_fd = os.open(os.path.join(ddir, LOCK), os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
