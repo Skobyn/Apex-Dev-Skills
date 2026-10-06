@@ -188,61 +188,35 @@ print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
   fi
 }
 
-# apex_dirty DIR — why DIR's working tree is not exactly its HEAD: changes and
-# untracked files whatever status.* config says, submodule changes, and index
-# entries flagged skip-worktree or assume-unchanged (they hide edits from
-# status), and the same inside every submodule. Prints nothing when clean.
+# apex_dirty DIR — why DIR's working tree is not exactly its HEAD, submodules
+# included. Prints nothing when clean. Three layers:
+#   - git status: content of index paths (changed, staged, deleted, unmerged)
+#     and submodule commits;
+#   - inventory.py: a positive walk of the real tree — every entry must be an
+#     index path, a directory leading to one, a gitlink, or ignored by a
+#     committed .gitignore; anything else (untracked files, unlistable
+#     directories, nested .git entries, files hidden by an untracked
+#     .gitignore) is reported, and so is any error;
+#   - index entries flagged skip-worktree or assume-unchanged (they hide edits
+#     from status).
+# Then each submodule: one that is not checked out (a worktree never checks
+# submodules out) must be an empty directory; a populated one gets the same
+# checks. Files inside directories that committed rules ignore are outside the
+# claim (node_modules, venvs).
 apex_dirty() {
-  local dir="$1" depth="${2:-0}" st flags untracked gl sub rel state=':(exclude,top).git' skipstate=0
-  # Run state lives in the main checkout's .dev-plan-state (a run without a
-  # worktree); a linked worktree (its .git is a file) or a submodule never
-  # holds it, so there it is checked like any other directory.
-  if (( depth == 0 )) && [[ -d "$dir/.git" && ! -L "$dir/.git" ]]; then
-    state=':(exclude,top).dev-plan-state'; skipstate=1
-  fi
+  local dir="$1" depth="${2:-0}" st inv flags gl sub rel line listing
   st="$(apex_git "$dir" status --porcelain --untracked-files=no --ignore-submodules=none 2>/dev/null)" \
     || { echo "git status failed in $dir"; return 0; }
   [[ -n "$st" ]] && printf '%s\n' "$st"
-  # Untracked files: only committed .gitignore files hide them (not
-  # .git/info/exclude or core.excludesFile); an untracked .gitignore is itself
-  # a difference from the head (modified ones show in status) unless committed
-  # rules ignore the directory it sits in (a tool's cache, e.g. .pytest_cache/):
-  # git never reads a .gitignore inside an ignored directory, so it hides
-  # nothing. Matching the file's own name is not enough ('.*' ignores
-  # lib/.gitignore while lib/.gitignore still hides lib/'s files). Any error
-  # reports every candidate.
-  untracked="$( { apex_git "$dir" ls-files -o --exclude-per-directory=.gitignore -- . "$state"
-                 apex_git "$dir" ls-files -o -z -- ':(glob)**/.gitignore' "$state" \
-                   | python3 -c '
-import subprocess, sys
-cand = [p for p in sys.stdin.buffer.read().split(b"\0") if p]
-if not cand:
-    sys.exit(0)
-ok = set()
-try:
-    git = sys.argv[1:]
-    tracked = set(subprocess.run(git + ["ls-files", "-z", "--", ":(glob)**/.gitignore"],
-                                 capture_output=True, check=True).stdout.split(b"\0"))
-    dirs = sorted({p.rsplit(b"/", 1)[0] for p in cand if b"/" in p})   # a top-level one is never trusted
-    if dirs:
-        r = subprocess.run(git + ["-c", "core.excludesFile=/dev/null", "check-ignore", "-z", "-v", "-n", "--stdin"],
-                           input=b"".join(b"./" + d + b"\0" for d in dirs), capture_output=True)   # ./ : no pathspec magic (":build")
-        f = r.stdout.split(b"\0")
-        ign = set()
-        for i in range(0, len(f) - 3, 4):   # source, line, pattern, path
-            if f[i] in tracked and f[i + 2] and not f[i + 2].startswith(b"!"):
-                if f[i + 3].startswith(b"./"):
-                    ign.add(f[i + 3][2:])   # the directory is ignored by a committed rule
-        ok = {p for p in cand if b"/" in p and p.rsplit(b"/", 1)[0] in ign}
-except Exception:
-    ok = set()
-for p in cand:
-    if p not in ok:
-        sys.stdout.buffer.write(p + b"\n")' env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-                       -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_NAMESPACE git --no-pager -C "$dir" \
-                   || echo "(could not check untracked .gitignore files)"
-               } 2>/dev/null | sort -u)"
-  [[ -n "$untracked" ]] && printf 'untracked: %s\n' "${untracked//$'\n'/, }"
+  inv="$(python3 "$APEX_EXECUTE_SCRIPTS/inventory.py" "$dir" -- \
+           env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+               -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_NAMESPACE \
+               GIT_NO_REPLACE_OBJECTS=1 git --no-pager -c core.quotepath=false -C "$dir" 2>/dev/null \
+         || echo "(could not take the inventory of $dir)")"
+  [[ -n "$inv" ]] && printf 'not in the head: %s\n' "${inv//$'\n'/, }"
+  if (( depth == 0 )) && [[ $'\n'"$inv" == *$'\n'.dev-plan-state/* ]]; then
+    echo "hint: a run without a worktree keeps its state in .dev-plan-state/ — commit '.dev-plan-state/' to .gitignore"
+  fi
   flags="$(apex_git "$dir" ls-files -v 2>/dev/null | awk '/^([a-z]|S) / { n++; if (n <= 5) l = l " " substr($0, 3) } END { if (n) print n " path(s)" l (n > 5 ? " ..." : "") }')"
   if [[ -n "$flags" ]]; then
     if [[ "$(apex_git "$dir" config --bool core.sparseCheckout 2>/dev/null)" == "true" ]]; then
@@ -251,48 +225,7 @@ for p in cand:
       printf 'flagged skip-worktree/assume-unchanged (edits hidden from status): %s\n' "$flags"
     fi
   fi
-  # Directories this user cannot list: git only warns and skips them, yet
-  # files inside can still be opened by name (chmod 311). And any '.git'
-  # entry below the top other than a submodule's: git never looks inside a
-  # path named .git, and git commands run at or below it answer from that
-  # repository. Submodule directories are left to the recursion below.
-  local unreadable
-  unreadable="$(apex_git "$dir" ls-files -z --stage 2>/dev/null | python3 -c '
-import os, sys
-top, skipstate = sys.argv[1], sys.argv[2] == "1"
-links = set()
-for e in sys.stdin.buffer.read().split(b"\0"):
-    if e.startswith(b"160000 ") and b"\t" in e:
-        links.add(os.fsdecode(e.split(b"\t", 1)[1]))
-bad = []
-def err(e):
-    bad.append(e.filename or "?")
-for root, dirs, files in os.walk(top, onerror=err):
-    rel = os.path.relpath(root, top)
-    rel = "" if rel == "." else rel + "/"
-    for name in dirs + files:
-        if name.lower() == ".git" and (rel or name != ".git"):
-            bad.append(os.path.join(root, name) + " (a .git entry)")
-    keep = []
-    for d in dirs:
-        p = os.path.join(root, d)
-        if d.lower() == ".git" or (rel + d) in links:
-            continue                      # the top .git; reported above; or a submodule
-        if not rel and d == ".dev-plan-state" and skipstate:
-            continue
-        if not os.path.islink(p) and not os.access(p, os.R_OK | os.X_OK):
-            bad.append(p)
-        keep.append(d)
-    dirs[:] = keep
-for p in sorted(set(bad))[:5]:
-    print(os.path.relpath(p, top) if p != "?" else p)' "$dir" "$skipstate" 2>/dev/null || echo "(could not scan $dir)")"
-  [[ -n "$unreadable" ]] && printf 'directories that cannot be listed, or nested .git entries (git hides their files): %s\n' "${unreadable//$'\n'/, }"
-  # Gitlinks: neither status nor ls-files looks at files in a submodule
-  # directory that is not checked out (a worktree never checks submodules
-  # out), nor at untracked files a populated submodule's own .gitignore
-  # hides. An unpopulated one must be empty; a populated one gets the same
-  # checks. Paths are printed with printf, never put into a program (sed).
-  local line listing
+  # Submodules. Paths are printed with printf, never put into a program.
   while IFS= read -r -d '' gl; do
     [[ "$gl" == "(fail)" ]] && { echo "could not list the submodules in $dir"; continue; }
     [[ "$gl" == 160000\ * ]] || continue

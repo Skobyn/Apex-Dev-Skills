@@ -1188,7 +1188,7 @@ rm -f "$GW/.gitignore"
 printf '.*\n!/.gitignore\n.cache/\n' >"$GW/.gitignore"; git -C "$GW" add .gitignore; git -C "$GW" commit -qm ignore-cache; mkdir -p "$GW/.cache"; printf '*\n' >"$GW/.cache/.gitignore"
 ! has ".cache" "$(source "$EX/_lib.sh"; apex_dirty "$GW")" || fail "the gate counted a tool cache's .gitignore that a committed .gitignore ignores"
 mkdir -p "$GW/lib"; printf 'evil.py\n' >"$GW/lib/.gitignore"; echo x >"$GW/lib/evil.py"
-has "lib/.gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$GW")" || fail "the gate missed an untracked .gitignore whose name (not directory) a committed '.*' rule ignores"
+has "lib/evil.py" "$(source "$EX/_lib.sh"; apex_dirty "$GW")" || fail "the gate missed an untracked .gitignore whose name (not directory) a committed '.*' rule ignores"
 rm -rf "$GW/lib"
 printf 'build\n' >>"$GW/.gitignore"; git -C "$GW" commit -qam ignore-build; mkdir -p "$GW/:build"; printf '*\n' >"$GW/:build/.gitignore"; echo x >"$GW/:build/t.py"
 has ":build/.gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$GW")" || fail "the gate trusted an untracked .gitignore in a directory whose name is pathspec magic (:build)"
@@ -1202,14 +1202,14 @@ git -C "$SM" update-index --add --cacheinfo "160000,$(git -C "$SM/sub" rev-parse
 mkdir -p "$SM/empty"   # what a checkout leaves for a submodule it does not check out
 [ -z "$(source "$EX/_lib.sh"; apex_dirty "$SM")" ] || fail "a clean repository with submodules was reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$SM")"
 printf '*\n' >"$SM/sub/.gitignore"; echo x >"$SM/sub/conftest.py"
-has "submodule sub: untracked: .gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed files hidden by an untracked .gitignore in a populated submodule"
+has "submodule sub: not in the head: .*conftest.py" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed files hidden by an untracked .gitignore in a populated submodule"
 rm -f "$SM/sub/.gitignore" "$SM/sub/conftest.py"; echo x >"$SM/empty/conftest.py"
 has "submodule directory that is not checked out: empty" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed files in a submodule directory that is not checked out"
 rm -f "$SM/empty/conftest.py"
 # A submodule path that is not plain text to a program (a|b) is still checked.
 git -C "$SM" update-index --add --cacheinfo "160000,$(git -C "$SM/sub" rev-parse HEAD),a|b"; git -C "$SM" commit -qm ab >/dev/null 2>&1
 git clone -q "$SM/sub" "$SM/a|b" 2>/dev/null; printf '*\n' >"$SM/a|b/.gitignore"; echo x >"$SM/a|b/conftest.py"
-has "submodule a|b: untracked: .gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a hidden file in a submodule whose path contains |"
+has "submodule a|b: not in the head: .*conftest.py" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a hidden file in a submodule whose path contains |"
 rm -f "$SM/a|b/.gitignore" "$SM/a|b/conftest.py"
 [ -z "$(source "$EX/_lib.sh"; apex_dirty "$SM")" ] || fail "clean submodules (including a|b) were reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$SM")"
 # A directory this user cannot list hides its files from git, not from the tests.
@@ -1242,6 +1242,24 @@ git -C "$SM" worktree add -q "$SMOKE_TMP/smwt" 2>/dev/null
 mkdir -p "$SMOKE_TMP/smwt/.dev-plan-state"; echo x >"$SMOKE_TMP/smwt/.dev-plan-state/conftest.py"
 has ".dev-plan-state" "$(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/smwt")" || fail "the gate missed files in a .dev-plan-state directory inside a linked worktree"
 rm -rf "$SMOKE_TMP/smwt/.dev-plan-state"
+# A worktree whose .git file is swapped for a copy of its git dir is still a
+# worktree: its .dev-plan-state is checked.
+WG="$(git -C "$SMOKE_TMP/smwt" rev-parse --absolute-git-dir)"; rm -f "$SMOKE_TMP/smwt/.git"; cp -a "$WG" "$SMOKE_TMP/smwt/.git"
+git -C "$SM" rev-parse --absolute-git-dir >"$SMOKE_TMP/smwt/.git/commondir"
+mkdir -p "$SMOKE_TMP/smwt/.dev-plan-state"; echo x >"$SMOKE_TMP/smwt/.dev-plan-state/conftest.py"
+has ".dev-plan-state/conftest.py" "$(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/smwt")" || fail "the gate missed .dev-plan-state in a worktree whose .git is a directory"
+rm -rf "$SMOKE_TMP/smwt/.dev-plan-state"
+# An untracked symlink (pytest follows it) is not in the head.
+mkdir -p "$SMOKE_TMP/smext"; echo x >"$SMOKE_TMP/smext/conftest.py"; ln -s "$SMOKE_TMP/smext" "$SM/lib/ext"
+has "lib/ext" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed an untracked symlink to a directory"
+rm -f "$SM/lib/ext"
+# A run without a worktree keeps its state in the checkout: unless committed
+# rules ignore .dev-plan-state, the gate cannot show the tree is the head.
+NW="$SMOKE_TMP/nw"; mkdir -p "$NW/plans"; git init -q -b main "$NW"; printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$NW/plans/n-plan.md"
+git -C "$NW" add -A; git -C "$NW" commit -qm n; ( cd "$NW" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/n-plan.md >/dev/null 2>&1 ) || true
+has ".dev-plan-state" "$(source "$EX/_lib.sh"; apex_dirty "$NW")" || fail "a run without a worktree passed with its state directory not ignored"
+printf '.dev-plan-state/\n' >"$NW/.gitignore"; git -C "$NW" add .gitignore; git -C "$NW" commit -qm ignore-state
+[ -z "$(source "$EX/_lib.sh"; apex_dirty "$NW")" ] || fail "a run without a worktree whose state is ignored was reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$NW")"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
