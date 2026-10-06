@@ -150,22 +150,65 @@ if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
     echo "ERROR: ${WT_BRANCH} has commits after the last reviewed completion (${LAND_FLOOR:0:12}..${LAND_SHA:0:12}) — review and complete them as a task first." >&2
     exit 1
   fi
-  # The landed change is the reviewed change: merging must not put base
-  # changes back to the fork's version when the run never touched them.
-  LAND_BASE="$(apex_base_sha "$REPO_ROOT" "$BASE_BRANCH" || true)"
-  REVERTS="$(apex_land_reverts "$REPO_ROOT" "$LAND_BASE" "$LAND_SHA" "$(read_field fork_sha)")"
-  if [[ -z "$LAND_BASE" || "$REVERTS" == "!" ]]; then
-    echo "ERROR: cannot compute the merge of ${LAND_SHA:0:12} into $BASE_BRANCH (conflicts, or git older than 2.38) — merge the base into the run branch, review it as a task, then land." >&2
-    exit 1
-  fi
-  if [[ -n "$REVERTS" ]]; then
-    echo "ERROR: landing would revert base changes no review covered (the run branch merged $BASE_BRANCH without them, e.g. -s ours):" >&2
-    printf '%s\n' "$REVERTS" | sed 's/^/         /' >&2
-    echo "       Merge $BASE_BRANCH into the run branch normally (keeping its changes), review that as a task, then land." >&2
-    exit 1
-  fi
   if ! "$APEX_EXECUTE_SCRIPTS/green-gate.sh" "$PLAN" check; then
     echo "ERROR: final green gate failed on the branch head — refusing to land." >&2
+    exit 1
+  fi
+fi
+
+# 6b. The landed tree, without merge machinery (ADR-0003): paths the run
+#     changed since its fork point come from the reviewed head, paths the base
+#     changed since then from the base, the rest are unchanged. A path (or a
+#     directory/file pair) changed on both sides is refused: merge the base into
+#     the run branch, `checkpoint.sh PLAN refork REASON`, and complete a task
+#     (its review then covers the run against the current base). The plan file
+#     and the lessons ledger always come from the base (whatever the run branch
+#     holds there is never landed). --force keeps the old `git merge`
+#     (operator override).
+FORK_SHA="$(read_field fork_sha)"
+land_paths() { # land_paths A B — paths changed between two commits (NUL-free lines; "?" on error)
+  apex_git "$REPO_ROOT" diff-tree -r -z --name-only --no-renames "$1" "$2" 2>/dev/null | tr '\0' '\n' || echo "?"
+}
+if [[ "$FORCE" != "--force" ]]; then
+  [[ -n "$FORK_SHA" ]] || { echo "ERROR: this run has no fork point recorded — re-run iterate.sh once, or land with --force after checking the branch." >&2; exit 1; }
+  BASE_TIP="$(apex_git "$REPO_ROOT" rev-parse HEAD)"
+  RSET="$(land_paths "$FORK_SHA" "$LAND_SHA")"; BSET="$(land_paths "$FORK_SHA" "$BASE_TIP")"
+  OVERLAP="$(python3 -c '
+import sys
+rset = [p for p in sys.argv[1].splitlines() if p]
+bset = [p for p in sys.argv[2].splitlines() if p]
+keep = {p for p in sys.argv[3:] if p}
+out = []
+if "?" in rset or "?" in bset:
+    out.append("? (cannot list the changes since the fork point)")
+rset = [p for p in rset if p not in keep]
+bset = [p for p in bset if p not in keep]
+bs = set(bset)
+for r in rset:
+    if r in bs:
+        out.append("SAME\t" + r)          # same path: fine only if both sides hold the same entry
+for r in rset:
+    for b in bset:
+        if r.startswith(b + "/") or b.startswith(r + "/"):
+            out.append("%s / %s (a file on one side, a directory on the other)" % (b, r))
+print("\n".join(dict.fromkeys(out)))' "$RSET" "$BSET" "$PLAN_REL" "$LEDGER_REL")"
+  # A path both sides changed to the same entry (the run merged the base) is
+  # not a conflict: the landed tree holds that reviewed entry either way.
+  OVERLAP="$(while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      if [[ "$line" == SAME$'\t'* ]]; then
+        p="${line#SAME$'\t'}"
+        [[ "$(apex_git "$REPO_ROOT" ls-tree --full-tree "$LAND_SHA" -- ":(top,literal)$p" 2>/dev/null)" \
+           == "$(apex_git "$REPO_ROOT" ls-tree --full-tree "$BASE_TIP" -- ":(top,literal)$p" 2>/dev/null)" ]] && continue   # same mode and blob
+        line="$p"
+      fi
+      printf '%s\n' "$line"
+    done <<<"$OVERLAP")"
+  if [[ -n "$OVERLAP" ]]; then
+    echo "ERROR: the base and this run changed the same paths since the run forked:" >&2
+    printf '%s\n' "$OVERLAP" | sed 's/^/         /' >&2
+    echo "       Merge $BASE_BRANCH into $WT_BRANCH, run: checkpoint.sh $PLAN refork \"<why>\", then review and" >&2
+    echo "       complete a task (its review covers the run against the current base); then land." >&2
     exit 1
   fi
 fi
@@ -189,11 +232,47 @@ if [[ ${#RECORD[@]} -gt 0 ]]; then
   git -C "$REPO_ROOT" commit -m "apex-scope-loop: record plan completion for $WT_BRANCH" -- "${RECORD[@]}"
 fi
 
-# 9. Merge the worktree's exact head.
-echo "[land] merging $WT_BRANCH (${LAND_SHA:0:12}) into $BASE_BRANCH ..."
-if ! git -C "$REPO_ROOT" merge --no-ff "$LAND_SHA" -m "apex-scope-loop: merge $WT_BRANCH into $BASE_BRANCH (final gate passed)"; then
-  echo "ERROR: merge hit conflicts. Resolve in $REPO_ROOT, commit, then re-run land.sh." >&2
-  exit 1
+# 9. Land: a commit whose tree is the reviewed head plus the base's own
+#    changes (6b), with the base tip and the run head as parents, then a
+#    fast-forward of the base checkout (refused if the base moved meanwhile).
+MSG="apex-scope-loop: merge $WT_BRANCH into $BASE_BRANCH (final gate passed)"
+if [[ "$FORCE" == "--force" ]]; then
+  echo "[land] --force: merging $WT_BRANCH (${LAND_SHA:0:12}) into $BASE_BRANCH with git merge ..."
+  git -C "$REPO_ROOT" merge --no-ff "$LAND_SHA" -m "$MSG" \
+    || { echo "ERROR: merge hit conflicts. Resolve in $REPO_ROOT, commit, then re-run land.sh." >&2; exit 1; }
+else
+  BASE_TIP="$(apex_git "$REPO_ROOT" rev-parse HEAD)"
+  TMPIDX="$(mktemp "${TMPDIR:-/tmp}/apex-land-index.XXXXXX")"
+  trap 'rm -f "$TMPIDX"' EXIT
+  ix() { GIT_INDEX_FILE="$TMPIDX" GIT_NO_REPLACE_OBJECTS=1 git -C "$REPO_ROOT" "$@"; }
+  ix read-tree "${LAND_SHA}^{tree}"
+  # Every path the base changed since the fork point (now including this
+  # land's plan record) takes the base tip's entry, or is removed.
+  apex_git "$REPO_ROOT" diff-tree -r -z --no-renames --raw "$FORK_SHA" "$BASE_TIP" | python3 -c '
+import sys
+data = sys.stdin.buffer.read().split(b"\0")
+out = []
+i = 0
+while i + 1 < len(data):
+    meta, path = data[i], data[i + 1]; i += 2
+    oldmode, newmode, oldsha, newsha, status = meta.lstrip(b":").split(b" ")[:5]
+    if status.startswith(b"D"):
+        out.append(b"0 " + b"0" * len(newsha) + b"\t" + path)
+    else:
+        out.append(newmode + b" " + newsha + b"\t" + path)
+sys.stdout.buffer.write(b"".join(o + b"\0" for o in out))' | ix update-index -z --index-info \
+    || { echo "ERROR: could not build the landed tree; $BASE_BRANCH holds only the plan record — re-run land.sh." >&2; exit 1; }
+  for rel in "$PLAN_REL" "$LEDGER_REL"; do   # always the base's copy
+    [[ -n "$rel" ]] || continue
+    ent="$(apex_git "$REPO_ROOT" ls-tree --full-tree "$BASE_TIP" -- ":(top,literal)$rel")"
+    if [[ -n "$ent" ]]; then printf '%s\0' "${ent/ blob / }" | ix update-index -z --index-info
+    else ix update-index --force-remove -- "$rel"; fi
+  done
+  TREE="$(ix write-tree)"
+  NEW="$(GIT_NO_REPLACE_OBJECTS=1 git -C "$REPO_ROOT" commit-tree "$TREE" -p "$BASE_TIP" -p "$LAND_SHA" -m "$MSG")"
+  echo "[land] landing $WT_BRANCH (${LAND_SHA:0:12}) onto $BASE_BRANCH as ${NEW:0:12} ..."
+  git -C "$REPO_ROOT" merge --ff-only -q "$NEW" \
+    || { echo "ERROR: $BASE_BRANCH moved while landing — re-run land.sh." >&2; exit 1; }
 fi
 
 # 10. Tear down the worktree; delete the branch only if it is fully merged.

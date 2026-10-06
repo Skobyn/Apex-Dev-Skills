@@ -9,6 +9,7 @@
 #   ./checkpoint.sh PLAN.md approve  LINE_NO SHA "<the human's literal approval reply>"
 #   ./checkpoint.sh PLAN.md halt     REASON
 #   ./checkpoint.sh PLAN.md resume   REASON       # human: clear a halt and the error budget
+#   ./checkpoint.sh PLAN.md refork   REASON       # after merging a moved base: re-review against it
 #   ./checkpoint.sh PLAN.md rewind   LINE_NO      # uncheck a completed task
 #
 # LINE_NO is always the line of a task in a valid plan (planlib); SHA is a
@@ -61,7 +62,7 @@
 set -euo pipefail
 
 PLAN="${1:?usage: checkpoint.sh PLAN.md ACTION [...]}"
-ACTION="${2:?action: complete|fail|review|approve|halt|resume|rewind}"
+ACTION="${2:?action: complete|fail|review|approve|halt|resume|refork|rewind}"
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found"; exit 1; }
 
 APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
@@ -503,6 +504,49 @@ s["halt_reason"] = None
 s["consecutive_failures"] = 0
 save(path, s)' "$CHECKPOINT" "$NOW" "$REASON"
     echo "[checkpoint] resumed: $REASON"
+    ;;
+
+  refork)
+    # The base moved and changed paths this run also changed: after the
+    # operator merges the base into the run branch, the run's diff base
+    # becomes the base tip, so the next completion reviews the run's whole
+    # effect against the current base (land.sh 6b then has nothing to refuse).
+    REASON="${3:?refork needs a reason (the operator decision)}"
+    [[ "${APEX_GIBSON:-1}" != "0" ]] || { echo "[checkpoint] REFUSED refork: the harness is off" >&2; exit 1; }
+    [[ -n "$(read_field worktree_branch)" ]] || { echo "[checkpoint] REFUSED refork: only a run with a worktree lands, so only it reforks" >&2; exit 1; }
+    refuse_if_halted
+    BASE_TIP="$(apex_base_sha "$WT" "$(read_field base_branch)")" \
+      || { echo "[checkpoint] REFUSED refork: the base branch '$(read_field base_branch)' does not resolve" >&2; exit 1; }
+    apex_git "$WT" merge-base --is-ancestor "$BASE_TIP" HEAD \
+      || { echo "[checkpoint] REFUSED refork: merge $(read_field base_branch) (${BASE_TIP:0:12}) into the run branch first" >&2; exit 1; }
+    # The wider review needs a task: with none left, the last completed one is
+    # reopened.
+    REOPEN=""
+    if [[ "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$PLAN" 2>/dev/null)" == "0" ]]; then
+      REOPEN="$(python3 -c '
+import json, sys
+s = json.load(open(sys.argv[1]))
+c = s.get("completes") or []
+lv = s.get("last_verdict") or {}
+print(c[-1]["line"] if c else lv.get("line_no", ""))' "$CHECKPOINT")"
+      [[ "$REOPEN" =~ ^[1-9][0-9]*$ ]] || { echo "[checkpoint] REFUSED refork: no task is unchecked and the last completed one is unknown — rewind a task first" >&2; exit 1; }
+      need_line "$REOPEN"
+      [[ "$(task_field checked)" == "1" ]] || { echo "[checkpoint] REFUSED refork: line $REOPEN is not checked — rewind a task first" >&2; exit 1; }
+      sed -i.bak "${REOPEN}s/^- \[[xX]\]/- [ ]/" "$PLAN" && rm -f "${PLAN}.bak"
+    fi
+    python3 -c "$PY_SAVE"'
+import sys
+path, now, reason, base_tip, reopen = sys.argv[1:]
+with open(path) as f: s = json.load(f)
+s.setdefault("reforks", []).append({"reason": reason, "old_fork": s.get("fork_sha"), "new_fork": base_tip,
+                                    "completes": s.get("completes") or [], "reopened_line": reopen or None, "at": now})
+s["fork_sha"] = base_tip
+s["completes"] = []
+s["retired"] = False
+if reopen:
+    s["completed_tasks"] = max(0, s.get("completed_tasks", 0) - 1)
+save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$BASE_TIP" "$REOPEN"
+    echo "[checkpoint] reforked at ${BASE_TIP:0:12}${REOPEN:+ (reopened line $REOPEN)}: the next completion reviews the run against the current base"
     ;;
 
   rewind)

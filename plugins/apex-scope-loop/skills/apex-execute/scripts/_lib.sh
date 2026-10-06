@@ -33,7 +33,11 @@ APEX_EXECUTE_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   - fixed output whatever the user's config: no color, no pager, unquoted
 #     paths, a/ b/ prefixes, top-level paths;
 #   - `diff` never runs an external diff or textconv driver (a "trusted"
-#     external diff would decide `diff --quiet`'s exit code, git 2.46+).
+#     external diff would decide `diff --quiet`'s exit code, git 2.46+);
+#   - stat shortcuts that can hide edits are off (fsmonitor, ctime trust).
+# Deliberate tampering with the repository's own git configuration during a
+# run (merge drivers, attributes, update-index flags, hooksPath) is guarded by
+# apex-dispatch's pre-bash/pre-edit hooks (ADR-0003), not here.
 # GIT_CONFIG_COUNT / GIT_CONFIG_PARAMETERS (e.g. safe.directory) pass through;
 # the -c values here are applied after them.
 apex_git() {
@@ -45,6 +49,7 @@ apex_git() {
       GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/nonexistent/apex-scope-loop-no-grafts \
     git -c color.ui=never -c color.diff=never -c core.quotepath=false -c diff.noprefix=false \
         -c diff.mnemonicPrefix=false -c diff.relative=false -c diff.trustExitCode=false \
+        -c core.fsmonitor=false -c core.trustctime=true -c core.checkStat=default -c core.ignoreStat=false \
         --no-pager -C "$dir" "$@"
 }
 
@@ -188,41 +193,23 @@ print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
 # entries flagged skip-worktree or assume-unchanged (they hide edits from
 # status). Prints nothing when clean.
 apex_dirty() {
-  local dir="$1" st flags
-  st="$(apex_git "$dir" status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null)" \
+  local dir="$1" st flags untracked
+  st="$(apex_git "$dir" status --porcelain --untracked-files=no --ignore-submodules=none 2>/dev/null)" \
     || { echo "git status failed in $dir"; return 0; }
   [[ -n "$st" ]] && printf '%s\n' "$st"
-  flags="$(apex_git "$dir" ls-files -v 2>/dev/null | grep -aE '^([a-z]|S) ' || true)"
-  [[ -n "$flags" ]] && printf 'flagged skip-worktree/assume-unchanged (edits hidden from status): %s\n' "$flags"
+  # Untracked files: only committed .gitignore files hide them (not
+  # .git/info/exclude or core.excludesFile).
+  untracked="$(apex_git "$dir" ls-files -o --exclude-per-directory=.gitignore -- . ':(exclude,top).dev-plan-state' 2>/dev/null)"
+  [[ -n "$untracked" ]] && printf 'untracked: %s\n' "${untracked//$'\n'/, }"
+  flags="$(apex_git "$dir" ls-files -v 2>/dev/null | awk '/^([a-z]|S) / { n++; if (n <= 5) l = l " " substr($0, 3) } END { if (n) print n " path(s)" l (n > 5 ? " ..." : "") }')"
+  if [[ -n "$flags" ]]; then
+    if [[ "$(apex_git "$dir" config --bool core.sparseCheckout 2>/dev/null)" == "true" ]]; then
+      printf 'sparse checkout (the gate needs the whole head; run: git -C %s sparse-checkout disable): %s\n' "$dir" "$flags"
+    else
+      printf 'flagged skip-worktree/assume-unchanged (edits hidden from status): %s\n' "$flags"
+    fi
+  fi
   return 0
-}
-
-# apex_land_reverts DIR BASE_SHA LAND_SHA FORK — paths the base changed since
-# FORK that merging LAND_SHA into BASE_SHA would put back to FORK's version
-# although the run never changed them (an `-s ours` merge of the base into
-# the run branch): those reverts were never in any reviewed task diff. Prints
-# the paths; "!" when the merge cannot be computed.
-apex_land_reverts() {
-  local dir="$1" base="$2" land="$3" fork="$4" merged
-  merged="$(apex_git "$dir" merge-tree --write-tree "$base" "$land" 2>/dev/null)" || { echo "!"; return 0; }
-  merged="${merged%%$'\n'*}"
-  python3 - "$fork" "$base" "$land" "$merged" <<'PY' 3< <(apex_git "$dir" diff --name-only -z --no-renames "$fork" "$base" 2>/dev/null) \
-    4< <(apex_git "$dir" ls-tree -r -z --full-tree "$fork") 5< <(apex_git "$dir" ls-tree -r -z --full-tree "$base") \
-    6< <(apex_git "$dir" ls-tree -r -z --full-tree "$land") 7< <(apex_git "$dir" ls-tree -r -z --full-tree "$merged")
-import os, sys
-def tree(fd):
-    out = {}
-    for rec in os.fdopen(fd, "rb").read().split(b"\0"):
-        if rec:
-            meta, path = rec.split(b"\t", 1)
-            out[path] = meta
-    return out
-changed = [p for p in os.fdopen(3, "rb").read().split(b"\0") if p]
-fork, base, land, merged = tree(4), tree(5), tree(6), tree(7)
-for p in changed:
-    if land.get(p) == fork.get(p) and merged.get(p) != base.get(p):
-        sys.stdout.write(p.decode("utf-8", "replace") + "\n")
-PY
 }
 
 # apex_unreviewed_runs DIR REV — runs in this repository without a worktree

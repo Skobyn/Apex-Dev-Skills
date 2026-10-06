@@ -1075,33 +1075,49 @@ F8B="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worktree
 expect_refusal "a base branch that is another live run's worktree branch" "worktree branch of another run" indir "$F8" APEX_BASE_BRANCH="$F8B" "$EX/init.sh" plans/b-plan.md
 ok "trusted external diff, control-character paths, many matches, finished/reopened/harness-off/hand-ticked no-worktree runs, archived plans, mode switch, run branch, live-run base"
 
-# 41. Per-run integrity at the exits: land never reverts base changes that no
-#     review covered (an -s ours merge of the base), while a normal, reviewed
-#     merge of the base lands; the gate refuses a working tree that is not its
-#     head (skip-worktree / assume-unchanged edits, untracked files hidden by
-#     status.showUntrackedFiles=no).
-oursrun() { # oursrun DIR STRATEGY — two-task run; base changes between tasks; returns land's output
+# 41. Per-run integrity at the exits: land builds the landed tree from the
+#     reviewed head plus the base's own changes, never with merge machinery —
+#     an -s ours merge cannot revert base changes, a path changed on both
+#     sides to different entries is refused until the run reforks onto the
+#     current base and re-reviews, merge drivers never run; the gate refuses a
+#     working tree that is not its head.
+oursrun() { # oursrun DIR MODE — MODE: ours | normal | ours-touch | refork | driver; prints land's output
   local d="$1" how="$2" w; mkdir -p "$d/plans"; git init -q -b main "$d"
   printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n- [ ] **Phase 1.2** [docs] b\n  - Acceptance: true\n' >"$d/plans/o-plan.md"
-  echo 'max_items = 5' >"$d/limits.txt"; git -C "$d" add -A; git -C "$d" commit -qm o
+  printf 'max_items = 5\n1\n2\n3\nnote = a\n' >"$d/limits.txt"; git -C "$d" add -A; git -C "$d" commit -qm o
   ( cd "$d" && "$EX/init.sh" plans/o-plan.md >/dev/null 2>&1 ) || { echo "init-failed"; return 0; }
   w="$(st "$d" plans/o-plan.md)/worktree"
   done_task() { # done_task LINE
     (cd "$d" && "$EX/green-gate.sh" plans/o-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/o-plan.md "$1" >/dev/null \
       && "$CP" plans/o-plan.md review "$1" "$(git -C "$w" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/o-plan.md complete "$1" ok >/dev/null 2>&1)
   }
-  echo a >"$w/a.md"; git -C "$w" add -A; git -C "$w" commit -qm a; done_task 1 || { echo "task1-failed"; return 0; }
+  if [ "$how" = ours-touch ] || [ "$how" = refork ]; then printf 'max_items = 5\n1\n2\n3\nnote = b\n' >"$w/limits.txt"; else echo a >"$w/a.md"; fi
+  git -C "$w" add -A; git -C "$w" commit -qm a; done_task 1 || { echo "task1-failed"; return 0; }
   git -C "$d" add plans/o-plan.md; git -C "$d" commit -qm tick1
-  echo 'max_items = 9' >"$d/limits.txt"; git -C "$d" commit -qam fix
-  if [ "$how" = ours ]; then git -C "$w" merge -q -s ours -m sync main; else git -C "$w" merge -q -m sync main; fi
+  printf 'max_items = 9\n1\n2\n3\nnote = a\n' >"$d/limits.txt"; git -C "$d" commit -qam fix
+  if [ "$how" = driver ]; then
+    git -C "$d" config merge.evil.driver "printf 'backdoor = on\n' > %A"; echo '* merge=evil' >>"$d/.git/info/attributes"
+  fi
+  case "$how" in
+    ours|ours-touch) git -C "$w" merge -q -s ours -m sync main ;;
+    normal|refork) git -C "$w" merge -q -m sync main ;;
+  esac
+  [ "$how" = refork ] && { (cd "$d" && "$CP" plans/o-plan.md refork "base moved under limits.txt" >/dev/null 2>&1) || { echo "refork-failed"; return 0; }; }
   echo b >"$w/b.md"; git -C "$w" add -A; git -C "$w" commit -qm b; done_task 3 || { echo "task2-failed"; return 0; }
   git -C "$d" add plans/o-plan.md; git -C "$d" commit -qm tick2
-  (cd "$d" && "$EX/land.sh" plans/o-plan.md 2>&1); echo "land-rc=$?"
+  (cd "$d" && "$EX/land.sh" plans/o-plan.md 2>&1 | grep -v '^\[land\]' ; exit "${PIPESTATUS[0]}"); echo "land-rc=$?"
 }
 O1="$(oursrun "$SMOKE_TMP/o1" ours)"
-has "would revert base changes" "$O1" && ! has "land-rc=0" "$O1" || fail "land reverted base changes after an -s ours merge: $(printf '%s' "$O1" | tail -2)"
+has "land-rc=0" "$O1" && grep -q 'max_items = 9' "$SMOKE_TMP/o1/limits.txt" || fail "an -s ours merge reverted a base change at land: $(printf '%s' "$O1" | tail -2)"
 O2="$(oursrun "$SMOKE_TMP/o2" normal)"
 has "land-rc=0" "$O2" && grep -q 'max_items = 9' "$SMOKE_TMP/o2/limits.txt" || fail "a reviewed normal merge of the base did not land: $(printf '%s' "$O2" | tail -2)"
+O3="$(oursrun "$SMOKE_TMP/o3" ours-touch)"
+has "changed the same paths" "$O3" && ! has "land-rc=0" "$O3" || fail "an -s ours merge plus an edit to the same file landed: $(printf '%s' "$O3" | tail -2)"
+O4="$(oursrun "$SMOKE_TMP/o4" refork)"
+has "land-rc=0" "$O4" && grep -q 'max_items = 9' "$SMOKE_TMP/o4/limits.txt" && grep -q 'note = b' "$SMOKE_TMP/o4/limits.txt" \
+  || fail "a reforked, re-reviewed run did not land both sides: $(printf '%s' "$O4" | tail -2)"
+O5="$(oursrun "$SMOKE_TMP/o5" driver)"
+has "land-rc=0" "$O5" && ! grep -rq backdoor "$SMOKE_TMP/o5" --include='*.txt' --include='*.md' || fail "a merge driver touched the landed tree: $(printf '%s' "$O5" | tail -2)"
 G1="$SMOKE_TMP/g1"; mkdir -p "$G1/plans"; git init -q -b main "$G1"
 printf 'test:\n\t@grep -q GOOD impl.txt\n' >"$G1/Makefile"; echo GOOD >"$G1/impl.txt"; printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n' >"$G1/plans/g-plan.md"
 git -C "$G1" add -A; git -C "$G1" commit -qm g
@@ -1111,7 +1127,13 @@ echo GOOD >"$GW/impl.txt"; git -C "$GW" update-index --skip-worktree impl.txt
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a head whose failing file was hidden by skip-worktree"
 git -C "$GW" update-index --no-skip-worktree impl.txt; git -C "$GW" checkout -q impl.txt; git -C "$GW" config status.showUntrackedFiles no; echo x >"$GW/extra.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate ignored an untracked file hidden by status.showUntrackedFiles=no"
-ok "land keeps the base's reviewed state (-s ours refused, normal merge lands); the gate binds to a clean head"
+git -C "$GW" config --unset status.showUntrackedFiles
+mkdir -p "$(git -C "$GW" rev-parse --git-common-dir)/info"; echo extra.txt >>"$(git -C "$GW" rev-parse --git-common-dir)/info/exclude"
+has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate ignored an untracked file hidden by .git/info/exclude"
+rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
+touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
+has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
+ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers); the gate binds to a clean head"
 
 echo ""
 echo "smoke passed: 41/41 checks"
