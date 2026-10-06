@@ -193,7 +193,8 @@ print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
 # entries flagged skip-worktree or assume-unchanged (they hide edits from
 # status), and the same inside every submodule. Prints nothing when clean.
 apex_dirty() {
-  local dir="$1" depth="${2:-0}" st flags untracked gl sub rel
+  local dir="$1" depth="${2:-0}" st flags untracked gl sub rel state=':(exclude,top).dev-plan-state'
+  (( depth == 0 )) || state=':(exclude,top).git'   # the run's state lives only at its top
   st="$(apex_git "$dir" status --porcelain --untracked-files=no --ignore-submodules=none 2>/dev/null)" \
     || { echo "git status failed in $dir"; return 0; }
   [[ -n "$st" ]] && printf '%s\n' "$st"
@@ -205,8 +206,8 @@ apex_dirty() {
   # nothing. Matching the file's own name is not enough ('.*' ignores
   # lib/.gitignore while lib/.gitignore still hides lib/'s files). Any error
   # reports every candidate.
-  untracked="$( { apex_git "$dir" ls-files -o --exclude-per-directory=.gitignore -- . ':(exclude,top).dev-plan-state'
-                 apex_git "$dir" ls-files -o -z -- ':(glob)**/.gitignore' ':(exclude,top).dev-plan-state' \
+  untracked="$( { apex_git "$dir" ls-files -o --exclude-per-directory=.gitignore -- . "$state"
+                 apex_git "$dir" ls-files -o -z -- ':(glob)**/.gitignore' "$state" \
                    | python3 -c '
 import subprocess, sys
 cand = [p for p in sys.stdin.buffer.read().split(b"\0") if p]
@@ -246,23 +247,41 @@ for p in cand:
     fi
   fi
   # Directories this user cannot list: git only warns and skips them, yet
-  # files inside can still be opened by name (chmod 311).
+  # files inside can still be opened by name (chmod 311). And any '.git'
+  # entry below the top other than a submodule's: git never looks inside a
+  # path named .git, and git commands run at or below it answer from that
+  # repository. Submodule directories are left to the recursion below.
   local unreadable
-  unreadable="$(python3 -c '
+  unreadable="$(apex_git "$dir" ls-files -z --stage 2>/dev/null | python3 -c '
 import os, sys
-top = sys.argv[1]
+top, depth = sys.argv[1], int(sys.argv[2])
+links = set()
+for e in sys.stdin.buffer.read().split(b"\0"):
+    if e.startswith(b"160000 ") and b"\t" in e:
+        links.add(os.fsdecode(e.split(b"\t", 1)[1]))
 bad = []
 def err(e):
     bad.append(e.filename or "?")
 for root, dirs, files in os.walk(top, onerror=err):
-    dirs[:] = [d for d in dirs if d != ".git" and not (root == top and d == ".dev-plan-state")]
+    rel = os.path.relpath(root, top)
+    rel = "" if rel == "." else rel + "/"
+    for name in dirs + files:
+        if name.lower() == ".git" and rel:
+            bad.append(os.path.join(root, name) + " (a .git entry)")
+    keep = []
     for d in dirs:
         p = os.path.join(root, d)
+        if d.lower() == ".git" or (rel + d) in links:
+            continue                      # top .git; reported above; or a submodule
+        if not rel and d == ".dev-plan-state" and depth == 0:
+            continue
         if not os.path.islink(p) and not os.access(p, os.R_OK | os.X_OK):
             bad.append(p)
+        keep.append(d)
+    dirs[:] = keep
 for p in sorted(set(bad))[:5]:
-    print(os.path.relpath(p, top) if p != "?" else p)' "$dir" 2>/dev/null || echo "(could not scan $dir)")"
-  [[ -n "$unreadable" ]] && printf 'directories that cannot be listed (their files are hidden from status): %s\n' "${unreadable//$'\n'/, }"
+    print(os.path.relpath(p, top) if p != "?" else p)' "$dir" "$depth" 2>/dev/null || echo "(could not scan $dir)")"
+  [[ -n "$unreadable" ]] && printf 'directories that cannot be listed, or nested .git entries (git hides their files): %s\n' "${unreadable//$'\n'/, }"
   # Gitlinks: neither status nor ls-files looks at files in a submodule
   # directory that is not checked out (a worktree never checks submodules
   # out), nor at untracked files a populated submodule's own .gitignore

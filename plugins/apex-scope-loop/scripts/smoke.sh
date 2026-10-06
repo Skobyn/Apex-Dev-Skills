@@ -1221,6 +1221,18 @@ chmod 755 "$SM/zz"; rm -rf "$SM/zz"; echo x >"$SM/empty/conftest.py"; chmod 311 
 ZZ="$(asuser bash -c 'source "$1/_lib.sh"; apex_dirty "$2"' _ "$EX" "$SM")"
 has "no-setpriv" "$ZZ" || has "cannot be listed" "$ZZ" || fail "the gate missed a submodule directory this user cannot list: $ZZ"
 chmod 755 "$SM/empty"; rm -f "$SM/empty/conftest.py"
+has "no-setpriv" "$ZZ" && echo "smoke note: running as root without setpriv — the unlistable-directory checks were skipped"
+# A '.git' entry below the top hides its directory's files from git, and git
+# commands run there answer from it.
+mkdir -p "$SM/lib"; echo l >"$SM/lib/l.txt"; git -C "$SM" add lib; git -C "$SM" commit -qm lib >/dev/null 2>&1
+[ -z "$(source "$EX/_lib.sh"; apex_dirty "$SM")" ] || fail "a clean repository with a tracked directory was reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$SM")"
+git init -q "$SM/lib"
+has "lib/.git (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a repository planted in a tracked directory"
+rm -rf "$SM/lib/.git"; mkdir -p "$SM/lib/.git"; echo x >"$SM/lib/.git/conftest.py"
+has "lib/.git (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed files in a directory named .git"
+rm -rf "$SM/lib/.git"; echo 'gitdir: /nonexistent' >"$SM/lib/.Git"
+has "lib/.Git (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a .git file below the top"
+rm -f "$SM/lib/.Git"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
