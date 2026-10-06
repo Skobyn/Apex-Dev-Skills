@@ -24,3 +24,10 @@ with a new one.
 **Harness fix:** Route every harness git call through one wrapper that pins output config (-c color.ui=never, core.quotepath=false, --no-ext-diff/--no-textconv, --ignore-submodules=none, GIT_NO_REPLACE_OBJECTS) per call, never exported; never grep -q from a pipe under pipefail (use here-strings); test each boundary check in no-worktree, remote-base and detached setups before review
 **Plan:** apex-dispatch-plan.md
 **Tags:** ##risk-tier #harness #git #backend
+
+## L-004 · 2026-10-06 · loosening-a-safety-check-needs-the-attacker-s-question-not-t
+**What happened:** To stop pytest caches failing the gate, apex_dirty began trusting an untracked .gitignore whenever a committed rule matched its name; a committed '.*' rule then let an untracked lib/.gitignore hide sibling files and fake GATE: PASS.
+**Root cause:** The fix was shaped by the false-positive case (.pytest_cache/) instead of by what the untracked file can do (hide siblings). The safe condition is about what the file can affect: its directory must already be ignored by committed rules.
+**Harness fix:** When relaxing a guard for a legitimate case, state the invariant in terms of capability (what can this input hide/change?) and add a smoke case for the adversarial neighbour of the legitimate one (here: committed '.*' + '!/.gitignore').
+**Plan:** apex-dispatch-plan.md
+**Tags:** #backend #harness #gate #security
