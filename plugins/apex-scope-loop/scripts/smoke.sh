@@ -982,5 +982,37 @@ has "GATE_STEP: test PASS" "$(cd "$L7" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=ap
   || fail "a gate command lost its env-supplied git config"
 ok "classifier inputs: color config, large diffs; no-worktree feature branch, remote base, restart guard, env git config"
 
+# 40. A trusted external diff cannot decide an exemption or the land boundary
+#     (git 2.46+); control characters in paths cannot fuse into an allowlisted
+#     word; many matching lines do not crash the classifier; a finished run
+#     without a worktree does not block the next one.
+M1="$SMOKE_TMP/m1"; mkdir -p "$M1/plans"; git init -q -b main "$M1"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n- [ ] **Gate 1→2** [gate:human] sign-off\n  - Acceptance: true\n' >"$M1/plans/m-plan.md"; git -C "$M1" add -A; git -C "$M1" commit -qm m
+( cd "$M1" && APEX_GIBSON=0 "$EX/init.sh" plans/m-plan.md >/dev/null 2>&1 ) || fail "init for check 40 failed"
+MW="$(st "$M1" plans/m-plan.md)/worktree"; echo doc >"$MW/notes.md"; git -C "$MW" add -A; git -C "$MW" commit -qm d
+(cd "$M1" && "$EX/green-gate.sh" plans/m-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/m-plan.md 1 >/dev/null \
+  && "$CP" plans/m-plan.md review 1 "$(git -C "$MW" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/m-plan.md complete 1 ok >/dev/null 2>&1) || fail "check 40 task 1 could not complete"
+mkdir -p "$MW/src/auth"; echo x >"$MW/src/auth/login.py"; git -C "$MW" add -A; git -C "$MW" commit -qm auth
+git -C "$M1" config diff.external /bin/true; git -C "$M1" config diff.trustExitCode true
+expect_refusal "a gate line with code under a trusted external diff" "no risk tier\|no independent review\|green" indir "$M1" "$CP" plans/m-plan.md complete 3 ok
+git -C "$M1" config --unset diff.external; git -C "$M1" config --unset diff.trustExitCode
+C1="$(mktemp -d "$SMOKE_TMP/c.XXXXXX")"; CW="$(mkrun "$C1")" || fail "init for check 40 failed"
+printf 'def can_access(u): return True\n' >"$CW/$(printf '\a')ssociate.py"; git -C "$CW" add -A; git -C "$CW" commit -qm c
+has "^TIER: C" "$(cd "$C1" && "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record)" || fail "a control character fused a path word into an allowlisted one"
+C2="$(mktemp -d "$SMOKE_TMP/c.XXXXXX")"; CW="$(mkrun "$C2")" || fail "init for check 40 failed"
+seq 1 50000 | sed 's/^/price = /' >"$CW/prices.txt"; git -C "$CW" add -A; git -C "$CW" commit -qm p
+out="$(cd "$C2" && "$EX/risk-tier.sh" plans/k-plan.md 1 --no-record 2>&1)" || fail "risk-tier failed on a diff with many matching lines"
+has "^TIER: C" "$out" || fail "a diff with many matching lines was not Tier C"
+F1="$SMOKE_TMP/f1"; mkdir -p "$F1/plans"; git init -q -b main "$F1"; printf '.dev-plan-state/\n' >"$F1/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F1/plans/a-plan.md"; git -C "$F1" add -A; git -C "$F1" commit -qm a
+( cd "$F1" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for check 40 failed"
+echo doc >"$F1/notes.md"; git -C "$F1" add notes.md; git -C "$F1" commit -qm d
+(cd "$F1" && "$EX/green-gate.sh" plans/a-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/a-plan.md 1 >/dev/null \
+  && "$CP" plans/a-plan.md review 1 "$(git -C "$F1" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/a-plan.md complete 1 ok >/dev/null 2>&1) || fail "the finished-run fixture could not complete"
+git -C "$F1" add -A; git -C "$F1" commit -qm tick
+printf -- '- [ ] **Phase 1.1** [docs] b\n  - Acceptance: true\n' >"$F1/plans/b-plan.md"; echo more >>"$F1/notes.md"; git -C "$F1" add -A; git -C "$F1" commit -qm b
+( cd "$F1" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/b-plan.md >/dev/null 2>&1 ) || fail "a finished no-worktree run blocked the next run"
+ok "trusted external diff, control-character paths, many matches, finished no-worktree runs"
+
 echo ""
-echo "smoke passed: 39/39 checks"
+echo "smoke passed: 40/40 checks"

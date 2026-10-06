@@ -111,11 +111,11 @@ fi
 
 # 5. The branch to merge is exactly what the worktree holds.
 if [[ -d "$WT_PATH" ]]; then
-  LAND_SHA="$(git -C "$WT_PATH" rev-parse HEAD)"
-  BR_SHA="$(git -C "$REPO_ROOT" rev-parse -q --verify "refs/heads/$WT_BRANCH" || true)"
+  LAND_SHA="$(apex_git "$WT_PATH" rev-parse HEAD)"
+  BR_SHA="$(apex_git "$REPO_ROOT" rev-parse -q --verify "refs/heads/$WT_BRANCH" || true)"
   [[ "$BR_SHA" == "$LAND_SHA" ]] || { echo "ERROR: refs/heads/$WT_BRANCH ($BR_SHA) is not the worktree head ($LAND_SHA) — refusing to land." >&2; exit 1; }
 else
-  LAND_SHA="$(git -C "$REPO_ROOT" rev-parse -q --verify "refs/heads/$WT_BRANCH" || true)"
+  LAND_SHA="$(apex_git "$REPO_ROOT" rev-parse -q --verify "refs/heads/$WT_BRANCH" || true)"
   [[ -n "$LAND_SHA" ]] || { echo "ERROR: neither the worktree ($WT_PATH) nor branch $WT_BRANCH exists — nothing to land." >&2; exit 1; }
 fi
 
@@ -134,7 +134,7 @@ fi
 
 # 6. Harness: unreviewed code never reaches the base branch.
 if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
-  if [[ -d "$WT_PATH" ]] && [[ -n "$(git -C "$WT_PATH" status --porcelain)" ]]; then
+  if [[ -d "$WT_PATH" ]] && [[ -n "$(apex_git "$WT_PATH" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
     echo "ERROR: worktree has uncommitted changes that no reviewer has seen — commit, gate, and review them first." >&2
     exit 1
   fi

@@ -94,8 +94,14 @@ if [[ -z "$(read_field worktree_branch)" ]]; then
   done
 fi
 PATHSPEC=(-- . "${EXCL[@]}")
-FILES="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only HEAD "${PATHSPEC[@]}"; \
-            "${GIT[@]}" ls-files --others --exclude-standard "${PATHSPEC[@]}"; } 2>/dev/null | sort -u | sed '/^$/d')"
+# Paths are read NUL-separated (git C-quotes control characters even with
+# quotepath off, and a quote escape can fuse with the next word); control
+# characters become "_" (a word break) before classification.
+FILES="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only -z "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only -z HEAD "${PATHSPEC[@]}"; \
+            "${GIT[@]}" ls-files -z --others --exclude-standard "${PATHSPEC[@]}"; } 2>/dev/null | python3 -c '
+import re, sys
+paths = {re.sub(r"[\x00-\x1f\x7f]", "_", p.decode("utf-8", "surrogateescape")) for p in sys.stdin.buffer.read().split(b"\0") if p}
+sys.stdout.buffer.write("".join(sorted(p + "\n" for p in paths)).encode("utf-8", "surrogateescape"))')"
 LINES="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --numstat "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --numstat HEAD "${PATHSPEC[@]}"; } 2>/dev/null \
           | awk '$1 ~ /^[0-9]+$/ {s += $1 + $2} END {print s + 0}')"
 NFILES="$(printf '%s\n' "$FILES" | sed '/^$/d' | wc -l | tr -d ' ')"
@@ -144,7 +150,7 @@ ADDED="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE"
 # Here-strings, not pipes: under pipefail, `printf | grep -q` on a large diff
 # fails with SIGPIPE when grep exits at an early match.
 if [[ -n "$ADDED" ]] && grep -aqiE "$C_CONTENT" <<<"$ADDED"; then
-  hit="$(grep -aoiE "$C_CONTENT" <<<"$ADDED" | head -1)"
+  hit="$(grep -m1 -aoiE "$C_CONTENT" <<<"$ADDED")"
   raise C "tier-c content signal in diff: '$hit'"
 fi
 
@@ -233,7 +239,7 @@ echo "DIFF: $NFILES file(s), $LINES line(s) since ${SINCE:0:12}"
 if [[ ${#REASONS[@]} -eq 0 ]]; then
   echo "REASON: no elevated-risk signals"
 else
-  printf 'REASON: %s\n' "${REASONS[@]}" | awk '!seen[$0]++' | head -20
+  printf 'REASON: %s\n' "${REASONS[@]}" | awk '!seen[$0]++ && n++ < 20'   # awk reads everything: no SIGPIPE
 fi
 case "$TIER" in
   C) echo "REQUIRES: fan-out review (six lenses) + adversarial refutation + human approval G12 before check-off" ;;

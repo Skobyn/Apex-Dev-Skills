@@ -31,16 +31,33 @@ APEX_EXECUTE_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   - history as committed: no replace refs, no grafts, no inherited
 #     GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / object-store redirection;
 #   - fixed output whatever the user's config: no color, no pager, unquoted
-#     paths, a/ b/ prefixes, top-level paths.
+#     paths, a/ b/ prefixes, top-level paths;
+#   - `diff` never runs an external diff or textconv driver (a "trusted"
+#     external diff would decide `diff --quiet`'s exit code, git 2.46+).
 # GIT_CONFIG_COUNT / GIT_CONFIG_PARAMETERS (e.g. safe.directory) pass through;
 # the -c values here are applied after them.
 apex_git() {
   local dir="$1"; shift
+  if [[ "${1:-}" == diff ]]; then shift; set -- diff --no-ext-diff --no-textconv "$@"; fi
   env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
       -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_NAMESPACE \
+      -u GIT_EXTERNAL_DIFF -u GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE \
       GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/nonexistent/apex-scope-loop-no-grafts \
     git -c color.ui=never -c color.diff=never -c core.quotepath=false -c diff.noprefix=false \
-        -c diff.mnemonicPrefix=false -c diff.relative=false --no-pager -C "$dir" "$@"
+        -c diff.mnemonicPrefix=false -c diff.relative=false -c diff.trustExitCode=false \
+        --no-pager -C "$dir" "$@"
+}
+
+# apex_base_sha DIR BASE — the base branch's commit: the local branch first,
+# then a remote-tracking branch, then any other ref (a tag that shares the
+# branch's name never stands in for it).
+apex_base_sha() {
+  local dir="$1" b="$2" r
+  [[ -n "$b" ]] || return 1
+  for r in "refs/heads/$b" "refs/remotes/$b" "$b"; do
+    apex_git "$dir" rev-parse -q --verify "${r}^{commit}" 2>/dev/null && return 0
+  done
+  return 1
 }
 APEX_SCOPE_LOOP_PLUGIN_ROOT="$(cd "$APEX_EXECUTE_SCRIPTS/../../.." && pwd)"
 
@@ -151,7 +168,7 @@ print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
   fork="$(apex_git "$dir" rev-parse -q --verify "${fork}^{commit}" 2>/dev/null)" \
     || { echo "apex_floor: the fork point is not a commit in this repository" >&2; return 1; }
   if [[ -n "$base" ]]; then
-    basesha="$(apex_git "$dir" rev-parse -q --verify "${base}^{commit}" 2>/dev/null)" \
+    basesha="$(apex_base_sha "$dir" "$base")" \
       || { echo "apex_floor: the base branch '$base' does not resolve here" >&2; return 1; }
     apex_git "$dir" merge-base --is-ancestor "$fork" "$basesha" 2>/dev/null \
       || { echo "apex_floor: the fork point ${fork:0:12} is not on '$base' (the base was rewritten, or a merge into it was undone) — start a new run" >&2; return 1; }
@@ -178,7 +195,7 @@ apex_unreviewed_runs() {
     plan="$(python3 -c '
 import json, sys
 s = json.load(open(sys.argv[1]))
-skip = s.get("worktree_branch") or s.get("landed") or s.get("harness") == "off"
+skip = s.get("worktree_branch") or s.get("landed") or s.get("finished") or s.get("harness") == "off"
 print("" if skip else (s.get("plan_path") or "?"))' "$cp" 2>/dev/null || echo "?")"
     [[ -n "$plan" ]] || continue
     base="$(CHECKPOINT="$cp" apex_floor "$dir" HEAD 2>/dev/null)" || { printf '%s\n' "$plan"; continue; }

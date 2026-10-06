@@ -158,13 +158,13 @@ if [[ "$LOCK_RC" -eq 10 ]]; then
   exit 0
 fi
 
-HEAD_SHA="$(git -C "${WORKTREE:-$REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
+HEAD_SHA="$(apex_git "${WORKTREE:-$REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
 # The task's diff base is the chain floor (ADR-0003): the head the last
 # reviewed `complete` verified, else the run's fork point. A 0.2.x run has no
 # fork point recorded: it is fixed once, here, at the worktree's fork from the
 # base branch (never in an APEX_NO_WORKTREE run, where that would be HEAD).
 if [[ -z "$(read_field fork_sha)" && -n "$WT_BRANCH" ]]; then
-  FORK="$(apex_git "$WORKTREE" merge-base HEAD "$(read_field base_branch)" 2>/dev/null || true)"
+  FORK="$(apex_git "$WORKTREE" merge-base HEAD "$(apex_base_sha "$WORKTREE" "$(read_field base_branch)")" 2>/dev/null || true)"
   [[ -n "$FORK" ]] && python3 - "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" "$FORK" <<'PY' || true
 import fcntl, json, os, sys
 path, lock, fork = sys.argv[1:]

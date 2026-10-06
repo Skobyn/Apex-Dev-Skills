@@ -97,7 +97,7 @@ if [[ "${APEX_NO_WORKTREE:-0}" == "1" && "$KEEP_RUN" != "1" && "${APEX_GIBSON:-1
   PENDING="$(apex_unreviewed_runs "$REPO_ROOT")"
   if [[ -n "$PENDING" ]]; then
     echo "ERROR: a run in this checkout has commits after its last reviewed completion:" >&2
-    printf '         %s\n' $PENDING >&2
+    printf '%s\n' "$PENDING" | sed 's/^/         /' >&2
     echo "       Finish (review and complete) or rewind its tasks first; to abandon it, delete its state under $STATE_BASE (its commits stay unreviewed)." >&2
     exit 1
   fi
@@ -144,13 +144,13 @@ read -r TOTAL DONE <<<"$COUNTS"
 # the worktree's HEAD. Without a worktree a fresh run forks at HEAD, and a
 # kept run that predates the chain gets none (risk-tier and complete refuse).
 if [[ -n "$WT_PATH" ]]; then
-  FORK_SHA="$(apex_git "$WT_PATH" merge-base HEAD "$BASE_BRANCH" 2>/dev/null || true)"
+  FORK_SHA="$(apex_git "$WT_PATH" merge-base HEAD "$(apex_base_sha "$WT_PATH" "$BASE_BRANCH")" 2>/dev/null || true)"
   [[ -n "$FORK_SHA" ]] || { echo "ERROR: the worktree $WT_PATH shares no history with $BASE_BRANCH — refusing to start a run." >&2; exit 1; }
 elif [[ "$KEEP_RUN" == "1" ]]; then
   FORK_SHA=""
 else
   # A run on a branch other than the base forks where that branch left it.
-  FORK_SHA="$(apex_git "$REPO_ROOT" merge-base HEAD "$BASE_BRANCH" 2>/dev/null \
+  FORK_SHA="$(apex_git "$REPO_ROOT" merge-base HEAD "$(apex_base_sha "$REPO_ROOT" "$BASE_BRANCH")" 2>/dev/null \
               || apex_git "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
 fi
 

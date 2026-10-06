@@ -193,8 +193,8 @@ case "$ACTION" in
       # keeps a decision-layer raise) never outranks what the code shows.
       RT_OUT="$("$APEX_EXECUTE_SCRIPTS/risk-tier.sh" "$PLAN" "$LINE_NO" --since "$FLOOR" --no-record 9>&- 2>&1)" \
         || { echo "[checkpoint] REFUSED complete: could not classify the task diff:" >&2; printf '%s\n' "$RT_OUT" | tail -3 | sed 's/^/  /' >&2; exit 1; }
-      COMPUTED="$(printf '%s\n' "$RT_OUT" | sed -n 's/^TIER: //p' | head -1)"
-      [[ "$COMPUTED" =~ ^[ABC]$ && "$(printf '%s\n' "$RT_OUT" | sed -n 's/^HEAD: //p' | head -1)" == "$HEAD_V" ]] \
+      COMPUTED="$(sed -n '/^TIER: /{s///p;q;}' <<<"$RT_OUT")"
+      [[ "$COMPUTED" =~ ^[ABC]$ && "$(sed -n '/^HEAD: /{s///p;q;}' <<<"$RT_OUT")" == "$HEAD_V" ]] \
         || { echo "[checkpoint] REFUSED complete: the task diff was not classified at the head ${HEAD_V:0:12} (did the head move?)" >&2; exit 1; }
       python3 - "$CHECKPOINT" "$STATE_DIR/gate/last.json" "$LINE_NO" "$HEAD_V" "$SKIP_REVIEW" "$COMPUTED" "$FLOOR" <<'PY'
 import json, os, sys
@@ -262,9 +262,10 @@ PY
     sed -i.bak "${LINE_NO}s/^- \[ \]/- [x]/" "$PLAN" && rm -f "${PLAN}.bak"
     python3 -c "$PY_SAVE"'
 import sys
-path, now, verdict, line_no, skip, head, harness = sys.argv[1:]
+path, now, verdict, line_no, skip, head, harness, remaining = sys.argv[1:]
 with open(path) as f: s = json.load(f)
 s["completed_tasks"] = s.get("completed_tasks", 0) + 1
+s["finished"] = remaining == "0"      # every task checked (a run without a worktree is never landed)
 # The chain advances only past code the harness verified (APEX_GIBSON=0
 # completions leave their code in the diff of the next task).
 if harness == "1" and head != "unknown":
@@ -275,7 +276,8 @@ if skip:
 s["last_iteration_at"] = now
 s["current_phase"] = None
 s["consecutive_failures"] = 0
-save(path, s)' "$CHECKPOINT" "$NOW" "$VERDICT" "$LINE_NO" "$SKIP_REVIEW" "$HEAD_V" "$([[ "${APEX_GIBSON:-1}" != "0" ]] && echo 1 || echo 0)"
+save(path, s)' "$CHECKPOINT" "$NOW" "$VERDICT" "$LINE_NO" "$SKIP_REVIEW" "$HEAD_V" "$([[ "${APEX_GIBSON:-1}" != "0" ]] && echo 1 || echo 0)" \
+      "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$PLAN" 2>/dev/null || echo "?")"
     apex_lock_stage "$PLAN_HASH" DONE   # this plan's lock becomes reclaimable until its next iterate
     echo "[checkpoint] complete @ line $LINE_NO ($VERDICT)"
     ;;
@@ -506,6 +508,7 @@ import sys
 path, line_no = sys.argv[1:]
 with open(path) as f: s = json.load(f)
 s["completed_tasks"] = max(0, s.get("completed_tasks", 0) - 1)
+s["finished"] = False
 # The chain floor moves back to before this task: its code (and everything
 # completed after it) is in the next task diff again.
 c = s.get("completes") or []
