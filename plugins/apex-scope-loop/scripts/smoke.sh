@@ -1260,6 +1260,19 @@ git -C "$NW" add -A; git -C "$NW" commit -qm n; ( cd "$NW" && APEX_NO_WORKTREE=1
 has ".dev-plan-state" "$(source "$EX/_lib.sh"; apex_dirty "$NW")" || fail "a run without a worktree passed with its state directory not ignored"
 printf '.dev-plan-state/\n' >"$NW/.gitignore"; git -C "$NW" add .gitignore; git -C "$NW" commit -qm ignore-state
 [ -z "$(source "$EX/_lib.sh"; apex_dirty "$NW")" ] || fail "a run without a worktree whose state is ignored was reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$NW")"
+# Names are bytes: an NFC twin of a tracked NFD directory is not in the head,
+# and an NFD directory is not ignored by an NFC rule.
+UN="$SMOKE_TMP/un"; mkdir -p "$UN/$(printf 'cafe\xcc\x81')"; git init -q -b main "$UN"; echo t >"$UN/$(printf 'cafe\xcc\x81')/t.py"; : >"$UN/$(printf 'cafe\xcc\x81')/conftest.py"
+printf '/n\xc3\xa9/\n' >"$UN/.gitignore"; git -C "$UN" add -A; git -C "$UN" commit -qm u
+mkdir -p "$UN/$(printf 'caf\xc3\xa9')"; echo x >"$UN/$(printf 'caf\xc3\xa9')/conftest.py"
+has "conftest.py" "$(source "$EX/_lib.sh"; apex_dirty "$UN")" || fail "the gate missed an NFC twin of a tracked NFD directory"
+mkdir -p "$UN/$(printf 'ne\xcc\x81')"; echo x >"$UN/$(printf 'ne\xcc\x81')/c.py"
+has "c.py" "$(source "$EX/_lib.sh"; apex_dirty "$UN")" || fail "an NFD directory was taken as ignored by an NFC rule"
+# Many entries in one directory are answered without stalling.
+BG="$SMOKE_TMP/bg"; mkdir -p "$BG/data"; git init -q -b main "$BG"; printf '*.log\n' >"$BG/.gitignore"; echo k >"$BG/data/keep"; git -C "$BG" add -A; git -C "$BG" commit -qm b
+python3 -c 'import sys
+for i in range(12000): open("%s/data/f%06d%s.log" % (sys.argv[1], i, "x" * 60), "w").close()' "$BG"
+[ -z "$(source "$EX/_lib.sh"; timeout 120 bash -c 'source "$1/_lib.sh"; apex_dirty "$2"' _ "$EX" "$BG" || echo stalled)" ] || fail "the inventory stalled or misreported a directory with 12000 ignored files"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
