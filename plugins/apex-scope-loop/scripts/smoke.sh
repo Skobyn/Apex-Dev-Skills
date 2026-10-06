@@ -1205,6 +1205,22 @@ printf '*\n' >"$SM/sub/.gitignore"; echo x >"$SM/sub/conftest.py"
 has "submodule sub: untracked: .gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed files hidden by an untracked .gitignore in a populated submodule"
 rm -f "$SM/sub/.gitignore" "$SM/sub/conftest.py"; echo x >"$SM/empty/conftest.py"
 has "submodule directory that is not checked out: empty" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed files in a submodule directory that is not checked out"
+rm -f "$SM/empty/conftest.py"
+# A submodule path that is not plain text to a program (a|b) is still checked.
+git -C "$SM" update-index --add --cacheinfo "160000,$(git -C "$SM/sub" rev-parse HEAD),a|b"; git -C "$SM" commit -qm ab >/dev/null 2>&1
+git clone -q "$SM/sub" "$SM/a|b" 2>/dev/null; printf '*\n' >"$SM/a|b/.gitignore"; echo x >"$SM/a|b/conftest.py"
+has "submodule a|b: untracked: .gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a hidden file in a submodule whose path contains |"
+rm -f "$SM/a|b/.gitignore" "$SM/a|b/conftest.py"
+[ -z "$(source "$EX/_lib.sh"; apex_dirty "$SM")" ] || fail "clean submodules (including a|b) were reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$SM")"
+# A directory this user cannot list hides its files from git, not from the tests.
+asuser() { if [ "$(id -u)" != 0 ]; then "$@"; elif command -v setpriv >/dev/null; then setpriv --bounding-set=-dac_override,-dac_read_search "$@"; else echo "no-setpriv"; fi; }
+mkdir -p "$SM/zz"; echo x >"$SM/zz/conftest.py"; chmod 311 "$SM/zz"
+ZZ="$(asuser bash -c 'source "$1/_lib.sh"; apex_dirty "$2"' _ "$EX" "$SM")"
+has "no-setpriv" "$ZZ" || has "cannot be listed" "$ZZ" || fail "the gate missed an untracked directory this user cannot list: $ZZ"
+chmod 755 "$SM/zz"; rm -rf "$SM/zz"; echo x >"$SM/empty/conftest.py"; chmod 311 "$SM/empty"
+ZZ="$(asuser bash -c 'source "$1/_lib.sh"; apex_dirty "$2"' _ "$EX" "$SM")"
+has "no-setpriv" "$ZZ" || has "cannot be listed" "$ZZ" || fail "the gate missed a submodule directory this user cannot list: $ZZ"
+chmod 755 "$SM/empty"; rm -f "$SM/empty/conftest.py"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"

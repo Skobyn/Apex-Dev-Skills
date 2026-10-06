@@ -245,11 +245,30 @@ for p in cand:
       printf 'flagged skip-worktree/assume-unchanged (edits hidden from status): %s\n' "$flags"
     fi
   fi
+  # Directories this user cannot list: git only warns and skips them, yet
+  # files inside can still be opened by name (chmod 311).
+  local unreadable
+  unreadable="$(python3 -c '
+import os, sys
+top = sys.argv[1]
+bad = []
+def err(e):
+    bad.append(e.filename or "?")
+for root, dirs, files in os.walk(top, onerror=err):
+    dirs[:] = [d for d in dirs if d != ".git" and not (root == top and d == ".dev-plan-state")]
+    for d in dirs:
+        p = os.path.join(root, d)
+        if not os.path.islink(p) and not os.access(p, os.R_OK | os.X_OK):
+            bad.append(p)
+for p in sorted(set(bad))[:5]:
+    print(os.path.relpath(p, top) if p != "?" else p)' "$dir" 2>/dev/null || echo "(could not scan $dir)")"
+  [[ -n "$unreadable" ]] && printf 'directories that cannot be listed (their files are hidden from status): %s\n' "${unreadable//$'\n'/, }"
   # Gitlinks: neither status nor ls-files looks at files in a submodule
   # directory that is not checked out (a worktree never checks submodules
   # out), nor at untracked files a populated submodule's own .gitignore
   # hides. An unpopulated one must be empty; a populated one gets the same
-  # checks.
+  # checks. Paths are printed with printf, never put into a program (sed).
+  local line listing
   while IFS= read -r -d '' gl; do
     [[ "$gl" == "(fail)" ]] && { echo "could not list the submodules in $dir"; continue; }
     [[ "$gl" == 160000\ * ]] || continue
@@ -259,11 +278,17 @@ for p in cand:
     elif [[ ! -d "$sub" ]]; then
       continue
     elif [[ ! -e "$sub/.git" ]]; then
-      [[ -z "$(ls -A "$sub" 2>/dev/null)" ]] || printf 'files in a submodule directory that is not checked out: %s\n' "$rel"
+      if ! listing="$(ls -A "$sub" 2>/dev/null)"; then
+        printf 'a submodule directory that is not checked out cannot be listed: %s\n' "$rel"
+      elif [[ -n "$listing" ]]; then
+        printf 'files in a submodule directory that is not checked out: %s\n' "$rel"
+      fi
     elif (( depth >= 8 )); then
       printf 'submodules nested too deep to check: %s\n' "$rel"
     else
-      apex_dirty "$sub" "$((depth + 1))" | sed "s|^|submodule $rel: |"
+      while IFS= read -r line; do
+        printf 'submodule %s: %s\n' "$rel" "$line"
+      done < <(apex_dirty "$sub" "$((depth + 1))" || echo "could not check it")
     fi
   done < <(apex_git "$dir" ls-files -z --stage 2>/dev/null || printf '(fail)\0')
   return 0
