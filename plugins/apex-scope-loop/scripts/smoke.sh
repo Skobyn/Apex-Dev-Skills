@@ -1037,7 +1037,28 @@ printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F3/plans/a-p
 ( cd "$F3" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for the mode-switch test failed"
 mkdir -p "$F3/src/auth"; echo 'import stripe' >"$F3/src/auth/login.py"; git -C "$F3" add -A; git -C "$F3" commit -qm x
 expect_refusal "a restart in worktree mode over unreviewed commits" "after its last reviewed completion" indir "$F3" APEX_INIT_FORCE=1 "$EX/init.sh" plans/a-plan.md
-ok "trusted external diff, control-character paths, many matches, finished/reopened/harness-off no-worktree runs, mode switch"
+# Only a reviewed completion retires a run: a box ticked by hand does not.
+F5="$SMOKE_TMP/f5"; mkdir -p "$F5/plans"; git init -q -b main "$F5"; printf '.dev-plan-state/\n' >"$F5/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n- [ ] **Phase 1.2** [backend] b\n  - Acceptance: true\n' >"$F5/plans/a-plan.md"; git -C "$F5" add -A; git -C "$F5" commit -qm a
+( cd "$F5" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for the hand-tick test failed"
+echo doc >"$F5/notes.md"; git -C "$F5" add notes.md; git -C "$F5" commit -qm d
+(cd "$F5" && "$EX/green-gate.sh" plans/a-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/a-plan.md 1 >/dev/null \
+  && "$CP" plans/a-plan.md review 1 "$(git -C "$F5" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/a-plan.md complete 1 ok >/dev/null 2>&1) || fail "the hand-tick fixture task 1 could not complete"
+git -C "$F5" add -A; git -C "$F5" commit -qm tick; (cd "$F5" && "$EX/iterate.sh" plans/a-plan.md >/dev/null 2>&1) || true
+mkdir -p "$F5/src/auth"; echo 'import stripe' >"$F5/src/auth/login.py"; git -C "$F5" add src; git -C "$F5" commit -qm x
+sed -i.bak 's/^- \[ \] \*\*Phase 1.2/- [x] **Phase 1.2/' "$F5/plans/a-plan.md" && rm -f "$F5/plans/a-plan.md.bak"
+expect_refusal "a restart after a box ticked by hand" "below the new run's fork point" indir "$F5" APEX_NO_WORKTREE=1 APEX_INIT_FORCE=1 "$EX/init.sh" plans/a-plan.md
+# A properly finished run whose plan was archived does not block the next run.
+F6="$SMOKE_TMP/f6"; mkdir -p "$F6/plans/done"; git init -q -b main "$F6"; printf '.dev-plan-state/\n' >"$F6/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F6/plans/a-plan.md"; git -C "$F6" add -A; git -C "$F6" commit -qm a
+( cd "$F6" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for the archive test failed"
+echo doc >"$F6/notes.md"; git -C "$F6" add notes.md; git -C "$F6" commit -qm d
+(cd "$F6" && "$EX/green-gate.sh" plans/a-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/a-plan.md 1 >/dev/null \
+  && "$CP" plans/a-plan.md review 1 "$(git -C "$F6" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/a-plan.md complete 1 ok >/dev/null 2>&1) || fail "the archive fixture could not finish"
+git -C "$F6" add -A; git -C "$F6" commit -qm tick; git -C "$F6" mv plans/a-plan.md plans/done/a-plan.md; echo more >>"$F6/notes.md"; git -C "$F6" add -A; git -C "$F6" commit -qm archive
+printf -- '- [ ] **Phase 1.1** [docs] b\n  - Acceptance: true\n' >"$F6/plans/b-plan.md"; git -C "$F6" add -A; git -C "$F6" commit -qm b
+( cd "$F6" && "$EX/init.sh" plans/b-plan.md >/dev/null 2>&1 ) || fail "a finished run with an archived plan blocked the next run"
+ok "trusted external diff, control-character paths, many matches, finished/reopened/harness-off/hand-ticked no-worktree runs, archived plans, mode switch"
 
 echo ""
 echo "smoke passed: 40/40 checks"

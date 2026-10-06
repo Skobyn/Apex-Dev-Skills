@@ -95,11 +95,18 @@ fi
 # reviewed completion would have them fall below the new fork point
 # (APEX_INIT_FORCE, a moved or new plan, a switch to worktree mode).
 if [[ "$KEEP_RUN" != "1" && "${APEX_GIBSON:-1}" != "0" ]]; then
-  PENDING="$(apex_unreviewed_runs "$REPO_ROOT")"
+  # The new fork point: the base tip for a worktree run, HEAD's line otherwise.
+  if [[ "${APEX_NO_WORKTREE:-0}" == "1" ]]; then GUARD_REV=HEAD
+  else GUARD_REV="$(apex_base_sha "$REPO_ROOT" "$BASE_BRANCH" || echo HEAD)"; fi
+  PENDING="$(apex_unreviewed_runs "$REPO_ROOT" "$GUARD_REV")"
   if [[ -n "$PENDING" ]]; then
-    echo "ERROR: a run in this checkout has commits after its last reviewed completion:" >&2
-    printf '%s\n' "$PENDING" | sed 's/^/         /' >&2
-    echo "       Finish (review and complete) or rewind its tasks first; to abandon it, delete its state under $STATE_BASE (its commits stay unreviewed)." >&2
+    echo "ERROR: another run in this checkout could have unreviewed commits below the new run's fork point:" >&2
+    while IFS=$'\t' read -r sd plan why; do
+      echo "         $plan — $why" >&2
+      echo "           state: $sd" >&2
+    done <<<"$PENDING"
+    echo "       Finish (review and complete) or rewind that run's tasks first. To abandon it after checking those" >&2
+    echo "       commits yourself, delete its state directory (its commits stay unreviewed)." >&2
     exit 1
   fi
 fi

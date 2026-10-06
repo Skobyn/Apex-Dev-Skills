@@ -183,6 +183,25 @@ if not s.get("fork_sha"):
     os.replace(tmp, path)
 PY
 fi
+# A briefed task means the run is active again (a reopened plan): it is no
+# longer retired, so the restart guard covers its commits.
+python3 - "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" <<'PY' || true
+import fcntl, json, os, sys
+path, lock = sys.argv[1:]
+fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX)          # checkpoint.sh's state lock
+s = json.load(open(path))
+if s.get("retired"):
+    s["retired"] = False
+    tmp = path + ".tmp"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644), "w") as f:
+        json.dump(s, f, indent=2)
+    os.replace(tmp, path)
+PY
 TASK_BASE="$(apex_floor "${WORKTREE:-$REPO_ROOT}" || echo none)"
 echo "STATE: $STATE_DIR"
 echo "WORKTREE: $WORKTREE"

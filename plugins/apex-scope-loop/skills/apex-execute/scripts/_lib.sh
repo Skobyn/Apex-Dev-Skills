@@ -183,35 +183,39 @@ print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
   fi
 }
 
-# apex_unreviewed_runs DIR — for every run in this repository without a
-# worktree (not landed, harness on, not finished), print its plan when it has
-# committed changes after its floor (other than its own plan file and the
-# lessons ledger) or has no floor. A fresh run of either mode forks at or
-# below HEAD, so those changes would fall below it unreviewed. "Finished" is
-# derived now, never stored: the plan file exists, planlib counts no task
-# remaining, and the last completion was made with the harness on.
+# apex_unreviewed_runs DIR REV — runs in this repository without a worktree
+# (not landed, harness on) whose own commits would fall below a new fork point
+# at REV: one line "STATE_DIR<TAB>PLAN<TAB>REASON" per run that has committed
+# changes after its floor (other than its plan file and the lessons ledger)
+# or has no floor. A retired run (a reviewed completion left no task; only a
+# completion sets it, rewind and the next brief clear it) is skipped unless
+# its plan file, when present, lists a task again. Commits made after a run
+# retired belong to no plan.
 apex_unreviewed_runs() {
-  local dir="$1" cp plan rel base
+  local dir="$1" rev="$2" cp sd info plan retired rel base excl
   for cp in "$STATE_BASE"/*/checkpoint.json; do
     [[ -f "$cp" ]] || continue
-    plan="$(python3 -c '
+    sd="$(dirname "$cp")"
+    info="$(python3 -c '
 import json, sys
 s = json.load(open(sys.argv[1]))
 skip = s.get("worktree_branch") or s.get("landed") or s.get("harness") == "off"
-print("" if skip else (s.get("plan_path") or "?"))
-print(s.get("last_complete_harness") or "")' "$cp" 2>/dev/null || echo "?")"
-    local last_h="${plan#*$'\n'}"; plan="${plan%%$'\n'*}"
+print("" if skip else (s.get("plan_path") or "?"), "1" if s.get("retired") else "0", sep="\t")' "$cp" 2>/dev/null || printf '?\t0')"
+    plan="${info%%$'\t'*}"; retired="${info##*$'\t'}"
     [[ -n "$plan" ]] || continue
-    if [[ "$last_h" == "1" && -f "$plan" ]] \
-       && [[ "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$plan" 2>/dev/null)" == "0" ]]; then
-      continue   # finished: every task checked, the last one reviewed
+    if [[ "$retired" == "1" ]] && { [[ ! -f "$plan" ]] \
+         || [[ "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$plan" 2>/dev/null)" == "0" ]]; }; then
+      continue
     fi
-    base="$(CHECKPOINT="$cp" apex_floor "$dir" HEAD 2>/dev/null)" || { printf '%s\n' "$plan"; continue; }
-    local excl=(":(exclude,top,literal).claude/apex-scope-loop/LESSONS.md")
+    if ! base="$(CHECKPOINT="$cp" apex_floor "$dir" "$rev" 2>/dev/null)"; then
+      printf '%s\t%s\t%s\n' "$sd" "$plan" "no diff base (it predates the review chain, or its history was replaced)"
+      continue
+    fi
+    excl=(":(exclude,top,literal).claude/apex-scope-loop/LESSONS.md")
     rel="$(python3 -c 'import os,sys; r=os.path.relpath(os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])); print(r if r.endswith(".md") and not r.startswith("..") else "")' "$plan" "$dir")"
     [[ -n "$rel" ]] && excl+=(":(exclude,top,literal)$rel")
-    apex_git "$dir" diff --quiet --no-renames --ignore-submodules=none "$base" HEAD -- . "${excl[@]}" 2>/dev/null \
-      || printf '%s\n' "$plan"
+    apex_git "$dir" diff --quiet --no-renames --ignore-submodules=none "$base" "$rev" -- . "${excl[@]}" 2>/dev/null \
+      || printf '%s\t%s\t%s\n' "$sd" "$plan" "commits after its last reviewed completion (${base:0:12})"
   done
 }
 
