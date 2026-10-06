@@ -1190,6 +1190,9 @@ printf '.*\n!/.gitignore\n.cache/\n' >"$GW/.gitignore"; git -C "$GW" add .gitign
 mkdir -p "$GW/lib"; printf 'evil.py\n' >"$GW/lib/.gitignore"; echo x >"$GW/lib/evil.py"
 has "lib/.gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$GW")" || fail "the gate missed an untracked .gitignore whose name (not directory) a committed '.*' rule ignores"
 rm -rf "$GW/lib"
+printf 'build\n' >>"$GW/.gitignore"; git -C "$GW" commit -qam ignore-build; mkdir -p "$GW/:build"; printf '*\n' >"$GW/:build/.gitignore"; echo x >"$GW/:build/t.py"
+has ":build/.gitignore" "$(source "$EX/_lib.sh"; apex_dirty "$GW")" || fail "the gate trusted an untracked .gitignore in a directory whose name is pathspec magic (:build)"
+rm -rf "$GW/:build"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"

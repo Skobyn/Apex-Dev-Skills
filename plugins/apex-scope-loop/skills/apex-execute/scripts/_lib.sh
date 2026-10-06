@@ -220,12 +220,13 @@ try:
     dirs = sorted({p.rsplit(b"/", 1)[0] for p in cand if b"/" in p})   # a top-level one is never trusted
     if dirs:
         r = subprocess.run(git + ["-c", "core.excludesFile=/dev/null", "check-ignore", "-z", "-v", "-n", "--stdin"],
-                           input=b"".join(d + b"\0" for d in dirs), capture_output=True)
+                           input=b"".join(b"./" + d + b"\0" for d in dirs), capture_output=True)   # ./ : no pathspec magic (":build")
         f = r.stdout.split(b"\0")
         ign = set()
         for i in range(0, len(f) - 3, 4):   # source, line, pattern, path
             if f[i] in tracked and f[i + 2] and not f[i + 2].startswith(b"!"):
-                ign.add(f[i + 3])           # the directory is ignored by a committed rule
+                if f[i + 3].startswith(b"./"):
+                    ign.add(f[i + 3][2:])   # the directory is ignored by a committed rule
         ok = {p for p in cand if b"/" in p and p.rsplit(b"/", 1)[0] in ign}
 except Exception:
     ok = set()
