@@ -183,6 +183,48 @@ print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
   fi
 }
 
+# apex_dirty DIR — why DIR's working tree is not exactly its HEAD: changes and
+# untracked files whatever status.* config says, submodule changes, and index
+# entries flagged skip-worktree or assume-unchanged (they hide edits from
+# status). Prints nothing when clean.
+apex_dirty() {
+  local dir="$1" st flags
+  st="$(apex_git "$dir" status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null)" \
+    || { echo "git status failed in $dir"; return 0; }
+  [[ -n "$st" ]] && printf '%s\n' "$st"
+  flags="$(apex_git "$dir" ls-files -v 2>/dev/null | grep -aE '^([a-z]|S) ' || true)"
+  [[ -n "$flags" ]] && printf 'flagged skip-worktree/assume-unchanged (edits hidden from status): %s\n' "$flags"
+  return 0
+}
+
+# apex_land_reverts DIR BASE_SHA LAND_SHA FORK — paths the base changed since
+# FORK that merging LAND_SHA into BASE_SHA would put back to FORK's version
+# although the run never changed them (an `-s ours` merge of the base into
+# the run branch): those reverts were never in any reviewed task diff. Prints
+# the paths; "!" when the merge cannot be computed.
+apex_land_reverts() {
+  local dir="$1" base="$2" land="$3" fork="$4" merged
+  merged="$(apex_git "$dir" merge-tree --write-tree "$base" "$land" 2>/dev/null)" || { echo "!"; return 0; }
+  merged="${merged%%$'\n'*}"
+  python3 - "$fork" "$base" "$land" "$merged" <<'PY' 3< <(apex_git "$dir" diff --name-only -z --no-renames "$fork" "$base" 2>/dev/null) \
+    4< <(apex_git "$dir" ls-tree -r -z --full-tree "$fork") 5< <(apex_git "$dir" ls-tree -r -z --full-tree "$base") \
+    6< <(apex_git "$dir" ls-tree -r -z --full-tree "$land") 7< <(apex_git "$dir" ls-tree -r -z --full-tree "$merged")
+import os, sys
+def tree(fd):
+    out = {}
+    for rec in os.fdopen(fd, "rb").read().split(b"\0"):
+        if rec:
+            meta, path = rec.split(b"\t", 1)
+            out[path] = meta
+    return out
+changed = [p for p in os.fdopen(3, "rb").read().split(b"\0") if p]
+fork, base, land, merged = tree(4), tree(5), tree(6), tree(7)
+for p in changed:
+    if land.get(p) == fork.get(p) and merged.get(p) != base.get(p):
+        sys.stdout.write(p.decode("utf-8", "replace") + "\n")
+PY
+}
+
 # apex_unreviewed_runs DIR REV — runs in this repository without a worktree
 # (not landed, harness on) whose own commits would fall below a new fork point
 # at REV: one line "STATE_DIR<TAB>PLAN<TAB>REASON" per run that has committed

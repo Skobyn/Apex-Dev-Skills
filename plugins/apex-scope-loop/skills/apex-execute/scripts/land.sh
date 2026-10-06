@@ -134,8 +134,8 @@ fi
 
 # 6. Harness: unreviewed code never reaches the base branch.
 if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
-  if [[ -d "$WT_PATH" ]] && [[ -n "$(apex_git "$WT_PATH" status --porcelain --untracked-files=all --ignore-submodules=none)" ]]; then
-    echo "ERROR: worktree has uncommitted changes that no reviewer has seen — commit, gate, and review them first." >&2
+  if [[ -d "$WT_PATH" ]] && [[ -n "$(apex_dirty "$WT_PATH")" ]]; then
+    echo "ERROR: the worktree is not its head (uncommitted, untracked, or edits hidden by skip-worktree/assume-unchanged) — commit, gate, and review them first." >&2
     exit 1
   fi
   # Every landed commit was verified by a reviewed `complete` (the chain):
@@ -148,6 +148,20 @@ if [[ "${APEX_GIBSON:-1}" != "0" && "$FORCE" != "--force" ]]; then
   fi
   if ! apex_git "$REPO_ROOT" diff --quiet --no-renames --ignore-submodules=none "$LAND_FLOOR" "$LAND_SHA" 2>/dev/null; then
     echo "ERROR: ${WT_BRANCH} has commits after the last reviewed completion (${LAND_FLOOR:0:12}..${LAND_SHA:0:12}) — review and complete them as a task first." >&2
+    exit 1
+  fi
+  # The landed change is the reviewed change: merging must not put base
+  # changes back to the fork's version when the run never touched them.
+  LAND_BASE="$(apex_base_sha "$REPO_ROOT" "$BASE_BRANCH" || true)"
+  REVERTS="$(apex_land_reverts "$REPO_ROOT" "$LAND_BASE" "$LAND_SHA" "$(read_field fork_sha)")"
+  if [[ -z "$LAND_BASE" || "$REVERTS" == "!" ]]; then
+    echo "ERROR: cannot compute the merge of ${LAND_SHA:0:12} into $BASE_BRANCH (conflicts, or git older than 2.38) — merge the base into the run branch, review it as a task, then land." >&2
+    exit 1
+  fi
+  if [[ -n "$REVERTS" ]]; then
+    echo "ERROR: landing would revert base changes no review covered (the run branch merged $BASE_BRANCH without them, e.g. -s ours):" >&2
+    printf '%s\n' "$REVERTS" | sed 's/^/         /' >&2
+    echo "       Merge $BASE_BRANCH into the run branch normally (keeping its changes), review that as a task, then land." >&2
     exit 1
   fi
   if ! "$APEX_EXECUTE_SCRIPTS/green-gate.sh" "$PLAN" check; then

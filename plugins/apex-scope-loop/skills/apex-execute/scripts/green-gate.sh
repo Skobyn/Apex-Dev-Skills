@@ -120,9 +120,10 @@ run_step() {
 
 HEAD_SHA="$(apex_git "$WT" rev-parse HEAD 2>/dev/null || echo unknown)"
 
-if [[ "$MODE" == "check" ]] && [[ -n "$(apex_git "$WT" status --porcelain 2>/dev/null)" ]]; then
+if [[ "$MODE" == "check" ]] && DIRTY_WHY="$(apex_dirty "$WT")" && [[ -n "$DIRTY_WHY" ]]; then
   echo "HEAD_SHA: $HEAD_SHA"
-  echo "GATE: FAIL uncommitted changes in $WT — commit first; the gate and the reviewer bind to an exact head SHA"
+  echo "GATE: FAIL the working tree in $WT is not its head (uncommitted, untracked or hidden edits) — the gate and the reviewer bind to an exact head SHA"
+  printf '%s\n' "$DIRTY_WHY" | sed 's/^/  /' >&2
   exit 1
 fi
 
