@@ -1233,6 +1233,15 @@ has "lib/.git (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fai
 rm -rf "$SM/lib/.git"; echo 'gitdir: /nonexistent' >"$SM/lib/.Git"
 has "lib/.Git (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a .git file below the top"
 rm -f "$SM/lib/.Git"
+mkdir -p "$SM/.GIT"; echo x >"$SM/.GIT/conftest.py"
+has ".GIT (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a top-level directory named .GIT"
+rm -rf "$SM/.GIT"
+# Run state never lives in a linked worktree: a .dev-plan-state there is checked.
+git -C "$SM" worktree add -q "$SMOKE_TMP/smwt" 2>/dev/null
+[ -z "$(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/smwt")" ] || fail "a clean linked worktree with submodules was reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/smwt")"
+mkdir -p "$SMOKE_TMP/smwt/.dev-plan-state"; echo x >"$SMOKE_TMP/smwt/.dev-plan-state/conftest.py"
+has ".dev-plan-state" "$(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/smwt")" || fail "the gate missed files in a .dev-plan-state directory inside a linked worktree"
+rm -rf "$SMOKE_TMP/smwt/.dev-plan-state"
 rm -f "$GW/extra.txt"; echo BADD >"$GW/impl.txt"; git -C "$GW" commit -qam badd; git -C "$GW" config core.trustctime false
 touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r "$SMOKE_TMP/g1.ref" "$GW/impl.txt"
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"

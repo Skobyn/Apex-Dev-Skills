@@ -193,8 +193,13 @@ print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
 # entries flagged skip-worktree or assume-unchanged (they hide edits from
 # status), and the same inside every submodule. Prints nothing when clean.
 apex_dirty() {
-  local dir="$1" depth="${2:-0}" st flags untracked gl sub rel state=':(exclude,top).dev-plan-state'
-  (( depth == 0 )) || state=':(exclude,top).git'   # the run's state lives only at its top
+  local dir="$1" depth="${2:-0}" st flags untracked gl sub rel state=':(exclude,top).git' skipstate=0
+  # Run state lives in the main checkout's .dev-plan-state (a run without a
+  # worktree); a linked worktree (its .git is a file) or a submodule never
+  # holds it, so there it is checked like any other directory.
+  if (( depth == 0 )) && [[ -d "$dir/.git" && ! -L "$dir/.git" ]]; then
+    state=':(exclude,top).dev-plan-state'; skipstate=1
+  fi
   st="$(apex_git "$dir" status --porcelain --untracked-files=no --ignore-submodules=none 2>/dev/null)" \
     || { echo "git status failed in $dir"; return 0; }
   [[ -n "$st" ]] && printf '%s\n' "$st"
@@ -254,7 +259,7 @@ for p in cand:
   local unreadable
   unreadable="$(apex_git "$dir" ls-files -z --stage 2>/dev/null | python3 -c '
 import os, sys
-top, depth = sys.argv[1], int(sys.argv[2])
+top, skipstate = sys.argv[1], sys.argv[2] == "1"
 links = set()
 for e in sys.stdin.buffer.read().split(b"\0"):
     if e.startswith(b"160000 ") and b"\t" in e:
@@ -266,21 +271,21 @@ for root, dirs, files in os.walk(top, onerror=err):
     rel = os.path.relpath(root, top)
     rel = "" if rel == "." else rel + "/"
     for name in dirs + files:
-        if name.lower() == ".git" and rel:
+        if name.lower() == ".git" and (rel or name != ".git"):
             bad.append(os.path.join(root, name) + " (a .git entry)")
     keep = []
     for d in dirs:
         p = os.path.join(root, d)
         if d.lower() == ".git" or (rel + d) in links:
-            continue                      # top .git; reported above; or a submodule
-        if not rel and d == ".dev-plan-state" and depth == 0:
+            continue                      # the top .git; reported above; or a submodule
+        if not rel and d == ".dev-plan-state" and skipstate:
             continue
         if not os.path.islink(p) and not os.access(p, os.R_OK | os.X_OK):
             bad.append(p)
         keep.append(d)
     dirs[:] = keep
 for p in sorted(set(bad))[:5]:
-    print(os.path.relpath(p, top) if p != "?" else p)' "$dir" "$depth" 2>/dev/null || echo "(could not scan $dir)")"
+    print(os.path.relpath(p, top) if p != "?" else p)' "$dir" "$skipstate" 2>/dev/null || echo "(could not scan $dir)")"
   [[ -n "$unreadable" ]] && printf 'directories that cannot be listed, or nested .git entries (git hides their files): %s\n' "${unreadable//$'\n'/, }"
   # Gitlinks: neither status nor ls-files looks at files in a submodule
   # directory that is not checked out (a worktree never checks submodules
