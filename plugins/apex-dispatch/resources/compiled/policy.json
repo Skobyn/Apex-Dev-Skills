@@ -1,0 +1,1150 @@
+{
+  "classes": [
+    {
+      "budgets": {
+        "minutes": 15,
+        "spawns": 2,
+        "usd": 0.5
+      },
+      "external_builders": true,
+      "fanout": {
+        "max_lanes": 1,
+        "shape": "single"
+      },
+      "id": "docs",
+      "providers_allowed": [
+        "claude-session",
+        "claude-p",
+        "codex",
+        "opencode-ollama",
+        "aider-ollama"
+      ],
+      "requires_command_acceptance": false,
+      "review_diversity": {
+        "A": "off",
+        "B": "warn",
+        "C": "block"
+      },
+      "review_shape": {
+        "A": "solo",
+        "B": "six-lens",
+        "C": "fanout6+adversarial"
+      },
+      "roster": [
+        "docs",
+        "reviewer"
+      ],
+      "tier_ceiling": "standard",
+      "tier_floor": "cheap"
+    },
+    {
+      "budgets": {
+        "minutes": 30,
+        "spawns": 3,
+        "usd": 1.0
+      },
+      "external_builders": true,
+      "fanout": {
+        "max_lanes": 1,
+        "shape": "single"
+      },
+      "id": "tests",
+      "providers_allowed": [
+        "claude-session",
+        "claude-p",
+        "codex",
+        "opencode-ollama"
+      ],
+      "requires_command_acceptance": true,
+      "review_diversity": {
+        "A": "off",
+        "B": "warn",
+        "C": "block"
+      },
+      "review_shape": {
+        "A": "solo",
+        "B": "six-lens",
+        "C": "fanout6+adversarial"
+      },
+      "roster": [
+        "tester",
+        "reviewer"
+      ],
+      "tier_ceiling": "standard",
+      "tier_floor": "cheap"
+    },
+    {
+      "budgets": {
+        "minutes": 30,
+        "spawns": 4,
+        "usd": 1.5
+      },
+      "external_builders": true,
+      "fanout": {
+        "max_lanes": 3,
+        "shape": "lanes"
+      },
+      "id": "mechanical",
+      "providers_allowed": [
+        "claude-session",
+        "claude-p",
+        "codex"
+      ],
+      "requires_command_acceptance": true,
+      "review_diversity": {
+        "A": "off",
+        "B": "warn",
+        "C": "block"
+      },
+      "review_shape": {
+        "A": "solo",
+        "B": "six-lens",
+        "C": "fanout6+adversarial"
+      },
+      "roster": [
+        "builder",
+        "reviewer"
+      ],
+      "tier_ceiling": "standard",
+      "tier_floor": "standard"
+    },
+    {
+      "budgets": {
+        "minutes": 60,
+        "spawns": 6,
+        "usd": 4.0
+      },
+      "external_builders": false,
+      "fanout": {
+        "max_lanes": 1,
+        "shape": "single"
+      },
+      "id": "feature",
+      "providers_allowed": [
+        "claude-session",
+        "claude-p"
+      ],
+      "requires_command_acceptance": true,
+      "review_diversity": {
+        "A": "off",
+        "B": "warn",
+        "C": "block"
+      },
+      "review_shape": {
+        "A": "solo",
+        "B": "six-lens",
+        "C": "fanout6+adversarial"
+      },
+      "roster": [
+        "builder",
+        "tester",
+        "reviewer"
+      ],
+      "size_rule": {
+        "large_effort": "high",
+        "small_max_files": 6,
+        "small_max_lines": 150
+      },
+      "tier_ceiling": "strong",
+      "tier_floor": "standard"
+    },
+    {
+      "brief": "diagnosis-first",
+      "budgets": {
+        "minutes": 60,
+        "spawns": 6,
+        "usd": 4.0
+      },
+      "effort": "high",
+      "external_builders": true,
+      "fanout": {
+        "max_lanes": 1,
+        "shape": "single"
+      },
+      "id": "bugfix",
+      "providers_allowed": [
+        "claude-session",
+        "claude-p",
+        "codex"
+      ],
+      "requires_command_acceptance": true,
+      "review_diversity": {
+        "A": "off",
+        "B": "warn",
+        "C": "block"
+      },
+      "review_shape": {
+        "A": "solo",
+        "B": "six-lens",
+        "C": "fanout6+adversarial"
+      },
+      "roster": [
+        "diagnoser",
+        "builder",
+        "reviewer"
+      ],
+      "tier_ceiling": "strong",
+      "tier_floor": "standard"
+    },
+    {
+      "budgets": {
+        "minutes": 120,
+        "spawns": 10,
+        "usd": 10.0
+      },
+      "external_builders": false,
+      "fanout": {
+        "max_lanes": 1,
+        "shape": "single"
+      },
+      "human_gate": "G12",
+      "id": "migration",
+      "providers_allowed": [
+        "claude-session",
+        "claude-p",
+        "codex"
+      ],
+      "requires_command_acceptance": true,
+      "review_diversity": {
+        "A": "block",
+        "B": "block",
+        "C": "block"
+      },
+      "review_shape": {
+        "A": "fanout6+adversarial",
+        "B": "fanout6+adversarial",
+        "C": "fanout6+adversarial"
+      },
+      "roster": [
+        "builder",
+        "tester",
+        "reviewer",
+        "adversarial-reviewer"
+      ],
+      "tier_ceiling": "max",
+      "tier_floor": "strong"
+    },
+    {
+      "budgets": {
+        "minutes": 120,
+        "spawns": 10,
+        "usd": 10.0
+      },
+      "external_builders": false,
+      "fanout": {
+        "max_lanes": 1,
+        "shape": "single"
+      },
+      "human_gate": "G12",
+      "id": "security",
+      "providers_allowed": [
+        "claude-session",
+        "claude-p",
+        "codex"
+      ],
+      "requires_command_acceptance": true,
+      "review_diversity": {
+        "A": "block",
+        "B": "block",
+        "C": "block"
+      },
+      "review_shape": {
+        "A": "fanout6+adversarial",
+        "B": "fanout6+adversarial",
+        "C": "fanout6+adversarial"
+      },
+      "roster": [
+        "builder",
+        "tester",
+        "reviewer",
+        "adversarial-reviewer"
+      ],
+      "tier_ceiling": "max",
+      "tier_floor": "strong"
+    },
+    {
+      "budgets": {
+        "minutes": 0,
+        "spawns": 0,
+        "usd": 0.0
+      },
+      "external_builders": false,
+      "fanout": {
+        "max_lanes": 1,
+        "shape": "single"
+      },
+      "human_gate": "G12",
+      "id": "gate",
+      "providers_allowed": [
+        "claude-session"
+      ],
+      "requires_command_acceptance": false,
+      "review_diversity": {
+        "A": "off",
+        "B": "off",
+        "C": "off"
+      },
+      "review_shape": {
+        "A": "none",
+        "B": "none",
+        "C": "none"
+      },
+      "roster": [],
+      "tier_ceiling": "cheap",
+      "tier_floor": "cheap"
+    }
+  ],
+  "disabled": [],
+  "escalation": {
+    "diagnoser_family": "different",
+    "diagnoser_role": "diagnoser",
+    "max_review_rounds": 3,
+    "prior_failure_summary_tokens": 400,
+    "rungs": [
+      {
+        "action": "effort_up",
+        "at_failures": 1,
+        "diagnoser": false,
+        "id": "effort-up"
+      },
+      {
+        "action": "model_up",
+        "at_failures": 2,
+        "diagnoser": true,
+        "id": "model-up"
+      },
+      {
+        "action": "halt",
+        "at_failures": 3,
+        "diagnoser": false,
+        "id": "halt"
+      }
+    ]
+  },
+  "hard_rules": [
+    {
+      "description": "Tier C, or security or migration tags, route as class security: strong floor, six lenses plus adversarial, diversity block, single fan-out, no external builders, human gate G12 through checkpoint approve.",
+      "id": "tier-c-floor",
+      "kind": "route_floor",
+      "match": "any",
+      "then": {
+        "class": "security",
+        "external_builders": false,
+        "fanout": "single",
+        "human_gate": "G12",
+        "review_diversity": "block",
+        "review_shape": "fanout6+adversarial",
+        "tier_floor": "strong"
+      },
+      "when": {
+        "risk_tier": "C",
+        "tags_any": [
+          "security",
+          "migration",
+          "tier:c"
+        ]
+      }
+    },
+    {
+      "description": "Tier B reviews are six-lens with a diversity warning.",
+      "id": "tier-b-review",
+      "kind": "route_floor",
+      "match": "all",
+      "then": {
+        "review_diversity": "warn",
+        "review_shape": "six-lens"
+      },
+      "when": {
+        "risk_tier": "B"
+      }
+    },
+    {
+      "description": "A repo with no runnable check has no code-computed stop signal, so the floor is standard and the reviewer is a Claude reviewer.",
+      "id": "no-runnable-check",
+      "kind": "route_floor",
+      "match": "all",
+      "then": {
+        "reviewer_family": "anthropic",
+        "tier_floor": "standard"
+      },
+      "when": {
+        "runnable_check": false
+      }
+    },
+    {
+      "description": "Two or more consecutive failures put the floor one rung above the last attempt.",
+      "id": "repeat-failure-floor",
+      "kind": "route_floor",
+      "match": "all",
+      "then": {
+        "tier_floor_rungs_above_last": 1
+      },
+      "when": {
+        "consecutive_failures_gte": 2
+      }
+    },
+    {
+      "description": "External providers build only docs, tests, mechanical and bugfix work at tier standard or below, and never Tier C.",
+      "id": "external-builder-scope",
+      "kind": "route_floor",
+      "match": "all",
+      "then": {
+        "classes_only": [
+          "docs",
+          "tests",
+          "mechanical",
+          "bugfix"
+        ],
+        "tier_ceiling": "standard"
+      },
+      "when": {
+        "provider_external": true,
+        "role": "builder"
+      }
+    },
+    {
+      "deny": [
+        "Bash(* --dangerously-*)",
+        "Bash(* --yolo*)",
+        "Bash(* --always-approve*)",
+        "Bash(* --full-auto*)",
+        "Bash(git push --force*)"
+      ],
+      "description": "Layer A permission deny rules. Deny outranks every hook and verdict and holds in bypassPermissions. No ask rules anywhere.",
+      "id": "deny-bypass-flags",
+      "kind": "permission_deny"
+    },
+    {
+      "description": "Layer I sandbox settings: the sandbox must be on, must fail when unavailable, and never runs commands unsandboxed. Allowed network domains come from the enabled providers' hosts.",
+      "id": "os-confinement",
+      "kind": "sandbox",
+      "sandbox": {
+        "allowUnsandboxedCommands": false,
+        "enabled": true,
+        "failIfUnavailable": true
+      }
+    }
+  ],
+  "mcp": {
+    "default_deny": false,
+    "servers_allow": []
+  },
+  "providers": [
+    {
+      "acceptance_window": 20,
+      "allowed_classes": [
+        "docs",
+        "tests",
+        "mechanical",
+        "feature",
+        "bugfix",
+        "migration",
+        "security",
+        "gate"
+      ],
+      "binary": null,
+      "enabled": true,
+      "family": "anthropic",
+      "forbidden_flags": [],
+      "forced_flags": [],
+      "hosts": [
+        "api.anthropic.com"
+      ],
+      "id": "claude-session",
+      "key_env": null,
+      "kind": "in-session",
+      "max_tier": "max",
+      "min_acceptance": 0.7,
+      "reports_usage": true,
+      "roles_allowed": [
+        "builder",
+        "tester",
+        "docs",
+        "researcher",
+        "reviewer",
+        "reviewer-exec",
+        "adversarial-reviewer",
+        "diagnoser",
+        "provider-runner"
+      ],
+      "sandbox_mode": null,
+      "status": "verified"
+    },
+    {
+      "acceptance_window": 20,
+      "allowed_classes": [
+        "docs",
+        "tests",
+        "mechanical",
+        "feature",
+        "bugfix",
+        "migration",
+        "security"
+      ],
+      "binary": "claude",
+      "enabled": true,
+      "family": "anthropic-separate-session",
+      "forbidden_flags": [
+        "--bare",
+        "--dangerously-skip-permissions",
+        "--allow-dangerously-skip-permissions"
+      ],
+      "forced_flags": [
+        "-p",
+        "--setting-sources",
+        "user",
+        "--permission-mode",
+        "dontAsk",
+        "--permission-prompts",
+        "none",
+        "--output-format",
+        "json"
+      ],
+      "hosts": [
+        "api.anthropic.com"
+      ],
+      "id": "claude-p",
+      "key_env": "ANTHROPIC_API_KEY",
+      "kind": "subprocess",
+      "max_tier": "standard",
+      "min_acceptance": 0.7,
+      "reports_usage": true,
+      "roles_allowed": [
+        "builder",
+        "tester",
+        "docs",
+        "reviewer",
+        "adversarial-reviewer",
+        "diagnoser"
+      ],
+      "sandbox_mode": null,
+      "status": "verified"
+    },
+    {
+      "acceptance_window": 20,
+      "allowed_classes": [
+        "docs",
+        "tests",
+        "mechanical",
+        "feature",
+        "bugfix",
+        "migration",
+        "security"
+      ],
+      "binary": "codex",
+      "enabled": true,
+      "family": "openai",
+      "forbidden_flags": [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--approve-for-me",
+        "danger-full-access",
+        "-a"
+      ],
+      "forced_flags": [
+        "exec",
+        "--json",
+        "--sandbox",
+        "workspace-write",
+        "--skip-git-repo-check",
+        "-c",
+        "approval_policy=never",
+        "--ignore-user-config"
+      ],
+      "hosts": [
+        "api.openai.com"
+      ],
+      "id": "codex",
+      "key_env": "OPENAI_API_KEY",
+      "kind": "subprocess",
+      "max_tier": "standard",
+      "min_acceptance": 0.7,
+      "reports_usage": true,
+      "roles_allowed": [
+        "builder",
+        "tester",
+        "docs",
+        "reviewer",
+        "adversarial-reviewer",
+        "diagnoser"
+      ],
+      "sandbox_mode": "workspace-write",
+      "status": "verified"
+    },
+    {
+      "acceptance_window": 20,
+      "allowed_classes": [
+        "docs",
+        "tests"
+      ],
+      "binary": "grok",
+      "enabled": false,
+      "family": "xai",
+      "forbidden_flags": [
+        "--dangerously-skip-permissions",
+        "--yolo"
+      ],
+      "forced_flags": [
+        "-p",
+        "--sandbox",
+        "strict",
+        "--worktree",
+        "--no-subagents",
+        "--output-format",
+        "streaming-messages-json"
+      ],
+      "hosts": [
+        "api.x.ai"
+      ],
+      "id": "grok",
+      "key_env": "XAI_API_KEY",
+      "kind": "subprocess",
+      "max_tier": "cheap",
+      "min_acceptance": 0.7,
+      "reports_usage": true,
+      "roles_allowed": [
+        "docs",
+        "tester",
+        "reviewer",
+        "diagnoser"
+      ],
+      "sandbox_mode": "strict",
+      "status": "flagged-off"
+    },
+    {
+      "acceptance_window": 20,
+      "allowed_classes": [
+        "docs",
+        "tests"
+      ],
+      "binary": "opencode",
+      "enabled": false,
+      "family": "local",
+      "forbidden_flags": [
+        "--dangerously-skip-permissions"
+      ],
+      "forced_flags": [
+        "run",
+        "--format",
+        "json"
+      ],
+      "hosts": [],
+      "id": "opencode-ollama",
+      "key_env": null,
+      "kind": "subprocess",
+      "max_tier": "cheap",
+      "min_acceptance": 0.7,
+      "reports_usage": false,
+      "roles_allowed": [
+        "docs",
+        "tester"
+      ],
+      "sandbox_mode": null,
+      "status": "flagged-off"
+    },
+    {
+      "acceptance_window": 20,
+      "allowed_classes": [
+        "docs",
+        "tests"
+      ],
+      "binary": "aider",
+      "enabled": false,
+      "family": "local",
+      "forbidden_flags": [
+        "--auto-commits",
+        "--dirty-commits"
+      ],
+      "forced_flags": [
+        "--yes",
+        "--no-auto-commits",
+        "--no-dirty-commits",
+        "--no-git",
+        "--no-auto-lint",
+        "--no-auto-test"
+      ],
+      "hosts": [],
+      "id": "aider-ollama",
+      "key_env": null,
+      "kind": "subprocess",
+      "max_tier": "cheap",
+      "min_acceptance": 0.7,
+      "reports_usage": false,
+      "roles_allowed": [
+        "docs",
+        "tester"
+      ],
+      "sandbox_mode": null,
+      "status": "flagged-off"
+    },
+    {
+      "acceptance_window": 20,
+      "allowed_classes": [
+        "docs",
+        "tests",
+        "mechanical"
+      ],
+      "binary": null,
+      "enabled": false,
+      "family": "openai",
+      "forbidden_flags": [],
+      "forced_flags": [],
+      "hosts": [
+        "api.openai.com"
+      ],
+      "id": "openai-sdk",
+      "key_env": "OPENAI_API_KEY",
+      "kind": "stub",
+      "max_tier": "standard",
+      "min_acceptance": 0.7,
+      "reports_usage": true,
+      "roles_allowed": [
+        "builder",
+        "tester",
+        "docs"
+      ],
+      "sandbox_mode": null,
+      "status": "stub"
+    }
+  ],
+  "pruning": {
+    "enabled": true,
+    "max_lines": 200,
+    "runners": [
+      {
+        "id": "pytest",
+        "pattern": "pytest"
+      },
+      {
+        "id": "npm-test",
+        "pattern": "npm test"
+      },
+      {
+        "id": "vitest",
+        "pattern": "vitest"
+      },
+      {
+        "id": "jest",
+        "pattern": "jest"
+      },
+      {
+        "id": "cargo-test",
+        "pattern": "cargo test"
+      },
+      {
+        "id": "go-test",
+        "pattern": "go test"
+      },
+      {
+        "id": "ruff",
+        "pattern": "ruff"
+      },
+      {
+        "id": "eslint",
+        "pattern": "eslint"
+      },
+      {
+        "id": "tsc",
+        "pattern": "tsc"
+      }
+    ]
+  },
+  "roles": [
+    {
+      "description": "Builds one routed task inside the plan worktree and commits it, confined to the task's owned paths. Dispatched by apex-dispatch exactly as routed.",
+      "disallowed_tools": [
+        "Agent",
+        "NotebookEdit"
+      ],
+      "does": "Implement exactly the routed task in the plan worktree, staying inside the task's owned Paths, until its Acceptance check passes locally. Commit the work with a message naming the task.",
+      "effort": "medium",
+      "effort_variants": [
+        "high",
+        "xhigh"
+      ],
+      "enabled": true,
+      "id": "builder",
+      "maxTurns": 60,
+      "mcp_allow": [],
+      "read_only": false,
+      "returns": "The commit SHA, the Acceptance command with its result, the files changed, and anything left undone stated plainly. Never claim done without the command output.",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Edit",
+        "Write",
+        "MultiEdit",
+        "Bash"
+      ]
+    },
+    {
+      "description": "Writes or repairs tests for one routed task inside the plan worktree, confined to the task's owned paths.",
+      "disallowed_tools": [
+        "Agent",
+        "NotebookEdit"
+      ],
+      "does": "Add or repair the tests the routed task calls for, run them, and commit. Never delete, skip or weaken an existing test to reach green.",
+      "effort": "medium",
+      "effort_variants": [],
+      "enabled": true,
+      "id": "tester",
+      "maxTurns": 50,
+      "mcp_allow": [],
+      "read_only": false,
+      "returns": "The commit SHA, the test command with its pass and fail counts, and the tests added or changed.",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Edit",
+        "Write",
+        "MultiEdit",
+        "Bash"
+      ]
+    },
+    {
+      "description": "Writes or updates documentation for one routed docs task, confined to the task's owned paths.",
+      "disallowed_tools": [
+        "Agent",
+        "Bash",
+        "NotebookEdit"
+      ],
+      "does": "Write or update the documentation the routed task names, matching the repo's existing voice and structure.",
+      "effort": "low",
+      "effort_variants": [],
+      "enabled": true,
+      "id": "docs",
+      "maxTurns": 30,
+      "mcp_allow": [],
+      "read_only": false,
+      "returns": "The files changed and a one-paragraph summary of what a reader now learns that they could not before.",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Edit",
+        "Write",
+        "MultiEdit"
+      ]
+    },
+    {
+      "description": "Read-only researcher that answers one routed question from the repository and the web, without changing anything.",
+      "disallowed_tools": [
+        "Bash",
+        "Edit",
+        "Write",
+        "MultiEdit",
+        "NotebookEdit",
+        "Agent"
+      ],
+      "does": "Answer the routed question from the repository and public sources. Change nothing.",
+      "effort": "low",
+      "effort_variants": [],
+      "enabled": true,
+      "id": "researcher",
+      "maxTurns": 30,
+      "mcp_allow": [],
+      "read_only": true,
+      "returns": "A direct answer first, then the evidence as file paths with line numbers or URLs, and what remains unknown.",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "WebSearch",
+        "WebFetch"
+      ]
+    },
+    {
+      "description": "Independent read-only reviewer for one routed task. Grades the exact head SHA from the brief against the Acceptance line and ends with one VERDICT line. Has no shell and no edit tools.",
+      "disallowed_tools": [
+        "Bash",
+        "Edit",
+        "Write",
+        "MultiEdit",
+        "NotebookEdit",
+        "Agent",
+        "mcp__*"
+      ],
+      "does": "Review the diff named in the brief against the task's Acceptance line and the lenses the route assigns. The gate and Acceptance results are already in the brief; you have no shell, so cite them rather than re-running anything.",
+      "effort": "high",
+      "effort_variants": [],
+      "enabled": true,
+      "id": "reviewer",
+      "maxTurns": 40,
+      "mcp_allow": [],
+      "read_only": true,
+      "returns": "Findings as file:line with a concrete failure scenario, a clearance line per lens, and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES.",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ]
+    },
+    {
+      "description": "Opt-in reviewer that may run read-only shell commands. No edit tools; its transcript is audited. Exists only when a repo opts in with the settings snippet applied.",
+      "disallowed_tools": [
+        "Edit",
+        "Write",
+        "MultiEdit",
+        "NotebookEdit",
+        "Agent",
+        "mcp__*"
+      ],
+      "does": "Review the diff named in the brief and run read-only commands to confirm the Acceptance result. Never edit, commit or push.",
+      "effort": "high",
+      "effort_variants": [],
+      "enabled": false,
+      "id": "reviewer-exec",
+      "maxTurns": 40,
+      "mcp_allow": [],
+      "read_only": true,
+      "returns": "Findings as file:line with a concrete failure scenario, the commands run with their results, and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES.",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash"
+      ]
+    },
+    {
+      "description": "Read-only refutation pass for Tier C reviews. Tries to break the approving reviewers' conclusions with concrete inputs. Has no shell and no edit tools.",
+      "disallowed_tools": [
+        "Bash",
+        "Edit",
+        "Write",
+        "MultiEdit",
+        "NotebookEdit",
+        "Agent",
+        "mcp__*"
+      ],
+      "does": "Read the approving reviews and the diff in the brief, then try to refute each conclusion with a concrete input or state that produces a wrong result.",
+      "effort": "high",
+      "effort_variants": [],
+      "enabled": true,
+      "id": "adversarial-reviewer",
+      "maxTurns": 40,
+      "mcp_allow": [],
+      "read_only": true,
+      "returns": "Each refutation attempt with its input and outcome, and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES.",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ]
+    },
+    {
+      "description": "Read-only diagnoser called on the second failure of a task. Explains why the previous attempts failed so the next builder starts from a cause, not a symptom.",
+      "disallowed_tools": [
+        "Bash",
+        "Edit",
+        "Write",
+        "MultiEdit",
+        "NotebookEdit",
+        "Agent",
+        "mcp__*"
+      ],
+      "does": "Read the failure summaries, the diff and the gate output in the brief and locate the root cause. Change nothing.",
+      "effort": "high",
+      "effort_variants": [],
+      "enabled": true,
+      "id": "diagnoser",
+      "maxTurns": 40,
+      "mcp_allow": [],
+      "read_only": true,
+      "returns": "The root cause with file:line evidence, the smallest fix that addresses it, and what the next attempt must not repeat, in under 400 words.",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ]
+    },
+    {
+      "description": "Runs one external worker shim for a routed task and reports its result. Calls only the bin/worker scripts; never edits files.",
+      "disallowed_tools": [
+        "Edit",
+        "Write",
+        "MultiEdit",
+        "NotebookEdit",
+        "Agent",
+        "mcp__*"
+      ],
+      "does": "Run the single worker shim command given in the brief from the orchestrator's instructions, wait for its DISPATCH-DONE sentinel, and read its result file.",
+      "effort": "low",
+      "effort_variants": [],
+      "enabled": true,
+      "id": "provider-runner",
+      "maxTurns": 20,
+      "mcp_allow": [],
+      "read_only": true,
+      "returns": "The shim's exit code, the sentinel line, and the path and contents summary of its result file. Never apply the patch yourself.",
+      "tools": [
+        "Read",
+        "Bash"
+      ]
+    }
+  ],
+  "semantic": {
+    "cmd_env": "APEX_DECIDE_CMD",
+    "default_cmd": "apex-decide",
+    "enabled": true,
+    "min_p": 0.8,
+    "rubrics": {
+      "contamination": "dispatch/contamination@1",
+      "escalation": "escalation@1",
+      "lens_set": "dispatch/lens-set@1",
+      "risk_tier": "risk-tier@1",
+      "size": "dispatch/size@1",
+      "task_class": "dispatch/task-class@1"
+    },
+    "timeout_ms": 2000,
+    "uncalibrated_may_lower_cost": false,
+    "uncertain_tier": "standard"
+  },
+  "tag_classes": [
+    {
+      "class": "gate",
+      "id": "gate-tags",
+      "tags": [
+        "gate",
+        "gate:human",
+        "gate:partner"
+      ]
+    },
+    {
+      "class": "security",
+      "id": "security-tags",
+      "tags": [
+        "security",
+        "auth",
+        "pii",
+        "consent",
+        "money",
+        "billing",
+        "tier:c"
+      ]
+    },
+    {
+      "class": "migration",
+      "id": "migration-tags",
+      "tags": [
+        "migration",
+        "schema",
+        "db",
+        "data"
+      ]
+    },
+    {
+      "class": "bugfix",
+      "id": "bugfix-tags",
+      "tags": [
+        "bug",
+        "bugfix",
+        "fix",
+        "regression",
+        "incident"
+      ]
+    },
+    {
+      "class": "tests",
+      "id": "tests-tags",
+      "tags": [
+        "test",
+        "tests",
+        "qa",
+        "e2e"
+      ]
+    },
+    {
+      "class": "docs",
+      "id": "docs-tags",
+      "tags": [
+        "docs",
+        "doc",
+        "readme",
+        "adr"
+      ]
+    },
+    {
+      "class": "mechanical",
+      "id": "mechanical-tags",
+      "tags": [
+        "mechanical",
+        "refactor",
+        "rename",
+        "chore",
+        "deps",
+        "lint"
+      ]
+    },
+    {
+      "class": "feature",
+      "id": "feature-tags",
+      "tags": [
+        "feature",
+        "backend",
+        "frontend",
+        "ui",
+        "api",
+        "cli"
+      ]
+    }
+  ],
+  "tiers": [
+    {
+      "context_budget_tokens": 40000,
+      "effort": "low",
+      "id": "cheap",
+      "maxTurns": 30,
+      "model": "haiku",
+      "price_usd_per_mtok": {
+        "cache_read": 0.1,
+        "cache_write": 1.25,
+        "input": 1.0,
+        "output": 5.0
+      },
+      "rank": 0
+    },
+    {
+      "context_budget_tokens": 80000,
+      "effort": "medium",
+      "id": "standard",
+      "maxTurns": 60,
+      "model": "sonnet",
+      "price_usd_per_mtok": {
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+        "input": 3.0,
+        "output": 15.0
+      },
+      "rank": 1
+    },
+    {
+      "context_budget_tokens": 120000,
+      "effort": "high",
+      "id": "strong",
+      "maxTurns": 80,
+      "model": "opus",
+      "price_usd_per_mtok": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5.0,
+        "output": 25.0
+      },
+      "rank": 2
+    },
+    {
+      "context_budget_tokens": 160000,
+      "effort": "xhigh",
+      "id": "max",
+      "maxTurns": 100,
+      "model": "opus",
+      "price_usd_per_mtok": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5.0,
+        "output": 25.0
+      },
+      "rank": 3
+    }
+  ]
+}

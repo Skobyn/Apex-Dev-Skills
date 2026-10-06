@@ -23,7 +23,21 @@ Ship **apex-dispatch** as a separate plugin that routes and governs delegation, 
   - skills `dispatch-route`, `dispatch-worker`; commands `route`, `run`, `done`, `report`, `doctor`, `compile`.
 - **Dependency:** apex-scope-loop ≥ 0.3.0 is found as a sibling (`APEX_SCOPE_LOOP_ROOT` overrides). apex-scope-loop finds apex-dispatch by its executable `scripts/route.sh`; until that exists, apex-scope-loop behaves as if apex-dispatch were absent.
 - **Namespace:** `apex-dispatch:routes/<plan-hash>/<line>`, `apex-dispatch:ledger/<plan-hash>`, `apex-dispatch:providers`; on disk only `<state>/dispatch/` and `<state>/adhoc/`, by reference to apex-scope-loop ADR-0003, which owns `.dev-plan-state/` and `ACTIVE`.
-- **Governance layers, strongest first:** loader-enforced tool presence in generated agents (`tools`/`disallowedTools`; reviewers have no Bash, no edits); PreToolUse denies from the compiled policy; Stop/SubagentStop checks; the ledger. Hard rules outrank model verdicts; no new model-judged gates.
+- **Governance layers, strongest first** (spec §5.3):
+  - **A. Permission deny rules** in `resources/settings-snippet.json` (bypass flags, `git push --force`), applied by the user; no `ask` rules anywhere.
+  - **B. apex-guardrails always-on floor:** the same bypass-flag and destructive-git denials, independent of any active route.
+  - **C. Loader-enforced tool presence** in generated `agents/*.md` (`tools`/`disallowedTools`, `effort`, `maxTurns`): reviewers have no Bash and no edits; builders have no `Agent`; never `Bash(pattern)`, never `isolation: worktree`.
+  - **D. Session-scoped stage lock:** an atomic `ACTIVE` lock with stage transitions written by code; GATE/REVIEW deny git mutation and writes.
+  - **E. Route-enforcement hooks** (PreToolUse `Agent|Task`, `Bash`, `Edit…`, optional `mcp__`): roster, model deny-on-mismatch, budgets, stage and worktree confinement.
+  - **F. Agent identity:** SubagentStart registers `agent_id → role`; per-role enforcement where the payload carries it, else the SubagentStop transcript audit.
+  - **G. Provenance and script gates:** `checkpoint.sh` accepts only hook-written or shim-written verdicts at the exact HEAD; `land.sh` verifies the chain.
+  - **H. Budgets, layered:** hard `maxTurns`, spawns, lanes, wall-clock and `--max-budget-usd`; advisory estimated USD.
+  - **I. OS confinement, proven:** the snippet's sandbox (`failIfUnavailable`, no unsandboxed commands, provider hosts only) plus each shim's in-process probe.
+  - **J. Stop hook:** blocks once per route when routed work was done inline; otherwise advisory.
+
+  Hard rules outrank model verdicts; no new model-judged gates.
+- **Decision-layer rubric ids, pinned and never renamed:** `dispatch/task-class@1`, `dispatch/size@1`, `dispatch/lens-set@1`, `dispatch/contamination@1`, `risk-tier@1`, `escalation@1` (also asserted as constants by `resources/schema.json`).
+- **Hook registration:** `scripts/compile.sh` registers in `hooks/hooks.json` only the hook scripts that exist under `hooks/`, each through a fixed event/matcher table; per-repo policy never changes registration (disabled features no-op in bash). With no hook scripts present the file is `{"hooks": {}}`.
 - **Compatibility:** Claude Code 2.1.251+, git 2.40+, bash 4+, python3 3.8+ stdlib; no ruflo.
 
 ## Consequences

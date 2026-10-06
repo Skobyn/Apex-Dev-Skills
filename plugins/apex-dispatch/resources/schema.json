@@ -1,0 +1,262 @@
+{
+  "about": "Hand-written schema for the merged apex-dispatch policy, interpreted by scripts/lib/compile.py (python3 stdlib, no jsonschema). Keywords: type (one name or a list), enum, const, min, max, pattern (full match), min_items, items, unique (scalar items), unique_ids (object items keyed by id), required and optional (object keys; any other key is an error unless additional is true), ref (the value is an id of an entry in that list section of the merged policy), $def (use a definition below).",
+  "defs": {
+    "id": { "type": "string", "pattern": "[a-z0-9][a-z0-9:.-]*" },
+    "model_alias": { "type": "string", "enum": ["sonnet", "opus", "haiku", "fable"] },
+    "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] },
+    "tier_ref": { "type": "string", "ref": "tiers" },
+    "class_ref": { "type": "string", "ref": "classes" },
+    "role_ref": { "type": "string", "ref": "roles" },
+    "provider_ref": { "type": "string", "ref": "providers" },
+    "strings": { "type": "array", "items": { "type": "string", "min": 1 }, "unique": true },
+    "tool_list": { "type": "array", "items": { "type": "string", "pattern": "[A-Za-z][A-Za-z0-9_]*(__[A-Za-z0-9_*-]+)*\\*?" }, "unique": true },
+    "count": { "type": "integer", "min": 0 },
+    "positive": { "type": "integer", "min": 1 },
+    "usd": { "type": "number", "min": 0 },
+    "review_shape": { "type": "string", "enum": ["none", "solo", "six-lens", "fanout6+adversarial"] },
+    "diversity": { "type": "string", "enum": ["off", "warn", "block"] },
+    "by_risk_tier_shape": {
+      "type": "object",
+      "required": { "A": { "$def": "review_shape" }, "B": { "$def": "review_shape" }, "C": { "$def": "review_shape" } }
+    },
+    "by_risk_tier_diversity": {
+      "type": "object",
+      "required": { "A": { "$def": "diversity" }, "B": { "$def": "diversity" }, "C": { "$def": "diversity" } }
+    },
+    "prices": {
+      "type": "object",
+      "required": { "input": { "$def": "usd" }, "output": { "$def": "usd" }, "cache_read": { "$def": "usd" }, "cache_write": { "$def": "usd" } }
+    },
+    "one_line": { "type": "string", "pattern": "[^\\n]{1,600}" }
+  },
+  "root": {
+    "type": "object",
+    "required": {
+      "tiers": {
+        "type": "array", "min_items": 1, "unique_ids": true,
+        "items": {
+          "type": "object",
+          "required": {
+            "id": { "$def": "id" },
+            "rank": { "$def": "count" },
+            "model": { "$def": "model_alias" },
+            "effort": { "$def": "effort" },
+            "maxTurns": { "$def": "positive" },
+            "context_budget_tokens": { "$def": "positive" },
+            "price_usd_per_mtok": { "$def": "prices" }
+          }
+        }
+      },
+      "providers": {
+        "type": "array", "min_items": 1, "unique_ids": true,
+        "items": {
+          "type": "object",
+          "required": {
+            "id": { "$def": "id" },
+            "status": { "type": "string", "enum": ["verified", "flagged-off", "stub"] },
+            "kind": { "type": "string", "enum": ["in-session", "subprocess", "stub"] },
+            "family": { "type": "string", "min": 1 },
+            "binary": { "type": ["string", "null"] },
+            "key_env": { "type": ["string", "null"], "pattern": "[A-Z][A-Z0-9_]*" },
+            "forced_flags": { "type": "array", "items": { "type": "string" } },
+            "forbidden_flags": { "$def": "strings" },
+            "allowed_classes": { "type": "array", "items": { "$def": "class_ref" }, "unique": true },
+            "max_tier": { "$def": "tier_ref" },
+            "roles_allowed": { "type": "array", "items": { "$def": "role_ref" }, "unique": true },
+            "reports_usage": { "type": "boolean" },
+            "sandbox_mode": { "type": ["string", "null"] },
+            "min_acceptance": { "type": "number", "min": 0, "max": 1 },
+            "acceptance_window": { "$def": "positive" },
+            "hosts": { "$def": "strings" },
+            "enabled": { "type": "boolean" }
+          }
+        }
+      },
+      "roles": {
+        "type": "array", "min_items": 1, "unique_ids": true,
+        "items": {
+          "type": "object",
+          "required": {
+            "id": { "type": "string", "pattern": "[a-z][a-z0-9]*(-[a-z0-9]+)*" },
+            "description": { "$def": "one_line" },
+            "does": { "$def": "one_line" },
+            "returns": { "$def": "one_line" },
+            "tools": { "$def": "tool_list", "min_items": 1 },
+            "disallowed_tools": { "$def": "tool_list" },
+            "read_only": { "type": "boolean" },
+            "maxTurns": { "$def": "positive" },
+            "effort": { "$def": "effort" },
+            "effort_variants": { "type": "array", "items": { "$def": "effort" }, "unique": true },
+            "mcp_allow": { "$def": "strings" },
+            "enabled": { "type": "boolean" }
+          }
+        }
+      },
+      "classes": {
+        "type": "array", "min_items": 1, "unique_ids": true,
+        "items": {
+          "type": "object",
+          "required": {
+            "id": { "$def": "id" },
+            "tier_floor": { "$def": "tier_ref" },
+            "tier_ceiling": { "$def": "tier_ref" },
+            "roster": { "type": "array", "items": { "$def": "role_ref" }, "unique": true },
+            "fanout": {
+              "type": "object",
+              "required": { "shape": { "type": "string", "enum": ["single", "lanes"] }, "max_lanes": { "$def": "positive" } }
+            },
+            "review_shape": { "$def": "by_risk_tier_shape" },
+            "review_diversity": { "$def": "by_risk_tier_diversity" },
+            "providers_allowed": { "type": "array", "items": { "$def": "provider_ref" }, "unique": true, "min_items": 1 },
+            "requires_command_acceptance": { "type": "boolean" },
+            "external_builders": { "type": "boolean" },
+            "budgets": {
+              "type": "object",
+              "required": { "usd": { "$def": "usd" }, "spawns": { "$def": "count" }, "minutes": { "$def": "count" } }
+            }
+          },
+          "optional": {
+            "effort": { "$def": "effort" },
+            "brief": { "type": "string", "enum": ["standard", "diagnosis-first"] },
+            "human_gate": { "type": ["string", "null"], "enum": ["G12", null] },
+            "size_rule": {
+              "type": "object",
+              "required": { "small_max_lines": { "$def": "positive" }, "small_max_files": { "$def": "positive" }, "large_effort": { "$def": "effort" } }
+            }
+          }
+        }
+      },
+      "tag_classes": {
+        "type": "array", "unique_ids": true,
+        "items": {
+          "type": "object",
+          "required": {
+            "id": { "$def": "id" },
+            "tags": { "type": "array", "min_items": 1, "items": { "$def": "id" }, "unique": true },
+            "class": { "$def": "class_ref" }
+          }
+        }
+      },
+      "hard_rules": {
+        "type": "array", "min_items": 1, "unique_ids": true,
+        "items": {
+          "type": "object",
+          "required": {
+            "id": { "$def": "id" },
+            "kind": { "type": "string", "enum": ["route_floor", "permission_deny", "sandbox"] },
+            "description": { "$def": "one_line" }
+          },
+          "optional": {
+            "match": { "type": "string", "enum": ["any", "all"] },
+            "when": {
+              "type": "object",
+              "optional": {
+                "risk_tier": { "type": "string", "enum": ["A", "B", "C"] },
+                "tags_any": { "type": "array", "min_items": 1, "items": { "$def": "id" }, "unique": true },
+                "runnable_check": { "type": "boolean" },
+                "consecutive_failures_gte": { "$def": "positive" },
+                "provider_external": { "type": "boolean" },
+                "role": { "$def": "role_ref" }
+              }
+            },
+            "then": {
+              "type": "object",
+              "optional": {
+                "class": { "$def": "class_ref" },
+                "classes_only": { "type": "array", "min_items": 1, "items": { "$def": "class_ref" }, "unique": true },
+                "tier_floor": { "$def": "tier_ref" },
+                "tier_ceiling": { "$def": "tier_ref" },
+                "tier_floor_rungs_above_last": { "$def": "positive" },
+                "review_shape": { "$def": "review_shape" },
+                "review_diversity": { "$def": "diversity" },
+                "reviewer_family": { "type": "string", "min": 1 },
+                "fanout": { "type": "string", "enum": ["single", "lanes"] },
+                "external_builders": { "type": "boolean", "const": false },
+                "human_gate": { "type": "string", "enum": ["G12"] }
+              }
+            },
+            "deny": { "type": "array", "min_items": 1, "items": { "type": "string", "pattern": "[A-Za-z]+\\(.+\\)" }, "unique": true },
+            "sandbox": {
+              "type": "object",
+              "required": {
+                "enabled": { "type": "boolean", "const": true },
+                "failIfUnavailable": { "type": "boolean", "const": true },
+                "allowUnsandboxedCommands": { "type": "boolean", "const": false }
+              }
+            }
+          }
+        }
+      },
+      "escalation": {
+        "type": "object",
+        "required": {
+          "max_review_rounds": { "$def": "positive" },
+          "prior_failure_summary_tokens": { "$def": "positive" },
+          "diagnoser_role": { "$def": "role_ref" },
+          "diagnoser_family": { "type": "string", "enum": ["different", "same"] },
+          "rungs": {
+            "type": "array", "min_items": 1, "unique_ids": true,
+            "items": {
+              "type": "object",
+              "required": {
+                "id": { "$def": "id" },
+                "at_failures": { "$def": "positive" },
+                "action": { "type": "string", "enum": ["effort_up", "model_up", "halt"] },
+                "diagnoser": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      },
+      "semantic": {
+        "type": "object",
+        "required": {
+          "enabled": { "type": "boolean" },
+          "cmd_env": { "type": "string", "pattern": "[A-Z][A-Z0-9_]*" },
+          "default_cmd": { "type": "string", "min": 1 },
+          "timeout_ms": { "type": "integer", "min": 1, "max": 5000 },
+          "min_p": { "type": "number", "min": 0.5, "max": 1 },
+          "uncalibrated_may_lower_cost": { "type": "boolean", "const": false },
+          "uncertain_tier": { "$def": "tier_ref" },
+          "rubrics": {
+            "type": "object",
+            "required": {
+              "task_class": { "type": "string", "const": "dispatch/task-class@1" },
+              "size": { "type": "string", "const": "dispatch/size@1" },
+              "lens_set": { "type": "string", "const": "dispatch/lens-set@1" },
+              "contamination": { "type": "string", "const": "dispatch/contamination@1" },
+              "risk_tier": { "type": "string", "const": "risk-tier@1" },
+              "escalation": { "type": "string", "const": "escalation@1" }
+            }
+          }
+        }
+      },
+      "pruning": {
+        "type": "object",
+        "required": {
+          "enabled": { "type": "boolean" },
+          "max_lines": { "$def": "positive" },
+          "runners": {
+            "type": "array", "unique_ids": true,
+            "items": { "type": "object", "required": { "id": { "$def": "id" }, "pattern": { "type": "string", "min": 1 } } }
+          }
+        }
+      },
+      "mcp": {
+        "type": "object",
+        "required": {
+          "default_deny": { "type": "boolean" },
+          "servers_allow": { "$def": "strings" }
+        }
+      },
+      "disabled": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": { "id": { "$def": "id" }, "reason": { "type": "string", "pattern": "\\s*\\S[\\s\\S]*" } },
+          "optional": { "section": { "type": "string", "enum": ["tiers", "providers", "roles", "classes", "tag_classes"] } }
+        }
+      }
+    }
+  }
+}
