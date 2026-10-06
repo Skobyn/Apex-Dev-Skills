@@ -26,7 +26,7 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh`
   - Blocked-by: Phase 0.1
 
-- [ ] **Phase 1.2** [backend] iterate.sh: widened tag regex, 8-line look-ahead, Blocked-by resolver, next-unblocked selection, ACTIVE lock, stage, Route/Paths/Budget directives, ROUTE and LANES blocks
+- [x] **Phase 1.2** [backend] iterate.sh: widened tag regex, 8-line look-ahead, Blocked-by resolver, next-unblocked selection, ACTIVE lock, stage, Route/Paths/Budget directives, ROUTE and LANES blocks
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh`
   - Blocked-by: Phase 1.1
 
@@ -34,11 +34,11 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh`
   - Blocked-by: Phase 1.2
 
-- [ ] **Phase 1.4** [backend][tier:c] checkpoint.sh review provenance, 3-round cap, ESCALATE_ROUTE, complete evidence; risk-tier --classify; land.sh ledger verify
+- [x] **Phase 1.4** [backend][tier:c] checkpoint.sh review provenance, 3-round cap, ESCALATE_ROUTE, complete evidence; risk-tier --classify; land.sh ledger verify
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh`
   - Blocked-by: Phase 1.3
 
-- [ ] **Phase 1.5** [docs] ruflo optional across docs, apex-plan generic/apex profiles, reviewer disallowedTools, ADR-0003, README, version 0.3.0
+- [x] **Phase 1.5** [docs] ruflo optional across docs, apex-plan generic/apex profiles, reviewer disallowedTools, ADR-0003, README, version 0.3.0
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q '"version": "0.3.0"' plugins/apex-scope-loop/.claude-plugin/plugin.json`
   - Blocked-by: Phase 1.4
 
@@ -46,7 +46,7 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `test -f docs/examples/non-apex-run.md && grep -q 'land.sh' docs/examples/non-apex-run.md`
   - Blocked-by: Phase 1.5
 
-- [ ] **Gate 1→2** [gate:human] Phase 1 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
+- [x] **Gate 1→2** [gate:human] Phase 1 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
   - Acceptance: user types approve gate-1-2
 
 ### Phase 2 — apex-dispatch core
