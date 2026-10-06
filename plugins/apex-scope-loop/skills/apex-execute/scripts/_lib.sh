@@ -184,10 +184,12 @@ print(s.get("base_branch") or "")' "$CHECKPOINT" 2>/dev/null)
 }
 
 # apex_unreviewed_runs DIR — for every run in this repository without a
-# worktree (not landed, harness on), print its plan when it has committed
-# changes after its floor (other than its own plan file and the lessons
-# ledger) or has no floor. A fresh run forks at HEAD, so those changes would
-# fall below it unreviewed.
+# worktree (not landed, harness on, not finished), print its plan when it has
+# committed changes after its floor (other than its own plan file and the
+# lessons ledger) or has no floor. A fresh run of either mode forks at or
+# below HEAD, so those changes would fall below it unreviewed. "Finished" is
+# derived now, never stored: the plan file exists, planlib counts no task
+# remaining, and the last completion was made with the harness on.
 apex_unreviewed_runs() {
   local dir="$1" cp plan rel base
   for cp in "$STATE_BASE"/*/checkpoint.json; do
@@ -195,9 +197,15 @@ apex_unreviewed_runs() {
     plan="$(python3 -c '
 import json, sys
 s = json.load(open(sys.argv[1]))
-skip = s.get("worktree_branch") or s.get("landed") or s.get("finished") or s.get("harness") == "off"
-print("" if skip else (s.get("plan_path") or "?"))' "$cp" 2>/dev/null || echo "?")"
+skip = s.get("worktree_branch") or s.get("landed") or s.get("harness") == "off"
+print("" if skip else (s.get("plan_path") or "?"))
+print(s.get("last_complete_harness") or "")' "$cp" 2>/dev/null || echo "?")"
+    local last_h="${plan#*$'\n'}"; plan="${plan%%$'\n'*}"
     [[ -n "$plan" ]] || continue
+    if [[ "$last_h" == "1" && -f "$plan" ]] \
+       && [[ "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$plan" 2>/dev/null)" == "0" ]]; then
+      continue   # finished: every task checked, the last one reviewed
+    fi
     base="$(CHECKPOINT="$cp" apex_floor "$dir" HEAD 2>/dev/null)" || { printf '%s\n' "$plan"; continue; }
     local excl=(":(exclude,top,literal).claude/apex-scope-loop/LESSONS.md")
     rel="$(python3 -c 'import os,sys; r=os.path.relpath(os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])); print(r if r.endswith(".md") and not r.startswith("..") else "")' "$plan" "$dir")"

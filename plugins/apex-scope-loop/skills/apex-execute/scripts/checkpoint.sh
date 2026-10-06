@@ -262,10 +262,12 @@ PY
     sed -i.bak "${LINE_NO}s/^- \[ \]/- [x]/" "$PLAN" && rm -f "${PLAN}.bak"
     python3 -c "$PY_SAVE"'
 import sys
-path, now, verdict, line_no, skip, head, harness, remaining = sys.argv[1:]
+path, now, verdict, line_no, skip, head, harness = sys.argv[1:]
 with open(path) as f: s = json.load(f)
 s["completed_tasks"] = s.get("completed_tasks", 0) + 1
-s["finished"] = remaining == "0"      # every task checked (a run without a worktree is never landed)
+# apex_unreviewed_runs treats a run without a worktree as finished only
+# while its plan has no task left and its last completion was reviewed.
+s["last_complete_harness"] = harness
 # The chain advances only past code the harness verified (APEX_GIBSON=0
 # completions leave their code in the diff of the next task).
 if harness == "1" and head != "unknown":
@@ -276,8 +278,7 @@ if skip:
 s["last_iteration_at"] = now
 s["current_phase"] = None
 s["consecutive_failures"] = 0
-save(path, s)' "$CHECKPOINT" "$NOW" "$VERDICT" "$LINE_NO" "$SKIP_REVIEW" "$HEAD_V" "$([[ "${APEX_GIBSON:-1}" != "0" ]] && echo 1 || echo 0)" \
-      "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" remaining "$PLAN" 2>/dev/null || echo "?")"
+save(path, s)' "$CHECKPOINT" "$NOW" "$VERDICT" "$LINE_NO" "$SKIP_REVIEW" "$HEAD_V" "$([[ "${APEX_GIBSON:-1}" != "0" ]] && echo 1 || echo 0)"
     apex_lock_stage "$PLAN_HASH" DONE   # this plan's lock becomes reclaimable until its next iterate
     echo "[checkpoint] complete @ line $LINE_NO ($VERDICT)"
     ;;
@@ -508,7 +509,6 @@ import sys
 path, line_no = sys.argv[1:]
 with open(path) as f: s = json.load(f)
 s["completed_tasks"] = max(0, s.get("completed_tasks", 0) - 1)
-s["finished"] = False
 # The chain floor moves back to before this task: its code (and everything
 # completed after it) is in the next task diff again.
 c = s.get("completes") or []

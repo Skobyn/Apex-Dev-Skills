@@ -1012,7 +1012,32 @@ echo doc >"$F1/notes.md"; git -C "$F1" add notes.md; git -C "$F1" commit -qm d
 git -C "$F1" add -A; git -C "$F1" commit -qm tick
 printf -- '- [ ] **Phase 1.1** [docs] b\n  - Acceptance: true\n' >"$F1/plans/b-plan.md"; echo more >>"$F1/notes.md"; git -C "$F1" add -A; git -C "$F1" commit -qm b
 ( cd "$F1" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/b-plan.md >/dev/null 2>&1 ) || fail "a finished no-worktree run blocked the next run"
-ok "trusted external diff, control-character paths, many matches, finished no-worktree runs"
+# "Finished" is derived when the guard runs: a reopened plan, or a last task
+# completed with the harness off, keeps the guard on; so does a restart in
+# worktree mode.
+F4="$SMOKE_TMP/f4"; mkdir -p "$F4/plans"; git init -q -b main "$F4"; printf '.dev-plan-state/\n' >"$F4/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F4/plans/a-plan.md"; git -C "$F4" add -A; git -C "$F4" commit -qm a
+( cd "$F4" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for the reopen test failed"
+echo doc >"$F4/notes.md"; git -C "$F4" add notes.md; git -C "$F4" commit -qm d
+(cd "$F4" && "$EX/green-gate.sh" plans/a-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/a-plan.md 1 >/dev/null \
+  && "$CP" plans/a-plan.md review 1 "$(git -C "$F4" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/a-plan.md complete 1 ok >/dev/null 2>&1) || fail "the reopen fixture could not finish"
+printf -- '- [ ] **Phase 1.2** [backend] c\n  - Acceptance: true\n' >>"$F4/plans/a-plan.md"
+mkdir -p "$F4/src/auth"; echo 'import stripe' >"$F4/src/auth/login.py"; git -C "$F4" add -A; git -C "$F4" commit -qm reopen
+printf -- '- [ ] **Phase 1.1** [docs] b\n  - Acceptance: true\n' >"$F4/plans/b-plan.md"; git -C "$F4" add -A; git -C "$F4" commit -qm b
+expect_refusal "a new run after a finished plan was reopened" "after its last reviewed completion" indir "$F4" APEX_NO_WORKTREE=1 "$EX/init.sh" plans/b-plan.md
+F2="$SMOKE_TMP/f2"; mkdir -p "$F2/plans"; git init -q -b main "$F2"; printf '.dev-plan-state/\n' >"$F2/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F2/plans/a-plan.md"; git -C "$F2" add -A; git -C "$F2" commit -qm a
+( cd "$F2" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for the harness-off test failed"
+mkdir -p "$F2/src/auth"; echo 'import stripe' >"$F2/src/auth/login.py"; git -C "$F2" add -A; git -C "$F2" commit -qm x
+(cd "$F2" && APEX_GIBSON=0 "$CP" plans/a-plan.md complete 1 ok >/dev/null 2>&1) || fail "APEX_GIBSON=0 complete failed"
+printf -- '- [ ] **Phase 1.1** [docs] b\n  - Acceptance: true\n' >"$F2/plans/b-plan.md"; git -C "$F2" add -A; git -C "$F2" commit -qm b
+expect_refusal "a new run after a last task completed with the harness off" "after its last reviewed completion" indir "$F2" APEX_NO_WORKTREE=1 "$EX/init.sh" plans/b-plan.md
+F3="$SMOKE_TMP/f3"; mkdir -p "$F3/plans"; git init -q -b main "$F3"; printf '.dev-plan-state/\n' >"$F3/.gitignore"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$F3/plans/a-plan.md"; git -C "$F3" add -A; git -C "$F3" commit -qm a
+( cd "$F3" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/a-plan.md >/dev/null 2>&1 ) || fail "no-worktree init for the mode-switch test failed"
+mkdir -p "$F3/src/auth"; echo 'import stripe' >"$F3/src/auth/login.py"; git -C "$F3" add -A; git -C "$F3" commit -qm x
+expect_refusal "a restart in worktree mode over unreviewed commits" "after its last reviewed completion" indir "$F3" APEX_INIT_FORCE=1 "$EX/init.sh" plans/a-plan.md
+ok "trusted external diff, control-character paths, many matches, finished/reopened/harness-off no-worktree runs, mode switch"
 
 echo ""
 echo "smoke passed: 40/40 checks"

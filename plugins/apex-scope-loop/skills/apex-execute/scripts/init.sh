@@ -89,11 +89,12 @@ elif [[ -f "$CHECKPOINT" && "${APEX_INIT_FORCE:-0}" == "1" && "$(read_field land
   fi
 fi
 
-# --- A run without a worktree never restarts below unreviewed commits --------
-# A fresh run forks at (or below) HEAD; another run in this checkout that still
-# has commits after its last reviewed completion would have them fall below
-# the new fork point (APEX_INIT_FORCE, a moved or new plan).
-if [[ "${APEX_NO_WORKTREE:-0}" == "1" && "$KEEP_RUN" != "1" && "${APEX_GIBSON:-1}" != "0" ]]; then
+# --- No run restarts below another run's unreviewed commits ------------------
+# A fresh run (either mode) forks at or below HEAD / the base tip; a run
+# without a worktree in this checkout that still has commits after its last
+# reviewed completion would have them fall below the new fork point
+# (APEX_INIT_FORCE, a moved or new plan, a switch to worktree mode).
+if [[ "$KEEP_RUN" != "1" && "${APEX_GIBSON:-1}" != "0" ]]; then
   PENDING="$(apex_unreviewed_runs "$REPO_ROOT")"
   if [[ -n "$PENDING" ]]; then
     echo "ERROR: a run in this checkout has commits after its last reviewed completion:" >&2
