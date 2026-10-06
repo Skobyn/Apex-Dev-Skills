@@ -51,7 +51,7 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
 
 ### Phase 2 — apex-dispatch core
 
-- [ ] **Phase 2.1** [infra] apex-dispatch skeleton: plugin.json, marketplace registration, README, ADR-0001 (Proposed), root README row
+- [x] **Phase 2.1** [infra] apex-dispatch skeleton: plugin.json, marketplace registration, README, ADR-0001 (Proposed), root README row
   - Acceptance: `python3 -c "import json;m=json.load(open('.claude-plugin/marketplace.json'));assert any(p['source']=='./plugins/apex-dispatch' for p in m['plugins'])"`
   - Blocked-by: Phase 1.6
 
