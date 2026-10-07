@@ -55,7 +55,7 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `python3 -c "import json;m=json.load(open('.claude-plugin/marketplace.json'));assert any(p['source']=='./plugins/apex-dispatch' for p in m['plugins'])"`
   - Blocked-by: Phase 1.6
 
-- [ ] **Phase 2.2** [backend] Policy, overlay merge, schema validation, compile.sh with --check, generated agents and settings snippet
+- [x] **Phase 2.2** [backend] Policy, overlay merge, schema validation, compile.sh with --check, generated agents and settings snippet
   - Acceptance: `bash plugins/apex-dispatch/scripts/compile.sh --check`
   - Blocked-by: Phase 2.1
 
@@ -63,15 +63,15 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh`
   - Blocked-by: Phase 2.2
 
-- [ ] **Phase 2.4** [backend] ledger.sh hash chain with verify/export, report.sh, doctor.sh
+- [x] **Phase 2.4** [backend] ledger.sh hash chain with verify/export, report.sh, doctor.sh
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh`
   - Blocked-by: Phase 2.3
 
-- [ ] **Phase 2.5** [docs] Skills and commands (route, run, done, report, doctor, compile)
+- [x] **Phase 2.5** [docs] Skills and commands (route, run, done, report, doctor, compile)
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh`
   - Blocked-by: Phase 2.4
 
-- [ ] **Gate 2→3** [gate:human] Phase 2 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
+- [x] **Gate 2→3** [gate:human] Phase 2 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
   - Acceptance: user types approve gate-2-3
 
 ### Phase 3 — Governance hooks and sibling hygiene
