@@ -77,6 +77,13 @@ GIT_READ = {"status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree",
             "verify-tag", "var", "version", "help", "whatchanged", "range-diff", "diff-tree", "diff-index",
             "diff-files", "show-branch", "cherry", "fetch", "ls-remote", "annotate", "hash-object"}
 GIT_CFG_KEYS = re.compile(r"^(core|filter|diff|merge|include|includeif)\.", re.I)
+GIT_CFG_HARMLESS = re.compile(r"^core\.(editor|pager)=", re.I)       # cosmetic; cannot hide or alter content
+LEDGER_CODE = re.compile(r"\bimport\s+ledger\b|\bfrom\s+ledger\s+import\b|ledger\.py\b|\bledger\.append\b")
+# Shell reserved words that can lead a simple command; peeled like wrappers.
+RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac", "!", "{", "}", "time"}
+# Commands that print or search text: a bypass flag in their arguments is data, not a flag.
+TEXT_TOOLS = {"echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "git", "sed", "awk", "cat", "head", "tail",
+              "less", "wc", "jq", "cut", "sort"}
 UPDATE_INDEX_HIDING = {"--assume-unchanged", "--skip-worktree", "--fsmonitor-valid"}
 
 # Write-shaped commands (spec §5.3 D/E) and where their targets are.
@@ -137,6 +144,8 @@ class Ctx:
         if not isinstance(self.checkpoint, dict):
             self.checkpoint = {}
         self._policy = self._route = self._worktree = None
+        wt = self.checkpoint.get("worktree_path")
+        self.state_worktree = real(wt) if isinstance(wt, str) and wt and os.path.isdir(wt) else None
         self.notes = []
 
     def stale(self):
@@ -245,7 +254,14 @@ def halt_reason(ctx):
 def protected_reason(ctx, path):
     """Why `path` (absolute, normalised) may not be written by anyone during a run."""
     comps = path.split("/")
-    if ".dev-plan-state" in comps or under(path, ctx.state_base):
+    wt = ctx.state_worktree
+    if wt and under(path, wt) and path != wt:
+        # apex-scope-loop puts the plan worktree inside the run state
+        # (<state>/worktree): its tree is the work, not run state; only a
+        # .dev-plan-state nested inside it is.
+        if ".dev-plan-state" in os.path.relpath(path, wt).split("/"):
+            return "run state (.dev-plan-state/) is written only by the apex-scope-loop and apex-dispatch scripts"
+    elif ".dev-plan-state" in comps or under(path, ctx.state_base):
         return "run state (.dev-plan-state/) is written only by the apex-scope-loop and apex-dispatch scripts"
     if ".git" in comps:
         return "git internals (.git/: config, info/, hooks/, index) are not written during a run"
@@ -253,7 +269,7 @@ def protected_reason(ctx, path):
         return ".claude/apex-dispatch/ (policy overlay, tracked ledger) is not written during a run"
     if re.search(r"(^|/)\.claude/settings[^/]*\.json$", path):
         return ".claude/settings*.json is not written during a run"
-    if re.search(r"(^|/)\.claude/hooks(/|$)", path) or re.search(r"(^|/)hooks/hooks\.json$", path):
+    if re.search(r"(^|/)\.claude/hooks(/|$)", path):
         return "hook registrations are not written during a run"
     if os.path.basename(path) == ".mcp.json":
         return ".mcp.json is not written during a run"
@@ -511,7 +527,7 @@ def split_ops(tok):
 
 
 def tokens(cmd):
-    lex = shlex.shlex(cmd.replace("`", " ; "), posix=True, punctuation_chars=";&|()<>\n")
+    lex = shlex.shlex(cmd.replace("`", " "), posix=True, punctuation_chars=";&|()<>\n")
     lex.whitespace = " \t\r"
     lex.whitespace_split = True
     try:
@@ -575,9 +591,16 @@ class Cmd:
 
     def __init__(self, words, redirs):
         self.assigns, self.unsets, self.redirs = {}, set(), redirs
-        i = 0
+        i, self.listed = 0, []
         while i < len(words):
             t = words[i]
+            if t in RESERVED:
+                i += 1
+                continue
+            if t in ("for", "select", "case"):
+                self.listed = words[i:]                   # a word list or pattern, not a command
+                i = len(words)
+                break
             m = ASSIGN_RE.match(t)
             if m:
                 self.assigns[m.group(1)] = m.group(2)
@@ -656,7 +679,7 @@ class Cmd:
             g = GitCmd(self)
             if g.sub == "submodule" and g.args[:1] == ["foreach"]:
                 out.append(" ".join(x for x in g.args[1:] if not x.startswith("--")))
-        for w in self.words:
+        for w in self.words + self.listed:
             out += subst_strings(w)
         return out
 
@@ -810,6 +833,9 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
     """Raise Deny on the first rule a command string breaks. Recurses into nested command strings."""
     if depth > 4:
         return
+    for inner in re.findall(r"`([^`]*)`", cmd):          # backtick bodies, quoted or not
+        bash_rules(ctx, p, inner, depth + 1, prefix)
+    cmd = re.sub(r"`[^`]*`", " ", cmd)
     cwd = p.get("cwd") if isinstance(p.get("cwd"), str) else os.getcwd()
     role = caller_role(p)
     read_only = bool(role and (ctx.roles().get(role) or {}).get("read_only"))
@@ -827,8 +853,8 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
             if name in TAMPER_ENV:
                 raise Deny("unsetting %s would change what the harness enforces" % name)
         # 2. Layer A bypass flags, anywhere.
-        for w in c.words:
-            if w.startswith(BYPASS_PREFIXES) or any(s in w for s in BYPASS_SUBSTRINGS):
+        for w in ([] if c.base in TEXT_TOOLS else c.words):
+            if w.startswith(BYPASS_PREFIXES) or any(re.search(r"(^|[=\s])" + re.escape(s) + r"\b", w) for s in BYPASS_SUBSTRINGS):
                 raise Deny("bypass flag %s is forbidden" % w)
         # 3. Provider CLIs only through bin/worker-*.sh.
         b = c.base
@@ -849,7 +875,7 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
                 raise Deny("provider CLI %s runs only through bin/worker-*.sh (forced flags, sandbox probe, ledger)" % b)
         # 4. The ledger has one sanctioned writer interface.
         if re.fullmatch(r"python[0-9.]*", b) and (any(a.endswith("ledger.py") for a in c.args)
-                                                    or any(re.search(r"\bledger\b", a) for a in c.args if a not in ("-c",) and " " in a)
+                                                    or any(LEDGER_CODE.search(a) for a in c.args)
                                                     or ("-m" in c.args and "ledger" in c.args)):
             raise Deny("the ledger is written only in-process by route.py, the hooks and the shims (use ledger.sh)")
         # 5. Git configuration and repository internals the clean-worktree check trusts.
@@ -862,7 +888,7 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
             if g.sub == "sparse-checkout" and g.mutating():
                 raise Deny("git sparse-checkout changes skip-worktree flags; refused during a run")
             if g.mutating():
-                bad = [x for x in g.cfg if GIT_CFG_KEYS.match(x)]
+                bad = [x for x in g.cfg if GIT_CFG_KEYS.match(x) and not GIT_CFG_HARMLESS.match(x)]
                 if bad:
                     raise Deny("git -c %s on a mutating command overrides core/filter/diff/merge configuration" % bad[0])
                 if ctx.stage in LOCKED_STAGES:
@@ -877,7 +903,7 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
             path = resolve_target(ctx, cwd, prefix, t)
             if b == "touch" and os.path.basename(path) == "HALT":
                 continue                                  # setting a kill switch only tightens
-            why = protected_reason(ctx, path)
+            why = protected_reason(ctx, real(path))
             if why:
                 raise Deny("%s (%s %s)" % (why, b or "redirect", t))
             if (ctx.stage in LOCKED_STAGES or read_only) and not path.startswith("/dev/"):

@@ -849,7 +849,7 @@ pass "pre-agent: roster, model deny-on-mismatch then updatedInput, depth 1, HALT
 # 46. pre-bash: tamper hardening, provider CLIs, git configuration/internals, protected state, the GATE stage lock
 for c in 'APEX_GIBSON=0 bash x' 'export APEX_GIBSON=0' 'env APEX_DISPATCH_MODE=baseline bash iterate.sh' 'APEX_HALT=0 bash x' 'unset APEX_HALT' \
          'export APEX_DISPATCH_ENFORCE=1' 'APEX_STATE_ROOT=/tmp/x bash iterate.sh' \
-         'codex exec "do it"' 'claude -p hi' 'npx @openai/codex exec x' 'aider --yes x' 'echo --dangerously-skip-permissions' \
+         'codex exec "do it"' 'claude -p hi' 'npx @openai/codex exec x' 'aider --yes x' 'make run --dangerously-skip-permissions' \
          'git config core.autocrlf true' 'git config --global core.hooksPath /tmp/h' 'git config --unset core.filemode' \
          'git config filter.x.clean cat' 'git config merge.ours.driver true' 'git update-index --assume-unchanged a.py' \
          'git update-index --skip-worktree a.py' 'git -c core.hooksPath=/dev/null commit -m x' 'git -c filter.lfs.clean=cat add .' \
@@ -857,17 +857,26 @@ for c in 'APEX_GIBSON=0 bash x' 'export APEX_GIBSON=0' 'env APEX_DISPATCH_MODE=b
          'echo "*.py" >> .git/info/exclude' 'cp hook.sh .git/hooks/pre-commit' 'rm -rf .dev-plan-state/ACTIVE' 'rm -f .dev-plan-state/HALT' 'cd .dev-plan-state && rm x' \
          "sed -i s/BUILD/GATE/ .dev-plan-state/ACTIVE/owner.json" 'mv .claude/apex-dispatch/policy.json /tmp/' 'echo {} > .mcp.json' \
          'bash -c "git config core.autocrlf false"' 'echo $(rm -f .dev-plan-state/x)' 'python3 scripts/lib/ledger.py append' \
-         'echo x > ~/.gitconfig'; do
+         'echo x > ~/.gitconfig' \
+         "for f in \$(git ls-files '*.lock'); do git update-index --assume-unchanged \"\$f\"; done" \
+         'git ls-files -m | while read f; do git update-index --skip-worktree "$f"; done' \
+         'if [ -d .dev-plan-state/ACTIVE ]; then rm -rf .dev-plan-state/ACTIVE; fi' \
+         'if true; then git config core.autocrlf true; fi' '! git config core.autocrlf true' \
+         'echo "x `git config core.autocrlf true`"' 'case x in x) git config core.filemode false;; esac' \
+         'python3 -c "import ledger; ledger.append()"'; do
   is_deny pre-bash "$(pl bash "$HX" "$c")" "pre-bash allowed: $c"
 done
 for c in 'git config --get user.name' 'git config user.name' 'git config --list --show-origin' 'git config get user.email' \
          'git status && git diff HEAD~1' 'git -c core.quotepath=false log --oneline' 'APEX_HALT=1 bash x' 'claude --version' \
          'grep -rn "APEX_HALT=" .' 'ls -la 2>/dev/null | head' 'cat .dev-plan-state/ACTIVE/owner.json' 'git update-index --no-skip-worktree a.py' \
-         'git commit -m wip' 'echo hi > notes.txt' 'touch .dev-plan-state/HALT' "printf 'x' > /tmp/apex-smoke-scratch"; do
+         'git commit -m wip' 'echo hi > notes.txt' 'touch .dev-plan-state/HALT' \
+         'grep -rn -- --dangerously-skip-permissions docs' 'git commit -m "docs: never pass --yolo"' \
+         "python3 -c \"print('ledger ok')\"" 'git -c core.editor=true commit --amend --no-edit' \
+         'for f in a b; do echo "$f"; done' 'if git diff --quiet; then echo clean; fi' "printf 'x' > /tmp/apex-smoke-scratch"; do
   is_allow pre-bash "$(pl bash "$HX" "$c")" "pre-bash denied: $c"
 done
 stage GATE
-for c in 'git commit -m x' 'git add -A' 'git stash' 'git checkout -- a.py' 'echo x > src/a/x.py' 'sed -i s/a/b/ src/a/x.py' 'git branch topic'; do
+for c in 'git commit -m x' 'for x in a; do git commit -m x; done' 'git add -A' 'git stash' 'git checkout -- a.py' 'echo x > src/a/x.py' 'sed -i s/a/b/ src/a/x.py' 'git branch topic'; do
   is_deny pre-bash "$(pl bash "$HX" "$c")" "pre-bash allowed during GATE: $c"
 done
 for c in 'git status' 'git log -1' 'git branch --show-current' 'echo x >/dev/null' 'git stash list'; do
@@ -910,6 +919,34 @@ grep -q 'python3' "$PLUGIN_ROOT/scripts/lib/hook-common.bash" && \
   awk '/STATE_BASE\/ACTIVE/{lock=NR} /python3 -B/{py=NR} END{exit !(lock && py && lock < py)}' "$PLUGIN_ROOT/scripts/lib/hook-common.bash" \
   || fail "hook-common.bash does not check the ACTIVE lock before starting python3"
 pass "a governed pre-bash call took ${MS} ms (< 2000 ms; timeout 10 s); python3 starts only after the ACTIVE lock check"
+
+# 50. apex-scope-loop's real layout: the plan worktree lives at <state>/worktree inside .dev-plan-state/.
+#     Work inside it is allowed; the run state around it (checkpoint.json, gate/, ACTIVE, the worktree dir itself) is not.
+WX="$WORK/wx"; mkdir -p "$WX/plans"; git init -q -b main "$WX"
+printf '# W\n\n- [ ] **Phase 1.1** [mechanical] work in the worktree\n  - Acceptance: `pytest -q`\n  - Paths: src/a/**, tests/**\n' >"$WX/plans/p.md"
+printf '.dev-plan-state/\n' >"$WX/.gitignore"
+git -C "$WX" add -A; git -C "$WX" commit -qm wx
+(cd "$WX" && bash "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/init.sh" plans/p.md >/dev/null 2>&1) || fail "apex-scope-loop init.sh failed in the worktree fixture"
+O="$(cd "$WX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] || fail "worktree fixture route is not READY: $O"
+WSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; WWT="$WSD/worktree"
+[ -d "$WWT" ] && [ -f "$WSD/checkpoint.json" ] && [ -d "$WX/.dev-plan-state/ACTIVE" ] || fail "init.sh did not put the worktree at <state>/worktree"
+wk() { (cd "$WWT" && printf '%s' "$2" | bash "$PLUGIN_ROOT/hooks/$1.sh" 2>/dev/null) | one; }
+for f in src/a/x.py "$WWT/src/a/x.py" tests/test_a.py "$WWT/tests/test_a.py"; do
+  [ "$(wk pre-edit "$(pl edit "$WWT" "$f")")" = "{}" ] || fail "pre-edit denied $f inside the <state>/worktree plan worktree"
+done
+for c in 'echo y > src/a/x.py' 'mkdir -p src/a/new && touch src/a/new/f.py' 'rm src/a/x.py' 'cp src/a/x.py src/a/y.py' \
+         'mkdir -p tests' 'git add -A && git commit -m wip'; do
+  [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = "{}" ] || fail "pre-bash denied in the <state>/worktree plan worktree: $c"
+done
+for f in "$WSD/checkpoint.json" ../checkpoint.json ../gate/last.json "$WX/.dev-plan-state/ACTIVE/owner.json" .dev-plan-state/x .git; do
+  [ "$(wk pre-edit "$(pl edit "$WWT" "$f")")" = deny ] || fail "pre-edit allowed $f from the <state>/worktree plan worktree"
+done
+for c in 'echo x > ../checkpoint.json' 'rm -rf ../gate' "rm -rf $WX/.dev-plan-state/ACTIVE" 'rm -rf ../worktree' 'touch ../dispatch-shadow/x' \
+         'mkdir -p .dev-plan-state && echo x > .dev-plan-state/y'; do
+  [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = deny ] || fail "pre-bash allowed from the <state>/worktree plan worktree: $c"
+done
+pass "init.sh layout (<state>/worktree): edits, writes, rm/cp/mkdir and commits inside the worktree pass; checkpoint, gate, ACTIVE, the worktree dir and nested state stay denied"
 
 echo ""
 echo "smoke passed: $N/$N checks"
