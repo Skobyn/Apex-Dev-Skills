@@ -428,6 +428,7 @@ def compute(pol, feats, task, lanes_ctx, mode, escal):
             else:
                 cls_id, src = dec_cls, "decision"
         r["decision_choice"] = info.get("verdict")
+        r["table_class"] = table_cls             # what the table chose before the decision (report --decision)
     cls_id = cls_id or table_cls
     if src == "auto":
         src = "auto-default"
@@ -622,6 +623,8 @@ def finish(args, pol, feats, task, r, kind, ident, state_dir, extra_record):
               "decision_choice": r.get("decision_choice"), "semantic_source": sem_src}
     if table is not None:
         record["table_choice"] = {k: v for k, v in table.items() if k != "decision"}
+    elif r.get("table_class") and r.get("decision"):
+        record["table_choice"] = {"class": r["table_class"], "source": "table-before-decision"}
     record.update(extra_record)
     if not args.get("dry_run") and (emit_status == "READY" or table is not None):
         row = ledger_append(state_dir, "route", {k: v for k, v in record.items() if k not in ("event", "ts")},

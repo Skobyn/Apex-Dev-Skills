@@ -117,9 +117,10 @@ def tasks_of(rows, price):
                               "arm": "baseline" if mode in BASELINE_MODES else ("routed" if mode in ROUTED_MODES else None),
                               "class": tc.get("class") or router.get("class"), "tier": router.get("tier"),
                               "counterfactual": {"class": tc.get("class"), "tier": tc.get("tier")} if tc else None,
-                              "routes": [], "spawns": 0, "usd": 0.0, "unverified_rows": 0, "verdicts": [],
-                              "escalations": 0, "t0": _ts(r.get("ts")), "t1": _ts(r.get("ts"))}
+                              "routes": [], "agents": set(), "usd": 0.0, "unpriced_rows": 0, "verdicts": [],
+                              "escalations": 0, "modes": set(), "t0": _ts(r.get("ts")), "t1": _ts(r.get("ts"))}
         t["routes"].append(r.get("route_id"))
+        t["modes"].add(r.get("route_mode"))
         if r.get("route_mode") in ROUTED_MODES:
             t["tier"] = router.get("tier")          # the last routed rung is the tier the task ended on
         route_task[r.get("route_id")] = key
@@ -132,8 +133,13 @@ def tasks_of(rows, price):
         if ts is not None:
             t["t1"] = max(t["t1"] or ts, ts)
         ev = r.get("event")
-        if ev in SPAWNS:
-            t["spawns"] += 1
+        # One agent = one spawn: an in-session agent writes spawn_request + spawn +
+        # worker_run (hook), so it is counted by its `spawn` row; a shim run has
+        # only its worker_run (source shim).
+        if ev == "spawn":
+            t["agents"].add(("agent", r.get("agent_id") or r.get("seq")))
+        elif ev == "worker_run" and r.get("source") == "shim":
+            t["agents"].add(("shim", r.get("run_id") or r.get("seq")))
         if ev == "verdict":
             t["verdicts"].append((r.get("head_sha"), r.get("verdict")))
         elif ev == "escalate":
@@ -141,7 +147,10 @@ def tasks_of(rows, price):
         usd, unv = row_usd(r, price)
         if usd is not None:
             t["usd"] += usd
-        t["unverified_rows"] += 1 if unv else 0
+        # Unpriced: usage without a priceable model (provider-default, ollama/...),
+        # or a shim run that reported no usage at all (aider). Never counted as $0.
+        if unv or (ev == "worker_run" and usd is None):
+            t["unpriced_rows"] += 1
     out = []
     for t in tasks.values():
         heads = []
@@ -149,12 +158,14 @@ def tasks_of(rows, price):
             if h not in heads:
                 heads.append(h)
         first = [v for h, v in t["verdicts"] if heads and h == heads[0]]
-        t.update({"review_rounds": len(heads), "reviewed": bool(t["verdicts"]),
-                  "approved": bool(t["verdicts"]) and t["verdicts"][-1][1] == "APPROVE",
+        approved = bool(t["verdicts"]) and t["verdicts"][-1][1] == "APPROVE"
+        arms = {"baseline" if m in BASELINE_MODES else "routed" for m in t["modes"] if m in BASELINE_MODES + ROUTED_MODES}
+        t.update({"review_rounds": len(heads), "reviewed": bool(t["verdicts"]), "approved": approved,
                   "first_round_approved": bool(first) and all(v == "APPROVE" for v in first),
-                  "wall_min": round((t["t1"] - t["t0"]) / 60.0, 2) if t["t0"] is not None and t["t1"] is not None else None,
-                  "usd": round(t["usd"], 6)})
-        del t["verdicts"], t["t0"], t["t1"]
+                  # wall-clock only for finished (approved) tasks: an open task has no end
+                  "wall_min": round((t["t1"] - t["t0"]) / 60.0, 2) if approved and t["t0"] is not None and t["t1"] is not None else None,
+                  "usd": round(t["usd"], 6), "spawns": len(t["agents"]), "mixed_arms": len(arms) > 1})
+        del t["verdicts"], t["t0"], t["t1"], t["agents"], t["modes"]
         out.append(t)
     return out
 
@@ -176,16 +187,21 @@ def arm_stats(ts):
     reviewed = [t for t in ts if t["reviewed"]]
     solved = [t for t in ts if t["approved"]]
     usd = sum(t["usd"] for t in ts)
+    unpriced = sum(t["unpriced_rows"] for t in ts)
+    comparable = unpriced == 0
     return {"tasks": n, "sufficient_n": n >= MIN_N, "spawns": sum(t["spawns"] for t in ts),
             "spawns_per_task": _rate(sum(t["spawns"] for t in ts), n),
-            "usd_estimated": round(usd, 6), "usd_per_task": _rate(usd, n), "usd_per_solved_task": _rate(usd, len(solved)),
+            "usd_comparable": comparable, "unpriced_rows": unpriced,
+            "usd_estimated": round(usd, 6) if comparable else None,
+            "usd_priced_partial": round(usd, 6),
+            "usd_per_task": _rate(usd, n) if comparable else None,
+            "usd_per_solved_task": _rate(usd, len(solved)) if comparable else None,
             "tiers": dict(collections.Counter(str(t["tier"]) for t in ts)),
             "review_rounds_per_task": _rate(sum(t["review_rounds"] for t in reviewed), len(reviewed)),
             "approval_rate": _rate(len(solved), len(reviewed)),
             "first_round_approval_rate": _rate(sum(1 for t in reviewed if t["first_round_approved"]), len(reviewed)),
             "escalation_rate": _rate(sum(1 for t in ts if t["escalations"]), n),
-            "wall_minutes_p50": _median([t["wall_min"] for t in ts]),
-            "unverified_usage_rows": sum(t["unverified_rows"] for t in ts)}
+            "wall_minutes_p50": _median([t["wall_min"] for t in ts])}
 
 
 def _delta(a, b, k, pct=False):
@@ -215,7 +231,14 @@ def compare(root, state_dir, baseline_state=None):
                     "baseline": arm_stats([t for t in base if str(t["class"]) == c])} for c in classes}
     status = "no baseline data" if not base else ("no routed data" if not routed else
                                                   ("ok" if a["sufficient_n"] and b["sufficient_n"] else "insufficient n"))
-    return {"status": status, "min_n": MIN_N, "baseline_labels": labels, "baseline_state": baseline_state or state_dir,
+    usd_status = "ok" if a["usd_comparable"] and b["usd_comparable"] else (
+        "not comparable (unpriced or unverified usage rows: routed %d, baseline %d)" % (a["unpriced_rows"], b["unpriced_rows"]))
+    mixed = sorted(str(t["task"]) for t in ts if t["mixed_arms"])
+    warnings = (["plan line(s) %s have both baseline and routed routes in this ledger; each task counts in the arm of its "
+                 "first route" % ", ".join(mixed)] if mixed else [])
+    ok, _, msg = ledger.verify(state_dir)
+    return {"status": status, "usd_status": usd_status, "warnings": warnings, "min_n": MIN_N,
+            "chain": {"ok": ok, "message": msg}, "baseline_labels": labels, "baseline_state": baseline_state or state_dir,
             "routed": a, "baseline": b, "by_class": by_class,
             "shadow_counterfactuals": dict(collections.Counter(
                 "%s/%s" % (t["counterfactual"].get("class"), t["counterfactual"].get("tier"))
@@ -264,6 +287,8 @@ def decision(root, state_dir):
                           "routed_class": routed_cls, "calibrated": d.get("calibrated") is True,
                           "uncertain": d.get("uncertain") is True, "max_p": d.get("max_p"), "fallback": d.get("fallback"),
                           "moved_route": r.get("route_mode") == "decision", "agree": said is not None and said == routed_cls,
+                          "table_class": tc.get("class"),
+                          "agree_with_table": (said == tc.get("class")) if said is not None and tc.get("class") else None,
                           "approved": t.get("approved") if t.get("reviewed") else None})
         elif r.get("event") == "decision_shadow":
             said, det = r.get("decision_choice"), r.get("deterministic_choice")
@@ -271,7 +296,8 @@ def decision(root, state_dir):
                           "backend": r.get("backend"), "decision_id": r.get("decision_id"), "decision_class": said,
                           "routed_class": det, "calibrated": r.get("calibrated") is True, "uncertain": r.get("uncertain") is True,
                           "max_p": r.get("max_p"), "fallback": r.get("fallback"), "moved_route": False,
-                          "agree": said is not None and said == det, "approved": None})
+                          "agree": said is not None and said == det, "table_class": det,
+                          "agree_with_table": (said == det) if said is not None and det else None, "approved": None})
     if not items:
         return {"status": "no decision data", "rows": 0,
                 "note": "no route row called the decision layer (${APEX_DECIDE_CMD} unset, absent or timed out: "
@@ -284,8 +310,10 @@ def decision(root, state_dir):
     for x in items:
         by_bucket[_bucket(x["max_p"])].append(x)
     oc = [x for x in items if x["approved"] is not None]
+    wt = [x for x in items if x["agree_with_table"] is not None]
     return {"status": "ok", "rows": len(items),
             "agreement": agg(items),
+            "agreement_with_table": {"n": len(wt), "agreement_rate": _rate(sum(1 for x in wt if x["agree_with_table"]), len(wt))},
             "by_calibration": {"calibrated": agg([x for x in items if x["calibrated"]]),
                                "uncalibrated": agg([x for x in items if not x["calibrated"]])},
             "by_confidence": {k: agg(v) for k, v in sorted(by_bucket.items())},
@@ -310,14 +338,20 @@ def print_compare(c):
                                                                         ", ".join(str(x) for x in c["baseline_labels"]) or "none"))
     for arm in ("routed", "baseline"):
         a = c[arm]
-        print("REPORT_COMPARE_%s: tasks=%d spawns=%d spawns/task=%s usd=%.4f usd/task=%s usd/solved=%s tiers=%s "
+        usd = ("usd=%.4f usd/task=%s usd/solved=%s" % (a["usd_estimated"], _f(a["usd_per_task"]), _f(a["usd_per_solved_task"]))
+               if a["usd_comparable"] else "usd=not comparable (%d unpriced/unverified row(s); priced part $%.4f)"
+               % (a["unpriced_rows"], a["usd_priced_partial"]))
+        print("REPORT_COMPARE_%s: tasks=%d spawns=%d spawns/task=%s %s tiers=%s "
               "review_rounds/task=%s approval=%s first_round=%s escalation=%s wall_p50_min=%s"
-              % (arm.upper(), a["tasks"], a["spawns"], _f(a["spawns_per_task"]), a["usd_estimated"], _f(a["usd_per_task"]),
-                 _f(a["usd_per_solved_task"]), fmt_counter(a["tiers"]), _f(a["review_rounds_per_task"]),
+              % (arm.upper(), a["tasks"], a["spawns"], _f(a["spawns_per_task"]), usd, fmt_counter(a["tiers"]), _f(a["review_rounds_per_task"]),
                  _f(a["approval_rate"], True), _f(a["first_round_approval_rate"], True), _f(a["escalation_rate"], True),
                  _f(a["wall_minutes_p50"])))
     d = c["delta_routed_minus_baseline"]
-    print("REPORT_COMPARE_DELTA: " + ", ".join("%s=%s" % (k, _f(v)) for k, v in sorted(d.items())))
+    print("REPORT_COMPARE_USD: %s" % c["usd_status"])
+    print("REPORT_COMPARE_DELTA: " + ", ".join("%s=%s" % (k, "not comparable" if k.startswith("usd") and c["usd_status"] != "ok"
+                                                           else _f(v)) for k, v in sorted(d.items())))
+    for w in c["warnings"]:
+        print("REPORT_COMPARE_WARNING: %s" % w)
     for cls, v in sorted(c["by_class"].items()):
         print("REPORT_COMPARE_CLASS: %s routed=%d (usd/solved %s, approval %s) baseline=%d (usd/solved %s, approval %s)"
               % (cls, v["routed"]["tasks"], _f(v["routed"]["usd_per_solved_task"]), _f(v["routed"]["approval_rate"], True),
@@ -332,6 +366,9 @@ def print_decision(d):
         return
     print("REPORT_DECISION: %d row(s); agreement %s; moved the route %d; uncertain %d; backends %s"
           % (d["rows"], _f(d["agreement"]["agreement_rate"], True), d["moved_route"], d["uncertain"], fmt_counter(d["backends"])))
+    print("REPORT_DECISION_TABLE: agreement with the table's own class %s (n=%d; the table's choice is recorded on "
+          "decision-mode, baseline and shadow route rows)" % (_f(d["agreement_with_table"]["agreement_rate"], True),
+                                                                d["agreement_with_table"]["n"]))
     print("REPORT_DECISION_CALIBRATION: calibrated n=%d agreement %s; uncalibrated n=%d agreement %s"
           % (d["by_calibration"]["calibrated"]["n"], _f(d["by_calibration"]["calibrated"]["agreement_rate"], True),
              d["by_calibration"]["uncalibrated"]["n"], _f(d["by_calibration"]["uncalibrated"]["agreement_rate"], True)))
@@ -444,9 +481,14 @@ def main(argv):
         if do_decision:
             out["decision"] = decision(root, state)
         if as_json:
+            ok, _, msg = ledger.verify(state)
+            out["chain"] = {"ok": ok, "message": msg}
             print(json.dumps(out, indent=2, sort_keys=True))
             return 0
+        ok, _, msg = ledger.verify(state)
+        out["chain"] = {"ok": ok, "message": msg}
         print("REPORT_STATE: %s" % state)
+        print("REPORT_CHAIN: %s — %s" % ("OK" if ok else "BROKEN", msg))
         if do_compare:
             print_compare(out["compare"])
         if do_decision:

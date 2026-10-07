@@ -1895,6 +1895,8 @@ cfgp = os.environ.get("OPENCODE_CONFIG")
 d = a[a.index("--dir") + 1]
 n = len(os.listdir(LOG))
 json.dump({"bin": "opencode", "argv": a, "cwd": os.getcwd(), "config_path": cfgp, "config": json.load(open(cfgp)) if cfgp else None,
+           "config_content": json.loads(os.environ["OPENCODE_CONFIG_CONTENT"]) if os.environ.get("OPENCODE_CONFIG_CONTENT") else None,
+           "project_config": sorted(x for x in ("opencode.json", "opencode.jsonc", ".opencode") if os.path.lexists(os.path.join(d, x))),
            "env": sorted(os.environ)}, open(os.path.join(LOG, "%03d-opencode.json" % n), "w"))
 if mode == "edit":
     open(os.path.join(d, "docs", "guide.md"), "a").write("opencode edit\n")
@@ -1914,6 +1916,7 @@ mode = open(MODEFILE).read().strip()
 mf, conf = a[a.index("--message-file") + 1], a[a.index("--config") + 1]
 n = len(os.listdir(LOG))
 json.dump({"bin": "aider", "argv": a, "cwd": os.getcwd(), "message": open(mf).read(), "config": open(conf).read(),
+           "project_config": sorted(x for x in os.listdir(".") if x == ".env" or x.startswith(".aider")),
            "stdin": sys.stdin.read(), "env": sorted(os.environ)}, open(os.path.join(LOG, "%03d-aider.json" % n), "w"))
 if mode == "edit":
     open(os.path.join("docs", "guide.md"), "a").write("aider edit\n")
@@ -1996,6 +1999,8 @@ pass "flagged-off providers run only with the overlay's enabled + verified_versi
 # 73. opencode write worker: exactly the policy's command (forced flags, --dir = the throwaway worktree, the policy
 #     model, the brief last), a generated permission config via OPENCODE_CONFIG (owned Paths only, no ask); apply.sh
 #     commits it; a brief over 120 KiB is refused with 2 and still leaves result.json
+echo '{"permission":{"edit":"allow","bash":"allow"}}' >"$GWT/opencode.json"; mkdir -p "$GWT/.opencode"; echo x >"$GWT/.opencode/agent.md"
+git -C "$GWT" add -A; git -C "$GWT" commit -qm 'project opencode config'
 echo edit >"$STUB/mode"; GH0="$(git -C "$GWT" rev-parse HEAD)"
 gx "$OVA" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
 [ "$WRC" = 0 ] && [ "$(printf '%s\n' "$WOUT" | tail -1)" = "DISPATCH-DONE exit=0" ] || fail "the opencode worker failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
@@ -2014,10 +2019,13 @@ assert log["config_path"] == os.path.join(out, "opencode.jsonc") and "SMOKE_SECR
 perm = log["config"]["permission"]
 assert perm["edit"] == {"docs/**": "allow", "*": "deny"} and perm["external_directory"] == "deny" and perm["webfetch"] == "deny", perm
 assert perm["bash"]["git push*"] == "deny" and "ask" not in json.dumps(log["config"]), log["config"]
+assert log["config_content"] == log["config"] and log["project_config"] == [], (log["project_config"], log["config_content"])
 r = json.load(open(os.path.join(out, "result.json")))
 assert r["provider"] == "opencode-ollama" and r["family"] == "local" and r["ok"] and r["files_changed"] == ["docs/guide.md"], r
 assert r["usage"] == {"input": 100, "output": 20, "cache_read": 5} and r["model"] == p["model"], r
 PY
+GOW="$(jget "$GO1/worker.json" worktree)"
+[ -f "$GOW/opencode.json" ] && [ -f "$GOW/.opencode/agent.md" ] && [ ! -e "$GO1/hidden/opencode.json" ] || fail "the moved-aside opencode project config was not restored"
 wrun "$WG" bash "$APPLY" --worker "$GO1"; [ "$WRC" = 0 ] || fail "apply.sh refused the opencode patch (rc=$WRC: $(cat "$WORK/w.err"))"
 git -C "$GWT" log -1 --format=%B | grep -q 'Dispatch-Provider: opencode-ollama' && grep -q 'opencode edit' "$GWT/docs/guide.md" || fail "the opencode patch was not committed with its trailers"
 python3 -c 'import sys; open(sys.argv[1], "w").write("Refresh docs/guide.md.\n" + "x" * (125 * 1024))' "$WORK/bigbrief.md"
@@ -2027,12 +2035,17 @@ GOB="$(val WORKER_OUT "$WOUT")"
 [ "$WRC" = 2 ] && [ "$(printf '%s\n' "$WOUT" | tail -1)" = "DISPATCH-DONE exit=2" ] && grep -q 'capped at 122880 bytes' "$WORK/w.err" || fail "a 125 KiB argv brief was not refused with 2 (rc=$WRC: $WOUT $(cat "$WORK/w.err"))"
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["ok"] is False and r["exit_code"]==2 and "122880" in r["refused"] and r["verdict"] is None and not r["sentinel_seen"], r' "$GOB/result.json" || fail "the refused oversized brief left no result.json"
 [ "$(nlog)" = "$N1" ] && [ "$(shimrows "$GD/ledger.jsonl" worker_run route_id="$GRID")" = "$R0" ] || fail "an oversized brief reached the provider or spent a worker_run row"
+printf -- '--yolo is not a flag here: refresh docs/guide.md\n' >"$WORK/dashbrief.md"; echo noop >"$STUB/mode"
+gx "$OVA" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/dashbrief.md"
+[ "$WRC" = 0 ] && python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["argv"]; assert a[-1].startswith("Brief:\n--yolo is not a flag"), a[-1]' "$(lastlog)" \
+  || fail "a brief starting with - reached opencode as an option (rc=$WRC: $(cat "$WORK/w.err"))"
 pass "opencode write worker: the policy's command only (forced flags, --dir worktree, policy model, brief last, nothing forbidden), OPENCODE_CONFIG permissions (owned Paths, no ask, no push/webfetch/outside dirs), usage parsed, applied with trailers; a >120 KiB argv brief is refused (2) with result.json and the sentinel, nothing run or ledgered"
 
 # 74. aider write worker: --config/--env-file generated in the out dir (the repo's .aider.conf.yml and .env are never
 #     read), --message-file, the policy model, the owned tracked files after --, never --yes/--yes-always, stdin closed
 groute "$OVAI" aider-ollama; gdoc "$OVAI"
-printf 'yes-always: true\n' >"$GWT/.aider.conf.yml"; git -C "$GWT" add .aider.conf.yml; git -C "$GWT" commit -qm 'repo aider config'
+printf 'yes-always: true\n' >"$GWT/.aider.conf.yml"; printf 'yes-always: true\n' >"$GWT/.aider.model.settings.yml"; printf 'AIDER_YES_ALWAYS=true\n' >"$GWT/.env"
+git -C "$GWT" add -f .aider.conf.yml .aider.model.settings.yml .env; git -C "$GWT" commit -qm 'repo aider config'
 echo edit >"$STUB/mode"
 gx "$OVAI" bash "$AIW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
 [ "$WRC" = 0 ] || fail "the aider worker failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
@@ -2049,10 +2062,13 @@ assert a[a.index("--") + 1:] == ["docs/guide.md", "docs/hidden.md"], a
 for f in p["forbidden_flags"]:
     assert not any(x == f or x.startswith(f + "=") for x in a), f
 assert "yes-always: false" in log["config"] and log["message"].startswith("Refresh docs/guide.md") and log["stdin"] == ""
+assert log["project_config"] == [], log["project_config"]                  # .env and .aider* moved aside for the run
 r = json.load(open(os.path.join(out, "result.json")))
 assert r["provider"] == "aider-ollama" and r["ok"] and r["usage"] is None and r["usage_source"] is None and r["files_changed"] == ["docs/guide.md"], r
 PY
-pass "aider write worker: generated --config/--env-file (repo config never read), --message-file, the policy model, owned tracked files after --, no --yes/--yes-always, stdin closed, no usage reported"
+GAW="$(jget "$GA1/worker.json" worktree)"
+[ -f "$GAW/.env" ] && [ -f "$GAW/.aider.conf.yml" ] && [ -f "$GAW/.aider.model.settings.yml" ] || fail "aider's moved-aside project config was not restored"
+pass "aider write worker: generated --config/--env-file, the repo's .env/.aider* moved aside for the run and restored (repo config never read), --message-file, the policy model, owned tracked files after --, no --yes/--yes-always, stdin closed, no usage reported"
 
 # 75. grok: refused for builder roles; a reviewer runs read-only on a checkout-index snapshot that keeps
 #     export-ignore'd files, with the run-only settings (dontAsk) present, never --worktree; shim verdict row
@@ -2124,15 +2140,17 @@ pass "doctor: shim_file/roles/classes/verified_versions/version_verified per pro
 #     flags on the new shims are denied through the shim -> provider map (payloads fed from files)
 PJG="$WORK/p42"; mkdir -p "$PJG"; n=0
 gpb() { n=$((n + 1)); pl bash "$GWT" "$@" >"$PJG/$n.json"; (cd "$GWT" && bash "$PLUGIN_ROOT/hooks/pre-bash.sh" <"$PJG/$n.json" 2>/dev/null) | one; }
-for c in "python3 $PLUGIN_ROOT/scripts/lib/worker.py run grok a b c d -- --route r" "python3 -B scripts/lib/worker.py apply a b c d -- --worker x" \
-         "source $PLUGIN_ROOT/bin/worker-common.sh" ". ./bin/worker-common.sh" "bash $APPLY --worker x" \
+for c in "python3 $PLUGIN_ROOT/scripts/lib/worker.py run grok a b c d -- --route r" 'python3 -B ${CLAUDE_PLUGIN_ROOT}/scripts/lib/worker.py apply a b c d -- --worker x' \
+         "source $PLUGIN_ROOT/bin/worker-common.sh" '. "${CLAUDE_PLUGIN_ROOT}/bin/worker-common.sh"' "bash $APPLY --worker x" \
          "bash -c 'source $PLUGIN_ROOT/bin/worker-common.sh; apex_worker_main grok --route r'"; do
   [ "$(gpb "$c" agent_type=apex-dispatch:builder agent_id=b9)" = deny ] || fail "a builder was allowed the shim engine: $c"
   [ "$(gpb "$c" agent_type=apex-dispatch:tester)" = deny ] || fail "a tester worker session was allowed the shim engine: $c"
   [ "$(gpb "$c")" = "{}" ] || fail "the orchestrator was denied the shim engine: $c"
   [ "$(gpb "$c" agent_type=apex-dispatch:provider-runner agent_id=pr2)" = "{}" ] || fail "provider-runner was denied the shim engine: $c"
 done
-[ "$(gpb 'python3 tools/worker.py --help' agent_type=apex-dispatch:builder agent_id=b9)" = "{}" ] || fail "an unrelated worker.py was treated as the shim engine"
+for c in 'python3 tools/worker.py --help' 'python3 scripts/lib/worker.py --help' '. ./bin/worker-common.sh' 'bash scripts/apply.sh'; do
+  [ "$(gpb "$c" agent_type=apex-dispatch:builder agent_id=b9)" = "{}" ] || fail "a repository's own script was treated as the shim engine: $c"
+done
 for c in "bash $AIW --route r --role docs --brief b --yes-always" "bash bin/worker-grok.sh --route r --role reviewer --brief b --worktree" "bash $OCW --route r --role docs --brief b --auto"; do
   [ "$(gpb "$c")" = deny ] || fail "a provider-forbidden flag on a 4.2 shim was allowed: $c"
 done
@@ -2167,7 +2185,17 @@ cxd() { k=$((k + 1)); python3 -c 'import json,sys; print(json.dumps({"tool_name"
 for c in 'codex exec --dangerously-bypass-approvals-and-sandbox x' 'aider --yes-always --message m' 'git push --force origin main' 'claude -p --bare hi' 'ls; grok -p --worktree' 'npm test --yolo'; do
   [ "$(cxd "$c")" = 2 ] || fail "the codex deny hook allowed: $c"
 done
-for c in 'ls -a' 'git status' 'git clone --bare x y' 'pytest -q' 'echo yes'; do
+for c in 'timeout 600 aider --yes-always' 'env OLLAMA_HOST=x aider --yes-always' 'sudo grok -p hi --auto-approve' 'npx opencode-ai run --auto hi' \
+         'cd repo && git push --force origin main' 'pnpm dlx opencode-ai@1.2.3 run --auto x' 'pipx run aider-chat --yes-always' \
+         "bash -c 'sh -c \"aider --yes-always\"'" 'nice -n 5 nohup stdbuf -oL timeout -s KILL 60 aider --yes-always' "$(printf 'ls\naider --yes')"; do
+  [ "$(cxd "$c")" = 2 ] || fail "the codex deny hook allowed a wrapped or chained command: $c"
+done
+cxl() { k=$((k + 1)); python3 -c 'import json,sys; print(json.dumps({"tool_name": "Bash", "tool_input": {"command": sys.argv[1:]}}))' "$@" >"$CXJ/$k.json"
+  local rc=0; python3 "$PLUGIN_ROOT/resources/compiled/codex/apex-dispatch-deny.py" <"$CXJ/$k.json" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
+[ "$(cxl bash -lc 'aider --yes-always')" = 2 ] && [ "$(cxl bash -lc 'git push --force origin main')" = 2 ] && [ "$(cxl timeout 5 codex exec --approve-for-me x)" = 2 ] \
+  || fail "the codex deny hook allowed an argv-list command"
+[ "$(cxl bash -lc 'git push origin main')" = 0 ] && [ "$(cxl echo aider --yes-always)" = 0 ] || fail "the codex deny hook denied an ordinary argv-list command"
+for c in 'ls -a' 'git status' 'git clone --bare x y' 'pytest -q' 'echo yes' 'timeout 60 pytest' 'env FOO=1 npm test' "bash -lc 'make test'" 'npx prettier --check .' 'echo aider --yes-always'; do
   [ "$(cxd "$c")" = 0 ] || fail "the codex deny hook denied: $c"
 done
 printf 'not json' >"$CXJ/bad.json"; python3 "$PLUGIN_ROOT/resources/compiled/codex/apex-dispatch-deny.py" <"$CXJ/bad.json" >/dev/null 2>&1 || fail "the codex deny hook failed closed on garbage stdin"
@@ -2193,15 +2221,18 @@ ledger.append(st, "baseline", {"label": "baseline@0.3.0"}, "cli", route_mode="ba
 A, B, C = "a" * 40, "b" * 40, "c" * 40
 route("r-0123456789ab-L3-1", "table", "docs", "cheap", dec={"backend": "fake", "verdict": "docs", "calibrated": False, "max_p": 0.9, "decision_id": "d1"})
 run("r-0123456789ab-L3-1", 0.10); verdict("r-0123456789ab-L3-1", "APPROVE", A)
-route("r-0123456789ab-L4-1", "table", "docs", "cheap", dec={"backend": "fake", "verdict": "feature", "calibrated": False, "max_p": 0.6, "decision_id": "d2", "fallback": "uncalibrated_cheaper"})
+route("r-0123456789ab-L4-1", "table", "docs", "cheap", dec={"backend": "fake", "verdict": "feature", "calibrated": False, "max_p": 0.6, "decision_id": "d2", "fallback": "uncalibrated_cheaper"},
+      tc={"class": "docs", "source": "table-before-decision"})
 run("r-0123456789ab-L4-1", 0.30); verdict("r-0123456789ab-L4-1", "REQUEST_CHANGES", A); verdict("r-0123456789ab-L4-1", "APPROVE", B)
 route("r-0123456789ab-L5-1", "baseline", "baseline", "inherit", tc={"class": "docs", "tier": "cheap"})
 run("r-0123456789ab-L5-1", 0.50); run("r-0123456789ab-L5-1", 0.50); verdict("r-0123456789ab-L5-1", "APPROVE", C)
 route("r-0123456789ab-L6-1", "shadow", "baseline", "inherit", tc={"class": "docs", "tier": "cheap"})
 run("r-0123456789ab-L6-1", 0.20); verdict("r-0123456789ab-L6-1", "REQUEST_CHANGES", C)
+route("r-0123456789ab-L3-2", "baseline", "baseline", "inherit", tc={"class": "docs", "tier": "cheap"})   # same line, other arm
 PY
 O="$(bash "$REPORT" --state "$RS" --compare baseline 2>&1)" || fail "report.sh --compare failed: $O"
-has '^REPORT_COMPARE: insufficient n (min n 20 per arm; baseline labels: baseline@0.3.0)' "$O" && has '^REPORT_COMPARE_ROUTED: tasks=2 spawns=2 ' "$O" \
+has '^REPORT_CHAIN: OK' "$O" && has '^REPORT_COMPARE_WARNING: plan line(s) 3 have both baseline and routed routes' "$O" && has '^REPORT_COMPARE_USD: ok' "$O" \
+  && has '^REPORT_COMPARE: insufficient n (min n 20 per arm; baseline labels: baseline@0.3.0)' "$O" && has '^REPORT_COMPARE_ROUTED: tasks=2 spawns=2 ' "$O" \
   && has '^REPORT_COMPARE_BASELINE: tasks=2 spawns=3 ' "$O" && has '^REPORT_COMPARE_CLASS: docs routed=2' "$O" && has '^REPORT_COMPARE_SHADOW_ROUTED_CHOICE: docs/cheap=1' "$O" \
   || fail "report.sh --compare text is wrong: $O"
 bash "$REPORT" --state "$RS" --compare --json | python3 -c '
@@ -2211,10 +2242,13 @@ assert c["status"] == "insufficient n" and c["min_n"] == 20, c["status"]
 assert a["tasks"] == 2 and a["usd_per_solved_task"] == 0.2 and a["approval_rate"] == 1.0 and a["first_round_approval_rate"] == 0.5 and a["review_rounds_per_task"] == 1.5 and a["tiers"] == {"cheap": 2}, a
 assert b["tasks"] == 2 and b["usd_per_solved_task"] == 1.2 and b["approval_rate"] == 0.5 and b["tiers"] == {"inherit": 2} and b["spawns_per_task"] == 1.5, b
 assert d["approval_rate_pts"] == 50.0 and round(d["usd_per_solved_task_pct"], 1) == -83.3, d
+w = {str(t["task"]): t["wall_min"] for t in c["tasks"]}
+assert w["6"] is None and w["5"] is not None, w                                 # an unfinished task has no wall-clock
 ' || fail "report.sh --compare --json numbers are wrong"
 O="$(bash "$REPORT" --state "$RS" --decision 2>&1)"
 has '^REPORT_DECISION: 2 row(s); agreement 50.0%; moved the route 0; uncertain 0; backends fake=2' "$O" && has 'route=r-0123456789ab-L4-1 said=feature routed=docs .* DISAGREE' "$O" \
-  && has '^REPORT_DECISION_CONFIDENCE: p0.5-0.8 n=1 agreement 0.0%, p>=0.8 n=1 agreement 100.0%' "$O" || fail "report.sh --decision text is wrong: $O"
+  && has '^REPORT_DECISION_CONFIDENCE: p0.5-0.8 n=1 agreement 0.0%, p>=0.8 n=1 agreement 100.0%' "$O" && has '^REPORT_CHAIN: OK' "$O" \
+  && has "^REPORT_DECISION_TABLE: agreement with the table's own class 0.0% (n=1" "$O" || fail "report.sh --decision text is wrong: $O"
 bash "$REPORT" --state "$RS" --decision --compare --json | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
@@ -2225,7 +2259,7 @@ O="$(bash "$REPORT" --state "$GSD" --compare --decision 2>&1)"
 has '^REPORT_COMPARE: no baseline data' "$O" && has '^REPORT_DECISION: no decision data' "$O" || fail "report.sh on a table-only ledger did not say no baseline/decision data: $O"
 O="$(bash "$REPORT" --state "$RS" --compare --baseline-state "$GSD" 2>&1)"; has '^REPORT_COMPARE: no baseline data' "$O" || fail "--baseline-state was not used as the baseline arm: $O"
 [ "$(bash "$REPORT" --state "$RS" --baseline-state "$GSD" >/dev/null 2>&1; echo $?)" = 2 ] || fail "--baseline-state without --compare is not a usage error"
-has '^REPORT_ROUTES: 4' "$(bash "$REPORT" --state "$RS")" || fail "the plain report changed"
+has '^REPORT_ROUTES: 5' "$(bash "$REPORT" --state "$RS")" || fail "the plain report changed"
 pass "report.sh --compare: routed vs baseline/shadow arms (tasks, spawns, USD per solved task, tiers, review rounds, approval and first-round rates, deltas, shadow counterfactuals, insufficient n / no baseline data, --baseline-state); --decision: agreement by calibration and confidence, fallbacks, or no decision data; text and --json"
 
 # 80. carried worker hardening: never-touch is case-insensitive and covers .envrc; the reviewer USD floor and the
@@ -2256,6 +2290,92 @@ for t in 'bin/worker-grok.sh' 'worker-openai-sdk.sh' '--target codex' '--compare
 grep -qF -- '--compare' "$PLUGIN_ROOT/commands/report.md" && grep -qF -- '--decision' "$PLUGIN_ROOT/commands/report.md" && grep -qF -- '--target codex' "$PLUGIN_ROOT/commands/compile.md" \
   || fail "commands/report.md or compile.md do not describe the new modes"
 pass "docs: ADR-0001 (flagged-off providers, stub, codex target, measurement with min n, never-touch deviation), README and the report/compile commands describe the 4.2 surface"
+
+# 82. report --compare does not invent savings: 20 routed tasks (a codex builder with provider-default usage and no
+#     USD, plus an in-session reviewer) vs 20 baseline tasks (in-session builder + reviewer, identical tokens): USD is
+#     "not comparable" (never $0), spawns are one per agent (spawn_request+spawn+worker_run = 1), equal per task;
+#     a decision-mode route row records the table's choice and --decision reports agreement with it
+RS2="$WORK/rstate2"; mkdir -p "$RS2"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$RS2" <<'PY' || fail "could not build the reviewer-shape comparison ledger"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+st = sys.argv[2]
+U = {"input": 10000, "output": 2000}
+def ins(rid, aid, mode):
+    ledger.append(st, "spawn_request", {"route_id": rid, "role": "reviewer", "model": "sonnet"}, "hook", route_id=rid, route_mode=mode)
+    ledger.append(st, "spawn", {"route_id": rid, "agent_id": aid, "role": "reviewer"}, "hook", route_id=rid, route_mode=mode)
+    ledger.append(st, "worker_run", {"route_id": rid, "provider": "claude-session", "role": "reviewer", "exit_code": 0, "agent_id": aid,
+                                     "usage": U, "resolved_model": "claude-sonnet-5-5"}, "hook", route_id=rid, route_mode=mode)
+for i in range(20):
+    for arm, mode, line in (("r", "table", 10 + i), ("b", "baseline", 40 + i)):
+        rid = "r-0123456789ab-L%d-1" % line
+        ledger.append(st, "route", {"route_id": rid, "status": "READY", "origin": "plan", "line": line,
+                                    "router": {"class": "docs", "tier": "cheap" if arm == "r" else "inherit"}}, "cli", route_id=rid, route_mode=mode)
+        if arm == "r":
+            ledger.append(st, "worker_run", {"route_id": rid, "provider": "codex", "role": "docs", "exit_code": 0, "run_id": "w-codex-%d" % i,
+                                             "usage": U, "resolved_model": "provider-default", "usd": None}, "shim", route_id=rid, route_mode=mode)
+        else:
+            ins(rid, "b%d" % i, mode)
+        ins(rid, "%sr%d" % (arm, i), mode)
+        ledger.append(st, "verdict", {"route_id": rid, "role": "reviewer", "verdict": "APPROVE"}, "hook", route_id=rid, route_mode=mode, head_sha="a" * 40)
+PY
+bash "$REPORT" --state "$RS2" --compare --json | python3 -c '
+import json, sys
+c = json.load(sys.stdin)["compare"]; a, b, d = c["routed"], c["baseline"], c["delta_routed_minus_baseline"]
+assert c["status"] == "ok" and c["usd_status"].startswith("not comparable") and "routed 20" in c["usd_status"], c["usd_status"]
+assert a["usd_comparable"] is False and a["unpriced_rows"] == 20 and a["usd_per_solved_task"] is None and a["usd_estimated"] is None, a
+assert b["usd_comparable"] is True and b["usd_per_solved_task"] > 0, b
+assert d["usd_per_solved_task_pct"] is None and d["usd_per_task_pct"] is None, d
+assert a["spawns_per_task"] == b["spawns_per_task"] == 2.0 and a["spawns"] == b["spawns"] == 40, (a["spawns"], b["spawns"])
+' || fail "report --compare reported a USD saving from unpriced rows or double-counted spawns"
+O="$(bash "$REPORT" --state "$RS2" --compare 2>&1)"
+has '^REPORT_COMPARE_USD: not comparable (unpriced or unverified usage rows: routed 20, baseline 0)' "$O" && has '^REPORT_COMPARE_ROUTED: tasks=20 spawns=40 spawns/task=2.0 usd=not comparable (20 unpriced' "$O" \
+  && has 'usd_per_solved_task_pct=not comparable' "$O" && has '^REPORT_CHAIN: OK' "$O" || fail "report --compare text does not say USD is not comparable: $O"
+# A decision-mode route records the table's own class; --decision reports agreement with it.
+FD="$WORK/fd"; mkdir -p "$FD/plans"; git init -q -b main "$FD"
+printf '# D\n\n- [ ] **Phase 1.1** untagged work\n  - Acceptance: `pytest -q`\n' >"$FD/plans/p.md"; printf '.dev-plan-state/\n' >"$FD/.gitignore"
+git -C "$FD" add -A; git -C "$FD" commit -qm fd; (cd "$FD" && wenv bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the decision fixture"
+O="$(cd "$FD" && wenv env APEX_DECIDE_CMD="$WORK/decide" FAKE_DECISION='{"verdict":"docs","probabilities":{"docs":0.95,"feature":0.05},"calibrated":true,"uncertain":false,"backend":"fake","decision_id":"d9"}' bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_MODE "$O")" = decision ] && [ "$(val ROUTE_CLASS "$O")" = docs ] || fail "the decision fixture did not route by decision: $O"
+FSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; x=[y for y in r if y["event"]=="route"][-1]; assert x["table_choice"]["class"]=="feature" and x["router"]["class"]=="docs", x.get("table_choice")' "$FSD/dispatch/ledger.jsonl" \
+  || fail "a decision-mode route row does not record the table's choice"
+O="$(bash "$REPORT" --state "$FSD" --decision 2>&1)"
+has "^REPORT_DECISION_TABLE: agreement with the table's own class 0.0% (n=1" "$O" && has '^REPORT_DECISION: 1 row(s); agreement 100.0%; moved the route 1' "$O" || fail "--decision did not report agreement with the table: $O"
+pass "report --compare: unpriced/unverified usage makes USD not comparable (never \$0, no USD delta), one spawn per agent (equal per task), chain printed, mixed arms warned, unfinished tasks out of wall-clock; decision-mode routes record table_choice and --decision reports agreement with the table"
+
+# 83. run-only files: a provider's project config is moved aside and restored, worktree_files are undone, and both
+#     are restored on an error path too (the engine's outer finally); generated opencode permissions also travel
+#     in OPENCODE_CONFIG_CONTENT
+python3 - "$PLUGIN_ROOT/scripts/lib" "$WORK/rf" <<'PY' || fail "RunFiles does not move aside and restore run-only files"
+import os, sys
+sys.path.insert(0, sys.argv[1]); import worker
+base = sys.argv[2]; conf, out = os.path.join(base, "wt"), os.path.join(base, "out")
+os.makedirs(os.path.join(conf, ".opencode")); os.makedirs(out)
+open(os.path.join(conf, "opencode.json"), "w").write("orig")
+open(os.path.join(conf, ".opencode", "a.md"), "w").write("a")
+open(os.path.join(conf, ".env"), "w").write("E=1")
+os.makedirs(os.path.join(conf, ".claude")); open(os.path.join(conf, ".claude", "settings.json"), "w").write("user")
+assert worker.aider_project_config(conf) == [".env"], worker.aider_project_config(conf)
+rf = worker.RunFiles(conf, out)
+try:
+    rf.apply({"hide": ["opencode.json", ".opencode"], "worktree_files": {".claude/settings.json": "run-only"}})
+    assert not os.path.exists(os.path.join(conf, "opencode.json")) and not os.path.exists(os.path.join(conf, ".opencode"))
+    assert open(os.path.join(conf, ".claude", "settings.json")).read() == "run-only"
+    open(os.path.join(conf, "opencode.json"), "w").write("written by the provider")
+    raise RuntimeError("timeout missing")          # an error between apply() and the run
+except RuntimeError:
+    pass
+finally:
+    rf.restore()
+rf.restore()                                        # idempotent
+assert open(os.path.join(conf, "opencode.json")).read() == "orig" and open(os.path.join(conf, ".opencode", "a.md")).read() == "a"
+assert open(os.path.join(conf, ".claude", "settings.json")).read() == "user"
+src = open(worker.__file__).read()
+i = src.index("def cmd_run(")
+assert "runfiles.restore()                                 # also on a refusal" in src[i:], "the outer finally does not restore"
+PY
+pass "run-only files: provider project config (opencode.json/.opencode, .env/.aider*) moved aside and restored, grok-style worktree_files undone, restore idempotent and also in cmd_run's outer finally"
 
 echo ""
 echo "smoke passed: $N/$N checks"

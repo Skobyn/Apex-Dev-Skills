@@ -1192,28 +1192,30 @@ def resolve_target(ctx, cwd, prefix, t):
 
 
 def engine_entry(ctx, c, cwd, prefix):
-    """The worker engine entry point this command runs, or None: `python*
-    .../scripts/lib/worker.py`, `source`/`.` of bin/worker-common.sh, or
-    apex-dispatch's scripts/apply.sh (run directly or through a shell). String
+    """The worker engine entry point this command runs, or None: `python* <this
+    plugin's scripts/lib/worker.py>`, `source`/`.` of this plugin's
+    bin/worker-common.sh, or this plugin's scripts/apply.sh (run directly or
+    through a shell). A path counts when it resolves to this plugin's file, or is
+    written through apex-dispatch/ or ${CLAUDE_PLUGIN_ROOT} (unexpanded), so a
+    repository's own scripts/lib/worker.py or apply.sh is not caught. String
     matching on the command (trust model: non-malicious agents, not a sandbox)."""
     b, a = c.base, c.args
+
+    def ours(x, rel):
+        if re.search(r"(apex-dispatch|CLAUDE_PLUGIN_ROOT\}?)/" + re.escape(rel) + "$", x):
+            return True
+        return "$" not in x and real(resolve_target(ctx, cwd, prefix, x)) == real(os.path.join(ctx.plugin_root, rel))
     if re.fullmatch(r"python[0-9.]*", b):
         for x in a:
-            if re.search(r"(^|/)scripts/lib/worker\.py$", x) or (
-                    os.path.basename(x) == "worker.py"
-                    and real(resolve_target(ctx, cwd, prefix, x)) == real(os.path.join(ctx.plugin_root, "scripts", "lib", "worker.py"))):
+            if os.path.basename(x) == "worker.py" and ours(x, "scripts/lib/worker.py"):
                 return "scripts/lib/worker.py (the shim engine)"
-    if b in ("source", ".") and a and os.path.basename(a[0]) == "worker-common.sh":
+    if b in ("source", ".") and a and os.path.basename(a[0]) == "worker-common.sh" and ours(a[0], "bin/worker-common.sh"):
         return "bin/worker-common.sh (the shim library)"
-    apply_py = real(os.path.join(ctx.plugin_root, "scripts", "apply.sh"))
     cand = [c.words[0]] if c.words else []
     if b in SHELLS and a:
         cand.append(next((x for x in a if not x.startswith("-")), ""))
     for x in cand:
-        if not x.endswith("apply.sh"):
-            continue
-        if re.search(r"(apex-dispatch|CLAUDE_PLUGIN_ROOT\}?)/scripts/apply\.sh$", x) or (
-                "$" not in x and real(resolve_target(ctx, cwd, prefix, x)) == apply_py):
+        if x.endswith("apply.sh") and ours(x, "scripts/apply.sh"):
             return "scripts/apply.sh"
     return None
 
