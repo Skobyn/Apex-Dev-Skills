@@ -78,7 +78,8 @@ GIT_READ = {"status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree",
             "diff-files", "show-branch", "cherry", "fetch", "ls-remote", "annotate", "hash-object"}
 GIT_CFG_KEYS = re.compile(r"^(core|filter|diff|merge|include|includeif)\.", re.I)
 GIT_CFG_HARMLESS = re.compile(r"^core\.(editor|pager)=", re.I)       # cosmetic; cannot hide or alter content
-LEDGER_CODE = re.compile(r"^\s*(import\s+ledger\s*(;|$)|from\s+ledger\s+import\b)|\bledger\.append\s*\(|apex-dispatch/scripts/lib/ledger\.py\b", re.M)
+LEDGER_CODE = re.compile(r"(^|[;\n])\s*(import\s+[\w., ]*\bledger\b|from\s+ledger\s+import\b)|\bledger\.append\s*\("
+                         r"|apex-dispatch/scripts/lib/ledger\.py\b")
 LEDGER_PATH = re.compile(r"(^|/)apex-dispatch/scripts/lib/ledger\.py$")
 # Shell reserved words that can lead a simple command; peeled like wrappers.
 RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac", "!", "{", "}", "time"}
@@ -687,16 +688,56 @@ class Cmd:
             out += subst_strings(w)
         return out
 
+    def target_dirs(self):
+        """(values, given) of cp/mv/install/ln -t forms: `-t D`, clusters `-vt D`,
+        attached `-tD`/`-vtD`, `--target-directory D`, and abbreviations `--target=D`."""
+        a, vals, given = self.args, set(), False
+        for k, w in enumerate(a):
+            if w.startswith("--"):
+                name, eq, val = w.partition("=")
+                if len(name) >= 4 and "--target-directory".startswith(name):
+                    given = True
+                    if eq:
+                        vals.add(val)
+                    elif k + 1 < len(a):
+                        vals.add(a[k + 1])
+                continue
+            m = re.fullmatch(r"-[A-Za-z]*t(.*)", w)
+            if m:
+                given = True
+                if m.group(1):
+                    vals.add(m.group(1))
+                elif k + 1 < len(a):
+                    vals.add(a[k + 1])
+        return vals, given
+
+    def find_parts(self):
+        """(start points, deletes): find's start points (after -H/-L/-P/-O/-D) and
+        whether it deletes (-delete, or -exec/-ok running rm/rmdir/unlink/shred/mv)."""
+        a, i = self.args, 0
+        while i < len(a) and (a[i] in ("-H", "-L", "-P") or re.fullmatch(r"-O\d*", a[i]) or a[i] == "-D"):
+            i += 2 if a[i] == "-D" else 1
+        starts = []
+        while i < len(a) and not (a[i].startswith("-") or a[i] in ("(", "!", ")")):
+            starts.append(a[i])
+            i += 1
+        deletes = "-delete" in a or any(w in ("-exec", "-execdir", "-ok", "-okdir") and k + 1 < len(a)
+                                        and os.path.basename(a[k + 1]) in ("rm", "rmdir", "unlink", "shred", "mv")
+                                        for k, w in enumerate(a))
+        return starts or ["."], deletes
+
     def removal_targets(self):
         """Targets this command deletes or moves away (not merely writes into)."""
         b, pos = self.base, self.positionals()
         if b in ("rm", "rmdir", "unlink", "shred"):
             return set(pos)
         if b == "mv":
-            tdir = {self.args[k + 1] for k, w in enumerate(self.args) if w in ("-t", "--target-directory") and k + 1 < len(self.args)}
-            if tdir or any(w.startswith("--target-directory=") for w in self.args):
-                return set(pos) - tdir
-            return set(pos[:-1])
+            tdir, given = self.target_dirs()
+            return set(pos) - tdir if given else set(pos[:-1])
+        if b == "find":
+            starts, deletes = self.find_parts()
+            # `.` (the cwd itself) may be a deletion start: its matches go, not the directory.
+            return {x for x in starts if x not in (".", "./")} if deletes else set()
         return set()
 
     def write_targets(self):
@@ -706,13 +747,14 @@ class Cmd:
         pos = self.positionals()
         if b in WRITE_ALL:
             shaped, t = True, list(pos)
+            if b == "mv":
+                t += sorted(self.target_dirs()[0] - set(t))
         elif b in WRITE_SKIP_FIRST:
             shaped, t = True, pos[1:]
         elif b in WRITE_DEST:
             shaped = True
-            tdir = [a[k + 1] for k, w in enumerate(a) if w in ("-t", "--target-directory") and k + 1 < len(a)]
-            tdir += [w.split("=", 1)[1] for w in a if w.startswith("--target-directory=")]
-            t = tdir or pos[-1:]
+            tdir, given = self.target_dirs() if b != "rsync" else (set(), False)
+            t = sorted(tdir) if given else pos[-1:]
         elif b == "sed" and any(w == "--in-place" or w.startswith("--in-place=") or re.fullmatch(r"-[a-zA-Z]*i.*", w) for w in a):
             shaped = True
             script_given = any(w in ("-e", "-f", "--expression", "--file") for w in a)
@@ -726,14 +768,8 @@ class Cmd:
             shaped = bool(t)
         elif b == "patch":
             shaped, t = True, (pos or ["."])
-        elif b == "find" and "-delete" in a:
-            shaped = True
-            t = []
-            for w in a:
-                if w.startswith("-") or w in ("(", "!"):
-                    break
-                t.append(w)
-            t = t or ["."]
+        elif b == "find" and self.find_parts()[1]:
+            shaped, t = True, self.find_parts()[0]
         for op, target in self.redirs:
             if op in OUT_REDIRS:
                 shaped = True
@@ -905,6 +941,10 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
                 raise Deny("`git config` writes are refused during a run (the gate and land trust local git configuration; reads like --get/--list are fine)")
             if g.sub == "update-index" and any(a in UPDATE_INDEX_HIDING for a in g.args):
                 raise Deny("git update-index %s hides edits from status; refused during a run" % " ".join(a for a in g.args if a in UPDATE_INDEX_HIDING))
+            if g.sub == "worktree" and g.pos()[:1] in (["remove"], ["move"]) and len(g.pos()) >= 2:
+                target = real(resolve_target(ctx, cwd, prefix, g.pos()[1]))
+                if target in {w for w in (ctx.state_worktree, ctx.worktree) if w}:
+                    raise Deny("git worktree %s of the plan worktree is refused during a run (land.sh removes it)" % g.pos()[0])
             if g.sub == "sparse-checkout" and g.mutating():
                 raise Deny("git sparse-checkout changes skip-worktree flags; refused during a run")
             if g.mutating():
@@ -918,6 +958,16 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
         # 6. Write-shaped commands: protected paths always; the checkout during GATE/REVIEW or for read-only roles.
         targets, shaped = c.write_targets()
         removals = c.removal_targets()
+        # A recursive delete rooted at a worktree's top would take its `.git` link file.
+        roots = {w for w in (ctx.state_worktree, ctx.worktree) if w}
+        if b == "find" and c.find_parts()[1] and not any(
+                w in ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex") for w in c.args):
+            if any(real(resolve_target(ctx, cwd, prefix, x)) in roots for x in c.find_parts()[0]):
+                raise Deny("find -delete at the worktree root without a -name/-path filter would delete its .git link")
+        if b == "rsync" and any(w.startswith("--delete") or w == "--remove-source-files" for w in c.args) and c.positionals():
+            dest = real(resolve_target(ctx, cwd, prefix, c.positionals()[-1]))
+            if dest in roots and not any(".git" in w for w in c.args):
+                raise Deny("rsync --delete into the worktree root would delete its .git link (add --exclude=.git)")
         for t in targets:
             if t in ("-",):
                 continue

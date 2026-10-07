@@ -863,7 +863,9 @@ for c in 'APEX_GIBSON=0 bash x' 'export APEX_GIBSON=0' 'env APEX_DISPATCH_MODE=b
          'if [ -d .dev-plan-state/ACTIVE ]; then rm -rf .dev-plan-state/ACTIVE; fi' \
          'if true; then git config core.autocrlf true; fi' '! git config core.autocrlf true' \
          'echo "x `git config core.autocrlf true`"' 'case x in x) git config core.filemode false;; esac' \
-         'python3 -c "import ledger; ledger.append()"'; do
+         'python3 -c "import ledger; ledger.append()"' \
+         "python3 -c \"import sys; sys.path.insert(0, '$PLUGIN_ROOT/scripts/lib'); from ledger import append; append({'kind': 'x'})\"" \
+         "python3 -c 'import ledger as L; L.append({})'" "python3 -c 'import os, ledger'"; do
   is_deny pre-bash "$(pl bash "$HX" "$c")" "pre-bash allowed: $c"
 done
 for c in 'git config --get user.name' 'git config user.name' 'git config --list --show-origin' 'git config get user.email' \
@@ -938,13 +940,18 @@ for f in src/a/x.py "$WWT/src/a/x.py" tests/test_a.py "$WWT/tests/test_a.py"; do
 done
 for c in 'echo y > src/a/x.py' 'mkdir -p src/a/new && touch src/a/new/f.py' 'rm src/a/x.py' 'cp src/a/x.py src/a/y.py' \
          'mkdir -p tests' 'git add -A && git commit -m wip' 'cp templates/conf.py .' 'cp src/a/x.py ./' 'cd src && cp a/x.py ..' \
-         'mv build/out.py .' "find . -name '*.pyc' -delete" 'patch -p1 < fix.diff' 'rsync -a vendor/ .' 'chmod -R u+w .' 'touch .'; do
+         'mv build/out.py .' "find . -name '*.pyc' -delete" 'patch -p1 < fix.diff' 'rsync -a vendor/ .' 'chmod -R u+w .' 'touch .' 'find src -name "*.tmp" -delete' 'rsync -a --delete --exclude=.git vendor/ .' \
+         'mv -t src/a src/b/x.py' 'git worktree list'; do
   [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = "{}" ] || fail "pre-bash denied in the <state>/worktree plan worktree: $c"
 done
 for f in "$WSD/checkpoint.json" ../checkpoint.json ../gate/last.json "$WX/.dev-plan-state/ACTIVE/owner.json" .dev-plan-state/x .git; do
   [ "$(wk pre-edit "$(pl edit "$WWT" "$f")")" = deny ] || fail "pre-edit allowed $f from the <state>/worktree plan worktree"
 done
-for c in 'rm -rf .' 'mv . ../x' 'rmdir .' 'echo x > ../checkpoint.json' 'rm -rf ../gate' "rm -rf $WX/.dev-plan-state/ACTIVE" 'rm -rf ../worktree' 'touch ../dispatch-shadow/x' \
+for c in 'rm -rf .' 'mv . ../x' 'rmdir .' 'find ../worktree -delete' "find $WWT -delete" 'find -L ../worktree -exec rm -rf {} +' \
+         "find ../worktree -name '*.pyc' -delete" "find $WWT -name '*.pyc' -delete" \
+         'mv -vt /tmp ../worktree' 'mv -t/tmp ../worktree' 'mv --target=/tmp ../worktree' 'mv --target-directory /tmp ../worktree' \
+         'mv -t ../ src' 'git worktree remove --force .' "git worktree remove $WWT" 'git worktree move . /tmp/elsewhere' \
+         'find . -delete' 'find . -type f -delete' 'rsync -a --delete vendor/ .' 'echo x > ../checkpoint.json' 'rm -rf ../gate' "rm -rf $WX/.dev-plan-state/ACTIVE" 'rm -rf ../worktree' 'touch ../dispatch-shadow/x' \
          'mkdir -p .dev-plan-state && echo x > .dev-plan-state/y'; do
   [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = deny ] || fail "pre-bash allowed from the <state>/worktree plan worktree: $c"
 done
