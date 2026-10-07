@@ -902,15 +902,19 @@ def find_root_reason(ctx, c, cwd, prefix, roots):
     paths = opt_values(a, ("-path", "-ipath", "-wholename", "-iwholename"))
     regexes = opt_values(a, ("-regex", "-iregex"))
     filtered = bool(names or inames or paths or regexes or "-empty" in a)
+    negated = [w for w in a if w in ("!", "-not", "-o", "-or", "-prune")]
     for x in c.find_parts()[0]:
-        if "$" in x or "`" in x:
-            return "find -delete from an unresolvable start point (%s) may hit the plan worktree root" % x
-        rp = real(resolve_target(ctx, cwd, prefix, x))
-        if rp not in roots:
+        unresolved = "$" in x or "`" in x               # may be a root: judged as one
+        rp = None if unresolved else real(resolve_target(ctx, cwd, prefix, x))
+        if not unresolved and rp not in roots:
             continue
+        where = "a start point that may be the worktree root (%s)" % x if unresolved else "the worktree root"
         if not filtered:
-            return "find -delete at the worktree root without a -name/-path/-regex/-empty filter would delete its .git link"
-        base = os.path.basename(rp)
+            return "find -delete at %s without a -name/-path/-regex/-empty filter would delete its .git link" % where
+        if negated:
+            return ("find -delete at %s with %s could match the root or its .git link; run it from a subdirectory "
+                    "or with a positive -name filter only" % (where, negated[0]))
+        base = os.path.basename(rp) if rp else os.path.basename(x.rstrip("/"))
         hits = [n for n in names if fnmatch.fnmatchcase(".git", n) or fnmatch.fnmatchcase(base, n)]
         hits += [n for n in inames if fnmatch.fnmatch(".git", n.lower()) or fnmatch.fnmatch(base.lower(), n.lower())]
         stem = x.rstrip("/") or "/"
@@ -1005,7 +1009,7 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
                                                         or LEDGER_PATH.search(real(resolve_target(ctx, cwd, prefix, a))))
                                                     for a in c.args)
                                                     or any(LEDGER_CODE.search(a) for a in c.args)
-                                                    or any(w == "-m" and k + 1 < len(c.args) and c.args[k + 1] == "ledger" for k, w in enumerate(c.args))):
+                                                    or ("-m" in c.args and c.args.index("-m") + 1 < len(c.args) and c.args[c.args.index("-m") + 1] == "ledger")):
             raise Deny("the ledger is written only in-process by route.py, the hooks and the shims (use ledger.sh)")
         # 5. Git configuration and repository internals the clean-worktree check trusts.
         if b == "git":
