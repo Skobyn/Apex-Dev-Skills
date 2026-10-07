@@ -648,5 +648,66 @@ dj 'assert c["settings-snippet"] == "ok"' || fail "doctor.sh did not see the app
 [ "$(bash "$DOCTOR" --bogus >/dev/null 2>&1; echo $?)" = 2 ] || fail "doctor.sh --bogus is not a usage error"
 pass "doctor.sh: doctor.json with per-check status; claude absent/old and CLAUDE_CODE_SUBAGENT_MODEL fail; snippet warn/ok; live probes unverified"
 
+# --- Phase 2.5: skills and commands ------------------------------------------
+
+# 39. both skills exist: name is unquoted kebab-case matching the directory; allowed-tools is an explicit list
+for skill in dispatch-route dispatch-worker; do
+  SK="$PLUGIN_ROOT/skills/$skill/SKILL.md"
+  [ -f "$SK" ] || fail "missing skill: $SK"
+  [ "$(head -1 "$SK")" = "---" ] || fail "$skill SKILL.md has no frontmatter"
+  fm="$(awk '/^---$/{c++; next} c==1' "$SK")"
+  name_line="$(grep -m1 '^name:' <<<"$fm" || true)"
+  [[ "$name_line" =~ ^name:[[:space:]]+$skill[[:space:]]*$ ]] || fail "$skill SKILL.md name: must be unquoted kebab-case '$skill' (got: $name_line)"
+  grep -q '^description:[[:space:]]*[^[:space:]]' <<<"$fm" || fail "$skill SKILL.md missing description:"
+  tools_line="$(grep -m1 '^allowed-tools:' <<<"$fm" || true)"
+  [ -n "$tools_line" ] || fail "$skill SKILL.md missing allowed-tools:"
+  if grep -qE '\*|mcp__' <<<"$tools_line"; then fail "$skill SKILL.md allowed-tools has a wildcard: $tools_line"; fi
+  [[ "$tools_line" =~ ^allowed-tools:[[:space:]]+[A-Za-z][A-Za-z,[:space:]]*$ ]] || fail "$skill SKILL.md allowed-tools is not an explicit tool list: $tools_line"
+done
+for s in "$PLUGIN_ROOT"/skills/*/SKILL.md; do
+  if grep -qE '^allowed-tools:.*(\*|mcp__)' "$s"; then fail "$s has a wildcard in allowed-tools"; fi
+done
+pass "skills dispatch-route and dispatch-worker: kebab-case name matching dir, description, explicit allowed-tools without wildcards"
+
+# 40. all six commands exist with name: matching the filename and a description:
+for cmd in route run done report doctor compile; do
+  C="$PLUGIN_ROOT/commands/$cmd.md"
+  [ -f "$C" ] || fail "missing command: $C"
+  [ "$(head -1 "$C")" = "---" ] || fail "$cmd command has no frontmatter"
+  fm="$(awk '/^---$/{c++; next} c==1' "$C")"
+  grep -qE "^name:[[:space:]]+$cmd[[:space:]]*$" <<<"$fm" || fail "$cmd command frontmatter name: missing or not '$cmd'"
+  grep -q '^description:[[:space:]]*[^[:space:]]' <<<"$fm" || fail "$cmd command missing description:"
+  grep -q '\$ARGUMENTS' "$C" || fail "$cmd command never uses \$ARGUMENTS"
+done
+pass "commands route/run/done/report/doctor/compile: name matches filename, description, \$ARGUMENTS"
+
+# 41. every script path a command or skill references exists: ${CLAUDE_PLUGIN_ROOT}/<path> and $D/<x>.sh
+#     in this plugin, $S/<x>.sh in the sibling apex-scope-loop's apex-execute scripts
+SL_SCRIPTS="$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts"
+python3 - "$PLUGIN_ROOT" "$SL_SCRIPTS" "$PLUGIN_ROOT"/commands/*.md "$PLUGIN_ROOT"/skills/*/SKILL.md <<'PY' || fail "a command or skill references a script path that does not exist"
+import os, re, sys
+root, sl, files = sys.argv[1], sys.argv[2], sys.argv[3:]
+bad, seen = [], 0
+for f in files:
+    t = open(f).read()
+    refs = [(os.path.join(root, p), p) for p in
+            re.findall(r'\$\{CLAUDE_PLUGIN_ROOT\}/((?:scripts|resources|bin|hooks|agents)/[A-Za-z0-9_./-]*[A-Za-z0-9_])', t)]
+    refs += [(os.path.join(root, "scripts", p), "$D/" + p) for p in re.findall(r'\$D/([A-Za-z0-9_.-]+\.sh)', t)]
+    refs += [(os.path.join(sl, p), "$S/" + p) for p in re.findall(r'\$S/([A-Za-z0-9_.-]+\.sh)', t)]
+    for path, ref in refs:
+        seen += 1
+        if not os.path.exists(path):
+            bad.append("%s: %s" % (os.path.relpath(f, root), ref))
+for b in bad:
+    print("smoke: missing referenced path " + b, file=sys.stderr)
+if seen == 0:
+    print("smoke: no script references found in commands/skills", file=sys.stderr)
+sys.exit(1 if bad or seen == 0 else 0)
+PY
+for cmd in route report doctor compile; do
+  grep -qF "\${CLAUDE_PLUGIN_ROOT}/scripts/$cmd.sh" "$PLUGIN_ROOT/commands/$cmd.md" || fail "commands/$cmd.md does not call \${CLAUDE_PLUGIN_ROOT}/scripts/$cmd.sh"
+done
+pass "every referenced script path exists (plugin \${CLAUDE_PLUGIN_ROOT}/\$D paths, sibling apex-scope-loop \$S paths); route/report/doctor/compile call their scripts"
+
 echo ""
 echo "smoke passed: $N/$N checks"
