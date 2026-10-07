@@ -41,7 +41,7 @@ The capture hook is observational only — it **never decides a tool call**: it
 exits 0 and prints nothing (no `permissionDecision`, never `allow`), even on
 error, so it is safe to leave installed everywhere. Claude Code composes hooks
 from all plugins in parallel and deny-first; only apex-guardrails and
-apex-dispatch vote. Each record carries the call's `tool_use_id`, which joins its
+apex-dispatch vote (apex-dev-harness's apex-app hook may also deny). Each record carries the call's `tool_use_id`, which joins its
 PreToolUse and PostToolUse records (and other ledgers keyed on the same id).
 
 ## Install

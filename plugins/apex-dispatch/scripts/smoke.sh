@@ -1327,25 +1327,41 @@ cases = {"VERDICT: REQUEST CHANGES": "REQUEST_CHANGES", "VERDICT: REQUEST_CHANGE
          "VERDICT: APPROVE - two nits, see above": "APPROVE", "VERDICT: APPROVE: ship it": "APPROVE",
          "VERDICT: APPROVE (but request changes to the docs)": "UNPARSED", "VERDICT: APPROVED": "UNPARSED",
          "VERDICT: APPROVE with nits": "UNPARSED", "VERDICT: REQUEST_CHANGES \u2014 then approve": "REQUEST_CHANGES",
-         # code fences, blockquotes and indented code are not verdicts; still fail closed
+         # round 1 review: a remark with a condition word is not an approval; "non-blocking" is fine
+         "VERDICT: APPROVE \u2014 once the blocking finding is fixed": "UNPARSED",
+         "VERDICT: APPROVE (conditional on fixing the blocking issue)": "UNPARSED",
+         "VERDICT: APPROVE - not yet, blocking finding above": "UNPARSED", "VERDICT: APPROVE, pending fixes": "UNPARSED",
+         "VERDICT: APPROVE-ish": "UNPARSED", "VERDICT: APPROVE \u2014 nits only": "APPROVE",
+         "VERDICT: APPROVE if the docs land": "UNPARSED", "VERDICT: APPROVE: after the rebase": "UNPARSED",
+         # a [blocking] finding forces REQUEST_CHANGES whatever the verdict line says
+         "- [blocking] src/a.py:3 drops the tenant check\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "[BLOCKING] races on retry\nVERDICT: APPROVE (non-blocking nits only)": "REQUEST_CHANGES",
+         "- [non-blocking] naming\nVERDICT: APPROVE": "APPROVE",
+         # fences, blockquotes and indented code discount APPROVE lines only
          "```\nVERDICT: APPROVE\n```": "UNPARSED", "~~~\nVERDICT: APPROVE\n~~~": "UNPARSED",
          "> VERDICT: APPROVE": "UNPARSED", "    VERDICT: APPROVE": "UNPARSED", "\tVERDICT: APPROVE": "UNPARSED",
-         "```\nVERDICT: REQUEST_CHANGES\n```\nVERDICT: APPROVE": "APPROVE",
-         "> VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "APPROVE",
+         "```\nVERDICT: REQUEST_CHANGES\n```\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "> VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "    VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "```\nVERDICT: maybe\n```\nVERDICT: APPROVE": "UNPARSED",
          "```\nVERDICT: APPROVE\n```\nVERDICT: REQUEST_CHANGES": "REQUEST_CHANGES",
-         # a quoted template naming both outcomes is ignored; an unquoted one fails closed
+         "VERDICT: APPROVE\n```\nsome code": "UNPARSED",
+         # a template placeholder naming both outcomes is no verdict, quoted or not, wherever it is
          "`VERDICT: APPROVE | REQUEST_CHANGES`\nVERDICT: APPROVE": "APPROVE",
+         "VERDICT: APPROVE or VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "APPROVE",
+         "```\nVERDICT: <APPROVE|REQUEST_CHANGES>\n```\nVERDICT: APPROVE": "APPROVE",
          "\"VERDICT: APPROVE or REQUEST_CHANGES\"\nVERDICT: REQUEST_CHANGES": "REQUEST_CHANGES",
          "`VERDICT: APPROVE | REQUEST_CHANGES`": "UNPARSED",
-         "VERDICT: APPROVE | REQUEST_CHANGES": "UNPARSED",
-         "VERDICT: APPROVE | REQUEST_CHANGES\nVERDICT: APPROVE": "UNPARSED"}
+         "VERDICT: APPROVE | REQUEST_CHANGES": "UNPARSED"}
 for msg, want in cases.items():
     got = hooks.parse_review(msg.replace("\\n", "\n"))[0]
     assert got == want, (msg, got, want)
 PY
 H0="$(git -C "$UX" rev-parse HEAD)"; i=0
 for m in 'VERDICT: REQUEST CHANGES' 'VERDICT: REQUEST_CHANGES (1 blocking finding)' 'Verdict: REQUEST_CHANGES' 'Looks fine to me.' \
-         $'```\nVERDICT: APPROVE\n```' '> VERDICT: APPROVE' 'VERDICT: APPROVE | REQUEST_CHANGES'; do
+         $'```\nVERDICT: APPROVE\n```' '> VERDICT: APPROVE' 'VERDICT: APPROVE | REQUEST_CHANGES' \
+         'VERDICT: APPROVE — once the blocking finding is fixed' $'- [blocking] x.py:1 breaks\nVERDICT: APPROVE' \
+         $'```\nVERDICT: REQUEST_CHANGES\n```\nVERDICT: APPROVE' $'VERDICT: APPROVE\n```'; do
   i=$((i + 1)); start "fc$i" apex-dispatch:reviewer; stopa "fc$i" apex-dispatch:reviewer "$(printf 'findings\n%s' "$m")"
   v="$(jget "$UD/reviews-raw/fc$i.json" verdict)"; [ "$v" != APPROVE ] && [ "$(jget "$UD/reviews-raw/fc$i.json" head_sha)" = "$H0" ] \
     && [ "$(rowsin "$UL" verdict agent_id="fc$i" verdict="$v")" = 1 ] || fail "'$m' did not leave a non-approving record + verdict row at HEAD ($v)"
@@ -1362,7 +1378,7 @@ pa y1 PostToolUse tool_response.agentId=f9; start f9 apex-dispatch:builder; pa y
 [ "$(jget "$UD/agents/f9.json" stopped_at)" = None ] || fail "an unknown post-agent status stopped a live agent"
 pa y3 PostToolUse tool_response.agentId=f9 tool_response.status=cancelled
 [ "$(jget "$UD/agents/f9.json" stopped_by)" = post-agent ] || fail "a terminal post-agent status did not stop the agent"
-pass "round 2 + 3.3: lenient verdict parsing (APPROVE + separated remark; code fences, blockquotes, indented code and quoted templates skipped), fail-closed (no/unreadable/mixed verdict = UNPARSED or REQUEST_CHANGES record + row at HEAD); records bound to the start HEAD and marked stale if it moved; only terminal post-agent statuses stop an agent"
+pass "round 2 + 3.3: lenient verdict parsing (APPROVE + an unconditional separated remark; APPROVE lines in fences/blockquotes/indented code and template placeholders skipped), fail-closed ([blocking] findings, conditional remarks, non-approving lines anywhere, unclosed fences; (no/unreadable/mixed verdict = UNPARSED or REQUEST_CHANGES record + row at HEAD); records bound to the start HEAD and marked stale if it moved; only terminal post-agent statuses stop an agent"
 
 # 61. Phase 3.3 carry-overs: an empty ledger never verifies as OK; --overlay alone never
 #     rewrites the plugin; ad-hoc state dirs are derived, not hardcoded; the route skill

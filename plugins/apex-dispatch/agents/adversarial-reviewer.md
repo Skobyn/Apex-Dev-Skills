@@ -15,7 +15,7 @@ Read the approving reviews and the diff in the brief, then try to refute each co
 
 ## Return
 
-Each refutation attempt with its input and outcome, and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES.
+Each refutation attempt with its input and outcome, and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES (any [blocking] finding, or a conditional APPROVE, is recorded as REQUEST_CHANGES or unparsed).
 
 ## Limits
 

@@ -1391,12 +1391,16 @@ def subagent_start(ctx, p):
 
 VERDICT_LINE_RE = re.compile(r"^verdict\s*:\s*(.*)$", re.I)
 APPROVE_RE = re.compile(r"approve[.!]?", re.I)                 # exactly APPROVE (any case)
-# APPROVE, then a separator, then a remark: "APPROVE (non-blocking nits only)", "APPROVE — nits".
-APPROVE_REMARK_RE = re.compile(r"approve\s*[(\[—–:,;-]", re.I)
+# APPROVE, a separator (whitespace + dash/en/em dash, or colon/comma/paren), then a remark.
+APPROVE_REMARK_RE = re.compile(r"approve(\s*[:,(\u2014\u2013]|\s+-)(.*)$", re.I | re.S)
+# A remark with any of these words is a condition, not an approval ("non-blocking" is allowed).
+REMARK_DENY_RE = re.compile(r"request|block|\bfix|\bonce\b|\bafter|\buntil\b|\bpending\b|\bcondition"
+                            r"|\bunless\b|\bif\b|\bnot\b|\bbut\b|\bbefore\b", re.I)
 CHANGES_RE = re.compile(r"request[ _-]?changes\b", re.I)      # trailing text allowed
-REQUEST_TOKEN_RE = re.compile(r"request", re.I)
-APPROVE_TOKEN_RE = re.compile(r"approve", re.I)
-QUOTE_OPENERS = ("`", '"', "'", "\u201c", "\u2018")
+# A template placeholder naming both outcomes ("APPROVE or VERDICT: REQUEST_CHANGES", "<APPROVE|REQUEST_CHANGES>").
+TOKEN = r"(approve|request[ _-]?changes)"
+TEMPLATE_RE = re.compile(r"^\W*" + TOKEN + r"\W*(\bor\b|\||/)\W*(verdict\s*:\s*)?\W*" + TOKEN + r"\W*$", re.I)
+BLOCKING_LINE_RE = re.compile(r"^\s*(?:[-*+]\s*)?\[blocking\]", re.I)
 FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
 LENS_RE = re.compile(r"^LENS:\s*(.{1,60})$", re.I)
 # The six canonical lenses (and the adversarial pass); anything else is no lens.
@@ -1415,20 +1419,17 @@ def canonical_lens(raw):
 READ_ONLY_PROBE = "apex-dispatch:reviewer"                # audit identity when the payload names none
 
 
-def quoted_template(raw):
-    """A quoted line offering both outcomes, e.g. `VERDICT: APPROVE | REQUEST_CHANGES`
-    echoed from the brief: an example, not a verdict."""
-    s = raw.strip().strip("*_ ")
-    return s.startswith(QUOTE_OPENERS) and bool(APPROVE_TOKEN_RE.search(s)) and bool(REQUEST_TOKEN_RE.search(s))
-
-
 def verdict_value(v):
-    """Classify one VERDICT value: APPROVE, REQUEST_CHANGES or UNPARSED."""
+    """Classify one VERDICT value: APPROVE, REQUEST_CHANGES, UNPARSED, or None for a
+    template placeholder that names both outcomes (an echo of the brief, not a verdict)."""
+    if TEMPLATE_RE.match(re.sub(r"[<>\[\]\"'`]", " ", v)):
+        return None
     if APPROVE_RE.fullmatch(v):
         return "APPROVE"
     if CHANGES_RE.match(v):
         return "REQUEST_CHANGES"
-    if APPROVE_REMARK_RE.match(v) and not REQUEST_TOKEN_RE.search(v):
+    m = APPROVE_REMARK_RE.match(v)
+    if m and not REMARK_DENY_RE.search(re.sub(r"non-blocking", " ", m.group(2), flags=re.I)):
         return "APPROVE"
     return "UNPARSED"
 
@@ -1436,40 +1437,52 @@ def verdict_value(v):
 def parse_review(msg):
     """(verdict, lens) from a reviewer's last message, fail-closed.
 
-    Only prose lines count: lines inside fenced code blocks (``` or ~~~),
-    blockquotes (`>`), and indented code (4+ spaces or a tab) are skipped, so a
-    quoted example or an echoed template never decides a review. Every other
-    line `verdict: <value>` (any case, markdown emphasis and backticks ignored)
-    is a verdict line: a value that is exactly APPROVE, or APPROVE followed by a
-    separator ( ( [ — – - : , ; ) and a remark with no REQUEST token
-    ("APPROVE (non-blocking nits only)", "APPROVE — nits"), is APPROVE; one
-    starting with REQUEST CHANGES / REQUEST_CHANGES / request-changes is
-    REQUEST_CHANGES; anything else ("APPROVED", "APPROVE with nits", "LGTM", an
-    unquoted "APPROVE | REQUEST_CHANGES") is UNPARSED. A quoted line (opening
-    with a backtick or quote mark) that names both outcomes is a template echo
-    and is ignored. The result is APPROVE only when there is at least one verdict line
-    and every verdict line is APPROVE; otherwise the last non-approving value
-    (REQUEST_CHANGES or UNPARSED), or UNPARSED when there is no verdict line at
-    all. The lens is the last prose `LENS:` line, canonicalised."""
-    values, lens, fenced = [], None, False
+    Every line `verdict: <value>` (any case, markdown emphasis and backticks
+    ignored) is a verdict line. Its value is APPROVE when it is exactly APPROVE,
+    or APPROVE + a separator (whitespace then - / en or em dash, or : , ( ) + a
+    remark with none of request, block(ing), fix, once, after, until, pending,
+    condition(al), unless, if, not, but, before ("non-blocking" is fine);
+    REQUEST_CHANGES when it starts with REQUEST CHANGES / REQUEST_CHANGES /
+    request-changes; a template placeholder naming both outcomes joined by
+    or / | / slash is no verdict; anything else ("APPROVED", "APPROVE-ish",
+    "LGTM") is UNPARSED.
+
+    Context only discounts approvals: an APPROVE line inside a fenced code block,
+    a blockquote (`>`) or indented code (4+ spaces or a tab) is an example and is
+    skipped, but a REQUEST_CHANGES or UNPARSED line counts wherever it is. A fence
+    left open at the end of the message adds UNPARSED. Any line that starts with
+    `[blocking]` (optionally as a list item) forces REQUEST_CHANGES.
+
+    The result is REQUEST_CHANGES if a blocking finding is listed; otherwise the
+    last non-approving value if any; otherwise APPROVE if there is at least one
+    counted APPROVE; otherwise UNPARSED. The lens is the last prose `LENS:` line,
+    canonicalised."""
+    values, lens, fenced, blocking = [], None, False, False
     for raw in str(msg or "").splitlines():
         if FENCE_RE.match(raw):
             fenced = not fenced
             continue
-        if fenced or raw.startswith(("    ", "\t")) or raw.lstrip().startswith(">") or quoted_template(raw):
-            continue
+        if BLOCKING_LINE_RE.match(re.sub(r"[*_`]", "", raw.lstrip(" \t>"))):
+            blocking = True
+        example = fenced or raw.startswith(("    ", "\t")) or raw.lstrip().startswith(">")
         line = re.sub(r"[*`]", "", raw).strip().strip("_#> ").strip()
         m = VERDICT_LINE_RE.match(line)
         if m:
-            values.append(verdict_value(m.group(1).strip().strip("_*` ")))
+            v = verdict_value(m.group(1).strip().strip("_*` "))
+            if v is not None and not (example and v == "APPROVE"):
+                values.append(v)
             continue
         m = LENS_RE.match(line.rstrip("."))
-        if m:
+        if m and not example:
             lens = canonical_lens(m.group(1))
-    if values and all(v == "APPROVE" for v in values):
-        return "APPROVE", lens
+    if fenced:
+        values.append("UNPARSED")
+    if blocking:
+        return "REQUEST_CHANGES", lens
     bad = [v for v in values if v != "APPROVE"]
-    return (bad[-1] if bad else "UNPARSED"), lens
+    if bad:
+        return bad[-1], lens
+    return ("APPROVE" if values else "UNPARSED"), lens
 
 
 def audit_transcript(ctx, p):

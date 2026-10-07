@@ -114,7 +114,7 @@ ok "hooks.json == compile output; bypass-flag hook wired even without destructiv
 #     denies on text tools, command scoped to tool_input.command (python3 and
 #     pure-bash paths). Fixtures are files fed on stdin; nothing here is executed.
 HOOK="$PLUGIN_ROOT/hooks/block-destructive-bash.sh"
-bash_event() { local c="${1//\\/\\\\}"; c="${c//\"/\\\"}"; printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$c"; }
+bash_event() { local c="${1//\\/\\\\}"; c="${c//\"/\\\"}"; c="${c//$'\n'/\\n}"; printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$c"; }
 decision() { bash "$HOOK" "${@:2}" <"$1" | grep -oE '"permissionDecision":"[a-z]+"' | cut -d'"' -f4; }
 expect() { # expect <allow|deny> <fixture-file> [hook args] [label]
   local got; got="$(decision "$2" "${@:3}")"
@@ -131,6 +131,17 @@ deny_cmds=(
   'echo start && claude --dangerously-skip-permissions'
   'bash -c "codex --full-auto"'
   'out=$(gemini --yolo -p hi)'
+  $'echo $((1<<n))\nclaude --yolo'
+  "tmux new-session -d 'claude --dangerously-skip-permissions'"
+  "screen -dmS a bash -c 'codex --yolo'"
+  "docker run img sh -c 'codex --yolo'"
+  "script -qc 'claude --dangerously-skip-permissions' /dev/null"
+  "su -c 'codex --yolo' bob"
+  "ssh host 'claude --dangerously-skip-permissions'"
+  'sudo -u git claude --yolo'
+  'timeout -s KILL 30 codex --full-auto'
+  $'echo "<<EOF"\nclaude --yolo\nEOF'
+  $'cat <<EOF\n$(claude --yolo)\nEOF'
 )
 allow_cmds=(
   'grep -rn -- --yolo docs/'
@@ -138,6 +149,11 @@ allow_cmds=(
   'git commit -m "guardrails: deny --full-auto and --always-approve"'
   'rg --fixed-strings -e --dangerously-bypass-approvals-and-sandbox plugins/'
   'ls -la'
+  "git commit -m 'guardrails: deny \`--dangerously-skip-permissions\`'"
+  $'gh pr create --body "$(cat <<\'EOF\'\n- guardrails now deny `--yolo`\nEOF\n)"'
+  $'cat > notes.md <<\'EOF\'\nNever run `claude --dangerously-skip-permissions`.\nEOF'
+  "gh issue comment 5 --body 'see \`codex --full-auto\` docs'"
+  'echo $((1<<4))'
 )
 for c in "${deny_cmds[@]}"; do n=$((n+1)); bash_event "$c" >"$SMOKE_TMP/d$n.json"; expect deny "$SMOKE_TMP/d$n.json"; expect deny "$SMOKE_TMP/d$n.json" --bypass-only; done
 for c in "${allow_cmds[@]}"; do n=$((n+1)); bash_event "$c" >"$SMOKE_TMP/a$n.json"; expect allow "$SMOKE_TMP/a$n.json"; done
@@ -162,7 +178,7 @@ for f in d1 d3 d5 d7; do [ "$(nopy "$SMOKE_TMP/$f.json")" = deny ] || fail "no-p
 n_allow_first=$(( ${#deny_cmds[@]} + 1 ))
 for i in 0 1 2; do f="a$((n_allow_first + i))"; [ "$(nopy "$SMOKE_TMP/$f.json")" = allow ] || fail "no-python fallback falsely denied $(cat "$SMOKE_TMP/$f.json")"; done
 [ "$(nopy "$SMOKE_TMP/decoy-first.json")" = deny ] || fail "no-python fallback read a decoy \"command\" key outside tool_input"
-ok "bypass flags always denied (${#deny_cmds[@]} forms); text tools pass (${#allow_cmds[@]}); command scoped to tool_input.command; pure-bash fallback agrees"
+ok "bypass flags always denied (${#deny_cmds[@]} forms incl. launchers, wrapper option values, heredoc/arithmetic edges); single-quoted and quoted-heredoc text and text tools pass (${#allow_cmds[@]}); command scoped to tool_input.command; pure-bash fallback agrees"
 
 echo ""
 echo "smoke passed: 12/12 checks"

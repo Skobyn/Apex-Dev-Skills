@@ -15,7 +15,7 @@ Review the diff named in the brief against the task's Acceptance line and the le
 
 ## Return
 
-Findings as file:line with a concrete failure scenario, a clearance line per lens, then, when the brief assigns you one lens of a Tier C fan-out, a line that is exactly LENS: <lens> (correctness, security, consent-pii, money, performance or maintainability), and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES. The subagent-stop hook records that final line as your review; a missing or unreadable verdict line (anything but exactly APPROVE or REQUEST_CHANGES) is recorded as unparsed and blocks the task at this head.
+Findings as file:line with a concrete failure scenario, a clearance line per lens, then, when the brief assigns you one lens of a Tier C fan-out, a line that is exactly LENS: <lens> (correctness, security, consent-pii, money, performance or maintainability), and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES. Mark blocking findings [blocking]. The hook fails closed: a [blocking] finding, a conditional APPROVE remark or a non-approving verdict line anywhere means no approval; APPROVE in code or quotes does not count.
 
 ## Limits
 

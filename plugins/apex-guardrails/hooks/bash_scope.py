@@ -22,11 +22,24 @@ Bypass flags (always denied, whatever the policy says):
 False denies are avoided the way apex-dispatch's pre-bash hook avoids them
 (plugins/apex-dispatch/scripts/lib/hooks.py, bash_rules step 2): the command
 is tokenised into simple commands; env assignments and wrappers (sudo, env,
-nohup, ...) are peeled off; when the program is a text tool (echo, printf,
-grep, rg, git, sed, cat, ...) its arguments are data, not flags, so
-`grep -- --yolo notes.md` and `git commit -m "drop --full-auto"` pass. Heredoc
-bodies are data too. Nested command strings (`bash -c '...'`, `$(...)`,
-backticks) are checked as commands in their own right.
+timeout, nice, ...) and their option values are peeled off; when the program
+is a text tool (echo, printf, grep, rg, git, sed, cat, ...) its arguments are
+data, not flags, so `grep -- --yolo notes.md` and `git commit -m "drop
+--full-auto"` pass.
+
+Quoting follows bash: a scanner walks the command once, tracking quotes.
+Single-quoted text and the bodies of quoted heredocs (<<'EOF', <<"EOF",
+<<\EOF) are literal, so a backtick or $( ) inside them is not a command.
+Command substitutions ($( ) and backticks) outside quotes, inside double
+quotes and inside unquoted heredoc bodies are checked as commands. `<<`
+inside $(( )) arithmetic is a shift, not a heredoc.
+
+Launchers: any program that is not a text tool may run its arguments as a
+command line (tmux, screen, docker, script -c, su -c, ssh, ...). So every
+argument of such a program that contains whitespace is checked as a nested
+command (literally: its own backticks are not expanded), and `<shell> -c ARG`
+anywhere in its arguments is checked as a full nested command. Nesting is
+depth-capped.
 """
 import json
 import os
@@ -37,26 +50,204 @@ import sys
 BYPASS_PREFIXES = ("--dangerously-", "--yolo", "--always-approve", "--full-auto")
 TEXT_TOOLS = {"echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "git", "sed", "awk", "cat", "head", "tail",
               "less", "wc", "jq", "cut", "sort"}
-WRAPPERS = {"sudo", "doas", "command", "builtin", "exec", "nohup", "time", "nice", "ionice", "stdbuf", "chronic",
-            "unbuffer", "env", "xargs", "timeout"}
+# Wrappers run the rest of their arguments as the command; value-taking options per wrapper.
+WRAPPER_VALUE_OPTS = {
+    "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T", "--user", "--group", "--host",
+             "--prompt", "--close-from", "--chdir", "--role", "--type", "--other-user", "--command-timeout"},
+    "doas": {"-u", "-C"},
+    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "--class", "--classdata"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "xargs": {"-I", "-n", "-P", "-d", "-L", "-s", "-E", "-a", "--max-args", "--max-procs", "--delimiter",
+              "--arg-file", "--replace"},
+    "nohup": set(), "command": set(), "builtin": set(), "exec": {"-a"}, "time": set(), "chronic": set(),
+    "unbuffer": set(),
+}
+# Wrappers whose first positional is not the command (timeout DURATION cmd ...).
+WRAPPER_SKIP_POSITIONAL = {"timeout": 1}
 RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac", "!", "{", "}"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 SEPARATORS = {";", "&&", "||", "|", "&", "|&", ";;", "(", ")", "\n"}
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+SUBST = "__APEX_SUBST__"
+MAX_DEPTH = 5
 
 
-def strip_heredocs(cmd):
-    out, delim = [], None
-    for line in cmd.split("\n"):
-        if delim is not None:
-            if line.strip() == delim:
-                delim = None
+def _match_paren(s, i):
+    """s[i] == '('; index of its matching ')' (quote-aware), or len(s)."""
+    depth, q = 0, None
+    while i < len(s):
+        c = s[i]
+        if q:
+            if c == "\\" and q == '"':
+                i += 2
+                continue
+            if c == q:
+                q = None
+        elif c == "\\":
+            i += 2
             continue
-        out.append(line)
-        m = re.search(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", line.replace("<<<", "   "))
-        if m:
-            delim = m.group(2)
-    return "\n".join(out)
+        elif c in "'\"":
+            q = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return len(s)
+
+
+def _backtick_end(s, i):
+    """s[i] == '`'; index of the closing backtick, or len(s)."""
+    j = i + 1
+    while j < len(s):
+        if s[j] == "\\":
+            j += 2
+            continue
+        if s[j] == "`":
+            return j
+        j += 1
+    return len(s)
+
+
+def _heredoc_delim(s, i):
+    """At s[i:] == '<<' (not '<<<'): (delimiter, quoted, strip_tabs, end_index) or None."""
+    j = i + 2
+    strip = j < len(s) and s[j] == "-"
+    if strip:
+        j += 1
+    while j < len(s) and s[j] in " \t":
+        j += 1
+    word, quoted = [], False
+    while j < len(s) and s[j] not in " \t\n;&|<>()":
+        c = s[j]
+        if c in "'\"":
+            quoted = True
+            k = s.find(c, j + 1)
+            k = len(s) if k < 0 else k
+            word.append(s[j + 1:k])
+            j = k + 1
+            continue
+        if c == "\\":
+            quoted = True
+            word.append(s[j + 1:j + 2])
+            j += 2
+            continue
+        word.append(c)
+        j += 1
+    w = "".join(word)
+    return (w, quoted, strip, j) if w else None
+
+
+def scan(cmd, expand=True):
+    """Walk a command string as bash would quote it. Returns (code, substs):
+    code  -- the command with heredoc bodies and comments removed and every
+             command substitution replaced by a placeholder word;
+    substs -- the bodies of the command substitutions bash would run
+             (outside quotes, in double quotes, in unquoted heredoc bodies).
+    expand=False treats substitutions as literal text (removed from code, not
+    returned): used for argument strings handed to another program."""
+    out, substs, pending = [], [], []
+    i, n, dq = 0, len(cmd), False
+
+    def subst_at(k):
+        """Command substitution / arithmetic starting at cmd[k] ('$' or '`'): (end, body or None)."""
+        if cmd[k] == "`":
+            e = _backtick_end(cmd, k)
+            return e + 1, cmd[k + 1:e]
+        if cmd.startswith("$((", k):
+            e = _match_paren(cmd, k + 1)
+            return e + 1, None                      # arithmetic, not a command
+        e = _match_paren(cmd, k + 1)
+        return e + 1, cmd[k + 2:e]
+
+    def heredoc_bodies(k):
+        """cmd[k] is the newline ending a line with pending heredocs: skip their bodies."""
+        k += 1
+        for delim, quoted, strip in pending:
+            while k < n:
+                e = cmd.find("\n", k)
+                e = n if e < 0 else e
+                line = cmd[k:e]
+                k = e + 1
+                if (line.lstrip("\t") if strip else line) == delim:
+                    break
+                if not quoted and expand:
+                    for body in scan_body(line):
+                        substs.append(body)
+        pending.clear()
+        return k
+
+    def scan_body(text):
+        found, k = [], 0
+        while k < len(text):
+            if text[k] == "\\":
+                k += 2
+                continue
+            if text[k] == "`" or text.startswith("$(", k):
+                end, body = _sub_in(text, k)
+                if body is not None:
+                    found.append(body)
+                k = end
+                continue
+            k += 1
+        return found
+
+    while i < n:
+        c = cmd[i]
+        if dq:
+            if c == "\\":
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if c == '"':
+                dq = False; out.append(c); i += 1; continue
+            if c == "`" or cmd.startswith("$(", i):
+                end, body = subst_at(i)
+                if body is not None and expand:
+                    substs.append(body)
+                out.append(SUBST if body is not None else cmd[i:end]); i = end; continue
+            out.append(c); i += 1; continue
+        if c == "\\":
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if c == "'":
+            e = cmd.find("'", i + 1)
+            e = n - 1 if e < 0 else e
+            out.append(cmd[i:e + 1]); i = e + 1; continue
+        if c == '"':
+            dq = True; out.append(c); i += 1; continue
+        if c == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
+            e = cmd.find("\n", i)
+            i = n if e < 0 else e
+            continue
+        if c == "`" or cmd.startswith("$(", i):
+            end, body = subst_at(i)
+            if body is not None and expand:
+                substs.append(body)
+            out.append(" %s " % SUBST if body is not None else cmd[i:end]); i = end; continue
+        if cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+            h = _heredoc_delim(cmd, i)
+            if h:
+                pending.append(h[:3])
+                out.append(cmd[i:h[3]]); i = h[3]; continue
+        if c == "\n" and pending:
+            out.append(c)
+            i = heredoc_bodies(i)
+            continue
+        out.append(c); i += 1
+    return "".join(out), substs
+
+
+def _sub_in(text, k):
+    if text[k] == "`":
+        e = _backtick_end(text, k)
+        return e + 1, text[k + 1:e]
+    if text.startswith("$((", k):
+        return _match_paren(text, k + 1) + 1, None
+    e = _match_paren(text, k + 1)
+    return e + 1, text[k + 2:e]
 
 
 def tokens(cmd):
@@ -76,8 +267,6 @@ def segments(cmd):
             if words:
                 segs.append(words)
             words = []
-        elif t and all(c in "<>" for c in t):
-            words.append(t)                  # a redirect operator; its target follows
         else:
             words.append(t)
     if words:
@@ -86,7 +275,8 @@ def segments(cmd):
 
 
 def program(words):
-    """(basename of the program, its arguments) after assignments and wrappers."""
+    """(basename of the program, its arguments) after assignments, reserved words
+    and wrappers (with their option values) are peeled off."""
     i = 0
     while i < len(words):
         w = words[i]
@@ -94,60 +284,58 @@ def program(words):
             i += 1
             continue
         base = os.path.basename(w)
-        if base in WRAPPERS:
+        if base in WRAPPER_VALUE_OPTS:
+            valued = WRAPPER_VALUE_OPTS[base]
             i += 1
-            while i < len(words) and (words[i].startswith("-") or ASSIGN_RE.match(words[i])):
-                i += 1                       # the wrapper's own options / env's assignments
+            while i < len(words):
+                a = words[i]
+                if a == "--":
+                    i += 1
+                    break
+                if ASSIGN_RE.match(a) and base == "env":
+                    i += 1
+                elif a.startswith("-") and a != "-":
+                    i += 2 if (a in valued and "=" not in a) else 1
+                else:
+                    break
+            i += WRAPPER_SKIP_POSITIONAL.get(base, 0)
             continue
         return base, words[i + 1:]
     return "", []
 
 
-def substitutions(cmd):
-    found = re.findall(r"`([^`]*)`", cmd)
-    i = 0
-    while True:
-        j = cmd.find("$(", i)
-        if j < 0:
-            break
-        depth, k = 0, j + 1
-        while k < len(cmd):
-            if cmd[k] == "(":
-                depth += 1
-            elif cmd[k] == ")":
-                depth -= 1
-                if depth == 0:
-                    break
-            k += 1
-        found.append(cmd[j + 2:k])
-        i = k + 1
-    return found
-
-
-def bypass_flag(cmd, depth=0):
-    if depth > 4 or not cmd:
+def bypass_flag(cmd, depth=0, expand=True):
+    """The first permission-bypass flag `cmd` would pass to a program, or None."""
+    if depth > MAX_DEPTH or not cmd:
         return None
-    for inner in substitutions(cmd):
+    code, substs = scan(cmd, expand)
+    for inner in substs:
         hit = bypass_flag(inner, depth + 1)
         if hit:
             return hit
-    for words in segments(strip_heredocs(re.sub(r"`[^`]*`", " ", cmd))):
+    for words in segments(code):
         base, args = program(words)
         if base.startswith(BYPASS_PREFIXES):
             return base
-        if base in SHELLS:
-            for n, a in enumerate(args):
-                if a == "-c" or (a.startswith("-") and not a.startswith("--") and "c" in a[1:]):
-                    if n + 1 < len(args):
-                        hit = bypass_flag(args[n + 1], depth + 1)
-                        if hit:
-                            return hit
-                    break
         if base in TEXT_TOOLS:
             continue
         for a in args:
             if a.startswith(BYPASS_PREFIXES):
                 return a.split("=", 1)[0]
+        # Launchers: `<shell> -c ARG` anywhere in the arguments runs ARG as a script ...
+        for n, a in enumerate(args):
+            prev = os.path.basename(args[n - 1]) if n else base
+            if n + 1 < len(args) and (a == "-c" or (a.startswith("-") and not a.startswith("--") and "c" in a[1:])) \
+                    and (prev in SHELLS or base in SHELLS or base in ("su", "script")):
+                hit = bypass_flag(args[n + 1], depth + 1)
+                if hit:
+                    return hit
+        # ... and any argument with whitespace may be a command line (tmux, ssh, docker, script -c, ...).
+        for a in args:
+            if any(ch in a for ch in " \t\n") and a != SUBST:
+                hit = bypass_flag(a, depth + 1, expand=False)
+                if hit:
+                    return hit
     return None
 
 

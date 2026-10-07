@@ -76,7 +76,15 @@ even when the policy declares no `destructive_bash` family (then with
 switch an agent CLI's own approvals off; any program given one is denied. Text tools
 (`echo`, `printf`, `grep`, `rg`, `git`, `sed`, `cat`, …) only mention a flag, so
 `grep -- --yolo notes.md` or `git commit -m "deny --full-auto"` pass; chained,
-`bash -c`, `$(…)` and backtick commands are checked on their own. This is the same
+`bash -c`, `$(…)` and backtick commands are checked on their own. Quoting follows
+bash: single-quoted text and quoted-heredoc bodies (`<<'EOF'`) are literal, so a
+flag in backticks there (a commit message, a PR body) is not a command; `$(…)` and
+backticks outside quotes, in double quotes and in unquoted heredocs are; `<<` inside
+`$(( ))` is a shift. Launchers are covered: for any program that is not a text tool,
+an argument with whitespace is checked as a nested command and `<shell> -c ARG`
+anywhere in its arguments is too (`tmux new-session '…'`, `ssh host '…'`,
+`docker run img sh -c '…'`, `script -qc '…'`, `su -c '…'`), and wrapper option values
+are skipped (`sudo -u git …`, `timeout -s KILL 30 …`). This is the same
 approach as apex-dispatch's `pre-bash` hook (step 2 of `bash_rules` in
 `plugins/apex-dispatch/scripts/lib/hooks.py`), reimplemented here in
 `hooks/bash_scope.py` so the two plugins stay independent.

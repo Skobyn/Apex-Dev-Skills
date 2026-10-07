@@ -66,7 +66,12 @@ plugins/apex-guardrails/
   `--yolo`, `--always-approve`, `--full-auto` — passed to any program, whatever the
   policy declares. Text tools (`echo`, `printf`, `grep`, `rg`, `git`, `sed`, `cat`, …)
   only mention such a flag and are not denied; nested `bash -c`, `$(…)` and backtick
-  commands are checked in their own right (the approach of apex-dispatch's `pre-bash`
+  commands are checked in their own right, with bash's quoting (single-quoted text and
+  quoted-heredoc bodies are literal; `<<` in `$(( ))` is not a heredoc); for any
+  non-text-tool program, arguments containing whitespace and `<shell> -c ARG` anywhere
+  in the arguments are checked as nested commands (launchers such as tmux, screen,
+  docker, script, su, ssh), depth-capped; wrapper option values (`sudo -u USER`,
+  `timeout -s SIG DURATION`, `env -u VAR`, `nice -n N`) are skipped (the approach of apex-dispatch's `pre-bash`
   hook, reimplemented in `hooks/bash_scope.py` so no code is shared across plugins).
   It then denies `rm -rf /`, `rm -rf ~`/`$HOME`, force-push to `main`/`master`,
   `git reset --hard` onto a protected branch, and curl/wget piped into a shell.
@@ -149,7 +154,9 @@ on the first failure with a named reason:
 11. `hooks/hooks.json` equals `compile-policy.sh` output for the shipped policy, and a
     policy without `destructive_bash` still wires the bypass-flag hook
 12. `block-destructive-bash.sh` on fixture events: each bypass-flag form denied (also
-    under `--bypass-only`), text tools that mention a flag allowed, a `"command"` key
+    under `--bypass-only`; launchers, wrapper option values, heredoc and arithmetic
+    edges included), text tools, single-quoted text and quoted-heredoc bodies that
+    mention a flag allowed, a `"command"` key
     outside `tool_input` ignored, and the no-`python3` fallback agreeing on a subset
 
 ## Consequences
