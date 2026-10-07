@@ -13,7 +13,7 @@ In-session subagents are Claude-only. Every other worker (a separate `claude -p`
 `bin/worker-*.sh`, `bin/worker-common.sh` and `scripts/apply.sh` are **not in this plugin yet** (they land in Phase 4 of the apex-dispatch plan). Until they do:
 
 1. **Route to `claude-session`.** When `ROUTE_PROVIDER` names anything else, dispatch the same roster role in-session (`subagent_type: "apex-dispatch:<role>"`, `model: <ROUTE_MODEL>`) exactly as the `dispatch-route` skill describes. `route.sh` already falls back to `claude-session` when a provider binary is missing; this covers the case where the binary is installed but its shim is not.
-2. **Say so.** In your report: "ROUTE_PROVIDER=<p> ran as claude-session: worker shims not shipped (Phase 4)". You do not record the spawn yourself (provenance rows come only from hooks and shims); the report line is the record until Phase 3.
+2. **Say so.** In your report: "ROUTE_PROVIDER=<p> ran as claude-session: worker shims not shipped (Phase 4)". You do not record the spawn yourself (provenance rows come only from hooks and shims); the report line is the record until the Phase 4 shims write `worker_run` rows.
 3. **Diversity.** A Tier C `REVIEW_DIVERSITY: block` cannot be met without a second family. Degrade to `warn`, state it plainly in the review summary and the G12 Ask Contract, and continue; never stall, never claim it was met.
 4. **Never run a provider CLI by hand** (`codex exec …`, `claude -p …`) as a substitute for the shim: nothing would force its flags, scrub its environment, confine it to a throwaway worktree or check its patch paths.
 

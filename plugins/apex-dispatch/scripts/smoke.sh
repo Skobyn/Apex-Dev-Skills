@@ -709,5 +709,207 @@ for cmd in route report doctor compile; do
 done
 pass "every referenced script path exists (plugin \${CLAUDE_PLUGIN_ROOT}/\$D paths, sibling apex-scope-loop \$S paths); route/report/doctor/compile call their scripts"
 
+# --- Phase 3.1: PreToolUse hooks (pre-agent, pre-bash, pre-edit, pre-mcp) ---
+HOOKS=(pre-agent pre-bash pre-edit pre-mcp)
+# Fixture with two disjoint lanes; route.sh takes the ACTIVE lock (stage BUILD) and writes active-route.json.
+HX="$WORK/hx"; mkdir -p "$HX/plans"; git init -q -b main "$HX"
+cat >"$HX/plans/p.md" <<'PLAN'
+# Hook fixture
+
+- [ ] **Phase 1.1** [mechanical] lane a
+  - Acceptance: `pytest tests/a -q`
+  - Route: fanout=lanes
+  - Paths: src/a/**
+
+- [ ] **Phase 1.2** [mechanical] lane b
+  - Acceptance: `pytest tests/b -q`
+  - Route: fanout=lanes
+  - Paths: src/b/**
+PLAN
+git -C "$HX" add -A; git -C "$HX" commit -qm hx
+HL_A="$(grep -n 'Phase 1.1' "$HX/plans/p.md" | cut -d: -f1)"; HL_B="$(grep -n 'Phase 1.2' "$HX/plans/p.md" | cut -d: -f1)"
+# hk HOOK JSON -> the hook's stdout (stderr dropped); one JSON object or the check fails
+hk() { (cd "$HX" && printf '%s' "$2" | bash "$PLUGIN_ROOT/hooks/$1.sh" 2>/dev/null); }
+pl() { python3 -c 'import json, sys
+k, cwd, a = sys.argv[1], sys.argv[2], sys.argv[3:]
+if k == "bash": d = {"tool_name": "Bash", "tool_input": {"command": a[0]}}
+elif k == "edit": d = {"tool_name": "Write", "tool_input": {"file_path": a[0], "content": "x"}}
+elif k == "mcp": d = {"tool_name": a[0], "tool_input": {}}
+else:
+    ti = {"subagent_type": a[0], "prompt": "p"}
+    if a[1]: ti["model"] = a[1]
+    d = {"tool_name": "Agent", "tool_input": ti}
+for kv in a[2 if k == "agent" else 1:]:
+    key, _, v = kv.partition("=")
+    d[key] = v
+d.update({"session_id": "smoke", "tool_use_id": "t1", "hook_event_name": "PreToolUse", "cwd": cwd})
+print(json.dumps(d))' "$@"; }
+one() { python3 -c 'import json, sys
+s = sys.stdin.read()
+assert s.endswith("\n") and s.count("\n") == 1, repr(s)
+o = json.loads(s)
+assert isinstance(o, dict)
+h = o.get("hookSpecificOutput")
+print("{}" if not o else h["permissionDecision"] + (" updated" if "updatedInput" in h else ""))'; }
+dec() { hk "$1" "$2" | one; }
+is_deny() { [ "$(dec "$1" "$2")" = deny ] || fail "$3"; }
+is_allow() { [ "$(dec "$1" "$2")" = "{}" ] || fail "$3"; }
+
+# 42. four hooks exist, executable, `bash -n` clean; no subagent-stop.sh yet (it flips enforcing()); hooks.json == compile output
+for h in "${HOOKS[@]}"; do
+  f="$PLUGIN_ROOT/hooks/$h.sh"
+  [ -x "$f" ] || fail "hooks/$h.sh missing or not executable"
+  bash -n "$f" || fail "hooks/$h.sh does not parse"
+done
+bash -n "$PLUGIN_ROOT/scripts/lib/hook-common.bash" || fail "scripts/lib/hook-common.bash does not parse"
+[ ! -e "$PLUGIN_ROOT/hooks/subagent-stop.sh" ] || fail "hooks/subagent-stop.sh exists: that is Phase 3.2 (it switches enforcement on)"
+python3 - "$PLUGIN_ROOT" <<'PY' || fail "hooks.json does not register the four PreToolUse hooks exactly as compile.py renders them"
+import json, os, sys
+root = sys.argv[1]
+sys.path.insert(0, os.path.join(root, "scripts", "lib"))
+import compile as c
+want, _ = c.render_hooks(root)
+have = json.load(open(os.path.join(root, "hooks", "hooks.json")))
+assert have == want, "hooks.json differs from compile.py's rendering"
+pre = {g["matcher"]: g["hooks"][0] for g in have["hooks"]["PreToolUse"]}
+assert pre == {m: {"type": "command", "command": 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/%s.sh"' % s, "timeout": 10}
+               for m, s in [("Agent|Task", "pre-agent"), ("Bash", "pre-bash"),
+                            ("Edit|Write|MultiEdit|NotebookEdit", "pre-edit"), ("^mcp__", "pre-mcp")]}, pre
+assert list(have["hooks"]) == ["PreToolUse"]
+PY
+pass "hooks pre-agent/bash/edit/mcp: executable, bash -n clean, registered (matchers, \${CLAUDE_PLUGIN_ROOT}, timeout 10) == compile output; no subagent-stop.sh"
+
+# 43. without an ACTIVE lock every hook is a no-op: exactly one JSON object, {} (deny-worthy input and garbage included)
+[ ! -e "$HX/.dev-plan-state" ] || fail "hook fixture already has state"
+for h in "${HOOKS[@]}"; do
+  [ "$(dec "$h" 'not json{')" = "{}" ] || fail "$h without a lock: garbage stdin did not give {}"
+  [ "$(dec "$h" '')" = "{}" ] || fail "$h without a lock: empty stdin did not give {}"
+done
+is_allow pre-bash "$(pl bash "$HX" 'APEX_GIBSON=0 bash x')" "pre-bash acted without an ACTIVE lock"
+is_allow pre-agent "$(pl agent "$HX" Explore opus)" "pre-agent acted without an ACTIVE lock"
+is_allow pre-edit "$(pl edit "$HX" .dev-plan-state/x)" "pre-edit acted without an ACTIVE lock"
+[ ! -e "$HX/.dev-plan-state" ] || fail "a hook wrote state without an ACTIVE lock"
+pass "no ACTIVE lock: every hook prints exactly one JSON object, {} (garbage, empty and deny-worthy input alike)"
+
+# Take the lock: a READY lanes route for 1.1 + 1.2.
+O="$(cd "$HX" && bash "$ROUTE" plan plans/p.md --line "$HL_A" --lanes "$HL_A,$HL_B" 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_FANOUT "$O")" = "lanes:2" ] || fail "hook fixture route is not a READY lanes route: $O"
+HRID="$(val ROUTE_ID "$O")"; HSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"
+OWNER="$HX/.dev-plan-state/ACTIVE/owner.json"
+[ -f "$OWNER" ] || fail "route.sh took no ACTIVE lock"
+stage() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); print(o["stage"]) if len(sys.argv) == 2 else (o.update(stage=sys.argv[2]), json.dump(o, open(sys.argv[1], "w")))' "$OWNER" "$@"; }
+rows() { python3 -c 'import json, sys
+r = [json.loads(l) for l in open(sys.argv[1])]
+print(sum(1 for x in r if x["event"] == sys.argv[2] and x.get("source") == "hook" and all(str(x.get(k)) == v for k, v in (a.split("=", 1) for a in sys.argv[3:]))))' "$HSD/dispatch-shadow/ledger.jsonl" "$@"; }
+
+# 44. under the lock: garbage stdin fails open ({} + stderr advisory + hook_error row); one JSON object for every hook
+for h in "${HOOKS[@]}"; do
+  [ "$(dec "$h" 'not json{')" = "{}" ] || fail "$h under a lock: garbage stdin did not fail open with {}"
+  ERR="$(cd "$HX" && printf 'not json{' | bash "$PLUGIN_ROOT/hooks/$h.sh" 2>&1 >/dev/null)"
+  grep -q 'failing open' <<<"$ERR" || fail "$h: no stderr advisory on unparseable stdin"
+done
+[ "$(rows hook_error)" -ge 4 ] || fail "unparseable stdin wrote no hook_error ledger rows"
+for h in "${HOOKS[@]}"; do
+  for k in agent bash edit mcp; do
+    case "$k" in agent) J="$(pl agent "$HX" Explore sonnet)" ;; bash) J="$(pl bash "$HX" 'git status')" ;;
+                 edit) J="$(pl edit "$HX" src/a/x.py)" ;; mcp) J="$(pl mcp "$HX" mcp__srv__tool)" ;; esac
+    hk "$h" "$J" | one >/dev/null || fail "$h printed other than exactly one JSON object for a $k payload"
+  done
+done
+pass "ACTIVE lock: unparseable stdin fails open ({} + advisory + hook_error row); every hook prints exactly one JSON object"
+
+# 45. pre-agent: roster, model pin, depth 1, HALT, reviewer gate binding -> stage REVIEW, stage lock, spawn budget
+is_deny pre-agent "$(pl agent "$HX" Explore sonnet)" "a subagent_type outside the roster was allowed"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:tester sonnet)" "apex-dispatch:tester (not on the mechanical roster) was allowed"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:builder opus)" "model opus on a sonnet route was allowed (deny-on-mismatch)"
+hk pre-agent "$(pl agent "$HX" apex-dispatch:builder opus)" | grep -q 'ROUTE_MODEL sonnet' || fail "the model denial does not name ROUTE_MODEL"
+U="$(hk pre-agent "$(pl agent "$HX" apex-dispatch:builder '')")"
+python3 -c 'import json, sys; h = json.loads(sys.argv[1])["hookSpecificOutput"]; assert h["permissionDecision"] == "allow" and h["updatedInput"] == {"subagent_type": "apex-dispatch:builder", "prompt": "p", "model": "sonnet"}' "$U" \
+  || fail "a spawn without model was not pinned to the route's model with a full updatedInput: $U"
+is_allow pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet)" "a roster builder at the route's model was denied"
+[ "$(rows spawn_request route_id="$HRID" role=builder)" = 2 ] || fail "allowed spawns did not write hook-sourced spawn_request rows"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet agent_id=a1 agent_type=apex-dispatch:builder)" "a nested spawn from a builder was allowed"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet agent_type=apex-dispatch:builder)" "a spawn from a builder worker session was allowed"
+(cd "$HX" && APEX_HALT=1 bash "$PLUGIN_ROOT/hooks/pre-agent.sh" <<<"$(pl agent "$HX" apex-dispatch:builder sonnet)" 2>/dev/null) | grep -q '"deny"' || fail "a spawn under APEX_HALT=1 was allowed"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:reviewer '')" "a reviewer spawn without a gate result was allowed"
+mkdir -p "$HSD/gate"
+printf '{"result":"PASS","head_sha":"%s"}\n' 0000000000000000000000000000000000000000 >"$HSD/gate/last.json"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:reviewer '')" "a reviewer spawn on a gate bound to another head was allowed"
+printf '{"result":"PASS","head_sha":"%s"}\n' "$(git -C "$HX" rev-parse HEAD)" >"$HSD/gate/last.json"
+[ "$(stage)" = BUILD ] || fail "stage is not BUILD before review"
+is_allow pre-agent "$(pl agent "$HX" apex-dispatch:reviewer '')" "a reviewer spawn on a gate bound to HEAD was denied"
+[ "$(stage)" = REVIEW ] || fail "allowing a reviewer spawn did not set stage REVIEW"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet)" "a builder spawn during REVIEW was allowed"
+stage BUILD
+is_allow pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet)" "the third builder spawn (budget 4) was denied"
+is_allow pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet)" "the fourth builder spawn (budget 4) was denied"
+hk pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet)" | grep -q 'spawn budget' || fail "a fifth builder spawn over ROUTE_BUDGET_SPAWNS=4 was not denied"
+pass "pre-agent: roster, model deny-on-mismatch then updatedInput, depth 1, HALT, reviewer only on a gate at HEAD (-> stage REVIEW), no builders in REVIEW, spawn budget; spawn_request rows"
+
+# 46. pre-bash: tamper hardening, provider CLIs, git configuration/internals, protected state, the GATE stage lock
+for c in 'APEX_GIBSON=0 bash x' 'export APEX_GIBSON=0' 'env APEX_DISPATCH_MODE=baseline bash iterate.sh' 'APEX_HALT=0 bash x' 'unset APEX_HALT' \
+         'export APEX_DISPATCH_ENFORCE=1' 'APEX_STATE_ROOT=/tmp/x bash iterate.sh' \
+         'codex exec "do it"' 'claude -p hi' 'npx @openai/codex exec x' 'aider --yes x' 'echo --dangerously-skip-permissions' \
+         'git config core.autocrlf true' 'git config --global core.hooksPath /tmp/h' 'git config --unset core.filemode' \
+         'git config filter.x.clean cat' 'git config merge.ours.driver true' 'git update-index --assume-unchanged a.py' \
+         'git update-index --skip-worktree a.py' 'git -c core.hooksPath=/dev/null commit -m x' 'git -c filter.lfs.clean=cat add .' \
+         'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf GIT_CONFIG_VALUE_0=true git checkout .' 'git sparse-checkout set src' \
+         'echo "*.py" >> .git/info/exclude' 'cp hook.sh .git/hooks/pre-commit' 'rm -rf .dev-plan-state/ACTIVE' 'rm -f .dev-plan-state/HALT' 'cd .dev-plan-state && rm x' \
+         "sed -i s/BUILD/GATE/ .dev-plan-state/ACTIVE/owner.json" 'mv .claude/apex-dispatch/policy.json /tmp/' 'echo {} > .mcp.json' \
+         'bash -c "git config core.autocrlf false"' 'echo $(rm -f .dev-plan-state/x)' 'python3 scripts/lib/ledger.py append' \
+         'echo x > ~/.gitconfig'; do
+  is_deny pre-bash "$(pl bash "$HX" "$c")" "pre-bash allowed: $c"
+done
+for c in 'git config --get user.name' 'git config user.name' 'git config --list --show-origin' 'git config get user.email' \
+         'git status && git diff HEAD~1' 'git -c core.quotepath=false log --oneline' 'APEX_HALT=1 bash x' 'claude --version' \
+         'grep -rn "APEX_HALT=" .' 'ls -la 2>/dev/null | head' 'cat .dev-plan-state/ACTIVE/owner.json' 'git update-index --no-skip-worktree a.py' \
+         'git commit -m wip' 'echo hi > notes.txt' 'touch .dev-plan-state/HALT' "printf 'x' > /tmp/apex-smoke-scratch"; do
+  is_allow pre-bash "$(pl bash "$HX" "$c")" "pre-bash denied: $c"
+done
+stage GATE
+for c in 'git commit -m x' 'git add -A' 'git stash' 'git checkout -- a.py' 'echo x > src/a/x.py' 'sed -i s/a/b/ src/a/x.py' 'git branch topic'; do
+  is_deny pre-bash "$(pl bash "$HX" "$c")" "pre-bash allowed during GATE: $c"
+done
+for c in 'git status' 'git log -1' 'git branch --show-current' 'echo x >/dev/null' 'git stash list'; do
+  is_allow pre-bash "$(pl bash "$HX" "$c")" "pre-bash denied during GATE: $c"
+done
+stage BUILD
+bash "$LEDGER" verify --state "$HSD" >/dev/null 2>&1 || fail "the ledger does not verify after hook rows"
+pass "pre-bash: tamper env, provider CLIs only via shims, bypass flags, git config writes/index flags/-c overrides/.git writes, run state; reads allowed; GATE denies git mutation and writes"
+
+# 47. pre-edit: protected paths for any role, GATE/REVIEW, read-only roles, outside the worktree, lanes' Paths
+for f in .dev-plan-state/x .dev-plan-state/ACTIVE/owner.json .claude/apex-dispatch/policy.json .claude/settings.json \
+         .claude/settings.local.json .mcp.json .git/config .git/info/attributes "$PLUGIN_ROOT/hooks/pre-bash.sh" \
+         /usr/local/apex-smoke-outside.py; do
+  is_deny pre-edit "$(pl edit "$HX" "$f")" "pre-edit allowed a write to $f"
+done
+is_allow pre-edit "$(pl edit "$HX" src/a/x.py)" "pre-edit denied a write inside lane a's Paths"
+is_allow pre-edit "$(pl edit "$HX" "$HX/src/b/y.py")" "pre-edit denied a write inside lane b's Paths"
+is_deny pre-edit "$(pl edit "$HX" src/c/z.py)" "pre-edit allowed a write outside every lane's Paths"
+is_deny pre-edit "$(pl edit "$HX" src/a/x.py agent_id=r1 agent_type=apex-dispatch:reviewer)" "pre-edit allowed a write from a read-only reviewer"
+stage REVIEW
+is_deny pre-edit "$(pl edit "$HX" src/a/x.py)" "pre-edit allowed a write during REVIEW"
+stage BUILD
+pass "pre-edit: .dev-plan-state, .claude/apex-dispatch, settings, .mcp.json, .git, plugin files, outside the worktree denied; lanes' Paths; read-only roles; REVIEW"
+
+# 48. pre-mcp: a no-op unless the merged policy sets mcp.default_deny; then only allowlisted servers
+is_allow pre-mcp "$(pl mcp "$HX" mcp__other__tool)" "pre-mcp denied with mcp.default_deny false"
+mkdir -p "$HX/.claude/apex-dispatch"
+printf '{"mcp": {"default_deny": true, "servers_allow": ["docs"]}}\n' >"$HX/.claude/apex-dispatch/policy.json"
+is_deny pre-mcp "$(pl mcp "$HX" mcp__other__tool)" "pre-mcp allowed a server outside servers_allow under default_deny"
+is_allow pre-mcp "$(pl mcp "$HX" mcp__docs__search)" "pre-mcp denied an allowlisted server"
+is_allow pre-mcp "$(pl bash "$HX" 'true')" "pre-mcp acted on a non-MCP tool"
+rm -rf "$HX/.claude"
+pass "pre-mcp: no-op by default; under mcp.default_deny only servers_allow (+ the role's mcp_allow) pass"
+
+# 49. hot path: a governed invocation stays well under the 10 s hook timeout; the no-lock path starts no python
+T0="$(date +%s%N)"; hk pre-bash "$(pl bash "$HX" 'git status')" >/dev/null; T1="$(date +%s%N)"
+MS=$(( (T1 - T0) / 1000000 ))
+[ "$MS" -lt 2000 ] || fail "pre-bash took ${MS} ms under a lock (budget 2000 ms, timeout 10 s)"
+grep -q 'python3' "$PLUGIN_ROOT/scripts/lib/hook-common.bash" && \
+  awk '/STATE_BASE\/ACTIVE/{lock=NR} /python3 -B/{py=NR} END{exit !(lock && py && lock < py)}' "$PLUGIN_ROOT/scripts/lib/hook-common.bash" \
+  || fail "hook-common.bash does not check the ACTIVE lock before starting python3"
+pass "a governed pre-bash call took ${MS} ms (< 2000 ms; timeout 10 s); python3 starts only after the ACTIVE lock check"
+
 echo ""
 echo "smoke passed: $N/$N checks"

@@ -247,13 +247,19 @@ def check_head(head, last):
 
 
 def mark_enforced(state_dir):
-    """Record dispatch_enforced: true in the run's checkpoint.json the first time
-    <state>/dispatch/ is created, so apex-scope-loop can refuse complete/land if
-    the directory later disappears. Takes checkpoint.sh's state lock without
-    blocking (a caller may already hold it, e.g. checkpoint.sh fail -> route.sh
-    escalate); gives up after ~3 s with a warning rather than deadlock."""
+    """Ensure the run's checkpoint.json records dispatch_enforced: true. Called on
+    every write to <state>/dispatch/ (append, route.sh, doctor.sh), so whichever
+    writer first uses the directory records it and apex-scope-loop can refuse
+    complete/land if the directory later disappears. Idempotent: a checkpoint
+    that already records it is left alone without taking the lock. Otherwise it
+    takes checkpoint.sh's state lock without blocking (a caller may already hold
+    it, e.g. checkpoint.sh fail -> route.sh escalate) and gives up after ~3 s
+    with a warning rather than deadlock."""
     cp = os.path.join(state_dir, "checkpoint.json")
     if not os.path.isfile(cp):
+        return
+    s = read_json(cp)
+    if isinstance(s, dict) and s.get("dispatch_enforced") is True:
         return
     fd = os.open(os.path.join(state_dir, ".checkpoint.lock"), os.O_CREAT | os.O_RDWR, 0o644)
     try:

@@ -23,7 +23,7 @@ Use the `dispatch-route` skill for every dispatch decision below, and the `dispa
    - `ROUTE: none` → apex-dispatch is off (`APEX_DISPATCH_MODE=off`); hand over to `/apex-scope-loop:iterate $ARGUMENTS` and stop.
    - `ROUTE: error …` → quote it and stop; do not route by hand.
 2. **Recall.** If `LESSONS` is non-zero: `$S/lessons.sh $ARGUMENTS recall <tags>`; the lessons go into every brief.
-3. **Dispatch.** Spawn exactly the route: roster roles only, as `apex-dispatch:<role>`, `model: ROUTE_MODEL`, the routed fan-out and lanes, within the budgets, all builders in one message, in the worktree. You do not write spawn rows (only hooks and shims can); with `ROUTE_ENFORCED: no` nothing needs recording, and `ROUTE_ENFORCED: yes` before the Phase 3 hooks means the task cannot complete — report it and stop. Commit the work on the worktree branch.
+3. **Dispatch.** Spawn exactly the route: roster roles only, as `apex-dispatch:<role>`, `model: ROUTE_MODEL`, the routed fan-out and lanes, within the budgets, all builders in one message, in the worktree. You do not write spawn rows (only hooks and shims can); with `ROUTE_ENFORCED: no` nothing needs recording, and `ROUTE_ENFORCED: yes` before the Phase 3.2 review-record hooks means the task cannot complete — report it and stop. While the lock is held, `pre-agent.sh` denies spawns off the roster, at another model, over budget, or builders during REVIEW; a denial is the route speaking, not an error to work around. Commit the work on the worktree branch.
 4. **Gate.** Run the task's Acceptance command in the worktree, then `$S/green-gate.sh $ARGUMENTS check`. On FAIL go to step 8.
 5. **Tier.** `$S/risk-tier.sh $ARGUMENTS <LINE_NO> --since <TASK_BASE> --classify` (re-run after every fix commit).
 6. **Review shape.** `$D/route.sh review-shape <ROUTE_ID> --tier <TIER>`. Dispatch it: A one reviewer; B one six-lens reviewer; C six lens reviewers + one adversarial reviewer in one message, the diversity requirement, then G12. Reviewers get the gate and Acceptance output in the brief (they have no Bash). Record each verdict with `$S/checkpoint.sh $ARGUMENTS review <LINE_NO> <sha> <VERDICT> apex-dispatch:reviewer --role … --route <ROUTE_ID> --model <model>`. REQUEST_CHANGES → builders fix, commit, back to step 4; three rounds max.
@@ -38,5 +38,5 @@ An ad-hoc ask has no plan line, so `green-gate.sh`, `risk-tier.sh` and `checkpoi
 ## Rules
 
 - One task, one route. Never dispatch a role, model, provider or fan-out the route did not name; if you cannot honour a field, stop and say which.
-- `ROUTE_ENFORCED: no` is the transitional shadow mode: say in your summary that no hook recorded or enforced the spawns. Do not set `APEX_DISPATCH_ENFORCE=1` before the Phase 3 hooks ship.
+- `ROUTE_ENFORCED: no` is the transitional shadow mode: the PreToolUse hooks enforce the route and record spawns in `dispatch-shadow/`, but no review records are hook-written yet; say so in your summary. Do not set `APEX_DISPATCH_ENFORCE=1` before the Phase 3.2 hooks ship.
 - Report truthfully: quote failures verbatim, name skipped steps, never call a task done that a sensor did not verify.
