@@ -2,8 +2,8 @@
 """apex-dispatch ledger: a hash-chained, append-only JSONL log (python3 stdlib).
 
 The single writer of <state>/dispatch/ledger.jsonl (<state>/dispatch-shadow/ while not enforcing,
-see enforcing()). route.py imports it
-(`import ledger; ledger.append(...)`); hooks and shims will import it too.
+see enforcing()). route.py and the hooks (scripts/lib/hooks.py) import it
+(`import ledger; ledger.append(...)`); the provider shims will too.
 Provenance events (route, spawn_request, spawn, worker_run, verdict) are written
 in-process only; scripts/ledger.sh (the CLI) refuses them.
 
@@ -90,12 +90,18 @@ def row_hash(row):
 def enforcing(root=None):
     """Whether apex-dispatch may create <state>/dispatch/ (the directory whose
     presence puts apex-scope-loop's checkpoint.sh into provenance mode). True
-    with APEX_DISPATCH_ENFORCE=1, or once the plugin ships hooks/subagent-stop.sh
-    (the hook that writes the reviews-raw records provenance mode needs).
-    Until then routing records into <state>/dispatch-shadow/ so it cannot wedge
-    checkpoint.sh review (transitional; see README "Enforcement switch")."""
-    if os.environ.get("APEX_DISPATCH_ENFORCE", "") == "1":
+    with APEX_DISPATCH_ENFORCE=1, or whenever the plugin ships
+    hooks/subagent-stop.sh (the hook that writes the reviews-raw records
+    provenance mode needs; shipped since Phase 3.2, so enforcement is the
+    default). APEX_DISPATCH_ENFORCE=0, set by the human before a run starts,
+    keeps the transitional <state>/dispatch-shadow/ (see README "Enforcement
+    switch"); a state whose <state>/dispatch/ already exists stays enforced
+    (dispatch_dir)."""
+    v = os.environ.get("APEX_DISPATCH_ENFORCE", "")
+    if v == "1":
         return True
+    if v == "0":
+        return False
     return os.path.isfile(os.path.join(root or plugin_root(), "hooks", "subagent-stop.sh"))
 
 
@@ -472,9 +478,10 @@ def evidence(state_dir, line, head, plan_hash=None):
          shim carries that route's route_id, and its head_sha (when recorded) is
          HEAD or an ancestor of HEAD.
     Provenance rows cannot be appended through the ledger.sh CLI; they are
-    written in-process (route.py, hooks, shims). Until pre-bash.sh (Phase 3)
-    denies direct python invocation of ledger.py, this raises the bar to
-    deliberate tampering; it is not proof against a determined orchestrator.
+    written in-process (route.py, hooks, shims). pre-bash.sh denies direct
+    python invocation of ledger.py while a run holds the lock, by string
+    matching, so this raises the bar to deliberate tampering; it is not proof
+    against a determined orchestrator.
     Returns (ok, message)."""
     plan_hash = plan_hash or os.path.basename(os.path.normpath(state_dir))
     if not PLAN_HASH_RE.match(plan_hash):

@@ -1332,5 +1332,59 @@ done; done
 ! grep -qi 'getapexinsights\|apex-app' "$PLUGIN_ROOT"/skills/apex-plan/resources/templates/profiles/generic/*.md || fail "the generic apex-plan profile carries Apex-specific vocabulary"
 ok "portability: version 0.3.0, ADR-0003, read-only reviewer edits, ruflo optional, apex-plan profiles"
 
+# 43. apex-dispatch Phase 3.2 consumers: green-gate.sh check PASS moves the ACTIVE
+#     lock BUILD -> GATE (only from BUILD; a FAIL leaves it); checkpoint.sh review
+#     refuses a record the transcript audit refused and takes the provider from the
+#     record; in provenance mode complete enforces the review shape (six distinct
+#     lens approvals + adversarial for fanout6+adversarial) and reviewer family
+#     diversity, degrading to a ledgered warning when doctor.json shows no second family.
+P3="$SMOKE_TMP/p32"; mkdir -p "$P3/plans"; git init -q -b main "$P3"
+printf -- '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n' >"$P3/plans/c-plan.md"; git -C "$P3" add -A; git -C "$P3" commit -qm p
+( cd "$P3" && APEX_GIBSON=0 "$EX/init.sh" plans/c-plan.md >/dev/null 2>&1 ) || fail "init for the Phase 3.2 checks failed"
+P3S="$(st "$P3" plans/c-plan.md)"; P3W="$P3S/worktree"; P3O="$(dirname "$P3S")/ACTIVE/owner.json"
+p3sha() { git -C "$P3W" rev-parse HEAD; }
+p3stage() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); print(o["stage"]) if len(sys.argv) == 2 else (o.update(stage=sys.argv[2]), json.dump(o, open(sys.argv[1], "w")))' "$P3O" "$@"; }
+( cd "$P3" && source "$EX/_lib.sh" && apex_resolve plans/c-plan.md && apex_lock_acquire "$PLAN_HASH" "$PLAN_ABS" 1 BUILD ) || fail "could not take the ACTIVE lock"
+echo b >"$P3W/b.md"; git -C "$P3W" add -A; git -C "$P3W" commit -qm b
+has "GATE: FAIL" "$(cd "$P3" && APEX_GATE_TEST=false "$EX/green-gate.sh" plans/c-plan.md check 2>&1)" && [ "$(p3stage)" = BUILD ] || fail "a failing gate moved the stage off BUILD"
+(cd "$P3" && APEX_GATE_TEST=true "$EX/green-gate.sh" plans/c-plan.md check >/dev/null 2>&1) && [ "$(p3stage)" = GATE ] || fail "a passing gate did not move the stage BUILD -> GATE"
+for s in REVIEW DONE; do
+  p3stage "$s"; (cd "$P3" && APEX_GATE_TEST=true "$EX/green-gate.sh" plans/c-plan.md check >/dev/null 2>&1); [ "$(p3stage)" = "$s" ] || fail "a passing gate moved the stage off $s"
+done
+p3stage BUILD
+mkdir -p "$P3S/dispatch/reviews-raw"
+raw() {  # raw ID ROLE [VERDICT] [PROVIDER]
+  python3 -c 'import json, sys
+i, role, verdict, prov, head = sys.argv[2:7]
+json.dump({"record_id": "rec-" + i + "-0001", "line": 1, "head_sha": head, "sha": head, "role": role, "verdict": verdict,
+           "provider": prov, "family": "anthropic" if prov == "claude-session" else "x"}, open(sys.argv[1], "w"))' \
+    "$P3S/dispatch/reviews-raw/$1.json" "$1" "$2" "${3:-APPROVE}" "${4:-claude-session}" "$(p3sha)"
+}
+printf '{"agent_id": "bad1", "refused": "read-only role reviewer (agent bad1) changed the repository: Bash git commit"}' >"$P3S/dispatch/reviews-raw/bad1.json"
+expect_refusal "a record refused by the transcript audit" "refused by apex-dispatch's transcript audit" indir "$P3" "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id bad1
+raw l1 lens:correctness
+(cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id l1 --provider codex >/dev/null) || fail "a lens record was refused"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["reviews"]["1"]["records"][-1]; assert r["provider"]=="claude-session" and r["role"]=="lens:correctness", r' "$P3S/checkpoint.json" \
+  || fail "the review record took the caller's --provider instead of the record's"
+for l in security consent/pii money performance; do i="l$(printf '%s' "$l" | tr -dc a-z)"; raw "$i" "lens:$l"; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id "$i" >/dev/null) || fail "lens $l refused"; done
+raw adv adversarial; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id adv >/dev/null) || fail "the adversarial record was refused"
+python3 - "$P3S/checkpoint.json" "$(p3sha)" <<'PY'
+import json, sys
+p, h = sys.argv[1:]; s = json.load(open(p)); s.setdefault("tiers", {})["1"] = {"tier": "C", "head": h}; json.dump(s, open(p, "w"))
+PY
+(cd "$P3" && "$CP" plans/c-plan.md approve 1 "$(p3sha)" "approve G12 1" >/dev/null)
+mkdir -p "$SMOKE_TMP/fd43/scripts"; printf '#!/bin/sh\nexit 0\n' >"$SMOKE_TMP/fd43/scripts/route.sh"
+printf '#!/bin/sh\necho "$*" >>"$(dirname "$0")/calls.log"\nexit 0\n' >"$SMOKE_TMP/fd43/scripts/ledger.sh"; chmod +x "$SMOKE_TMP/fd43/scripts/"*.sh
+expect_refusal "Tier C with five lenses" "six distinct lens approvals" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
+raw lm lens:maintainability; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id lm >/dev/null) || fail "the sixth lens record was refused"
+printf '{"claude_p_auth": "available", "providers": {}}' >"$P3S/dispatch/doctor.json"
+expect_refusal "Tier C without a second family while one is available" "family diversity (block)" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
+printf '{"claude_p_auth": "unavailable", "providers": {"codex": {"enabled": true, "available": false}}}' >"$P3S/dispatch/doctor.json"
+OUT="$(cd "$P3" && APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok 2>&1)" || fail "Tier C with no second family available did not complete: $OUT"
+has 'warning: reviewer family diversity (block)' "$OUT" && grep -q '^evidence ' "$SMOKE_TMP/fd43/scripts/calls.log" \
+  && grep -q '^append hook_advisory .*family diversity.* --source cli' "$SMOKE_TMP/fd43/scripts/calls.log" || fail "the diversity degrade was not warned and ledgered, or evidence was not asked"
+[ "$(p3stage)" = DONE ] || fail "complete did not move the stage to DONE"
+ok "Phase 3.2: green-gate PASS = BUILD -> GATE (only from BUILD); refused raw records refused; provider from the record; provenance complete needs six lenses + adversarial and family diversity (degraded to a ledgered warning without a second family); DONE"
+
 echo ""
-echo "smoke passed: 42/42 checks"
+echo "smoke passed: 43/43 checks"

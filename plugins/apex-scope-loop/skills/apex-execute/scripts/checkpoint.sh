@@ -210,9 +210,9 @@ case "$ACTION" in
       COMPUTED="$(sed -n '/^TIER: /{s///p;q;}' <<<"$RT_OUT")"
       [[ "$COMPUTED" =~ ^[ABC]$ && "$(sed -n '/^HEAD: /{s///p;q;}' <<<"$RT_OUT")" == "$HEAD_V" ]] \
         || { echo "[checkpoint] REFUSED complete: the task diff was not classified at the head ${HEAD_V:0:12} (did the head move?)" >&2; exit 1; }
-      python3 - "$CHECKPOINT" "$STATE_DIR/gate/last.json" "$LINE_NO" "$HEAD_V" "$SKIP_REVIEW" "$COMPUTED" "$FLOOR" <<'PY'
+      CK_OUT="$(python3 - "$CHECKPOINT" "$STATE_DIR/gate/last.json" "$LINE_NO" "$HEAD_V" "$SKIP_REVIEW" "$COMPUTED" "$FLOOR" "$DISPATCH_STATE" <<'PY'
 import json, os, sys
-cp, gate_path, line_no, head, skip, computed, floor = sys.argv[1:]
+cp, gate_path, line_no, head, skip, computed, floor, dstate = sys.argv[1:]
 s = json.load(open(cp))
 problems = []
 order = {"A": 0, "B": 1, "C": 2}
@@ -261,12 +261,67 @@ if tier == "C":
     a = s.get("approvals", {}).get(line_no)
     if not a or a.get("sha") != head or a.get("epoch", 0) != epoch:
         problems.append("Tier C: human approval (G12) for this exact head SHA in this epoch is required — halt and ask with the Ask Contract")
+# Provenance mode (apex-dispatch, spec §5.2 step 7 / §5.3 G): the review shape
+# and reviewer family diversity of the stricter of the route (its class) and the
+# effective tier. fanout6+adversarial needs six distinct lens approvals and an
+# adversarial approval at the head; diversity "block" needs an approval from a
+# provider other than the in-session one (claude-session), degraded to a warning
+# (and a ledger row) when doctor.json shows no second family is available.
+if os.path.isdir(dstate) and not skip:
+    SHAPES = ["none", "solo", "six-lens", "fanout6+adversarial"]
+    DIV = ["off", "warn", "block"]
+    shape = {"A": "solo", "B": "six-lens", "C": "fanout6+adversarial"}[tier]
+    div = {"A": "off", "B": "warn", "C": "block"}[tier]
+    try:
+        route = json.load(open(os.path.join(dstate, "active-route.json")))
+    except Exception:
+        route = {}
+    route = route if isinstance(route, dict) else {}
+    router = route.get("router") if isinstance(route.get("router"), dict) else {}
+    if str(route.get("line")) == line_no:
+        if router.get("review_shape") in SHAPES and SHAPES.index(router["review_shape"]) > SHAPES.index(shape):
+            shape = router["review_shape"]
+        if router.get("diversity") in DIV and DIV.index(router["diversity"]) > DIV.index(div):
+            div = router["diversity"]
+    approved = [x for x in at_head if x.get("attempt", 1) == attempt and x.get("epoch", 0) == epoch and x.get("verdict") == "APPROVE"]
+    if shape == "fanout6+adversarial":
+        lenses = sorted({x["role"][5:] for x in approved if str(x.get("role", "")).startswith("lens:")})
+        if len(lenses) < 6:
+            problems.append(f"review shape {shape}: six distinct lens approvals are required at {head[:12]} "
+                            f"(have {len(lenses)}: {', '.join(lenses) or 'none'}) — one reviewer per lens, each ending LENS: <lens>")
+        if not any(x.get("role") == "adversarial" for x in approved):
+            problems.append(f"review shape {shape}: an adversarial approval at {head[:12]} is required")
+    if div != "off" and approved and not any(x.get("provider") not in (None, "", "claude-session") for x in approved):
+        try:
+            doc = json.load(open(os.path.join(dstate, "doctor.json")))
+        except Exception:
+            doc = {}
+        provs = doc.get("providers") or {}
+        second = doc.get("claude_p_auth") == "available" or any(
+            isinstance(v, dict) and v.get("available") and v.get("enabled") for k, v in provs.items()
+            if k not in ("claude-session", "claude-p"))
+        msg = ("reviewer family diversity (%s): every approval at %s is from the in-session Claude family" % (div, head[:12]))
+        if div == "block" and second:
+            problems.append(msg + " — add a review from a second family (bin/worker-claude-p.sh or worker-codex.sh --role reviewer)")
+        else:
+            why = "no second family is available (doctor.json)" if div == "block" else "advisory for this shape"
+            print("DIVERSITY_WARN: " + msg + "; " + why)
 if problems:
     print("[checkpoint] REFUSED complete @ line " + line_no + ":", file=sys.stderr)
     for p in problems:
         print("  - " + p, file=sys.stderr)
     sys.exit(1)
 PY
+)"
+      while IFS= read -r ln; do
+        [[ "$ln" == DIVERSITY_WARN:* ]] || continue
+        echo "[checkpoint] warning: ${ln#DIVERSITY_WARN: }"
+        if [[ -n "$DISPATCH" ]]; then
+          "$DISPATCH/scripts/ledger.sh" append hook_advisory \
+            "$(python3 -c 'import json,sys; print(json.dumps({"hook": "checkpoint.sh complete", "advisory": sys.argv[1], "line": int(sys.argv[2])}))' "${ln#DIVERSITY_WARN: }" "$LINE_NO")" \
+            --state "$STATE_DIR" --source cli 9>&- >/dev/null || echo "[checkpoint] warning: the diversity degrade was not ledgered" >&2
+        fi
+      done <<<"$CK_OUT"
     fi
     # With apex-dispatch state, the ledger must back the completion (not
     # waived by APEX_GIBSON=0).
@@ -419,6 +474,8 @@ if os.path.isdir(dstate):
         assert isinstance(rec, dict)
     except Exception:
         die(f"no readable provenance record at {rec_path}")
+    if rec.get("refused"):
+        die(f"the review record was refused by apex-dispatch's transcript audit: {str(rec['refused'])[:300]}")
     # A record's identity is the record_id its writer (hook or shim) gives each
     # review run: copies, links, aliases and re-serialisations of one run are
     # one record; a new run is a new record wherever its file lands.
@@ -445,7 +502,8 @@ if os.path.isdir(dstate):
         for x in rv.get("records", []):
             if x.get("source") == source:
                 die(f"that provenance record is already recorded (line {ln}, {x.get('role')} on {str(x.get('sha'))[:12]})")
-    provider = provider or rec.get("provider", "")
+    # Provider and family come from the record (what ran), never from the caller.
+    provider = str(rec.get("provider") or "")
     model = model or rec.get("model", "")
     provenance = "reviews-raw" if agent_id else "worker"
 role = role or "reviewer"

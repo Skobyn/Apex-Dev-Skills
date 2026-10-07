@@ -15,8 +15,9 @@
 # exits 0; an error (bad policy, unreadable plan) exits 1; usage exits 2.
 # Without --dry-run a READY route is written to <D>/active-route.json (atomic) and
 # appended as a `route` row to the hash-chained <D>/ledger.jsonl (scripts/lib/ledger.py).
-# <D> is <state>/dispatch/ when enforcing (APEX_DISPATCH_ENFORCE=1, or hooks/subagent-stop.sh
-# shipped, or <state>/dispatch/ already exists), else <state>/dispatch-shadow/ — only
+# <D> is <state>/dispatch/ when enforcing (the default: hooks/subagent-stop.sh ships; or
+# APEX_DISPATCH_ENFORCE=1, or <state>/dispatch/ already exists), else (the human's
+# APEX_DISPATCH_ENFORCE=0 before a run) <state>/dispatch-shadow/ — only
 # <state>/dispatch/ puts checkpoint.sh into provenance mode. <state> is the plan's
 # state dir, or <state-base>/adhoc/<id>.
 #
@@ -27,7 +28,7 @@
 #   APEX_DECIDE_CMD              decision CLI for fields still `auto` (absent: SEMANTIC_SOURCE=table)
 #   APEX_HALT=1, HALT files      the same kill switches as apex-scope-loop (apex_halt_files)
 #   APEX_SCOPE_LOOP_ROOT         the sibling apex-scope-loop (path resolution, ACTIVE lock, planlib)
-#   APEX_DISPATCH_ENFORCE=1      write <state>/dispatch/ (provenance mode) before hooks ship
+#   APEX_DISPATCH_ENFORCE=0      human opt-out: keep <state>/dispatch-shadow/ for a new run (=1 forces dispatch/)
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -388,7 +388,7 @@ apex_dispatch_root() {
 # APEX_FORCE_UNLOCK=1 reclaims any lock (manual recovery only).
 apex_lock_dir() { printf '%s' "$STATE_BASE/ACTIVE"; }
 
-# apex_lock OP [ARGS...] — acquire ID PLAN LINE STAGE KIND | stage ID STAGE |
+# apex_lock OP [ARGS...] — acquire ID PLAN LINE STAGE KIND | stage ID STAGE [FROM_CSV] |
 # release ID | owner. acquire exits 10 when another owner holds the lock; any
 # other non-zero exit means the lock itself could not be used (an error, not BUSY).
 # stage and release act only for the current owner.
@@ -459,7 +459,8 @@ with lk:
         n["plan" if kind == "plan" else "label"] = plan
         write_owner(n)
     elif op == "stage":
-        if o and o.get("id") == args[0]:
+        # Optional third argument: the comma-separated stages it may move from.
+        if o and o.get("id") == args[0] and (len(args) < 3 or o.get("stage") in args[2].split(",")):
             o["stage"], o["updated_at"] = args[1], now
             write_owner(o)
     elif op == "release":
@@ -472,5 +473,5 @@ PY
 
 apex_lock_acquire() { apex_lock acquire "$1" "$2" "$3" "$4" "${5:-plan}"; }
 apex_lock_owner()   { apex_lock owner 2>/dev/null || echo "unknown"; }
-apex_lock_stage()   { apex_lock stage "$1" "$2"; }
+apex_lock_stage()   { apex_lock stage "$1" "$2" ${3:+"$3"}; }   # [FROM_CSV]: move only from these stages
 apex_lock_release() { apex_lock release "$1"; }

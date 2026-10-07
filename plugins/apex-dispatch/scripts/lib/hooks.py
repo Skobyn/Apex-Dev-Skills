@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""apex-dispatch PreToolUse hook engine (python3 stdlib only), spec §5.3 D/E/F.
+"""apex-dispatch hook engine (python3 stdlib only), spec §5.1, §5.3 D/E/F/H/J.
 
-Called by hooks/pre-{agent,bash,edit,mcp}.sh through scripts/lib/hook-common.bash
-only when the run's ACTIVE lock exists (the bash prelude no-ops otherwise, without
-starting python). Reads the PreToolUse payload on stdin and prints exactly one JSON
-object: {} (no opinion) or a PreToolUse hookSpecificOutput with
-permissionDecision deny (or allow + updatedInput for the Agent model fill).
+Called by every hooks/*.sh through scripts/lib/hook-common.bash only when the
+run's ACTIVE lock exists (the bash prelude no-ops otherwise, without starting
+python). Reads the hook payload on stdin and prints exactly one JSON object:
+{} (no opinion), a PreToolUse hookSpecificOutput with permissionDecision deny
+(or allow + updatedInput for the Agent model fill), or a PostToolUse
+additionalContext. SubagentStop's audit refusal and the Stop gate exit 2 with
+the reason on stderr (and still print {}); everything else exits 0.
 
-  hooks.py KIND PLUGIN_ROOT STATE_BASE EXEC_SCRIPTS REPO_ROOT   (KIND: agent|bash|edit|mcp)
+  hooks.py KIND PLUGIN_ROOT STATE_BASE EXEC_SCRIPTS REPO_ROOT
+  KIND: agent|bash|edit|mcp (PreToolUse), post-agent, post-bash, subagent-start, subagent-stop, stop
 
 Fail open: unparseable stdin or an internal error prints {} with a stderr
 advisory and a hook_error ledger row when the run's ledger is writable.
@@ -260,6 +263,12 @@ def protected_reason(ctx, path, removal=True):
     worktree's own root is fair game; removing or moving the root never is."""
     comps = path.split("/")
     wt = ctx.state_worktree
+    if removal:
+        # Removing or moving an ancestor of the run takes the run with it:
+        # `rm -rf ../../..` from the plan worktree, `rm -rf .` in the base checkout.
+        for p, what in ((ctx.state_base, "the run state"), (wt, "the plan worktree"), (ctx.worktree, "the plan worktree")):
+            if p and path != p and under(p, path):
+                return "removing or moving %s would delete %s (%s) during a run" % (path, what, p)
     if wt and path == wt and removal:
         return "the plan worktree root is not removed or moved during a run (land.sh removes it)"
     if wt and under(path, wt) and (path != wt or not removal):
@@ -336,6 +345,140 @@ def set_stage(ctx, stage):
         return False
 
 
+def now_ts():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def age_minutes(ts):
+    try:
+        t = datetime.datetime.strptime(str(ts), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+    return (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() / 60.0
+
+
+def write_json_atomic(path, obj, exclusive=False):
+    """Write JSON via a temp file and rename (exclusive: never replace an existing file)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, sort_keys=True)
+        f.write("\n")
+    if exclusive:
+        try:
+            os.link(tmp, path)                            # fails if path exists
+        finally:
+            os.unlink(tmp)
+    else:
+        os.replace(tmp, path)
+
+
+# ----------------------------------------------------------- agent registry ----
+# SubagentStart registers agent_id -> role -> route_id as <D>/agents/<agent_id>.json
+# (one file per agent: parallel starts never contend); SubagentStop (and
+# PostToolUse Agent, for a foreground agent) records the stop. The live set is
+# the registrations without a stop, younger than the route's wall-clock budget
+# (default LIVE_TTL_MIN): a lost SubagentStop can delay review by that long, never wedge it.
+
+AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+LIVE_TTL_MIN = 120
+
+
+def agents_dir(ctx, write=False):
+    return os.path.join(ledger.dispatch_dir(ctx.state_dir, write=write), "agents")
+
+
+def mark_stopped(ctx, agent_id, how):
+    if not (ctx.state_dir and isinstance(agent_id, str) and AGENT_ID_RE.match(agent_id)):
+        return None
+    path = os.path.join(agents_dir(ctx), agent_id + ".json")
+    rec = read_json(path)
+    if not isinstance(rec, dict):
+        return None
+    if not rec.get("stopped_at"):
+        rec.update({"stopped_at": now_ts(), "stopped_by": how})
+        try:
+            write_json_atomic(path, rec)
+        except OSError as e:
+            ctx.advise("could not record the stop of %s: %s" % (agent_id, e))
+    return rec
+
+
+def live_agents(ctx):
+    d = agents_dir(ctx) if ctx.state_dir else None
+    if not d or not os.path.isdir(d):
+        return []
+    mins = ((ctx.route.get("router") or {}).get("budgets") or {}).get("minutes")
+    ttl = mins if isinstance(mins, (int, float)) and mins > 0 else LIVE_TTL_MIN
+    out = []
+    for f in sorted(os.listdir(d))[:500]:
+        if not f.endswith(".json"):
+            continue
+        rec = read_json(os.path.join(d, f))
+        if not isinstance(rec, dict) or rec.get("stopped_at"):
+            continue
+        age = age_minutes(rec.get("started_at"))
+        if age is None or age > ttl:
+            continue
+        out.append(rec)
+    return out
+
+
+# ------------------------------------------------------------- usage / USD ----
+
+FAMILIES = ("haiku", "sonnet", "opus", "fable")
+
+
+def family(model):
+    m = str(model or "").lower()
+    for f in FAMILIES:
+        if f in m:
+            return f
+    return None
+
+
+def price_table(ctx):
+    out = {}
+    for t in sorted(ctx.policy.get("tiers", []), key=lambda x: x.get("rank", 0)):
+        out.setdefault(t.get("model"), t.get("price_usd_per_mtok") or {})
+    return out
+
+
+def norm_usage(u):
+    """PostToolUse Agent usage (API field names) -> the ledger's {input, output, cache_read, cache_write}."""
+    if not isinstance(u, dict):
+        return None
+    m = {"input": ("input", "input_tokens"), "output": ("output", "output_tokens"),
+         "cache_read": ("cache_read", "cache_read_input_tokens"),
+         "cache_write": ("cache_write", "cache_creation_input_tokens")}
+    out = {}
+    for k, keys in m.items():
+        for src in keys:
+            v = u.get(src)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[k] = int(v)
+                break
+    return out or None
+
+
+def row_usd(prices, row):
+    """Estimated USD of one worker_run row: its own `usd`, else usage x the tier price of its resolved family."""
+    if isinstance(row.get("usd"), (int, float)) and not isinstance(row.get("usd"), bool):
+        return float(row["usd"])
+    u, fam = row.get("usage"), family(row.get("resolved_model"))
+    if not isinstance(u, dict) or fam not in prices:
+        return 0.0
+    p = prices[fam]
+    return sum(float(u.get(k) or 0) * float(p.get(k) or 0) for k in ("input", "output", "cache_read", "cache_write")) / 1e6
+
+
+def route_usd(ctx, route_id, rows=None):
+    prices = price_table(ctx)
+    rows = ledger.read_rows(ctx.state_dir) if rows is None else rows
+    return sum(row_usd(prices, r) for r in rows if r.get("event") == "worker_run" and r.get("route_id") == route_id
+               and r.get("source") in ("hook", "shim"))
+
+
 def route_minutes(rec):
     try:
         ts = datetime.datetime.strptime(rec.get("ts", ""), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
@@ -374,6 +517,12 @@ def pre_agent(ctx, p):
             if gate.get("result") not in GATE_OK or not head or gate.get("head_sha") != head:
                 raise Deny("reviewer spawns need a green gate bound to HEAD (gate/last.json: result %s at %s; HEAD %s) — run green-gate.sh check"
                            % (gate.get("result") or "none", str(gate.get("head_sha") or "-")[:12], (head or "?")[:12]))
+            # Spec §5.3 D: the move to REVIEW is refused while builder-side
+            # agents are still running (registered by subagent-start.sh, no stop yet).
+            busy = [a for a in live_agents(ctx) if a.get("role") not in REVIEWER_ROLES]
+            if busy:
+                raise Deny("%d builder-side agent(s) are still running (%s); wait for them to finish and commit before review"
+                           % (len(busy), ", ".join("%s %s" % (a.get("role"), a.get("agent_id")) for a in busy[:4])))
         else:
             if ctx.stage in LOCKED_STAGES:
                 raise Deny("builder-side spawns are refused during stage %s (re-route to return to BUILD)" % ctx.stage)
@@ -398,6 +547,12 @@ def pre_agent(ctx, p):
             el = route_minutes(rec)
             if isinstance(mins, (int, float)) and el is not None and el > mins:
                 raise Deny("route %s's wall-clock budget is spent (%.0f of %s minutes)" % (rid, el, mins))
+            usd = budgets.get("usd")
+            if isinstance(usd, (int, float)) and usd > 0:
+                est = route_usd(ctx, rid)
+                if est >= usd:
+                    raise Deny("route %s's USD budget is spent (estimated $%.2f of $%.2f from post-agent usage rows); "
+                               "halt and ask, do not continue inline" % (rid, est, usd))
     elif not rec:
         raise Deny("no READY route for the ACTIVE task (stage %s); run route.sh (or iterate.sh) before spawning"
                    % (ctx.stage or "?"))
@@ -533,7 +688,19 @@ def split_ops(tok):
     return out
 
 
+# A quoted or escaped `(`/`)` standing alone ('(' "(" \( and the same for `)`) is
+# an argument (find's grouping), not a subshell: it is kept as a word. shlex in
+# punctuation mode cannot tell a quoted paren from a bare one, so such words are
+# swapped for placeholders before tokenising and mapped to WORD_PARENS after.
+QPAREN_RE = {"__APEX_QLP__": re.compile(r"""(?<![^\s;&|])(?:'\('|"\("|\\\()(?=$|[\s;&|])"""),
+             "__APEX_QRP__": re.compile(r"""(?<![^\s;&|])(?:'\)'|"\)"|\\\))(?=$|[\s;&|])""")}
+QPAREN_TOK = {"__APEX_QLP__": "\x00(", "__APEX_QRP__": "\x00)"}
+WORD_PARENS = {"\x00(": "(", "\x00)": ")"}
+
+
 def tokens(cmd):
+    for ph, rx in QPAREN_RE.items():
+        cmd = rx.sub(" %s " % ph, cmd)
     lex = shlex.shlex(cmd.replace("`", " "), posix=True, punctuation_chars=";&|()<>\n")
     lex.whitespace = " \t\r"
     lex.whitespace_split = True
@@ -543,7 +710,7 @@ def tokens(cmd):
         raw = re.findall(r"[^\s;&|()<>]+|[;&|()<>\n]+", cmd)
     out = []
     for t in raw:
-        out += split_ops(t) if t and all(c in ";&|()<>\n" for c in t) else [t]
+        out += split_ops(t) if t and all(c in ";&|()<>\n" for c in t) else [QPAREN_TOK.get(t, t)]
     return out
 
 
@@ -565,7 +732,7 @@ def segments(cmd):
         elif t.isdigit() and i + 1 < len(toks) and toks[i + 1] in REDIRS:
             pass                                          # an fd number (2>file)
         else:
-            words.append(t)
+            words.append(WORD_PARENS.get(t, t))
         i += 1
     if words or redirs:
         segs.append((words, redirs))
@@ -890,11 +1057,19 @@ def opt_values(args, names):
     return out
 
 
+def base_checkout(ctx):
+    return os.path.dirname(ctx.state_base) if os.path.basename(ctx.state_base) == ".dev-plan-state" else ctx.repo_root
+
+
 def find_root_reason(ctx, c, cwd, prefix, roots):
-    """A deleting find whose start point resolves to a worktree root may delete only
-    filtered matches: never the root itself or its `.git` link file. Starts are
-    compared resolved, so `.`, `../worktree`, an absolute path and `cd src && find ..`
-    are judged alike."""
+    """A deleting find whose start point resolves to a worktree root, or to an
+    ancestor of the run state or the plan worktree (the base checkout, `../..`),
+    may delete only filtered matches: never the root itself, its `.git`, nor a
+    directory on the way down to the run state or the worktree. Starts are
+    compared resolved, so `.`, `../worktree`, an absolute path and
+    `cd src && find ..` are judged alike. A start containing `$` or a backtick
+    may be any of them: its -name values are checked against the basenames of
+    every root, the base checkout, `.git` and `.dev-plan-state`."""
     import fnmatch
     a = c.args
     names = opt_values(a, ("-name",))
@@ -903,30 +1078,42 @@ def find_root_reason(ctx, c, cwd, prefix, roots):
     regexes = opt_values(a, ("-regex", "-iregex"))
     filtered = bool(names or inames or paths or regexes or "-empty" in a)
     negated = [w for w in a if w in ("!", "-not", "-o", "-or", "-prune")]
+    protected = [p for p in (ctx.state_base, ctx.state_worktree, ctx.worktree) if p]
     for x in c.find_parts()[0]:
         unresolved = "$" in x or "`" in x               # may be a root: judged as one
         rp = None if unresolved else real(resolve_target(ctx, cwd, prefix, x))
-        if not unresolved and rp not in roots:
+        below = [p for p in protected if rp and p != rp and under(p, rp)]
+        if not unresolved and rp not in roots and not below:
             continue
-        where = "a start point that may be the worktree root (%s)" % x if unresolved else "the worktree root"
+        if unresolved:
+            where = "a start point that may be the worktree root (%s)" % x
+        elif rp in roots:
+            where = "the worktree root"
+        else:
+            where = "%s, an ancestor of the run state or the plan worktree" % x
         if not filtered:
-            return "find -delete at %s without a -name/-path/-regex/-empty filter would delete its .git link" % where
+            return "find -delete at %s without a -name/-path/-regex/-empty filter would delete its .git link or the run" % where
         if negated:
-            return ("find -delete at %s with %s could match the root or its .git link; run it from a subdirectory "
-                    "or with a positive -name filter only" % (where, negated[0]))
-        base = os.path.basename(rp) if rp else os.path.basename(x.rstrip("/"))
-        hits = [n for n in names if fnmatch.fnmatchcase(".git", n) or fnmatch.fnmatchcase(base, n)]
-        hits += [n for n in inames if fnmatch.fnmatch(".git", n.lower()) or fnmatch.fnmatch(base.lower(), n.lower())]
+            return ("find -delete at %s with %s could match the root, its .git link or the run state; run it from a "
+                    "subdirectory or with a positive -name filter only" % (where, negated[0]))
+        comps = sorted({tuple(os.path.relpath(p, rp).split("/")) for p in below})
+        if unresolved:
+            bases = {".git", ".dev-plan-state"} | {os.path.basename(p) for p in protected + list(roots) + [base_checkout(ctx)] if p}
+        else:
+            bases = {".git", os.path.basename(rp) or "/"} | {part for t in comps for part in t}
+        hits = [n for n in names if any(fnmatch.fnmatchcase(b, n) for b in bases)]
+        hits += [n for n in inames if any(fnmatch.fnmatch(b.lower(), n.lower()) for b in bases)]
         stem = x.rstrip("/") or "/"
-        hits += [p for p in paths if fnmatch.fnmatch(stem + "/.git", p) or fnmatch.fnmatch(stem, p)]
+        targets = {stem, stem + "/.git"} | {stem + "/" + "/".join(t[:k]) for t in comps for k in range(1, len(t) + 1)}
+        hits += [p for p in paths if any(fnmatch.fnmatch(t, p) for t in targets)]
         for r in regexes:
             try:
-                if re.fullmatch(r, stem + "/.git") or re.fullmatch(r, stem):
+                if any(re.fullmatch(r, t) for t in targets):
                     hits.append(r)
             except re.error:
                 hits.append(r)
         if hits:
-            return "find -delete filter %s matches the worktree root or its .git link" % hits[0]
+            return "find -delete filter %s matches the worktree root, its .git link or the way to the run state" % hits[0]
     return None
 
 
@@ -1075,16 +1262,370 @@ def pre_bash(ctx, p):
     return {}
 
 
-HANDLERS = {"agent": pre_agent, "bash": pre_bash, "edit": pre_edit, "mcp": pre_mcp}
+# ------------------------------------------------------- post-agent (3.2) ----
+
+class Block(Exception):
+    """Exit 2 with the reason on stderr (SubagentStop audit refusal, Stop gate)."""
+
+
+def response_obj(p):
+    r = p.get("tool_response")
+    if isinstance(r, str):
+        try:
+            r = json.loads(r)
+        except ValueError:
+            return {"text": r}
+    return r if isinstance(r, dict) else {}
+
+
+def post_agent(ctx, p):
+    """PostToolUse / PostToolUseFailure, Agent|Task (spec §5.1, Phase 0 spike 6):
+    a worker_run row per tool_use_id with resolvedModel, usage, duration and tool
+    count; a model_mismatch row when the resolved family is not ROUTE_MODEL on a
+    builder-side role (advisory: the spawn already ran); the route's USD
+    estimate, which pre-agent enforces against ROUTE_BUDGET_USD at the next spawn."""
+    if p.get("tool_name") not in ("Agent", "Task"):
+        return {}
+    event = p.get("hook_event_name") or "PostToolUse"
+    ti = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
+    st = str(ti.get("subagent_type") or "general-purpose")
+    role = role_of(st) if st.startswith("apex-dispatch:") else st
+    resp = response_obj(p)
+    failed = event == "PostToolUseFailure" or str(resp.get("status") or "").lower() in ("failed", "error")
+    tuid = p.get("tool_use_id")
+    rid = ctx.route.get("route_id")
+    rows = ledger.read_rows(ctx.state_dir) if ctx.state_dir else []
+    if tuid and any(r.get("event") == "worker_run" and r.get("tool_use_id") == tuid for r in rows):
+        return {}                                          # one row per tool use (usage deduped)
+    resolved = resp.get("resolvedModel")
+    usage = norm_usage(resp.get("usage"))
+    agent_id = resp.get("agentId")
+    status = resp.get("status") or ("failed" if failed else "unknown")
+    if not failed and not resolved and usage is None:
+        # A background launch returns before the agent ran: nothing to price yet.
+        ctx.ledger_row("hook_advisory", {"hook": "post-agent.sh", "tool_use_id": tuid,
+                                         "advisory": "Agent %s returned status %s without resolvedModel or usage; usage unverified"
+                                         % (st, status)}, route_id=rid)
+        return {}
+    data = {"provider": "claude-session", "role": role, "exit_code": 1 if failed else 0, "status": status,
+            "agent_id": agent_id if isinstance(agent_id, str) else None, "tool_use_id": tuid, "subagent_type": st,
+            "requested_model": ti.get("model"), "resolved_model": resolved if isinstance(resolved, str) else None,
+            "usage": usage, "token_source": "real" if usage else "none",
+            "duration_ms": resp.get("totalDurationMs"), "tool_count": resp.get("totalToolUseCount"),
+            "total_tokens": resp.get("totalTokens"), "session_id": p.get("session_id")}
+    if isinstance(resp.get("modelsUsed"), (list, dict)):
+        data["models_used"] = resp["modelsUsed"]
+    if failed:
+        data["error"] = str(p.get("error") or resp.get("error") or "")[:300]
+    data["usd_estimate"] = round(row_usd(price_table(ctx), data), 6)
+    row = ctx.ledger_row("worker_run", data, route_id=rid)
+    if isinstance(agent_id, str) and str(status).lower() == "completed":
+        mark_stopped(ctx, agent_id, "post-agent")
+    notes = []
+    router = ctx.route.get("router") or {}
+    rmodel = router.get("model")
+    if role not in REVIEWER_ROLES and rmodel in MODELS and resolved and family(resolved) != rmodel:
+        ctx.ledger_row("model_mismatch", {"route_model": rmodel, "resolved_model": resolved, "role": role,
+                                          "agent_id": data["agent_id"], "tool_use_id": tuid}, route_id=rid)
+        notes.append("the %s ran on %s, not ROUTE_MODEL %s (recorded as model_mismatch)" % (role, resolved, rmodel))
+    cap = (router.get("budgets") or {}).get("usd")
+    if rid and isinstance(cap, (int, float)) and cap > 0:
+        est = route_usd(ctx, rid, rows + ([row] if row else []))
+        if est >= cap:
+            notes.append("route %s's estimated USD ($%.2f) has reached ROUTE_BUDGET_USD $%.2f: further builder-side "
+                         "spawns are denied; halt and ask" % (rid, est, cap))
+    if notes and event == "PostToolUse":
+        return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "apex-dispatch: " + "; ".join(notes)}}
+    return {}
+
+
+# -------------------------------------------------- subagent start / stop ----
+
+def subagent_start(ctx, p):
+    """SubagentStart (Phase 0 spike 7: agent_id, agent_type): register agent_id ->
+    role -> route_id and write a hook-sourced `spawn` row. Phase 0 did not verify
+    additionalContext on SubagentStart, so the role contract stays in the
+    generated agent file and the orchestrator's brief: nothing is injected."""
+    at, aid = p.get("agent_type"), p.get("agent_id")
+    role = role_of(at)
+    if role is None:
+        return {}
+    if not (isinstance(aid, str) and AGENT_ID_RE.match(aid)):
+        ctx.advise("SubagentStart without a usable agent_id; not registered")
+        ctx.ledger_row("hook_advisory", {"hook": "subagent-start.sh", "advisory": "agent_id %r not registered" % (aid,)})
+        return {}
+    rid = ctx.route.get("route_id")
+    rec = {"agent_id": aid, "agent_type": at, "role": role, "route_id": rid, "stage": ctx.stage,
+           "session_id": p.get("session_id"), "started_at": now_ts(), "stopped_at": None}
+    write_json_atomic(os.path.join(agents_dir(ctx, write=True), aid + ".json"), rec)
+    ctx.ledger_row("spawn", {"agent_id": aid, "role": role, "agent_type": at, "stage": ctx.stage,
+                             "session_id": p.get("session_id")}, route_id=rid or "unrouted")
+    return {}
+
+
+VERDICT_RE = re.compile(r"VERDICT:\s*(APPROVE|REQUEST_CHANGES)\b")
+LENS_RE = re.compile(r"^LENS:\s*([a-z][a-z/-]{0,40})\s*$", re.I)
+READ_ONLY_PROBE = "apex-dispatch:reviewer"                # bash_rules identity for the transcript audit
+
+
+def parse_review(msg):
+    """(verdict, lens) from a reviewer's last message: the last VERDICT line and
+    the last LENS line (markdown emphasis and backticks ignored)."""
+    verdict = lens = None
+    for raw in str(msg or "").splitlines():
+        line = raw.strip().strip("*`#>_ .").strip()
+        m = VERDICT_RE.fullmatch(line)
+        if m:
+            verdict = m.group(1)
+            continue
+        m = LENS_RE.match(line)
+        if m:
+            lens = m.group(1).lower()
+    return verdict, lens
+
+
+def audit_transcript(ctx, p):
+    """Post-hoc audit of a read-only agent's transcript (spec §5.3 F): Write/Edit
+    tool uses, Agent spawns, and Bash commands that pre-bash would refuse a
+    read-only role (git mutation, writes into the checkout, run state). A tool use
+    whose result is an error (a hook denied it) is not a violation. Bounded: the
+    last 4 MB of the transcript, at most 2000 tool uses."""
+    path = p.get("agent_transcript_path")
+    if not isinstance(path, str) or not os.path.isfile(path):
+        return None                                          # unavailable: nothing to audit
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 4 * 1024 * 1024))
+            data = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    uses, errors = [], set()
+    for line in data.splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        msg = obj.get("message") if isinstance(obj, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for it in content:
+            if not isinstance(it, dict):
+                continue
+            if it.get("type") == "tool_use" and len(uses) < 2000:
+                uses.append((it.get("id"), it.get("name"), it.get("input") if isinstance(it.get("input"), dict) else {},
+                             obj.get("cwd")))
+            elif it.get("type") == "tool_result" and it.get("is_error"):
+                errors.add(it.get("tool_use_id"))
+    out = []
+    for uid, name, inp, cwd in uses:
+        if uid in errors:
+            continue
+        if name in EDIT_TOOLS:
+            out.append("%s %s" % (name, inp.get("file_path") or inp.get("notebook_path") or "?"))
+        elif name in ("Agent", "Task"):
+            out.append("%s spawn of %s" % (name, inp.get("subagent_type") or "?"))
+        elif name == "Bash" and isinstance(inp.get("command"), str):
+            probe = {"cwd": cwd if isinstance(cwd, str) and os.path.isdir(cwd) else p.get("cwd"),
+                     "agent_type": READ_ONLY_PROBE, "agent_id": "audit"}
+            try:
+                bash_rules(ctx, probe, inp["command"])
+            except Deny as d:
+                out.append("Bash %r: %s" % (inp["command"][:120], d))
+    return out
+
+
+def subagent_stop(ctx, p):
+    """SubagentStop (Phase 0 spike 7: agent_id, agent_type, agent_transcript_path,
+    last_assistant_message, stop_hook_active). Records the stop; audits read-only
+    roles' transcripts; for reviewer roles writes the raw review record
+    <D>/reviews-raw/<agent_id>.json (record_id, line, head_sha at stop, role from
+    agent_type and LENS, verdict, provider family) and a `verdict` row, which
+    checkpoint.sh review --agent-id consumes. A violation refuses the record,
+    writes policy_violation and blocks the stop once (exit 2)."""
+    at, aid = p.get("agent_type"), p.get("agent_id")
+    role = role_of(at)
+    if role is None or not (isinstance(aid, str) and AGENT_ID_RE.match(aid)):
+        return {}
+    mark_stopped(ctx, aid, "subagent-stop")
+    gibson = at == "apex-scope-loop:gibson-reviewer"
+    reviewer = role in REVIEWER_ROLES or gibson
+    read_only = reviewer or bool((ctx.roles().get(role) or {}).get("read_only"))
+    rid = ctx.route.get("route_id")
+    raw_dir = os.path.join(ledger.dispatch_dir(ctx.state_dir, write=True), "reviews-raw")
+    rec_path = os.path.join(raw_dir, aid + ".json")
+    viol = audit_transcript(ctx, p) if read_only else []
+    if viol:
+        reason = ("read-only role %s (agent %s) changed or tried to change the repository: %s"
+                  % (role, aid, "; ".join(viol[:3]) + (" (+%d more)" % (len(viol) - 3) if len(viol) > 3 else "")))
+        if not any(r.get("event") == "policy_violation" and r.get("agent_id") == aid for r in ledger.read_rows(ctx.state_dir)):
+            ctx.ledger_row("policy_violation", {"hook": "subagent-stop.sh", "agent_id": aid, "role": role,
+                                                "violation": reason[:800], "count": len(viol)}, route_id=rid)
+        if reviewer and not os.path.exists(rec_path):
+            try:
+                write_json_atomic(rec_path, {"agent_id": aid, "agent_type": at, "refused": reason[:800],
+                                             "written_at": now_ts(), "source": "hook:subagent-stop"}, exclusive=True)
+            except OSError:
+                pass
+        if not p.get("stop_hook_active"):
+            raise Block("apex-dispatch subagent-stop: %s. The review record is refused; stop without further changes."
+                        % reason)
+        return {}
+    if not reviewer:
+        return {}
+    verdict, lens = parse_review(p.get("last_assistant_message"))
+    if verdict is None:
+        ctx.ledger_row("hook_advisory", {"hook": "subagent-stop.sh", "agent_id": aid,
+                                         "advisory": "reviewer %s stopped without a VERDICT line; no review record" % aid},
+                       route_id=rid)
+        return {}
+    if os.path.exists(rec_path):
+        return {}                                          # one record per review run
+    if role == "adversarial-reviewer" or (gibson and lens == "adversarial"):
+        rrole = "adversarial"
+    elif lens and lens != "adversarial":
+        rrole = "lens:" + lens
+    else:
+        rrole = "reviewer"
+    head = git(ctx.worktree, "rev-parse", "HEAD")
+    o = ctx.owner if ctx.owner_ok else {}
+    line = ctx.route.get("line") if ctx.route.get("line") is not None else o.get("line_no")
+    record_id = "%s-%s" % (aid[:48], os.urandom(8).hex())
+    rec = {"record_id": record_id, "line": line, "head_sha": head, "sha": head, "role": rrole, "lens": lens,
+           "verdict": verdict, "agent_id": aid, "agent_type": at, "route": rid, "provider": "claude-session",
+           "family": "anthropic", "plan_hash": o.get("id"), "session_id": p.get("session_id"),
+           "written_at": now_ts(), "source": "hook:subagent-stop"}
+    try:
+        write_json_atomic(rec_path, rec, exclusive=True)
+    except FileExistsError:
+        return {}
+    ctx.ledger_row("verdict", {"role": rrole, "verdict": verdict, "agent_id": aid, "record_id": record_id,
+                               "line": line, "lens": lens, "provider": "claude-session", "family": "anthropic",
+                               "head_sha": head}, route_id=rid or "unrouted")
+    return {}
+
+
+# ------------------------------------------------------------- stop-gate ----
+
+STOP_BLOCK_CAP = 8
+
+
+def worktree_dirty(path):
+    """Uncommitted or untracked work in the plan worktree (run state excluded; a
+    git error or timeout counts as clean: the gate never blocks on a guess)."""
+    try:
+        r = subprocess.run(["git", "-C", path, "status", "--porcelain", "--untracked-files=normal"],
+                           capture_output=True, text=True, timeout=5)
+    except Exception:
+        return False
+    out = r.stdout if r.returncode == 0 else ""
+    paths = [ln[3:].strip('"') for ln in out.splitlines() if len(ln) > 3]
+    return any(not p.startswith(".dev-plan-state") for p in paths)
+
+
+def stop_gate(ctx, p):
+    """Stop (Phase 0 spike 10: exit 2 blocks once; the re-fired Stop carries
+    stop_hook_active). Blocks at most once per route, and at most STOP_BLOCK_CAP
+    times per run, while an enforced route is in BUILD and ending the turn would
+    lose or bypass routed work: HEAD moved with no spawn/worker row (work done
+    inline), builder-side subagents still registered as running, or uncommitted
+    changes in the plan worktree. Everything else is allowed. Escapes: HALT, a
+    route that is not READY/enforced, stage other than BUILD, the lock released."""
+    if p.get("stop_hook_active") or halt_reason(ctx) or not ctx.enforcing_route() or ctx.stage != "BUILD":
+        return {}
+    rid = ctx.route.get("route_id")
+    rows = ledger.read_rows(ctx.state_dir)
+    blocks = [r for r in rows if r.get("event") == "hook_advisory" and r.get("hook") == "stop-gate.sh" and r.get("blocked")]
+    if any(r.get("route_id") == rid for r in blocks) or len(blocks) >= STOP_BLOCK_CAP:
+        return {}
+    spawned = any(r.get("event") in ledger.SPAWN_EVENTS and r.get("route_id") == rid and r.get("source") in ("hook", "shim")
+                  for r in rows)
+    head = git(ctx.worktree, "rev-parse", "HEAD")
+    reasons = []
+    if not spawned and head and ctx.route.get("head_sha") and head != ctx.route.get("head_sha"):
+        reasons.append("HEAD moved since route %s was emitted but no subagent or worker was spawned for it (routed work "
+                       "done inline): dispatch the route's roster, or record checkpoint.sh fail" % rid)
+    live = [a for a in live_agents(ctx) if a.get("role") not in REVIEWER_ROLES]
+    if live:
+        reasons.append("%d builder-side subagent(s) are still running (%s): wait for them and commit their work"
+                       % (len(live), ", ".join(str(a.get("agent_id")) for a in live[:4])))
+    elif worktree_dirty(ctx.worktree):
+        reasons.append("the plan worktree %s has uncommitted changes: commit them, or discard them and record "
+                       "checkpoint.sh fail" % ctx.worktree)
+    if not reasons:
+        if not spawned and not any(r.get("event") == "hook_advisory" and r.get("hook") == "stop-gate.sh"
+                                   and r.get("route_id") == rid for r in rows):
+            ctx.ledger_row("hook_advisory", {"hook": "stop-gate.sh", "advisory": "route %s is open with no spawn yet" % rid},
+                           route_id=rid)
+        return {}
+    msg = ("apex-dispatch stop-gate: %s. (Blocks once per route; to stop deliberately, touch the HALT file or close "
+           "the task with checkpoint.sh complete/fail.)" % "; ".join(reasons))
+    ctx.ledger_row("hook_advisory", {"hook": "stop-gate.sh", "advisory": msg[:800], "blocked": True}, route_id=rid)
+    raise Block(msg)
+
+
+# -------------------------------------------------------- post-bash-prune ----
+
+FAILURE_LINE = re.compile(r"\b(FAIL(ED|URE)?|ERROR|Error|error\[|error:|panicked|Traceback|AssertionError)\b|✗|✕")
+
+
+def post_bash(ctx, p):
+    """PostToolUse Bash. Phase 0 spike 9: a command hook cannot replace Bash
+    output (updatedToolOutput was not applied), so this hook is record-only: for a
+    recognised runner (policy pruning.runners) whose output exceeds
+    pruning.max_lines it keeps the full log at <D>/logs/<tool_use_id>.log for the
+    reviewer brief and writes one hook_advisory row. It never changes what the
+    model sees."""
+    if p.get("tool_name") != "Bash":
+        return {}
+    pruning = ctx.policy.get("pruning") or {}
+    if not pruning.get("enabled"):
+        return {}
+    ti = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
+    cmd = ti.get("command") if isinstance(ti.get("command"), str) else ""
+    runner = next((r for r in pruning.get("runners") or [] if isinstance(r, dict) and r.get("pattern")
+                   and r["pattern"] in cmd), None)
+    if runner is None:
+        return {}
+    resp = p.get("tool_response")
+    if isinstance(resp, dict):
+        text = "\n".join(str(resp.get(k) or "") for k in ("stdout", "stderr") if resp.get(k))
+    else:
+        text = str(resp or "")
+    lines = text.splitlines()
+    limit = pruning.get("max_lines") if isinstance(pruning.get("max_lines"), int) else 200
+    if len(lines) <= limit:
+        return {}
+    tuid = re.sub(r"[^A-Za-z0-9_-]", "_", str(p.get("tool_use_id") or "t%d" % int(time.time())))[:80]
+    log = os.path.join(ledger.dispatch_dir(ctx.state_dir, write=True), "logs", tuid + ".log")
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    with open(log, "w", encoding="utf-8") as f:
+        f.write(text)
+    fails = [ln for ln in lines if FAILURE_LINE.search(ln)]
+    ctx.ledger_row("hook_advisory", {"hook": "post-bash-prune.sh", "runner": runner.get("id"), "lines": len(lines),
+                                     "failure_lines": len(fails), "log": log, "tool_use_id": p.get("tool_use_id"),
+                                     "advisory": "%s output (%d lines) kept at %s; not trimmed (PostToolUse cannot replace "
+                                                 "Bash output, Phase 0 spike 9)" % (runner.get("id"), len(lines), log)})
+    return {}
+
+
+# kind -> (hook script, handler)
+HANDLERS = {"agent": ("pre-agent.sh", pre_agent), "bash": ("pre-bash.sh", pre_bash),
+            "edit": ("pre-edit.sh", pre_edit), "mcp": ("pre-mcp.sh", pre_mcp),
+            "post-agent": ("post-agent.sh", post_agent), "post-bash": ("post-bash-prune.sh", post_bash),
+            "subagent-start": ("subagent-start.sh", subagent_start), "subagent-stop": ("subagent-stop.sh", subagent_stop),
+            "stop": ("stop-gate.sh", stop_gate)}
+PRE_KINDS = {"agent", "bash", "edit", "mcp"}
 
 
 def main(argv):
     if len(argv) < 6 or argv[1] not in HANDLERS:
         print("{}")
-        print("usage: hooks.py agent|bash|edit|mcp PLUGIN_ROOT STATE_BASE EXEC_SCRIPTS REPO_ROOT", file=sys.stderr)
+        print("usage: hooks.py %s PLUGIN_ROOT STATE_BASE EXEC_SCRIPTS REPO_ROOT" % "|".join(HANDLERS), file=sys.stderr)
         return 0
     ctx = Ctx(argv[1], argv[2], argv[3], argv[4], argv[5])
-    hook = "pre-%s.sh" % argv[1]
+    hook, handler = HANDLERS[argv[1]]
     if not ctx.owner_ok and ctx.owner is not None:
         ctx.advise("ACTIVE/owner.json is unreadable; applying the run-independent rules only")
     if ctx.stale():
@@ -1100,19 +1641,23 @@ def main(argv):
         ctx.ledger_row("hook_error", {"hook": hook, "error": "unparseable stdin: %s" % e})
         print("{}")
         return 0
+    rc = 0
     try:
-        out = HANDLERS[argv[1]](ctx, payload)
+        out = handler(ctx, payload)
     except Deny as d:
         reason = str(d)
         ctx.ledger_row("hook_advisory", {"hook": hook, "advisory": "denied: " + reason,
                                          "tool_use_id": payload.get("tool_use_id")})
-        out = deny(reason)
+        out = deny(reason) if argv[1] in PRE_KINDS else {}
+    except Block as b:
+        print(str(b), file=sys.stderr)
+        out, rc = {}, 2
     except Exception as e:  # fail open, loudly
         ctx.advise("internal error, failing open: %s: %s" % (type(e).__name__, e))
         ctx.ledger_row("hook_error", {"hook": hook, "error": "%s: %s" % (type(e).__name__, e)})
         out = {}
     print(json.dumps(out, separators=(",", ":")))
-    return 0
+    return rc
 
 
 if __name__ == "__main__":

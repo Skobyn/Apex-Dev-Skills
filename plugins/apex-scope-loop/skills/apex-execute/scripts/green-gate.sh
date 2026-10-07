@@ -26,7 +26,7 @@
 # Emits (machine-readable):
 #   GATE_STEP: <step> <PASS|FAIL|NEW_FAILURE|PREEXISTING|SKIPPED> [exit=N]
 #   HEAD_SHA: <sha the check ran against>
-#   GATE: PASS | FAIL | SKIPPED
+#   GATE: PASS | FAIL | SKIPPED   (check PASS/SKIPPED moves the ACTIVE lock BUILD -> GATE)
 # Exit codes: 0 PASS/SKIPPED/baseline written · 1 FAIL · 2 bad args / not initialized
 set -euo pipefail
 
@@ -173,7 +173,8 @@ PY
   fi
 done
 
-python3 - "$MODE" "$RESULTS" "$BASELINE" "$GATE_DIR" "$HEAD_SHA" "$ran" <<'PY'
+GATE_RC=0
+python3 - "$MODE" "$RESULTS" "$BASELINE" "$GATE_DIR" "$HEAD_SHA" "$ran" <<'PY' || GATE_RC=$?
 import json, os, sys, datetime
 mode, results, baseline_path, gate_dir, head, ran = sys.argv[1:]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -220,3 +221,12 @@ else:
     print(f"GATE: {result}")
 sys.exit(1 if failed else 0)
 PY
+# Spec §5.3 D: a check that passes (or skips) at HEAD moves this plan's ACTIVE
+# lock from BUILD to GATE, under the same flock as every other stage write
+# (apex_lock). In GATE apex-dispatch's hooks refuse git mutation and writes in
+# the checkout; a reviewer spawn moves it on to REVIEW. Only from BUILD: a
+# re-run during review, or after complete (DONE), leaves the stage alone.
+if [[ "$MODE" == "check" && "$GATE_RC" == 0 ]]; then
+  apex_lock_stage "$PLAN_HASH" GATE BUILD 2>/dev/null || echo "[green-gate] warning: could not set stage GATE on the ACTIVE lock" >&2
+fi
+exit "$GATE_RC"

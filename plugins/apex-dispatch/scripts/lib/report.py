@@ -94,7 +94,9 @@ def summarise(root, state_dir, plan=None):
             "unverified": {"count": len(unverified), "rows": unverified,
                            "note": "usage without a resolved model; excluded from USD"},
             "human_gates": sum(1 for r in rows if r.get("event") == "human_gate"),
-            "hook_errors": sum(1 for r in rows if r.get("event") == "hook_error")}
+            "hook_errors": sum(1 for r in rows if r.get("event") == "hook_error"),
+            "model_mismatches": sum(1 for r in rows if r.get("event") == "model_mismatch"),
+            "policy_violations": sum(1 for r in rows if r.get("event") == "policy_violation")}
 
 
 def fmt_counter(d):
@@ -152,6 +154,8 @@ def main(argv):
               % (u["seq"], u["event"], u["route_id"], u["model"], u["provider"]))
     print("REPORT_HUMAN_GATES: %d" % s["human_gates"])
     print("REPORT_HOOK_ERRORS: %d" % s["hook_errors"])
+    print("REPORT_MODEL_MISMATCHES: %d" % s["model_mismatches"])
+    print("REPORT_POLICY_VIOLATIONS: %d" % s["policy_violations"])
     return 0
 
 

@@ -582,7 +582,7 @@ def finish(args, pol, feats, task, r, kind, ident, state_dir, extra_record):
     """Step 9: mode handling, the ROUTE block, active-route.json, the ledger `route` row."""
     mode = dispatch_mode()
     status = r["status"]
-    dstate = ledger.dispatch_dir(state_dir, write=True)
+    dstate = ledger.dispatch_dir(state_dir, write=not args.get("dry_run"))   # a dry run creates nothing
     if kind == "plan":
         prefix = "r-%s-L%s-" % (ident, task["line_no"])
     else:

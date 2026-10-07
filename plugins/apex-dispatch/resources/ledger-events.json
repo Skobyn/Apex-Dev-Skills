@@ -23,7 +23,7 @@
     },
     "worker_run": {
       "provenance": true,
-      "description": "A provider shim (bin/worker-*.sh) finished a run.",
+      "description": "A worker finished: post-agent.sh for an in-session subagent (provider claude-session; resolved_model, usage, duration_ms, tool_count, usd_estimate) or a provider shim (bin/worker-*.sh).",
       "required": {"route_id": "string", "provider": "string", "role": "string", "exit_code": "integer"}
     },
     "verdict": {
@@ -31,6 +31,14 @@
       "description": "A reviewer verdict captured by subagent-stop.sh or a shim result.json, bound to a head.",
       "required": {"route_id": "string", "role": "string", "verdict": "string"},
       "enums": {"verdict": ["APPROVE", "REQUEST_CHANGES"]}
+    },
+    "model_mismatch": {
+      "description": "post-agent.sh: a builder-side subagent ran on a model family other than the route's ROUTE_MODEL (advisory; the spawn was already pinned by pre-agent.sh).",
+      "required": {"route_model": "string", "resolved_model": "string"}
+    },
+    "policy_violation": {
+      "description": "subagent-stop.sh: a read-only role's transcript shows a write, an agent spawn or a git mutation; its review record is refused.",
+      "required": {"hook": "string", "agent_id": "string", "role": "string", "violation": "string"}
     },
     "escalate": {
       "description": "route.sh escalate chose the next rung of the escalation ladder.",

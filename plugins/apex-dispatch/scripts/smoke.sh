@@ -268,6 +268,11 @@ pass "--check flags any non-generated agents/*.md and detects a CRLF artifact"
 # --- Phase 2.3: route.sh (table-only) ----------------------------------------
 ROUTE="$PLUGIN_ROOT/scripts/route.sh"
 for v in $(compgen -e | grep '^APEX_' || true); do unset "$v"; done
+# hooks/subagent-stop.sh ships (Phase 3.2), so <state>/dispatch/ (provenance mode)
+# is the default. The Phase 2 and 3.1 checks below exercise the transitional
+# <state>/dispatch-shadow/ through the human opt-out APEX_DISPATCH_ENFORCE=0;
+# check 35 covers the switch and the Phase 3.2 checks run enforced.
+export APEX_DISPATCH_ENFORCE=0
 export GIT_AUTHOR_NAME=smoke GIT_AUTHOR_EMAIL=smoke@example.invalid GIT_COMMITTER_NAME=smoke GIT_COMMITTER_EMAIL=smoke@example.invalid
 has() { grep -q -- "$1" <<<"$2"; }
 val() { sed -n "s/^$1: //p" <<<"$2" | head -1; }
@@ -555,7 +560,7 @@ grep -qiF 'at least one `spawn_request`, `spawn` or `worker_run` row written wit
 for f in "$PLUGIN_ROOT/README.md" "$ADR"; do grep -q 'not proof against a determined orchestrator' "$f" || fail "$(basename "$f") does not state the evidence limit"; done
 pass "route.sh appends verifiable route/escalate rows; evidence = chain + this plan's READY route for the line (id and line agree) on HEAD's history + a hook/shim spawn row for it"
 
-# 35. enforcement switch (transitional): <state>/dispatch/ only with APEX_DISPATCH_ENFORCE=1 or hooks/subagent-stop.sh;
+# 35. enforcement switch: <state>/dispatch/ with APEX_DISPATCH_ENFORCE=1 or hooks/subagent-stop.sh (shipped: the default); =0 opts out;
 #     escalate --state; iterate.sh fails closed on BUSY; tier-c-floor tags
 [ ! -e "$SD/dispatch" ] && [ -d "$SD/dispatch-shadow" ] || fail "route.sh created <state>/dispatch/ without enforcement"
 rm -rf "$FX/.dev-plan-state/ACTIVE"
@@ -574,8 +579,12 @@ APEX_DISPATCH_ENFORCE=1 "$PLUGIN_ROOT/scripts/doctor.sh" --state "$WORK/enf2" >/
   || fail "doctor.sh created <state>/dispatch/ without recording dispatch_enforced"
 for f in checkpoint.sh land.sh; do grep -q 'dispatch_enforced' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/$f" || fail "$f does not refuse a dispatch-enforced run whose dispatch/ is gone"; done
 rm -rf "$WORK/copy3"; mkdir -p "$WORK/copy3/hooks"; touch "$WORK/copy3/hooks/subagent-stop.sh"
-python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger; assert ledger.enforcing(sys.argv[2]) and not ledger.enforcing(sys.argv[3])' \
+APEX_DISPATCH_ENFORCE= python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger; assert ledger.enforcing(sys.argv[2]) and not ledger.enforcing(sys.argv[3])' \
   "$PLUGIN_ROOT/scripts/lib" "$WORK/copy3" "$WORK" || fail "enforcing() does not follow hooks/subagent-stop.sh"
+APEX_DISPATCH_ENFORCE= python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger; assert ledger.enforcing()' "$PLUGIN_ROOT/scripts/lib" \
+  || fail "this plugin ships hooks/subagent-stop.sh but enforcing() is off by default"
+APEX_DISPATCH_ENFORCE=0 python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger; assert not ledger.enforcing(sys.argv[2])' "$PLUGIN_ROOT/scripts/lib" "$WORK/copy3" \
+  || fail "APEX_DISPATCH_ENFORCE=0 did not keep the shadow directory"
 O="$(cd / && bash "$ROUTE" escalate "$RID" --state "$SD" 2>&1)"
 has '^RUNG: ' "$O" && has "^PRIOR_ROUTE: $RID" "$O" || fail "route.sh escalate --state did not use the given state dir: $O"
 grep -q 'escalate "$RID" --state "$STATE_DIR"' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/checkpoint.sh" || fail "checkpoint.sh fail does not pass --state to route.sh escalate"
@@ -586,7 +595,7 @@ O="$(rt plan plans/p.md --line "$L_AUTH" --dry-run)"
 [ "$(val ROUTE_FANOUT "$(rt plan plans/p.md --line "$L_A" --lanes "$L_A,$L_AUTH" --dry-run)")" = single ] || fail "an [auth] task was accepted as a lane"
 python3 -c 'import json,sys; r=[x for x in json.load(open(sys.argv[1]))["hard_rules"] if x["id"]=="tier-c-floor"][0]; assert {"auth","pii","money","billing"} <= set(r["when"]["tags_any"])' "$PLUGIN_ROOT/resources/compiled/policy.json" || fail "tier-c-floor lacks auth/pii/money/billing"
 grep -q 'APEX_DISPATCH_ENFORCE' "$PLUGIN_ROOT/README.md" && grep -q 'APEX_DISPATCH_ENFORCE' "$ADR" || fail "README/ADR do not document the enforcement switch"
-pass "enforcement switch: dispatch-shadow/ unless APEX_DISPATCH_ENFORCE=1 or hooks/subagent-stop.sh; escalate --state; iterate BUSY arm; [auth] → tier-c-floor"
+pass "enforcement switch: on by default (hooks/subagent-stop.sh ships) or with APEX_DISPATCH_ENFORCE=1; =0 keeps dispatch-shadow/; escalate --state; iterate BUSY arm; [auth] → tier-c-floor"
 
 # 36. export-trace writes apex-agent-observability's exact line shape; export writes task summaries
 lg export-trace --state "$LS" --out "$WORK/trace.jsonl" >/dev/null || fail "export-trace failed"
@@ -711,6 +720,7 @@ pass "every referenced script path exists (plugin \${CLAUDE_PLUGIN_ROOT}/\$D pat
 
 # --- Phase 3.1: PreToolUse hooks (pre-agent, pre-bash, pre-edit, pre-mcp) ---
 HOOKS=(pre-agent pre-bash pre-edit pre-mcp)
+HOOKS32=(post-agent post-bash-prune subagent-start subagent-stop stop-gate)
 # Fixture with two disjoint lanes; route.sh takes the ACTIVE lock (stage BUILD) and writes active-route.json.
 HX="$WORK/hx"; mkdir -p "$HX/plans"; git init -q -b main "$HX"
 cat >"$HX/plans/p.md" <<'PLAN'
@@ -750,20 +760,20 @@ assert s.endswith("\n") and s.count("\n") == 1, repr(s)
 o = json.loads(s)
 assert isinstance(o, dict)
 h = o.get("hookSpecificOutput")
-print("{}" if not o else h["permissionDecision"] + (" updated" if "updatedInput" in h else ""))'; }
+print("{}" if not o else ("context" if "permissionDecision" not in h else h["permissionDecision"] + (" updated" if "updatedInput" in h else "")))'; }
 dec() { hk "$1" "$2" | one; }
 is_deny() { [ "$(dec "$1" "$2")" = deny ] || fail "$3"; }
 is_allow() { [ "$(dec "$1" "$2")" = "{}" ] || fail "$3"; }
 
-# 42. four hooks exist, executable, `bash -n` clean; no subagent-stop.sh yet (it flips enforcing()); hooks.json == compile output
-for h in "${HOOKS[@]}"; do
+# 42. all nine hooks exist, executable, `bash -n` clean; hooks.json == compile output (events, matchers,
+#     ${CLAUDE_PLUGIN_ROOT} paths, timeout 10)
+for h in "${HOOKS[@]}" "${HOOKS32[@]}"; do
   f="$PLUGIN_ROOT/hooks/$h.sh"
   [ -x "$f" ] || fail "hooks/$h.sh missing or not executable"
   bash -n "$f" || fail "hooks/$h.sh does not parse"
 done
 bash -n "$PLUGIN_ROOT/scripts/lib/hook-common.bash" || fail "scripts/lib/hook-common.bash does not parse"
-[ ! -e "$PLUGIN_ROOT/hooks/subagent-stop.sh" ] || fail "hooks/subagent-stop.sh exists: that is Phase 3.2 (it switches enforcement on)"
-python3 - "$PLUGIN_ROOT" <<'PY' || fail "hooks.json does not register the four PreToolUse hooks exactly as compile.py renders them"
+python3 - "$PLUGIN_ROOT" <<'PY' || fail "hooks.json does not register the hooks exactly as compile.py renders them"
 import json, os, sys
 root = sys.argv[1]
 sys.path.insert(0, os.path.join(root, "scripts", "lib"))
@@ -771,13 +781,19 @@ import compile as c
 want, _ = c.render_hooks(root)
 have = json.load(open(os.path.join(root, "hooks", "hooks.json")))
 assert have == want, "hooks.json differs from compile.py's rendering"
+cmd = lambda s: {"type": "command", "command": 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/%s.sh"' % s, "timeout": 10}
 pre = {g["matcher"]: g["hooks"][0] for g in have["hooks"]["PreToolUse"]}
-assert pre == {m: {"type": "command", "command": 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/%s.sh"' % s, "timeout": 10}
-               for m, s in [("Agent|Task", "pre-agent"), ("Bash", "pre-bash"),
-                            ("Edit|Write|MultiEdit|NotebookEdit", "pre-edit"), ("^mcp__", "pre-mcp")]}, pre
-assert list(have["hooks"]) == ["PreToolUse"]
+assert pre == {m: cmd(s) for m, s in [("Agent|Task", "pre-agent"), ("Bash", "pre-bash"),
+               ("Edit|Write|MultiEdit|NotebookEdit", "pre-edit"), ("^mcp__", "pre-mcp")]}, pre
+post = {g["matcher"]: g["hooks"][0] for g in have["hooks"]["PostToolUse"]}
+assert post == {"Agent|Task": cmd("post-agent"), "Bash": cmd("post-bash-prune")}, post
+assert have["hooks"]["PostToolUseFailure"] == [{"matcher": "Agent|Task", "hooks": [cmd("post-agent")]}]
+for ev, s in (("SubagentStart", "subagent-start"), ("SubagentStop", "subagent-stop")):
+    assert have["hooks"][ev] == [{"matcher": "^(apex-dispatch|apex-scope-loop):", "hooks": [cmd(s)]}], ev
+assert have["hooks"]["Stop"] == [{"hooks": [cmd("stop-gate")]}]
+assert sorted(have["hooks"]) == ["PostToolUse", "PostToolUseFailure", "PreToolUse", "Stop", "SubagentStart", "SubagentStop"]
 PY
-pass "hooks pre-agent/bash/edit/mcp: executable, bash -n clean, registered (matchers, \${CLAUDE_PLUGIN_ROOT}, timeout 10) == compile output; no subagent-stop.sh"
+pass "nine hooks: executable, bash -n clean, registered (events, matchers, \${CLAUDE_PLUGIN_ROOT}, timeout 10) == compile output"
 
 # 43. without an ACTIVE lock every hook is a no-op: exactly one JSON object, {} (deny-worthy input and garbage included)
 [ ! -e "$HX/.dev-plan-state" ] || fail "hook fixture already has state"
@@ -968,6 +984,253 @@ for c in 'rm -rf .' 'mv . ../x' 'rmdir .' 'find ../worktree -delete' "find $WWT 
   [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = deny ] || fail "pre-bash allowed from the <state>/worktree plan worktree: $c"
 done
 pass "init.sh layout (<state>/worktree): edits, writes, rm/cp/mkdir, commits and the worktree root as a cp/mv/patch/chmod/find target pass; removing or moving the root, checkpoint, gate, ACTIVE and nested state stay denied"
+
+# --- Phase 3.2: post-agent, subagent-start/stop, stop-gate, post-bash-prune ---
+# pj key=value... -> one JSON object (values parsed as JSON when they parse; dotted keys nest)
+pj() { python3 -c 'import json, sys
+d = {}
+for kv in sys.argv[1:]:
+    k, _, v = kv.partition("=")
+    try:
+        v = json.loads(v)
+    except ValueError:
+        pass
+    cur = d
+    *path, last = k.split(".")
+    for x in path:
+        cur = cur.setdefault(x, {})
+    cur[last] = v
+print(json.dumps(d))' "$@"; }
+# hr HOOK DIR JSON -> stdout of the hook run in DIR; rc in $HRC, stderr in $WORK/hr.err
+hr() { HRC=0; HOUT="$( (cd "$2" && printf '%s' "$3" | bash "$PLUGIN_ROOT/hooks/$1.sh" 2>"$WORK/hr.err") )" || HRC=$?; printf '%s\n' "$HOUT" | one >/dev/null || fail "$1 printed other than exactly one JSON object: [$HOUT] $(cat "$WORK/hr.err")"; }
+# rowsin LEDGER EVENT [k=v...] -> number of hook-sourced rows matching
+rowsin() { python3 -c 'import json, sys
+r = [json.loads(l) for l in open(sys.argv[1])]
+print(sum(1 for x in r if x["event"] == sys.argv[2] and x.get("source") == "hook" and all(str(x.get(k)) == v for k, v in (a.split("=", 1) for a in sys.argv[3:]))))' "$@"; }
+jget() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."): d = d[k]
+print(d)' "$1" "$2"; }
+
+# 51. the five Phase 3.2 hooks: without a lock {} for garbage, empty and real payloads; under a lock garbage fails open
+NX="$WORK/nx"; mkdir -p "$NX"; git init -q -b main "$NX"; git -C "$NX" commit -q --allow-empty -m nx
+for h in "${HOOKS32[@]}"; do
+  for j in 'not json{' '' "$(pj tool_name=Agent hook_event_name=PostToolUse tool_input.subagent_type=apex-dispatch:builder "cwd=$NX")" \
+           "$(pj agent_id=x1 agent_type=apex-dispatch:reviewer last_assistant_message='VERDICT: APPROVE' "cwd=$NX")" "$(pj hook_event_name=Stop "cwd=$NX")"; do
+    hr "$h" "$NX" "$j"; [ "$HRC" = 0 ] && [ "$HOUT" = "{}" ] || fail "$h without a lock did not give {} exit 0 (rc=$HRC, $HOUT)"
+  done
+  hr "$h" "$HX" 'not json{'; [ "$HRC" = 0 ] && [ "$HOUT" = "{}" ] && grep -q 'failing open' "$WORK/hr.err" || fail "$h under a lock: garbage stdin did not fail open"
+done
+[ ! -e "$NX/.dev-plan-state" ] || fail "a Phase 3.2 hook wrote state without an ACTIVE lock"
+pass "post-agent, post-bash-prune, subagent-start, subagent-stop, stop-gate: {} and exit 0 without a lock (garbage, empty, real payloads); fail open under a lock"
+
+# 52. carried hardening: quoted/escaped parens are find arguments; ancestors of the run state and the worktree
+#     are not removed; a `$` find start is checked against every root's basename; mark_enforced skips the lock
+for c in "find . '(' -type f ')' -delete" 'find . \( -type f \) -delete' 'find . "(" -type f ")" -delete' 'rm -rf ../../..' \
+         "find $WX -delete" "find $WX -name .dev-plan-state -exec rm -rf {} +" "find $WX -name '.dev*' -delete" 'rm -rf /' \
+         "mv $WX /tmp/elsewhere" 'find "$OUT" -name worktree -delete' 'find "$OUT" -name .dev-plan-state -delete' \
+         'find "$OUT" -name wx -exec rm -rf {} +' "find ../../.. -path '*/.dev-plan-state' -exec rm -rf {} +"; do
+  [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = deny ] || fail "pre-bash allowed from the plan worktree: $c"
+done
+for c in "find . '(' -name '*.pyc' ')' -delete" "echo '(' x ')'" "find $WX -name '*.pyc' -delete" 'find "$OUT" -name "*.o" -delete' \
+         'rm -rf src/a'; do
+  [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = "{}" ] || fail "pre-bash denied from the plan worktree: $c"
+done
+bx() { (cd "$WX" && printf '%s' "$2" | bash "$PLUGIN_ROOT/hooks/$1.sh" 2>/dev/null) | one; }
+for c in 'rm -rf .' "rm -rf $WX" 'find . -delete' 'find . -type f -delete' "find . -name .dev-plan-state -prune -o -delete"; do
+  [ "$(bx pre-bash "$(pl bash "$WX" "$c")")" = deny ] || fail "pre-bash allowed in the base checkout: $c"
+done
+[ "$(bx pre-bash "$(pl bash "$WX" "find . -name '*.pyc' -delete")")" = "{}" ] || fail "a filtered find in the base checkout was denied"
+ME="$WORK/me"; mkdir -p "$ME/dispatch"; printf '{"dispatch_enforced": true, "worktree_path": "%s"}\n' "$NX" >"$ME/checkpoint.json"
+python3 -c 'import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR); fcntl.flock(fd, fcntl.LOCK_EX); time.sleep(6)' "$ME/.checkpoint.lock" &
+LKPID=$!; sleep 0.3
+T0="$(date +%s%N)"; lg append hook_advisory '{"hook":"x","advisory":"y"}' --state "$ME" --source cli >/dev/null || fail "append to an enforced state failed"
+MS=$(( ($(date +%s%N) - T0) / 1000000 )); kill "$LKPID" 2>/dev/null || true; wait "$LKPID" 2>/dev/null || true
+[ "$MS" -lt 1500 ] || fail "an append to a state already marked dispatch_enforced waited ${MS} ms for the checkpoint lock"
+pass "quoted/escaped ( ) stay find arguments; ancestors of the run (rm -rf ../../.., rm -rf . in the base, find <base> -delete) denied; \$ starts checked against every root name; mark_enforced skips the lock when already set (${MS} ms)"
+
+# A fresh single-builder route for the agent-lifecycle checks (dispatch-shadow, route mode table).
+UX="$WORK/ux"; mkdir -p "$UX/plans" "$UX/src"; git init -q -b main "$UX"
+printf '# U\n\n- [ ] **Phase 1.1** [mechanical] one builder\n  - Acceptance: `pytest -q`\n  - Paths: src/**\n' >"$UX/plans/p.md"
+printf '.dev-plan-state/\n' >"$UX/.gitignore"; echo a >"$UX/src/a.py"; git -C "$UX" add -A; git -C "$UX" commit -qm ux
+O="$(cd "$UX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"; [ "$(val ROUTE_STATUS "$O")" = READY ] || fail "lifecycle fixture route is not READY: $O"
+URID="$(val ROUTE_ID "$O")"; USD_="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; UD="$USD_/dispatch-shadow"; UL="$UD/ledger.jsonl"
+UOWN="$UX/.dev-plan-state/ACTIVE/owner.json"
+ustage() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); print(o["stage"]) if len(sys.argv) == 2 else (o.update(stage=sys.argv[2]), json.dump(o, open(sys.argv[1], "w")))' "$UOWN" "$@"; }
+uh() { hr "$1" "$UX" "$2"; }
+ua() { (cd "$UX" && printf '%s' "$1" | bash "$PLUGIN_ROOT/hooks/pre-agent.sh" 2>/dev/null); }
+start() { uh subagent-start "$(pj agent_id="$1" agent_type="$2" session_id=s "cwd=$UX")"; }
+stopa() { uh subagent-stop "$(pj agent_id="$1" agent_type="$2" "last_assistant_message=$3" stop_hook_active="${4:-false}" agent_transcript_path="${5:-}" session_id=s "cwd=$UX")"; }
+
+# 53. subagent-start registers agent_id -> role -> route; the live set gates REVIEW; subagent-stop writes raw review records
+start b1 apex-dispatch:builder
+[ "$(jget "$UD/agents/b1.json" role)" = builder ] && [ "$(jget "$UD/agents/b1.json" route_id)" = "$URID" ] || fail "subagent-start did not register b1 -> builder -> $URID"
+[ "$(rowsin "$UL" spawn agent_id=b1 role=builder route_id="$URID")" = 1 ] || fail "subagent-start wrote no hook-sourced spawn row"
+start e1 Explore; start ../x apex-dispatch:builder
+[ ! -e "$UD/agents/e1.json" ] && [ -z "$(ls "$UD/agents" | grep -v '^b1.json$' || true)" ] || fail "a foreign agent type or a path-like agent_id was registered"
+mkdir -p "$USD_/gate"; printf '{"result":"PASS","head_sha":"%s"}\n' "$(git -C "$UX" rev-parse HEAD)" >"$USD_/gate/last.json"
+O="$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')")"
+grep -q 'still running' <<<"$O" || fail "a reviewer spawn was allowed while builder b1 is live: $O"
+stopa b1 apex-dispatch:builder 'done'
+[ -n "$(jget "$UD/agents/b1.json" stopped_at)" ] && [ "$(jget "$UD/agents/b1.json" stopped_at)" != None ] || fail "subagent-stop did not record b1's stop"
+[ "$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "the reviewer spawn was denied after the builder stopped"
+[ "$(ustage)" = REVIEW ] || fail "the reviewer spawn did not move the stage to REVIEW"; ustage BUILD
+start r1 apex-dispatch:reviewer; stopa r1 apex-dispatch:reviewer "$(printf 'Findings: none\nLENS: security\n**VERDICT: APPROVE**')"
+R1="$UD/reviews-raw/r1.json"; [ -f "$R1" ] || fail "subagent-stop wrote no reviews-raw record for reviewer r1"
+python3 - "$R1" "$(git -C "$UX" rev-parse HEAD)" "$URID" <<'PY' || fail "the r1 raw record does not carry record_id/line/head/role/lens/verdict/family"
+import json, re, sys
+r, head, rid = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+assert re.fullmatch(r"[A-Za-z0-9_-]{8,128}", r["record_id"]) and r["record_id"].startswith("r1-"), r
+assert r["line"] == 3 and r["head_sha"] == head and r["role"] == "lens:security" and r["lens"] == "security", r
+assert r["verdict"] == "APPROVE" and r["provider"] == "claude-session" and r["family"] == "anthropic" and r["route"] == rid, r
+PY
+RID1="$(jget "$R1" record_id)"; stopa r1 apex-dispatch:reviewer 'VERDICT: REQUEST_CHANGES'
+[ "$(jget "$R1" record_id)" = "$RID1" ] && [ "$(jget "$R1" verdict)" = APPROVE ] || fail "a second stop rewrote r1's record"
+[ "$(rowsin "$UL" verdict agent_id=r1 verdict=APPROVE role=lens:security)" = 1 ] || fail "no single hook-sourced verdict row for r1"
+start a1 apex-dispatch:adversarial-reviewer; stopa a1 apex-dispatch:adversarial-reviewer "$(printf 'tried 3 inputs\nVERDICT: REQUEST_CHANGES')"
+[ "$(jget "$UD/reviews-raw/a1.json" role)" = adversarial ] && [ "$(jget "$UD/reviews-raw/a1.json" verdict)" = REQUEST_CHANGES ] || fail "the adversarial reviewer's record lacks role adversarial"
+start g1 apex-scope-loop:gibson-reviewer; stopa g1 apex-scope-loop:gibson-reviewer "$(printf 'LENS: adversarial\nVERDICT: APPROVE')"
+[ "$(jget "$UD/reviews-raw/g1.json" role)" = adversarial ] || fail "gibson-reviewer's LENS: adversarial did not give role adversarial"
+start n1 apex-dispatch:reviewer; stopa n1 apex-dispatch:reviewer 'I approve of this.'
+[ ! -e "$UD/reviews-raw/n1.json" ] && [ "$(rowsin "$UL" hook_advisory agent_id=n1)" = 1 ] || fail "a reviewer without a VERDICT line got a record (or no advisory row)"
+python3 -c 'import json, sys; json.dump({"agent_id": "old1", "role": "builder", "started_at": "2000-01-01T00:00:00Z", "stopped_at": None}, open(sys.argv[1], "w"))' "$UD/agents/old1.json"
+[ "$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "a registration older than the route's wall-clock budget still blocked review"
+ustage BUILD
+pass "subagent-start registers agent_id -> role -> route + spawn row; REVIEW refused while a builder is live; subagent-stop: reviews-raw record (record_id, line, HEAD, role/lens, verdict, family) once per agent + verdict row; adversarial/gibson roles; no VERDICT, no record"
+
+# 54. transcript audit of read-only roles: a write or git mutation refuses the record, writes policy_violation, exits 2 once
+TR="$WORK/transcripts"; mkdir -p "$TR"
+tr_write() {  # tr_write FILE NAME INPUT_JSON IS_ERROR
+  python3 -c 'import json, sys
+f, name, inp, err = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), sys.argv[4] == "1"
+with open(f, "a") as o:
+    n = sum(1 for _ in open(f)) if __import__("os").path.exists(f) else 0
+    tid = "tu%d" % n
+    o.write(json.dumps({"type": "assistant", "cwd": sys.argv[5], "message": {"content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}}) + "\n")
+    o.write(json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "is_error": err, "content": "x"}]}}) + "\n")' "$@" "$UX"; }
+tr_write "$TR/v1.jsonl" Read '{"file_path": "src/a.py"}' 0
+tr_write "$TR/v1.jsonl" Bash '{"command": "git commit -am sneaky"}' 0
+start v1 apex-dispatch:reviewer; stopa v1 apex-dispatch:reviewer 'VERDICT: APPROVE' false "$TR/v1.jsonl"
+[ "$HRC" = 2 ] && [ "$HOUT" = "{}" ] && grep -q 'read-only role reviewer' "$WORK/hr.err" || fail "a reviewer that committed was not refused with exit 2 (rc=$HRC)"
+[ -n "$(jget "$UD/reviews-raw/v1.json" refused)" ] && [ "$(rowsin "$UL" policy_violation agent_id=v1)" = 1 ] || fail "no refused record / policy_violation row for v1"
+stopa v1 apex-dispatch:reviewer 'VERDICT: APPROVE' true "$TR/v1.jsonl"
+[ "$HRC" = 0 ] && [ "$HOUT" = "{}" ] || fail "the audit blocked again with stop_hook_active (rc=$HRC)"
+python3 -c 'import json,sys; assert "verdict" not in json.load(open(sys.argv[1]))' "$UD/reviews-raw/v1.json" || fail "a refused record was replaced by a verdict on the re-fired stop"
+tr_write "$TR/v2.jsonl" Bash '{"command": "git commit -am denied"}' 1
+tr_write "$TR/v2.jsonl" Bash '{"command": "git log --oneline -3"}' 0
+tr_write "$TR/v2.jsonl" Grep '{"pattern": "x"}' 0
+start v2 apex-scope-loop:gibson-reviewer; stopa v2 apex-scope-loop:gibson-reviewer 'VERDICT: APPROVE' false "$TR/v2.jsonl"
+[ "$HRC" = 0 ] && [ "$(jget "$UD/reviews-raw/v2.json" verdict)" = APPROVE ] || fail "a denied attempt or read-only git was treated as a violation (rc=$HRC)"
+tr_write "$TR/v3.jsonl" Write '{"file_path": "src/a.py", "content": "y"}' 0
+start v3 apex-dispatch:reviewer
+T0="$(date +%s%N)"; stopa v3 apex-dispatch:reviewer 'VERDICT: APPROVE' false "$TR/v3.jsonl"; MS=$(( ($(date +%s%N) - T0) / 1000000 ))
+[ "$HRC" = 2 ] || fail "a reviewer's Write was not refused"
+[ "$MS" -lt 2000 ] || fail "subagent-stop with a transcript audit took ${MS} ms (budget 2000 ms, timeout 10 s)"
+tr_write "$TR/b2.jsonl" Bash '{"command": "git commit -am work"}' 0
+start b2 apex-dispatch:builder; stopa b2 apex-dispatch:builder 'done' false "$TR/b2.jsonl"; [ "$HRC" = 0 ] || fail "a builder's commit was audited as a violation"
+pass "subagent-stop audit: a read-only role's successful write or git mutation -> refused record + policy_violation + exit 2, once (stop_hook_active passes); denied attempts and read-only git pass; builders are not audited; ${MS} ms"
+
+# 55. post-agent: worker_run with resolvedModel/usage/duration/tools (once per tool use), model_mismatch, failures;
+#     the USD estimate feeds pre-agent's ROUTE_BUDGET_USD
+pa() { uh post-agent "$(pj tool_name=Agent hook_event_name="${2:-PostToolUse}" tool_use_id="$1" tool_input.subagent_type=apex-dispatch:builder tool_input.model=sonnet "cwd=$UX" "${@:3}")"; }
+pa u1 PostToolUse tool_response.agentId=b3 tool_response.status=completed tool_response.resolvedModel=claude-sonnet-5-5 tool_response.totalDurationMs=5400 \
+  tool_response.totalToolUseCount=14 tool_response.usage.input_tokens=41000 tool_response.usage.output_tokens=6000 tool_response.usage.cache_read_input_tokens=100000
+[ "$HOUT" = "{}" ] || fail "post-agent answered a matching run with $HOUT"
+python3 - "$UL" <<'PY' || fail "post-agent did not write a worker_run row with resolved_model, normalised usage, duration, tool count and a USD estimate"
+import json, sys
+r = [json.loads(l) for l in open(sys.argv[1]) if '"worker_run"' in l]
+w = [x for x in r if x.get("tool_use_id") == "u1"]
+assert len(w) == 1, w
+w = w[0]
+assert w["source"] == "hook" and w["provider"] == "claude-session" and w["role"] == "builder" and w["exit_code"] == 0, w
+assert w["resolved_model"] == "claude-sonnet-5-5" and w["usage"] == {"input": 41000, "output": 6000, "cache_read": 100000}, w
+assert w["duration_ms"] == 5400 and w["tool_count"] == 14 and abs(w["usd_estimate"] - (41000 * 3 + 6000 * 15 + 100000 * 0.3) / 1e6) < 1e-9, w
+PY
+pa u1 PostToolUse tool_response.resolvedModel=claude-sonnet-5-5 tool_response.usage.input_tokens=1
+[ "$(rowsin "$UL" worker_run tool_use_id=u1)" = 1 ] || fail "a repeated tool_use_id wrote a second worker_run row"
+pa u2 PostToolUse tool_response.resolvedModel=claude-opus-4-1 tool_response.status=completed tool_response.usage.output_tokens=10
+grep -q 'model_mismatch' <<<"$HOUT" && [ "$(rowsin "$UL" model_mismatch tool_use_id=u2 route_model=sonnet)" = 1 ] || fail "an opus run on a sonnet route was not recorded as model_mismatch: $HOUT"
+pa u3 PostToolUse tool_response.status=async_launched tool_response.agentId=b4
+[ "$(rowsin "$UL" worker_run tool_use_id=u3)" = 0 ] && [ "$(rowsin "$UL" hook_advisory tool_use_id=u3)" = 1 ] || fail "a background launch without usage was priced or not noted"
+pa u4 PostToolUseFailure error=boom
+[ "$(rowsin "$UL" worker_run tool_use_id=u4 exit_code=1)" = 1 ] || fail "PostToolUseFailure did not write a failed worker_run row"
+[ "$(ua "$(pl agent "$UX" apex-dispatch:builder sonnet)" | one)" = "{}" ] || fail "a builder spawn under the USD budget was denied"
+pa u5 PostToolUse tool_response.resolvedModel=claude-sonnet-5-5 tool_response.status=completed tool_response.usage.input_tokens=600000
+grep -q 'ROUTE_BUDGET_USD' <<<"$HOUT" || fail "post-agent did not say the USD budget is reached: $HOUT"
+O="$(ua "$(pl agent "$UX" apex-dispatch:builder sonnet)")"
+grep -q 'USD budget is spent' <<<"$O" || fail "pre-agent allowed a builder spawn over ROUTE_BUDGET_USD: $O"
+bash "$LEDGER" verify --state "$USD_" >/dev/null 2>&1 || fail "the lifecycle ledger does not verify"
+O="$(bash "$REPORT" --state "$USD_")"
+has '^REPORT_MODEL_MISMATCHES: 1' "$O" && has '^REPORT_POLICY_VIOLATIONS: 2' "$O" || fail "report.sh does not count model_mismatch/policy_violation rows: $O"
+pass "post-agent: one worker_run per tool use (resolvedModel, usage, duration, tools, USD estimate), model_mismatch + additionalContext, background launches unpriced, failures exit_code 1; pre-agent denies builder spawns once ROUTE_BUDGET_USD is reached"
+
+# 56. stop-gate: escapes (stop_hook_active, HALT, not BUILD), then blocks once per route on uncommitted work and on inline work
+sg() { uh stop-gate "$(pj hook_event_name=Stop session_id=s stop_hook_active="${1:-false}" "cwd=$UX")"; }
+echo dirty >"$UX/src/b.py"
+sg true; [ "$HRC" = 0 ] || fail "stop-gate blocked with stop_hook_active"
+(cd "$UX" && printf '%s' "$(pj hook_event_name=Stop "cwd=$UX")" | APEX_HALT=1 bash "$PLUGIN_ROOT/hooks/stop-gate.sh" >/dev/null 2>&1) || fail "stop-gate blocked under APEX_HALT=1"
+ustage GATE; sg; [ "$HRC" = 0 ] || fail "stop-gate blocked outside BUILD"; ustage BUILD
+sg; [ "$HRC" = 2 ] && [ "$HOUT" = "{}" ] && grep -q 'uncommitted changes' "$WORK/hr.err" || fail "stop-gate did not block once on an uncommitted worktree (rc=$HRC)"
+sg; [ "$HRC" = 0 ] || fail "stop-gate blocked twice for one route"
+git -C "$UX" add -A; git -C "$UX" commit -qm wip
+O="$(cd "$UX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"; URID2="$(val ROUTE_ID "$O")"; [ "$URID2" != "$URID" ] || fail "re-route gave the same id"
+git -C "$UX" commit -q --allow-empty -m inline
+sg; [ "$HRC" = 2 ] && grep -q 'done inline' "$WORK/hr.err" || fail "stop-gate did not block a route whose HEAD moved with no spawn (rc=$HRC)"
+[ "$(rowsin "$UL" hook_advisory blocked=True)" = 2 ] || fail "stop-gate blocks were not ledgered"
+pass "stop-gate: never with stop_hook_active, HALT or outside BUILD; blocks once per route (exit 2, reason on stderr) on uncommitted work or HEAD moved without a spawn"
+
+# 57. post-bash-prune is record-only: a long runner output is kept under logs/ with an advisory row; output is never replaced
+LONG="$(python3 -c 'print("\n".join(["test_%d PASSED" % i for i in range(300)] + ["FAILED tests/test_x.py::t - assert 1 == 2"]))')"
+pb() { uh post-bash-prune "$(pj tool_name=Bash hook_event_name=PostToolUse tool_use_id="$1" "tool_input.command=$2" "tool_response.stdout=$3" tool_response.stderr= "cwd=$UX")"; }
+pb pb1 'uv run pytest -q' "$LONG"; [ "$HOUT" = "{}" ] || fail "post-bash-prune answered with $HOUT (it may not replace output)"
+[ "$(wc -l <"$UD/logs/pb1.log")" -ge 300 ] && [ "$(rowsin "$UL" hook_advisory tool_use_id=pb1 runner=pytest failure_lines=1)" = 1 ] || fail "a long pytest run was not kept under logs/ with an advisory row"
+pb pb2 'pytest -q' 'ok'; pb pb3 'cat big.txt' "$LONG"
+[ ! -e "$UD/logs/pb2.log" ] && [ ! -e "$UD/logs/pb3.log" ] || fail "post-bash-prune logged a short run or a non-runner command"
+pass "post-bash-prune: record-only (Phase 0 spike 9): long runner output kept at logs/<tool_use_id>.log + hook_advisory; short or non-runner output untouched"
+
+# 58. end to end, enforced by default: route -> spawn (pre-agent, subagent-start/stop, post-agent) -> gate (stage GATE)
+#     -> reviewer (stage REVIEW) -> raw record -> checkpoint.sh review --agent-id -> complete (ledger evidence) -> DONE
+EX="$WORK/ex"; mkdir -p "$EX/plans"; git init -q -b main "$EX"
+printf '# E\n\n- [ ] **Phase 1.1** [mechanical] rename a helper\n  - Acceptance: `true`\n  - Paths: src/**\n' >"$EX/plans/p.md"
+printf '.dev-plan-state/\n' >"$EX/.gitignore"; git -C "$EX" add -A; git -C "$EX" commit -qm ex
+EXS="$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts"
+(cd "$EX" && env -u APEX_DISPATCH_ENFORCE bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the end-to-end fixture"
+O="$(cd "$EX" && env -u APEX_DISPATCH_ENFORCE bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_ENFORCED "$O")" = yes ] || fail "the default route is not enforced (ROUTE_ENFORCED yes): $O"
+ERID="$(val ROUTE_ID "$O")"; ESD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; EWT="$ESD/worktree"
+[ -d "$ESD/dispatch" ] && [ ! -e "$ESD/dispatch-shadow" ] && [ "$(jget "$ESD/checkpoint.json" dispatch_enforced)" = True ] || fail "enforcement did not create <state>/dispatch/ and record dispatch_enforced"
+eh() { HRC=0; HOUT="$( (cd "$EWT" && printf '%s' "$2" | env -u APEX_DISPATCH_ENFORCE bash "$PLUGIN_ROOT/hooks/$1.sh" 2>"$WORK/hr.err") )" || HRC=$?; }
+eh pre-agent "$(pl agent "$EWT" apex-dispatch:builder sonnet)"; [ "$HOUT" = "{}" ] || fail "e2e: the builder spawn was denied: $HOUT"
+eh subagent-start "$(pj agent_id=eb1 agent_type=apex-dispatch:builder "cwd=$EWT")"
+mkdir -p "$EWT/src"; echo 'def helper(): pass' >"$EWT/src/h.py"; git -C "$EWT" add -A; git -C "$EWT" commit -qm "rename helper"
+eh subagent-stop "$(pj agent_id=eb1 agent_type=apex-dispatch:builder last_assistant_message=done "cwd=$EWT")"
+eh post-agent "$(pj tool_name=Agent hook_event_name=PostToolUse tool_use_id=eu1 tool_input.subagent_type=apex-dispatch:builder tool_input.model=sonnet \
+  tool_response.agentId=eb1 tool_response.status=completed tool_response.resolvedModel=claude-sonnet-5-5 tool_response.usage.input_tokens=1000 "cwd=$EWT")"
+(cd "$EX" && APEX_GATE_TEST=true bash "$EXS/green-gate.sh" plans/p.md check >/dev/null 2>&1) || fail "e2e: green-gate check did not pass"
+[ "$(jget "$EX/.dev-plan-state/ACTIVE/owner.json" stage)" = GATE ] || fail "a passing green-gate check did not move the stage to GATE"
+eh pre-bash "$(pl bash "$EWT" 'git commit --allow-empty -m late')"; [ "$(printf '%s\n' "$HOUT" | one)" = deny ] || fail "e2e: a commit during GATE was allowed"
+FORK="$(jget "$ESD/checkpoint.json" fork_sha)"
+(cd "$EX" && bash "$EXS/risk-tier.sh" plans/p.md 3 --since "$FORK" >/dev/null 2>&1) || fail "e2e: risk-tier.sh failed"
+eh pre-agent "$(pl agent "$EWT" apex-dispatch:reviewer '')"; [ "$HOUT" = "{}" ] || fail "e2e: the reviewer spawn was denied: $HOUT"
+[ "$(jget "$EX/.dev-plan-state/ACTIVE/owner.json" stage)" = REVIEW ] || fail "e2e: the reviewer spawn did not move the stage to REVIEW"
+eh subagent-start "$(pj agent_id=er1 agent_type=apex-dispatch:reviewer "cwd=$EWT")"
+eh subagent-stop "$(pj agent_id=er1 agent_type=apex-dispatch:reviewer "last_assistant_message=$(printf 'Acceptance met.\nVERDICT: APPROVE')" "cwd=$EWT")"
+ECK="$EXS/checkpoint.sh"; EHEAD="$(git -C "$EWT" rev-parse HEAD)"
+[ "$(jget "$ESD/dispatch/reviews-raw/er1.json" head_sha)" = "$EHEAD" ] || fail "e2e: the raw record is not bound to HEAD"
+O="$(cd "$EX" && bash "$ECK" plans/p.md review 3 "$EHEAD" APPROVE reviewer 2>&1)" && fail "e2e: a typed verdict was accepted in provenance mode"
+(cd "$EX" && bash "$ECK" plans/p.md review 3 "$EHEAD" APPROVE apex-dispatch:reviewer --agent-id er1 >/dev/null 2>&1) || fail "e2e: checkpoint.sh review refused the hook-written record"
+O="$(cd "$EX" && bash "$ECK" plans/p.md review 3 "$EHEAD" APPROVE apex-dispatch:reviewer --agent-id er1 2>&1)" && fail "e2e: a raw record was used twice"
+grep -q 'already recorded' <<<"$O" || fail "e2e: the second use was refused for the wrong reason: $O"
+O="$(cd "$EX" && bash "$ECK" plans/p.md complete 3 "reviewed" 2>&1)" || fail "e2e: checkpoint.sh complete refused: $O"
+[ "$(jget "$EX/.dev-plan-state/ACTIVE/owner.json" stage)" = DONE ] && grep -q '^- \[x\] \*\*Phase 1.1' "$EX/plans/p.md" || fail "e2e: complete did not tick the task and move the stage to DONE"
+bash "$LEDGER" evidence --state "$ESD" --line 3 --head "$EHEAD" >/dev/null 2>&1 && bash "$LEDGER" verify --state "$ESD" >/dev/null 2>&1 || fail "e2e: ledger evidence/verify failed after complete"
+python3 - "$ESD/dispatch/ledger.jsonl" "$ERID" <<'PY' || fail "e2e: the ledger lacks the hook rows of the flow"
+import json, sys
+r = [json.loads(l) for l in open(sys.argv[1])]
+ev = [(x["event"], x["source"]) for x in r if x.get("route_id") == sys.argv[2]]
+for want in [("route", "cli"), ("spawn_request", "hook"), ("spawn", "hook"), ("worker_run", "hook"), ("verdict", "hook")]:
+    assert want in ev, (want, ev)
+PY
+pass "end to end, enforced by default: route (dispatch/) -> pre-agent/subagent-start/stop/post-agent rows -> green-gate PASS = GATE -> reviewer = REVIEW -> raw record -> review --agent-id (once) -> complete with ledger evidence -> DONE"
 
 echo ""
 echo "smoke passed: $N/$N checks"
