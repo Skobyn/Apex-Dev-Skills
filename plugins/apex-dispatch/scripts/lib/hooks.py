@@ -1396,7 +1396,7 @@ APPROVE_REMARK_RE = re.compile(r"approve(\s*[:,(\u2014\u2013]|\s+-)(.*)$", re.I 
 # A remark counts only if every word is one of these (an allowlist: anything else may be a condition).
 REMARK_WORDS = {"nit", "nits", "nitpick", "nitpicks", "non-blocking", "nonblocking", "minor", "optional", "cosmetic",
                 "style", "lgtm", "only", "with", "and", "a", "few", "some", "small", "suggestions", "comments", "notes",
-                "looks", "good", "blockers", "findings", "clear", "all", "lenses", "cleanups", "noted"}
+                "looks", "good", "findings", "clear", "all", "lenses", "cleanups", "noted"}
 # Multi-word allowed phrases, replaced before the word check ("no" alone is ambiguous).
 REMARK_PHRASES = ("no blocking findings", "no blockers")
 CHANGES_RE = re.compile(r"request[ _-]?changes\b", re.I)      # trailing text allowed

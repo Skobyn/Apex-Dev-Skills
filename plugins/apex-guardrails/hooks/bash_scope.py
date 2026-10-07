@@ -46,7 +46,8 @@ prose options are exempt: long ones always (gh/glab --title/--body/
 --grep/--format/--pretty), short ones only for the subcommands where they take
 prose (git commit/tag/merge/notes -m -F, git log/show/shortlog -S -G, gh/glab
 pr|issue|release|mr create|edit|comment|review|close|note -t -b -d -n -f -F,
-gh api -f -F), and never an argument that itself starts with `-`, so `gh codespace ssh '...'`, `gh alias set x '...'`,
+gh api -f -F), and never a next argument that is option-shaped (`--?name[=v]`, no
+whitespace); a bullet value such as '- removes --yolo' is still a value, so `gh codespace ssh '...'`, `gh alias set x '...'`,
 `git rebase -x '...'` and `git bisect run ...` are checked.
 
 Heredocs fed to a command interpreter are scripts and their bodies are checked
@@ -95,7 +96,8 @@ _GH_LONG = {"--title", "--body", "--description", "--notes", "--message", "--sub
 # Long prose options are prose for every subcommand; short letters only where they mean prose.
 PROSE_FLAGS = {"gh": _GH_LONG, "glab": _GH_LONG,
                "git": {"--message", "--file", "--author", "--grep", "--format", "--pretty"}}
-_GH_ACTIONS = {"create", "edit", "comment", "review", "close", "note"}
+_GH_ACTIONS = {"create", "edit", "comment", "review", "close", "note", "merge"}
+OPTION_TOKEN_RE = re.compile(r"--?[A-Za-z][\w-]*(=\S*)?")
 
 
 def prose_shorts(base, args):
@@ -123,6 +125,8 @@ def prose_shorts(base, args):
         return set("fF")
     if sub in ("pr", "issue", "release", "mr") and act in _GH_ACTIONS:
         return set("tbdnfF")
+    if sub in ("repo", "gist") and act == "create":
+        return set("d")
     return set()
 
 
@@ -367,7 +371,9 @@ def strip_prose_values(base, args):
     out, i = [], 0
     while i < len(args):
         a = args[i]
-        nxt_is_value = i + 1 < len(args) and not args[i + 1].startswith("-")
+        # The next argument is an option (kept) only if it looks like one; '- removes --yolo' is a value.
+        nxt_is_value = i + 1 < len(args) and not (OPTION_TOKEN_RE.fullmatch(args[i + 1])
+                                                   and not any(c in args[i + 1] for c in " \t\n"))
         if a in longs:
             i += 2 if nxt_is_value else 1
             continue

@@ -94,7 +94,7 @@ everywhere (gh/glab `--title`, `--body`, `--description`, `--notes`, `--message`
 for the subcommands where they take prose (git `commit`/`tag`/`merge`/`notes add` `-m`/`-F`,
 git `log`/`show`/`shortlog` `-S`/`-G`; gh/glab `pr|issue|release|mr` `create|edit|comment|
 review|close|note` `-t -b -d -n -f -F`; `gh api -f -F`), in `--opt V`, `--opt=V`, `-oV` and
-`-am V` forms, and never an argument that starts with `-` (so `git rebase -S --exec='…'` and
+`-am V` forms, and never a next argument that is option-shaped (`--name[=v]` with no spaces; a bullet value like `'- removes --yolo'` is still a value) (so `git rebase -S --exec='…'` and
 `gh codespace ssh -d '…'` are still checked). A heredoc fed to a shell, `ssh` or `su` is a script and
 its body is checked as commands whatever its quoting: directly (`bash <<EOF`,
 `bash -s <<'EOF'`), via a shell argument of a non-text program (`docker exec -i c sh <<EOF`,

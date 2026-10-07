@@ -1346,7 +1346,7 @@ cases = {"VERDICT: REQUEST CHANGES": "REQUEST_CHANGES", "VERDICT: REQUEST_CHANGE
          "VERDICT: APPROVE \u2014 looks good": "APPROVE", "VERDICT: APPROVE (no blockers)": "APPROVE",
          "VERDICT: APPROVE (all lenses clear)": "APPROVE", "VERDICT: APPROVE (nits noted)": "APPROVE",
          "VERDICT: APPROVE (no blocking findings)": "APPROVE",
-         "VERDICT: APPROVE, no": "UNPARSED", "VERDICT: APPROVE \u2014 no, findings above": "UNPARSED",
+         "VERDICT: APPROVE, no": "UNPARSED", "VERDICT: APPROVE - blockers noted": "UNPARSED", "VERDICT: APPROVE \u2014 no, findings above": "UNPARSED",
          "VERDICT: APPROVE (nits noted above)": "UNPARSED",
          "- [blocking] <path:line> \u2014 <lens> \u2014 <failure scenario>\nVERDICT: APPROVE": "APPROVE",
          "- [blocking] <a.py:1> <the parser drops it>\nVERDICT: APPROVE": "REQUEST_CHANGES",
