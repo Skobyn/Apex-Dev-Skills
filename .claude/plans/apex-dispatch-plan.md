@@ -93,15 +93,15 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
 
 ### Phase 4 — Provider workers
 
-- [ ] **Phase 4.1** [backend][security] worker-common, worker-claude-p, worker-codex, apply.sh
+- [x] **Phase 4.1** [backend][security] worker-common, worker-claude-p, worker-codex, apply.sh
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh`
   - Blocked-by: Phase 3.3
 
-- [ ] **Phase 4.2** [backend] grok/opencode/aider shims flagged off, openai-sdk stub, compile --target codex, report --compare/--decision
+- [x] **Phase 4.2** [backend] grok/opencode/aider shims flagged off, openai-sdk stub, compile --target codex, report --compare/--decision
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh`
   - Blocked-by: Phase 4.1
 
-- [ ] **Gate 4→5** [gate:human] Phase 4 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
+- [x] **Gate 4→5** [gate:human] Phase 4 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
   - Acceptance: user types approve gate-4-5
 
 - [ ] **Gate 4→done** [gate:auto] Every plugin smoke passes on the final head
