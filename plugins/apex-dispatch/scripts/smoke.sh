@@ -875,7 +875,8 @@ for c in 'git config --get user.name' 'git config user.name' 'git config --list 
          'grep -rn -- --dangerously-skip-permissions docs' 'git commit -m "docs: never pass --yolo"' \
          "python3 -c \"print('ledger ok')\"" 'git -c core.editor=true commit --amend --no-edit' \
          'for f in a b; do echo "$f"; done' 'if git diff --quiet; then echo clean; fi' \
-         'pytest tests/test_ledger.py' 'python3 -m pytest -q tests/test_ledger.py' 'python3 scripts/lib/ledger.py --help' "printf 'x' > /tmp/apex-smoke-scratch"; do
+         'pytest tests/test_ledger.py' 'python3 -m pytest -q tests/test_ledger.py' 'python3 -m pytest -k ledger' \
+         'python3 -c "import app.ledger"' 'python3 scripts/lib/ledger.py --help' "printf 'x' > /tmp/apex-smoke-scratch"; do
   is_allow pre-bash "$(pl bash "$HX" "$c")" "pre-bash denied: $c"
 done
 stage GATE
@@ -941,14 +942,20 @@ done
 for c in 'echo y > src/a/x.py' 'mkdir -p src/a/new && touch src/a/new/f.py' 'rm src/a/x.py' 'cp src/a/x.py src/a/y.py' \
          'mkdir -p tests' 'git add -A && git commit -m wip' 'cp templates/conf.py .' 'cp src/a/x.py ./' 'cd src && cp a/x.py ..' \
          'mv build/out.py .' "find . -name '*.pyc' -delete" 'patch -p1 < fix.diff' 'rsync -a vendor/ .' 'chmod -R u+w .' 'touch .' 'find src -name "*.tmp" -delete' 'rsync -a --delete --exclude=.git vendor/ .' \
-         'mv -t src/a src/b/x.py' 'git worktree list'; do
+         'mv -t src/a src/b/x.py' 'git worktree list' "find ../worktree -name '*.pyc' -delete" "find $WWT -name '*.pyc' -delete" \
+         "cd src && find .. -name '*.pyc' -delete" 'find . -type d -empty -delete' 'rsync -a --delete --exclude .git vendor/ .' \
+         "rsync -a --delete -f '- .git' vendor/ ." 'rsync -a --delete vendor/ build/'; do
   [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = "{}" ] || fail "pre-bash denied in the <state>/worktree plan worktree: $c"
 done
 for f in "$WSD/checkpoint.json" ../checkpoint.json ../gate/last.json "$WX/.dev-plan-state/ACTIVE/owner.json" .dev-plan-state/x .git; do
   [ "$(wk pre-edit "$(pl edit "$WWT" "$f")")" = deny ] || fail "pre-edit allowed $f from the <state>/worktree plan worktree"
 done
 for c in 'rm -rf .' 'mv . ../x' 'rmdir .' 'find ../worktree -delete' "find $WWT -delete" 'find -L ../worktree -exec rm -rf {} +' \
-         "find ../worktree -name '*.pyc' -delete" "find $WWT -name '*.pyc' -delete" \
+         'find . -name .git -delete' "find . -name '.g*' -delete" "find . -path './.git' -delete" "find $WWT -name worktree -exec rm -rf {} +" \
+         'git -C .. worktree remove worktree --force' 'git -C src worktree remove ..' "git -C $WWT/.. worktree remove worktree" \
+         "git -C $WX worktree remove ${WWT#"$WX"/}" 'rsync -a --del vendor/ .' 'rsync -a --delete --exclude=.github vendor/ .' \
+         'rsync -a --delete --exclude=.git --delete-excluded vendor/ .' 'rsync -a --delete --exclude=.gitignore vendor/ .' \
+         'rsync -a --delete vendor/ "$PWD"' \
          'mv -vt /tmp ../worktree' 'mv -t/tmp ../worktree' 'mv --target=/tmp ../worktree' 'mv --target-directory /tmp ../worktree' \
          'mv -t ../ src' 'git worktree remove --force .' "git worktree remove $WWT" 'git worktree move . /tmp/elsewhere' \
          'find . -delete' 'find . -type f -delete' 'rsync -a --delete vendor/ .' 'echo x > ../checkpoint.json' 'rm -rf ../gate' "rm -rf $WX/.dev-plan-state/ACTIVE" 'rm -rf ../worktree' 'touch ../dispatch-shadow/x' \

@@ -78,7 +78,7 @@ GIT_READ = {"status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree",
             "diff-files", "show-branch", "cherry", "fetch", "ls-remote", "annotate", "hash-object"}
 GIT_CFG_KEYS = re.compile(r"^(core|filter|diff|merge|include|includeif)\.", re.I)
 GIT_CFG_HARMLESS = re.compile(r"^core\.(editor|pager)=", re.I)       # cosmetic; cannot hide or alter content
-LEDGER_CODE = re.compile(r"(^|[;\n])\s*(import\s+[\w., ]*\bledger\b|from\s+ledger\s+import\b)|\bledger\.append\s*\("
+LEDGER_CODE = re.compile(r"(^|[;\n])\s*(import\s+[\w, ]*\bledger\b(?!\.)|from\s+ledger\s+import\b)|\bledger\.append\s*\("
                          r"|apex-dispatch/scripts/lib/ledger\.py\b")
 LEDGER_PATH = re.compile(r"(^|/)apex-dispatch/scripts/lib/ledger\.py$")
 # Shell reserved words that can lead a simple command; peeled like wrappers.
@@ -260,6 +260,8 @@ def protected_reason(ctx, path, removal=True):
     worktree's own root is fair game; removing or moving the root never is."""
     comps = path.split("/")
     wt = ctx.state_worktree
+    if wt and path == wt and removal:
+        return "the plan worktree root is not removed or moved during a run (land.sh removes it)"
     if wt and under(path, wt) and (path != wt or not removal):
         # apex-scope-loop puts the plan worktree inside the run state
         # (<state>/worktree): its tree is the work, not run state; only a
@@ -734,11 +736,7 @@ class Cmd:
         if b == "mv":
             tdir, given = self.target_dirs()
             return set(pos) - tdir if given else set(pos[:-1])
-        if b == "find":
-            starts, deletes = self.find_parts()
-            # `.` (the cwd itself) may be a deletion start: its matches go, not the directory.
-            return {x for x in starts if x not in (".", "./")} if deletes else set()
-        return set()
+        return set()                                     # find: bash_rules judges its start points (find_root_reason)
 
     def write_targets(self):
         """(targets, write_shaped) for this command, redirects included."""
@@ -780,13 +778,15 @@ class Cmd:
 class GitCmd:
     def __init__(self, cmd):
         w, i = cmd.args, 0
-        self.cfg = []
+        self.cfg, self.cdirs = [], []
         while i < len(w) and w[i].startswith("-"):
             x = w[i]
             if x in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--attr-source") \
                     and i + 1 < len(w):
                 if x in ("-c", "--config-env"):
                     self.cfg.append(w[i + 1])
+                elif x == "-C":
+                    self.cdirs.append(w[i + 1])
                 i += 2
                 continue
             if x.startswith("--config-env="):
@@ -797,6 +797,10 @@ class GitCmd:
         self.sub = w[i] if i < len(w) else None
         self.args = w[i + 1:]
         self.env = cmd.assigns
+
+    def prefix(self, prefix=""):
+        """The cd-prefix git runs in after its -C options (cumulative, as git applies them)."""
+        return os.path.join(prefix, *[os.path.expanduser(d) for d in self.cdirs]) if self.cdirs else prefix
 
     def pos(self, valued=()):
         out, skip = [], False
@@ -875,6 +879,75 @@ class GitCmd:
         return True                                        # unknown subcommands and aliases: assume it writes
 
 
+def opt_values(args, names):
+    """Values of options in `names`, given as `--opt V` or `--opt=V`."""
+    out = []
+    for k, w in enumerate(args):
+        if w in names and k + 1 < len(args):
+            out.append(args[k + 1])
+        elif "=" in w and w.split("=", 1)[0] in names:
+            out.append(w.split("=", 1)[1])
+    return out
+
+
+def find_root_reason(ctx, c, cwd, prefix, roots):
+    """A deleting find whose start point resolves to a worktree root may delete only
+    filtered matches: never the root itself or its `.git` link file. Starts are
+    compared resolved, so `.`, `../worktree`, an absolute path and `cd src && find ..`
+    are judged alike."""
+    import fnmatch
+    a = c.args
+    names = opt_values(a, ("-name",))
+    inames = opt_values(a, ("-iname",))
+    paths = opt_values(a, ("-path", "-ipath", "-wholename", "-iwholename"))
+    regexes = opt_values(a, ("-regex", "-iregex"))
+    filtered = bool(names or inames or paths or regexes or "-empty" in a)
+    for x in c.find_parts()[0]:
+        if "$" in x or "`" in x:
+            return "find -delete from an unresolvable start point (%s) may hit the plan worktree root" % x
+        rp = real(resolve_target(ctx, cwd, prefix, x))
+        if rp not in roots:
+            continue
+        if not filtered:
+            return "find -delete at the worktree root without a -name/-path/-regex/-empty filter would delete its .git link"
+        base = os.path.basename(rp)
+        hits = [n for n in names if fnmatch.fnmatchcase(".git", n) or fnmatch.fnmatchcase(base, n)]
+        hits += [n for n in inames if fnmatch.fnmatch(".git", n.lower()) or fnmatch.fnmatch(base.lower(), n.lower())]
+        stem = x.rstrip("/") or "/"
+        hits += [p for p in paths if fnmatch.fnmatch(stem + "/.git", p) or fnmatch.fnmatch(stem, p)]
+        for r in regexes:
+            try:
+                if re.fullmatch(r, stem + "/.git") or re.fullmatch(r, stem):
+                    hits.append(r)
+            except re.error:
+                hits.append(r)
+        if hits:
+            return "find -delete filter %s matches the worktree root or its .git link" % hits[0]
+    return None
+
+
+def rsync_root_reason(ctx, c, cwd, prefix, roots):
+    """rsync that deletes in the destination may not run into a worktree root unless it
+    excludes exactly `.git` (the worktree's link file) and does not delete excluded files."""
+    a = c.args
+    if not any(w == "--del" or w.startswith("--delete") or w == "--remove-source-files" for w in a):
+        return None
+    pos = c.positionals()
+    if not pos:
+        return None
+    dest = pos[-1]
+    if "$" not in dest and "`" not in dest and real(resolve_target(ctx, cwd, prefix, dest)) not in roots:
+        return None
+    excl = opt_values(a, ("--exclude",))
+    rules = opt_values(a, ("--filter", "-f"))
+    rules += [w[2:] for w in a if w.startswith("-f") and len(w) > 2 and not w.startswith("--")]
+    ok = any(e in (".git", "/.git") for e in excl) or any(
+        re.fullmatch(r"\s*(-|exclude)\s+/?\.git\s*", r) for r in rules)
+    if ok and "--delete-excluded" not in a:
+        return None
+    return "rsync with delete into the worktree root (or an unresolvable destination) needs an exact --exclude=.git and no --delete-excluded"
+
+
 def resolve_target(ctx, cwd, prefix, t):
     t = os.path.expanduser(t)
     base = os.path.join(cwd, prefix) if prefix else cwd
@@ -932,7 +1005,7 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
                                                         or LEDGER_PATH.search(real(resolve_target(ctx, cwd, prefix, a))))
                                                     for a in c.args)
                                                     or any(LEDGER_CODE.search(a) for a in c.args)
-                                                    or ("-m" in c.args and "ledger" in c.args)):
+                                                    or any(w == "-m" and k + 1 < len(c.args) and c.args[k + 1] == "ledger" for k, w in enumerate(c.args))):
             raise Deny("the ledger is written only in-process by route.py, the hooks and the shims (use ledger.sh)")
         # 5. Git configuration and repository internals the clean-worktree check trusts.
         if b == "git":
@@ -942,8 +1015,9 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
             if g.sub == "update-index" and any(a in UPDATE_INDEX_HIDING for a in g.args):
                 raise Deny("git update-index %s hides edits from status; refused during a run" % " ".join(a for a in g.args if a in UPDATE_INDEX_HIDING))
             if g.sub == "worktree" and g.pos()[:1] in (["remove"], ["move"]) and len(g.pos()) >= 2:
-                target = real(resolve_target(ctx, cwd, prefix, g.pos()[1]))
-                if target in {w for w in (ctx.state_worktree, ctx.worktree) if w}:
+                raw = [g.pos()[1]] + g.cdirs
+                target = real(resolve_target(ctx, cwd, g.prefix(prefix), g.pos()[1]))
+                if any("$" in x or "`" in x for x in raw) or target in {w for w in (ctx.state_worktree, ctx.worktree) if w}:
                     raise Deny("git worktree %s of the plan worktree is refused during a run (land.sh removes it)" % g.pos()[0])
             if g.sub == "sparse-checkout" and g.mutating():
                 raise Deny("git sparse-checkout changes skip-worktree flags; refused during a run")
@@ -958,16 +1032,15 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
         # 6. Write-shaped commands: protected paths always; the checkout during GATE/REVIEW or for read-only roles.
         targets, shaped = c.write_targets()
         removals = c.removal_targets()
-        # A recursive delete rooted at a worktree's top would take its `.git` link file.
         roots = {w for w in (ctx.state_worktree, ctx.worktree) if w}
-        if b == "find" and c.find_parts()[1] and not any(
-                w in ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex") for w in c.args):
-            if any(real(resolve_target(ctx, cwd, prefix, x)) in roots for x in c.find_parts()[0]):
-                raise Deny("find -delete at the worktree root without a -name/-path filter would delete its .git link")
-        if b == "rsync" and any(w.startswith("--delete") or w == "--remove-source-files" for w in c.args) and c.positionals():
-            dest = real(resolve_target(ctx, cwd, prefix, c.positionals()[-1]))
-            if dest in roots and not any(".git" in w for w in c.args):
-                raise Deny("rsync --delete into the worktree root would delete its .git link (add --exclude=.git)")
+        if b == "find" and c.find_parts()[1]:
+            why = find_root_reason(ctx, c, cwd, prefix, roots)
+            if why:
+                raise Deny(why)
+        if b == "rsync":
+            why = rsync_root_reason(ctx, c, cwd, prefix, roots)
+            if why:
+                raise Deny(why)
         for t in targets:
             if t in ("-",):
                 continue
