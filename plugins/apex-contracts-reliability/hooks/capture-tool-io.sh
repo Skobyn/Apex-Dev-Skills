@@ -13,8 +13,11 @@
 #      failures, a call that succeeds then later fails) from the same ledger.
 #
 # Design constraints:
-#   - NEVER block a tool call. This hook is observational only; on any error it
-#     emits an allow/continue verdict and exits 0 so the agent is never wedged.
+#   - NEVER decide a tool call. This hook is observational only: it exits 0 and
+#     prints NOTHING — no permissionDecision, in particular never "allow". An
+#     "allow" from an observer would vote in Claude Code's parallel, deny-first
+#     hook composition and could pre-empt the permission prompt; decisions belong
+#     to apex-guardrails and apex-dispatch. On any error it still exits 0.
 #   - Dependency-free: bash + python3 stdlib only. python3 does the JSON shape
 #     inference; if python3 is absent we degrade to a raw-line append.
 #   - Append-only JSONL. One line per event. Analysis (scripts/analyze-ledger.sh)
@@ -28,16 +31,7 @@ EVENT="$(cat)"
 LEDGER_DIR="${APEX_CR_LEDGER_DIR:-${CLAUDE_PROJECT_DIR:-$PWD}/.claude/contracts-reliability}"
 LEDGER="${LEDGER_DIR}/ledger.jsonl"
 
-# Emit a non-blocking verdict and exit. PreToolUse expects an allow decision;
-# PostToolUse has no decision surface, so a bare exit 0 is correct there. We
-# print the allow envelope unconditionally — Claude Code ignores the
-# permissionDecision field on PostToolUse, and it keeps PreToolUse non-blocking.
-pass() {
-  printf '{"hookSpecificOutput":{"hookEventName":"%s","permissionDecision":"allow"}}\n' "${1:-PreToolUse}" 2>/dev/null || true
-  exit 0
-}
-
-mkdir -p "$LEDGER_DIR" 2>/dev/null || pass "PreToolUse"
+mkdir -p "$LEDGER_DIR" 2>/dev/null || exit 0
 
 # Best path: python3 normalizes the event into a compact ledger record and
 # captures the *shape* (field name -> JSON type) of the tool input + output,
@@ -104,6 +98,9 @@ rec = {
     "tool": tool,
     "input_shape": shape(tool_input),
     "session": ev.get("session_id") or ev.get("sessionId") or "",
+    # Joins the Pre and Post records of one call (and other ledgers, e.g. a
+    # relevance filter) on Claude Code's own id for the tool use.
+    "tool_use_id": ev.get("tool_use_id") or ev.get("toolUseId") or "",
 }
 if phase in ("PostToolUse",):
     rec["output_shape"] = shape(tool_resp) if tool_resp is not None else "null"
@@ -123,8 +120,5 @@ else
   printf '%s\n' "$EVENT" >> "$LEDGER" 2>/dev/null || true
 fi
 
-# Determine which phase we're in for the verdict envelope.
-PHASE="$(printf '%s' "$EVENT" | tr -d '\n' \
-  | grep -oE '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
-  | head -n1 | sed -E 's/.*:"([^"]*)"/\1/')"
-pass "${PHASE:-PreToolUse}"
+# Observational: no decision, no output.
+exit 0

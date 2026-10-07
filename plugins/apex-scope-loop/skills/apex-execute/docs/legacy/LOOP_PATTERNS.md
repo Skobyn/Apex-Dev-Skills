@@ -1,5 +1,7 @@
 # Loop Patterns — Sense Layer
 
+> **Legacy:** describes optional ruflo/claude-flow swarms; not required by apex-scope-loop 0.3.0.
+
 `/loop` runs inside an active session. It's fast, temporary, focused on **what's happening now**. The model self-paces with `ScheduleWakeup`.
 
 ## Cache-Window Rule

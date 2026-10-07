@@ -36,7 +36,7 @@ A walkthrough of the `apex-plan` skill end-to-end for a small but non-trivial fe
 ### Stage 2: COMPOSE
 
 ```bash
-.claude/skills/apex-plan/scripts/start.sh per-venue-rate-limit "Per-Venue Rate Limiting"
+${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/start.sh per-venue-rate-limit "Per-Venue Rate Limiting"
 # → wrote .claude/tasks/per-venue-rate-limit-adr.md
 # → wrote .claude/plans/per-venue-rate-limit-plan.md
 ```
@@ -71,7 +71,7 @@ Plan generated with five SPARC phases. Highlights:
 ### Stage 5: EXECUTE
 
 ```bash
-.claude/skills/apex-plan/scripts/promote-to-loop.sh per-venue-rate-limit
+${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/promote-to-loop.sh per-venue-rate-limit
 
 # Validation checklist:
 # [x] ADR has every section filled
@@ -93,7 +93,7 @@ Plan generated with five SPARC phases. Highlights:
 
 - `.claude/tasks/per-venue-rate-limit-adr.md` — the ADR (durable; lives forever)
 - `.claude/plans/per-venue-rate-limit-plan.md` — the plan (consumed by `/loop`)
-- `.dev-plan-state/<hash>/checkpoint.json` — state managed by apex-execute
+- `.dev-plan-state/{hash}/checkpoint.json` — state managed by apex-execute
 
 ## What happens next
 
@@ -109,7 +109,7 @@ apex-execute owns execution. When the loop reaches Gate 4→5, the orchestrator:
 2. Sets `halted: true` in checkpoint with `halt_reason: "awaiting partner gate 4-5"`
 3. Exits
 
-Chris's next session: SessionStart hook surfaces the inbox item. Chris reviews, marks the inbox item consumed (`POST /api/agent-coordination/inbox/<id>/consume`). User can then resume with `/loop`.
+Chris's next session: SessionStart hook surfaces the inbox item. Chris reviews, marks the inbox item consumed (`POST /api/agent-coordination/inbox/{id}/consume`). User can then resume with `/loop`.
 
 When the loop reaches Gate 5→done, it halts and prompts the user. User types `approve ship` in chat. The orchestrator reads that, advances, and the loop exits at `STATUS: COMPLETE`.
 

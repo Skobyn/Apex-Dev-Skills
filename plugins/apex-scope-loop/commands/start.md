@@ -8,9 +8,9 @@ You are starting an `apex-plan` session for slug `$ARGUMENTS`.
 
 Invoke the `apex-plan` skill and run its five-stage flow:
 
-1. **SCOPE** — Use AskUserQuestion for the 6 feedback-interview rounds defined in `skills/apex-plan/resources/templates/feedback-interview.md` (scope, constraints, success criteria, ownership, execution preference, gating preference). Capture each answer in working memory.
+1. **SCOPE** — Use AskUserQuestion for the 6 feedback-interview rounds defined in `${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/resources/templates/profiles/<profile>/feedback-interview.md` (profile `apex` when `.claude/agent-coord-config.json` exists or `APEX_PLAN_PROFILE=apex`, else `generic`; rounds: scope, constraints, success criteria, ownership, execution preference, gating preference). Capture each answer in working memory.
 
-2. **COMPOSE** — Run `skills/apex-plan/scripts/start.sh $ARGUMENTS "<Title>"` to scaffold:
+2. **COMPOSE** — Run `${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/start.sh $ARGUMENTS "<Title>"` to scaffold:
    - `.claude/tasks/$ARGUMENTS-adr.md`
    - `.claude/plans/$ARGUMENTS-plan.md`
    Seed both with the Stage 1 answers.
@@ -19,7 +19,7 @@ Invoke the `apex-plan` skill and run its five-stage flow:
 
 4. **PLAN** — Convert resolved ADR into the phased plan. Each task line must include: imperative title, `Acceptance:`, `Swarm:` directive, optional `Blocked-by:`. Place `[gate:auto]`, `[gate:human]`, or `[gate:partner:<email>]` checkboxes between phases.
 
-5. **EXECUTE** — Run `skills/apex-plan/scripts/promote-to-loop.sh $ARGUMENTS` to promote the validated plan into the apex-execute loop. On success, print the exact `/loop` command the user should run next (which corresponds to this plugin's `/apex-scope-loop:iterate` command).
+5. **EXECUTE** — Run `${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/promote-to-loop.sh $ARGUMENTS` to promote the validated plan into the apex-execute loop. On success, print the exact `/loop` command the user should run next (which corresponds to this plugin's `/apex-scope-loop:iterate` command).
 
 Refuse to promote if:
 - Any Open Question still shows `Default:` (not `Decision:`)

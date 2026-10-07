@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(* --dangerously-*)",
+      "Bash(* --yolo*)",
+      "Bash(* --always-approve*)",
+      "Bash(* --full-auto*)",
+      "Bash(git push --force*)"
+    ]
+  },
+  "sandbox": {
+    "allowUnsandboxedCommands": false,
+    "enabled": true,
+    "failIfUnavailable": true,
+    "network": {
+      "allowedDomains": [
+        "api.anthropic.com",
+        "api.openai.com"
+      ]
+    }
+  }
+}

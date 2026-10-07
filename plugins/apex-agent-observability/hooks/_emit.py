@@ -5,12 +5,18 @@ Reads a Claude Code hook JSON payload on stdin and prints exactly one
 normalized JSONL trace record on stdout. Pure stdlib; never raises out to
 the caller (the hook treats any failure as non-fatal).
 
+`_emit.py --session` instead prints the payload's `session_id` (or nothing);
+trace-event.sh keys the trace file on it.
+
 Record schema (one JSON object per line):
     ts             ISO-8601 UTC timestamp (passed in by the hook)
     event          SubagentStart | SubagentStop | PreToolUse | PostToolUse
     session        session id
     subagent_id    id of the subagent this event belongs to (or null)
     parent_id      id of the spawning agent, for the execution-order edge
+    agent_type     the subagent's type, e.g. "apex-dispatch:builder" (or null)
+    agent_transcript_path
+                   the subagent's own transcript (SubagentStop), or null
     tool           tool name for *ToolUse events (or null)
     token_estimate rough token count (~chars/4) for attribution
     edge           "parent_id->subagent_id" for Start events, else null
@@ -34,7 +40,19 @@ def estimate_tokens(*chunks):
     return total // 4
 
 
+def payload_session(raw):
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        return ""
+    v = payload.get("session_id") if isinstance(payload, dict) else None
+    return v if isinstance(v, str) else ""
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--session":
+        sys.stdout.write(payload_session(sys.stdin.read()))
+        return
     event = sys.argv[1] if len(sys.argv) > 1 else "Unknown"
     ts = sys.argv[2] if len(sys.argv) > 2 else ""
     session = sys.argv[3] if len(sys.argv) > 3 else "local"
@@ -43,6 +61,8 @@ def main():
     try:
         payload = json.loads(raw) if raw.strip() else {}
     except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
         payload = {}
 
     # Field names vary across Claude Code hook versions; probe several.
@@ -56,6 +76,8 @@ def main():
     subagent_id = first("subagent_id", "subagentId", "agent_id", "agentId")
     parent_id = first("parent_id", "parentId", "parent_agent_id")
     tool = first("tool_name", "toolName", "tool")
+    agent_type = first("agent_type", "agentType", "subagent_type")
+    agent_transcript_path = first("agent_transcript_path", "agentTranscriptPath")
 
     tool_input = payload.get("tool_input") or payload.get("toolInput")
     tool_response = (
@@ -79,6 +101,8 @@ def main():
         "session": session,
         "subagent_id": subagent_id,
         "parent_id": parent_id,
+        "agent_type": agent_type,
+        "agent_transcript_path": agent_transcript_path,
         "tool": tool,
         "token_estimate": token_estimate,
         "edge": edge,

@@ -6,13 +6,30 @@ set -euo pipefail
 PLAN="${1:?usage: status.sh PLAN.md}"
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found"; exit 1; }
 
-PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
-PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
-STATE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.dev-plan-state/$PLAN_HASH"
-CHECKPOINT="$STATE_DIR/checkpoint.json"
+APEX_RESOLVE_MODE=read  # reporting only: a repository mismatch warns
+# shellcheck source=_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+apex_resolve "$PLAN"
 
-TOTAL=$(awk '/^- \[[ x]\]/{c++} END{print c+0}' "$PLAN")
-DONE=$(awk '/^- \[x\]/{c++} END{print c+0}' "$PLAN")
+# Counts, the next task and blocked tasks come from planlib.py, the parser
+# iterate.sh and land.sh use, so status never disagrees with them.
+SUMMARY="$(python3 - "$APEX_EXECUTE_SCRIPTS" "$PLAN_ABS" <<'PY'
+import json, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1]); import planlib
+errs = planlib.cmd_validate(sys.argv[2])
+if errs:
+    print(json.dumps({"invalid": errs[:3]}))
+    sys.exit(0)
+ts = planlib.parse(sys.argv[2])
+d = planlib.cmd_next(sys.argv[2], 3)
+print(json.dumps({"total": len(ts), "done": sum(t["checked"] for t in ts),
+                  "next": (d.get("task") or {}).get("line_no"), "next_line": (d.get("task") or {}).get("line"),
+                  "blocked": len(d.get("blocked", []))}))
+PY
+)"
+sfield() { python3 -c 'import json,sys; v=json.loads(sys.argv[1]).get(sys.argv[2]); print("" if v is None else v)' "$SUMMARY" "$1"; }
+TOTAL="$(sfield total)"; DONE="$(sfield done)"; TOTAL="${TOTAL:-0}"; DONE="${DONE:-0}"
 TODO=$((TOTAL - DONE))
 
 echo "==== apex-execute status ===="
@@ -23,20 +40,22 @@ echo "Tasks      : $DONE / $TOTAL  ($TODO remaining)"
 
 if [[ -f "$CHECKPOINT" ]]; then
   echo "Checkpoint :"
-  cat "$CHECKPOINT" | sed 's/^/  /'
+  sed 's/^/  /' "$CHECKPOINT"; echo
 else
   echo "Checkpoint : (uninitialized — run init.sh)"
 fi
 
-# Next task preview
-NEXT=$(grep -nE '^- \[ \]' "$PLAN" | head -1 || true)
-if [[ -n "$NEXT" ]]; then
-  echo "Next task  : $NEXT"
+INVALID="$(sfield invalid)"
+if [[ -n "$INVALID" ]]; then
+  echo "Plan       : INVALID — iterate.sh will refuse it; run planlib.py validate $PLAN_ABS"
 fi
+# Next task preview (the task iterate.sh would select)
+NEXT="$(sfield next)"
+[[ -n "$NEXT" ]] && echo "Next task  : $NEXT:$(sfield next_line)"
 
-# Blocked tasks
-BLOCKED=$(grep -B1 'Blocked-by:' "$PLAN" 2>/dev/null | awk '/^- \[ \]/{c++} END{print c+0}')
-[[ $BLOCKED -gt 0 ]] && echo "Blocked    : $BLOCKED unresolved blocked-by references"
+# Tasks waiting on unchecked Blocked-by targets
+BLOCKED="$(sfield blocked)"
+[[ "${BLOCKED:-0}" -gt 0 ]] && echo "Blocked    : $BLOCKED task(s) waiting on unchecked Blocked-by targets"
 
 # Marker files
 [[ -f "$STATE_DIR/COMPLETE" ]] && echo "Marker     : COMPLETE"

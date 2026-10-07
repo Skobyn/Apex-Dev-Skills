@@ -27,7 +27,7 @@
 ### 1. Nightly progress audit (recurring)
 
 ```
-/schedule "0 2 * * *" run .claude/skills/apex-execute/scripts/audit.sh docs/plans/my-plan.md and store the brief into AgentDB namespace apex-execute
+/schedule "0 2 * * *" run ${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts/audit.sh docs/plans/my-plan.md and store the brief into AgentDB namespace apex-execute
 ```
 
 **Output**: `STATE_DIR/audits/$DATE.json` + memory entry `audit-$DATE` in namespace `apex-execute`.
@@ -44,7 +44,7 @@
 ### 3. Weekly architecture review (recurring)
 
 ```
-/schedule "0 9 * * 1" run .claude/skills/apex-execute/scripts/architecture-review.sh docs/plans/my-plan.md, spawn a swarm with reviewer + system-architect + security-architect, write findings to STATE_DIR/architecture-reviews/$WEEK.md
+/schedule "0 9 * * 1" run ${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts/architecture-review.sh docs/plans/my-plan.md, spawn a swarm with reviewer + system-architect + security-architect, write findings to STATE_DIR/architecture-reviews/$WEEK.md
 ```
 
 **Why**: Detects drift between code and design intent before it ossifies.

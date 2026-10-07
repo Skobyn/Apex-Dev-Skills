@@ -19,7 +19,7 @@ Policy-as-Code workflow.
 | Sub-feature | Hook | What it enforces |
 |---|---|---|
 | **B1 GuardRail (paths)** | `hooks/block-sensitive-paths.sh` | Hard-blocks `Write`/`Edit`/`MultiEdit`/`NotebookEdit` to `.env`, `**/secrets/**`, `**/*credential*`, private keys/keystores, and `infra/prod` config. |
-| **B1 GuardRail (bash)** | `hooks/block-destructive-bash.sh` | Denies `rm -rf /`, `rm -rf ~`/`$HOME`, force-push to `main`/`master`, `git reset --hard` onto a protected branch, and `curl`/`wget` piped into a shell. |
+| **B1 GuardRail (bash)** | `hooks/block-destructive-bash.sh` | Always denies permission-bypass flags (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, any `--dangerously-*`, `--yolo`, `--always-approve`, `--full-auto`) passed to any program, whatever the policy says; then denies `rm -rf /`, `rm -rf ~`/`$HOME`, force-push to `main`/`master`, `git reset --hard` onto a protected branch, and `curl`/`wget` piped into a shell. Reads `tool_input.command` only. |
 | **B3 SecretGuard** | `hooks/secret-scan.sh` | Scans `Write`/`Edit` content and `Bash` commands for AWS keys, PEM private keys, GitHub/Slack tokens, and inline `password=`/`secret=`/`api_key=` values — denying before the bytes hit disk or the wire. |
 
 All three are wired in `hooks/hooks.json` against `PreToolUse` matchers. Each hook

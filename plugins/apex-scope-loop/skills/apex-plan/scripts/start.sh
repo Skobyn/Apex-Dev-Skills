@@ -5,8 +5,14 @@
 #   ./start.sh <kebab-slug> "<Title>"
 #
 # Creates:
-#   .claude/tasks/<slug>-adr.md   (from resources/templates/adr-template.md)
-#   .claude/plans/<slug>-plan.md  (from resources/templates/plan-template.md)
+#   .claude/tasks/<slug>-adr.md   (from resources/templates/profiles/<profile>/adr-template.md)
+#   .claude/plans/<slug>-plan.md  (from resources/templates/profiles/<profile>/plan-template.md)
+#
+# Template profile (resources/templates/profiles/{generic,apex}/):
+#   APEX_PLAN_PROFILE=generic|apex  → use that profile (explicit override)
+#   unset, .claude/agent-coord-config.json exists in the repo root → apex
+#   otherwise                       → generic
+#   Any other APEX_PLAN_PROFILE value is an error.
 #
 # Substitutions performed:
 #   {{SLUG}}              → <slug>
@@ -41,7 +47,28 @@ fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TEMPLATES="$SKILL_DIR/resources/templates"
+
+# Select the template profile.
+PROFILE="${APEX_PLAN_PROFILE:-}"
+if [[ -z "$PROFILE" ]]; then
+  if [[ -f "$REPO_ROOT/.claude/agent-coord-config.json" ]]; then
+    PROFILE="apex"
+  else
+    PROFILE="generic"
+  fi
+fi
+case "$PROFILE" in
+  generic|apex) ;;
+  *)
+    echo "Error: APEX_PLAN_PROFILE must be 'generic' or 'apex'. Got: $PROFILE" >&2
+    exit 1
+    ;;
+esac
+TEMPLATES="$SKILL_DIR/resources/templates/profiles/$PROFILE"
+if [[ ! -f "$TEMPLATES/adr-template.md" || ! -f "$TEMPLATES/plan-template.md" ]]; then
+  echo "Error: templates missing for profile '$PROFILE' under $TEMPLATES" >&2
+  exit 1
+fi
 
 TASKS_DIR="$REPO_ROOT/.claude/tasks"
 PLANS_DIR="$REPO_ROOT/.claude/plans"
@@ -107,6 +134,7 @@ PY
 substitute "$TEMPLATES/adr-template.md" "$ADR_PATH"
 substitute "$TEMPLATES/plan-template.md" "$PLAN_PATH"
 
+echo "PROFILE: $PROFILE"
 echo "ADR:  $ADR_PATH"
 echo "PLAN: $PLAN_PATH"
 echo

@@ -15,13 +15,13 @@ Generates the durable governing documents for a new project. You receive the res
 
 ### Required "Building new features" section (apex-plan / apex-loop)
 
-This project is initialized with the Apex/ruflo toolchain in place. AGENTS.md must tell future agents to drive non-trivial feature work through that workflow rather than ad-hoc coding — this is how the governed foundation actually gets used. Include this section verbatim-ish (adapt commands to the project), and only when dev-environment provisioning installed the Apex suite (otherwise omit or soften to "if `apex-scope-loop` is installed"):
+This project is initialized with the Apex toolchain in place (ruflo is optional). AGENTS.md must tell future agents to drive non-trivial feature work through that workflow rather than ad-hoc coding — this is how the governed foundation actually gets used. Include this section verbatim-ish (adapt commands to the project), and only when dev-environment provisioning installed the Apex suite (otherwise omit or soften to "if `apex-scope-loop` is installed"):
 
 ```markdown
 ## Building new features
 
 This repo was initialized by Apex Project Start with governance, tests, CI, and the
-Apex/ruflo toolchain already wired up. For any non-trivial feature or change, work
+Apex toolchain already wired up. For any non-trivial feature or change, work
 *within* those frameworks using the Apex workflow — do not freelance:
 
 1. **Plan first — apex-plan.** Run `/apex-scope-loop:start <feature-slug>` to co-author an
@@ -34,10 +34,10 @@ Apex/ruflo toolchain already wired up. For any non-trivial feature or change, wo
    `docs/adr/` for any significant or non-obvious decision.
 4. **Small changes** (one-file fixes, typos) skip the ceremony — just implement and test.
 
-ruflo provides the memory + swarm MCP tools these commands rely on.
+These commands run on plain Claude Code subagents. ruflo is optional: set `APEX_MEMORY_CMD` to seed memory through it.
 ```
 
-Keep it tight; do not balloon it. If only ruflo (not the Apex suite) was provisioned, reference ruflo orchestration instead of the apex-scope-loop commands.
+Keep it tight; do not balloon it. If only the optional ruflo layer (not the Apex suite) was provisioned, reference ruflo orchestration instead of the apex-scope-loop commands.
 
 ### Required "Maintenance" section (when the maintenance toggle is on)
 

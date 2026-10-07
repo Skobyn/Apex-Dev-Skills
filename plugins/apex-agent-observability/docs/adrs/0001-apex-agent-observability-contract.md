@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-05-29
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-agent-observability v0.1.0
+- **Plugin:** apex-agent-observability v0.2.0 (contract introduced in v0.1.0)
 
 ## Context
 
@@ -66,7 +66,7 @@ plugins/apex-agent-observability/
 ├── scripts/
 │   ├── replay.sh                         # A2 engine
 │   ├── token-lens.sh                     # A3 engine
-│   └── smoke.sh                          # extended 12-check structural contract
+│   └── smoke.sh                          # extended 13-check contract
 ├── docs/adrs/0001-apex-agent-observability-contract.md
 └── README.md
 ```
@@ -86,9 +86,17 @@ plugins/apex-agent-observability/
 
 One JSON object per line at
 `${APEX_TRACE_DIR:-${CLAUDE_PROJECT_DIR:-$PWD}/.claude/traces}/run-<session>.jsonl`:
-`ts`, `event`, `session`, `subagent_id`, `parent_id`, `tool`,
-`token_estimate`, `edge` (the `parent->child` execution-order edge for
-`SubagentStart`).
+`ts`, `event`, `session`, `subagent_id`, `parent_id`, `agent_type`,
+`agent_transcript_path`, `tool`, `token_estimate`, `edge` (the
+`parent->child` execution-order edge for `SubagentStart`). `agent_type` and
+`agent_transcript_path` (added in v0.2.0) come from the SubagentStart /
+SubagentStop payload and are `null` elsewhere; readers ignore keys they do not
+use, so older 8-key lines stay valid.
+
+`<session>` is the payload's `session_id` (every hook event carries it), then
+`$APEX_TRACE_SESSION`, then `local`, reduced to `[A-Za-z0-9._-]`. Claude Code
+does not export a session id to hook processes, so v0.1.0's
+`CLAUDE_SESSION_ID` key put every run into `run-local.jsonl`.
 
 ### MCP tool surface
 
@@ -123,10 +131,10 @@ suite plan in `.claude/tasks/novel-plugins-suite-adr.md`. Sub-keys:
 Any future plugin reading/writing these keys must claim a non-overlapping
 prefix and reference this ADR.
 
-### Smoke contract (extended — 12 checks)
+### Smoke contract (extended — 13 checks)
 
 `scripts/smoke.sh` verifies, exiting non-zero on the first failure with a
-named reason and printing `smoke passed: 12/12 checks` on success:
+named reason and printing `smoke passed: 13/13 checks` on success:
 
 1. `plugin.json` exists with `name`, `version`, `description`, `author`,
    `keywords`.
@@ -141,6 +149,10 @@ named reason and printing `smoke passed: 12/12 checks` on success:
 10. The four expected skill dirs / surfaces are present.
 11. `.mcp.json` is valid JSON and its referenced server script exists.
 12. No SKILL.md `allowed-tools` contains `mcp__*`.
+13. `hooks/trace-event.sh` on fixture payloads: the file is keyed on the
+    payload `session_id` (not `CLAUDE_SESSION_ID`), then `APEX_TRACE_SESSION`,
+    then `local`, and is filename-safe; records carry `agent_type` and
+    `agent_transcript_path`; the hook prints nothing on stdout.
 
 ## Consequences
 
@@ -175,3 +187,6 @@ named reason and printing `smoke passed: 12/12 checks` on success:
 ## Status changes
 
 - 2026-05-29 — Proposed (initial scaffold).
+- 2026-10-07 — v0.2.0: trace file keyed on payload `session_id`;
+  `agent_type` / `agent_transcript_path` recorded; quoted
+  `"${CLAUDE_PLUGIN_ROOT}"` in hooks.json; smoke check 13. Still Proposed.

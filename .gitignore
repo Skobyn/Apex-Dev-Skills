@@ -14,3 +14,7 @@ ruvector.db
 
 # Local skill symlinks created by promote-to-loop (absolute paths, machine-specific)
 .claude/skills/
+
+# Python bytecode (planlib.py is imported by smoke tests)
+__pycache__/
+*.pyc
