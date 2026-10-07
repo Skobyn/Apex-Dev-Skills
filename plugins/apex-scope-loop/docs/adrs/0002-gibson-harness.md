@@ -23,7 +23,7 @@ Adopt the Gibson disciplines that apply to a single-loop, single-worktree plan e
 | Law 7: Tier C is sacred | `risk-tier.sh` (paths + added-line content + size + tags, ratchets upward only). Tier C gets a lens fan-out, an adversarial pass, and a G12 human approval via `checkpoint.sh approve` |
 | Law 8: report truthfully | `PREEXISTING` / `SKIPPED` gate states. `--skip-review` requires a recorded reason |
 | Law 9: the ratchet | `lessons.sh` counts failure signatures, prints `RATCHET: FILE_LESSON` on the second occurrence, and keeps a tracked `LESSONS.md` that is recalled by tag |
-| Kill switch, error budget | `HALT` files / `APEX_HALT=1` checked by `iterate.sh` and `land.sh`. `ESCALATE` after 2 consecutive failures, halt after 3 |
+| Kill switch, error budget | `HALT` files / `APEX_HALT=1` checked by `iterate.sh` and `land.sh`. `ESCALATE` after 2 consecutive failures, halt after 3 (made progress-aware in [ADR-0004](0004-review-loop-calibration.md): 3 stalls or 6 consecutive failures) |
 | Ask Contract | G12 and `[gate:human]` halts ask what / what it does / why / risks |
 
 **Enforcement point:** `checkpoint.sh complete` refuses to check off a non-gate task unless all of the following bind to the worktree's current `HEAD`:
@@ -77,3 +77,4 @@ Adds the sub-key `apex-scope-loop:lessons/<tag>` for ratchet lessons mirrored to
 ## Status changes
 
 - 2026-09-27 — Proposed (initial Gibson harness integration, plugin v0.2.0)
+- 2026-10-07 — Review loop calibrated by [ADR-0004](0004-review-loop-calibration.md) (plugin v0.4.0): threat model, severity bar, verify-only re-reviews, adversary budget, human waiver, progress-aware halts, hardening backlog, classifier calibration

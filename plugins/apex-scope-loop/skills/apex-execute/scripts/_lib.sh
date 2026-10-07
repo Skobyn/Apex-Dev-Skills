@@ -144,7 +144,30 @@ apex_resolve() {
   else
     LESSONS_LEDGER="$REPO_ROOT/.claude/apex-scope-loop/LESSONS.md"
   fi
+  # The hardening backlog (ADR-0004) lives beside the lessons ledger and is
+  # treated exactly like it (land.sh always takes the base's copy).
+  if [[ -n "${APEX_BACKLOG_FILE:-}" ]]; then
+    BACKLOG_LEDGER="$APEX_BACKLOG_FILE"
+  else
+    BACKLOG_LEDGER="$(dirname "$(apex_default_ledger "$plan_top")")/BACKLOG.md"
+  fi
   apex_guard
+}
+
+# apex_default_ledger PLAN_TOP — the default lessons ledger path (ignores APEX_LESSONS_FILE).
+apex_default_ledger() {
+  local top="$1" main_wt
+  if [[ -n "$top" ]]; then
+    main_wt="$(git -C "$top" worktree list --porcelain 2>/dev/null \
+      | awk '/^worktree /{p=substr($0,10); getline n; if (n != "bare") print p; exit}')"
+    if [[ -n "$main_wt" ]]; then
+      printf '%s/.claude/apex-scope-loop/LESSONS.md' "$(cd "$main_wt" && pwd -P)"
+    else
+      printf '%s/apex-scope-loop/LESSONS.md' "$(apex_common_dir "$top")"
+    fi
+  else
+    printf '%s/.claude/apex-scope-loop/LESSONS.md' "$REPO_ROOT"
+  fi
 }
 
 # apex_halt_files — every kill-switch path: checkout-local and shared.
@@ -254,7 +277,7 @@ apex_dirty() {
 # apex_unreviewed_runs DIR REV — runs in this repository without a worktree
 # (not landed, harness on) whose own commits would fall below a new fork point
 # at REV: one line "STATE_DIR<TAB>PLAN<TAB>REASON" per run that has committed
-# changes after its floor (other than its plan file and the lessons ledger)
+# changes after its floor (other than its plan file and the lessons/backlog ledgers)
 # or has no floor. A retired run (a reviewed completion left no task; only a
 # completion sets it, rewind and the next brief clear it) is skipped unless
 # its plan file, when present, lists a task again. Commits made after a run
@@ -279,7 +302,7 @@ print("" if skip else (s.get("plan_path") or "?"), "1" if s.get("retired") else 
       printf '%s\t%s\t%s\n' "$sd" "$plan" "no diff base against the new fork point (it predates the review chain, its history was replaced, or it is on another line of history)"
       continue
     fi
-    excl=(":(exclude,top,literal).claude/apex-scope-loop/LESSONS.md")
+    excl=(":(exclude,top,literal).claude/apex-scope-loop/LESSONS.md" ":(exclude,top,literal).claude/apex-scope-loop/BACKLOG.md")
     rel="$(python3 -c 'import os,sys; r=os.path.relpath(os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])); print(r if r.endswith(".md") and not r.startswith("..") else "")' "$plan" "$dir")"
     [[ -n "$rel" ]] && excl+=(":(exclude,top,literal)$rel")
     apex_git "$dir" diff --quiet --no-renames --ignore-submodules=none "$base" "$rev" -- . "${excl[@]}" 2>/dev/null \

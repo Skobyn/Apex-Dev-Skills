@@ -11,6 +11,9 @@ Usage:
   planlib.py validate PLAN        prints one error per line; exit 1 if any
   planlib.py remaining PLAN       number of unchecked tasks (the one definition of done)
   planlib.py counts PLAN          "<total> <checked>"
+  planlib.py threat PLAN [LINE_NO]  the threat model for a task (ADR-0004): its Threat:
+                                  directive, else the plan's "## Threat model" section,
+                                  else the default; first line "SOURCE: task|plan|default"
   Any command on an unreadable plan exits 3 ("ERROR: plan is invalid: ...").
 
 The grammar is deliberately small, and nothing in it hides a line:
@@ -22,13 +25,15 @@ The grammar is deliberately small, and nothing in it hides a line:
                 - [ ] **Phase 2.1** [backend][api] Title
   Block       the lines after a task up to the next blank line or task.
   Directive   a block line "- Key: value" indented 0-4 spaces, Key one of
-              Acceptance, Blocked-by, Swarm, Route, Paths, Budget. Deeper lines
+              Acceptance, Blocked-by, Swarm, Route, Paths, Budget, Threat. Deeper lines
               are notes, except that "Blocked-by:" counts at any depth (fail closed).
   Blocked-by  comma-separated; phase-2.1 | Phase 2.1 | **Phase 2.1** |
               gate-2-3 | Gate 2→3 | Gate 2-3. Repeated lines merge.
   Route       class=… provider=… fanout=… review=…   (may only tighten)
   Paths       comma-separated repo-relative globs (required when fanout=lanes)
   Budget      usd=<n> spawns=<n> minutes=<n>          (may only lower)
+  Threat      one line: the task's threat model for its reviewers (ADR-0004);
+              overrides the plan's "## Threat model" section
 
 The plan is a restricted markdown dialect, verified rather than guessed, so
 that what planlib runs is exactly what a CommonMark renderer shows as tasks
@@ -58,7 +63,7 @@ LOOKAHEAD = 8
 TASK_RE = re.compile(r"^- \[( |x|X)\][ \t]+(.*)$")
 ID_RE = re.compile(r"\*\*\s*(Phase\s+[0-9]+(?:\.[0-9]+)*|Gate\s+[^*\s—:]+(?:\s*(?:→|->)\s*[^*\s—:]+)?)")
 TAG_RE = re.compile(r"\[([a-z0-9:@._+-]+)\](?!\()")  # not markdown link text
-KEYS = "Acceptance|Blocked-by|Swarm|Route|Paths|Budget"
+KEYS = "Acceptance|Blocked-by|Swarm|Route|Paths|Budget|Threat"
 DIRECTIVE_RE = re.compile(r"^ {0,4}[-*][ \t]+(" + KEYS + r"):\s*(.*?)\s*$")
 ANY_DIRECTIVE_RE = re.compile(r"^\s*(?:[-*+][ \t]+)?(" + KEYS + r"):")
 BLOCKED_ANY_RE = re.compile(r"^\s*(?:[-*+][ \t]+)?Blocked-by:\s*(.*?)\s*$")
@@ -230,9 +235,10 @@ def parse(path):
         idm = ID_RE.search(body)
         tid = re.sub(r"\s+", " ", idm.group(1).strip()) if idm else None
         tags = [t for t in TAG_RE.findall(body) if t not in ("x", " ")]
-        d = {"acceptance": "", "blocked_by_raw": [], "swarm": "", "route_raw": "", "paths_raw": "", "budget_raw": ""}
+        d = {"acceptance": "", "blocked_by_raw": [], "swarm": "", "route_raw": "", "paths_raw": "", "budget_raw": "",
+             "threat": ""}
         key_map = {"Acceptance": "acceptance", "Blocked-by": "blocked_by_raw", "Swarm": "swarm",
-                   "Route": "route_raw", "Paths": "paths_raw", "Budget": "budget_raw"}
+                   "Route": "route_raw", "Paths": "paths_raw", "Budget": "budget_raw", "Threat": "threat"}
         repeated, late, in_example, noncanonical = [], [], [], []
         for j in block(lines, i):
             bm = BLOCKED_ANY_RE.match(lines[j])
@@ -273,6 +279,7 @@ def parse(path):
             "paths": [p.strip() for p in d["paths_raw"].split(",") if p.strip()],
             "budget_raw": d["budget_raw"],
             "budget": parse_kv(d["budget_raw"]),
+            "threat": d["threat"],
             "_repeated": repeated,
             "_late": late,
             "_in_example": in_example,
@@ -341,6 +348,54 @@ def disjoint(paths_a, paths_b):
 
 def public(t):
     return {k: v for k, v in t.items() if k not in ("ref",) and not k.startswith("_")}
+
+
+DEFAULT_THREAT_MODEL = (
+    "Trusted, non-malicious agents and operators. Guard against accidents and realistic misuse. "
+    "Not a sandbox: deliberate tampering with state, config or the harness by the trusted agent, "
+    "and obfuscated inputs, are out of scope.")
+THREAT_HEADING_RE = re.compile(r"^##[ \t]+Threat model[ \t]*#*[ \t]*$", re.I)
+THREAT_MAX_LINES = 40
+
+
+def plan_threat_model(path):
+    """The text of the plan's top-level "## Threat model" section (to the next
+    heading of level 1 or 2, or a thematic break), or None. A heading inside
+    a code fence does not count; blank lines and blockquoted author notes
+    ("> ...") are dropped; at most
+    THREAT_MAX_LINES lines are returned (the brief says so when cut)."""
+    lines = read_lines(path)
+    inside, errs = scan(lines)
+    if errs:
+        raise PlanError(errs[0])
+    for i, line in enumerate(lines):
+        if inside[i] or not THREAT_HEADING_RE.match(line):
+            continue
+        out = []
+        for j in range(i + 1, len(lines)):
+            l = lines[j]
+            if not inside[j] and (re.match(r"^#{1,2}[ \t]", l) or re.fullmatch(r"(?:-{3,}|\*{3,}|_{3,})[ \t]*", l)):
+                break
+            if l.strip(WS) and not (not inside[j] and l.lstrip(WS).startswith(">")):
+                out.append(l.rstrip(WS))
+        if len(out) > THREAT_MAX_LINES:
+            out = out[:THREAT_MAX_LINES] + [f"(threat model cut at {THREAT_MAX_LINES} lines; read the plan's section)"]
+        return out or None
+    return None
+
+
+def cmd_threat(path, line_no=None):
+    """(source, lines): task directive > plan section > default."""
+    if line_no is not None:
+        t = cmd_task(path, line_no)
+        if t is None:
+            raise PlanError(f"line {line_no} is not a task")
+        if t.get("threat"):
+            return "task", [t["threat"]]
+    sec = plan_threat_model(path)
+    if sec:
+        return "plan", sec
+    return "default", [DEFAULT_THREAT_MODEL]
 
 
 def cmd_remaining(path):
@@ -514,6 +569,12 @@ def run(argv):
         t = cmd_task(path, int(argv[3]))
         print(json.dumps(t))
         return 0 if t else 1
+    if cmd == "threat":
+        src, lines = cmd_threat(path, int(argv[3]) if len(argv) > 3 else None)
+        print("SOURCE: " + src)
+        for l in lines:
+            print(l)
+        return 0
     if cmd == "validate":
         errs = cmd_validate(path)
         for e in errs:

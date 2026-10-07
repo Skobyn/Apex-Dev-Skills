@@ -26,6 +26,13 @@
 #   HARNESS: gibson | off                # APEX_GIBSON=0 turns the harness off
 #   LESSONS: <n> matching ...           # ratchet entries for this task's tags
 #   CONSECUTIVE_FAILURES: <n>
+#   THREAT_MODEL: source task|plan|default, then the text as "  > " lines
+#                 (ADR-0004: every reviewer gets it verbatim)
+#   LAST_REVIEWED: <sha>|none   # last reviewed SHA in this attempt and epoch
+#   REVIEW_ROUND: <n>           # round of the next review (1 = full review)
+#   REVIEW_MODE: full | verify  # round >= 2 re-reviews only the fixes since LAST_REVIEWED
+#   ADVERSARY_BUDGET: <n>       # max [blocking] findings per review (APEX_ADVERSARY_BUDGET, default 3)
+#   BACKLOG: <n> open ...       # hardening backlog items for this plan (backlog.sh)
 #   SWARM / ROUTE_DIRECTIVE / PATHS / BUDGET: the task's directives (0.3.0)
 #   STAGE: BUILD                          # recorded in the ACTIVE lock
 #   LANES: <line,line,...>                # optional; disjoint-Paths lane candidates
@@ -228,6 +235,35 @@ else
   echo "HARNESS: off"
 fi
 echo "CONSECUTIVE_FAILURES: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("consecutive_failures",0))' "$CHECKPOINT" 2>/dev/null || echo 0)"
+# Review-loop calibration (ADR-0004): the threat model every reviewer gets
+# verbatim, the review round this task is in, and the adversary budget.
+THREAT_OUT="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" threat "$PLAN_ABS" "$LINE_NO" 2>/dev/null)" \
+  || THREAT_OUT="$(printf 'SOURCE: default\n%s' "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import planlib; print(planlib.DEFAULT_THREAT_MODEL)' "$APEX_EXECUTE_SCRIPTS")")"
+THREAT_SRC="${THREAT_OUT%%$'\n'*}"
+echo "THREAT_MODEL: source ${THREAT_SRC#SOURCE: }"
+printf '%s\n' "$THREAT_OUT" | sed '1d; s/^/  > /'
+python3 - "$CHECKPOINT" "$LINE_NO" "$HEAD_SHA" <<'PY' || { echo "LAST_REVIEWED: none"; echo "REVIEW_ROUND: 1"; echo "REVIEW_MODE: full"; }
+import json, sys
+path, line_no, head = sys.argv[1:]
+s = json.load(open(path))
+r = (s.get("reviews") or {}).get(line_no) or {}
+attempt, epoch = r.get("attempt", 1), s.get("epoch", 0)
+recs = [x for x in r.get("records") or [] if x.get("attempt", 1) == attempt and x.get("epoch", 0) == epoch]
+rounds = r.get("rounds") or []
+last = recs[-1]["sha"] if recs else "none"
+# The next review's round: the head's own round while its reviews are still
+# coming in and none requested changes; otherwise the next new commit's round.
+if head in rounds and not any(x.get("sha") == head and x.get("verdict") != "APPROVE" for x in recs):
+    n = rounds.index(head) + 1
+else:
+    n = len(rounds) + 1
+print("LAST_REVIEWED: " + last)
+print("REVIEW_ROUND: %d" % n)
+print("REVIEW_MODE: " + ("full" if n == 1 or last == "none" else "verify"))
+PY
+AB="${APEX_ADVERSARY_BUDGET:-3}"; [[ "$AB" =~ ^[1-9][0-9]{0,2}$ ]] || AB=3
+echo "ADVERSARY_BUDGET: $AB"
+echo "BACKLOG: $("$APEX_EXECUTE_SCRIPTS/backlog.sh" "$PLAN_ABS" count 2>/dev/null || echo "?") open for this plan — read with: backlog.sh $PLAN list"
 
 # Routing (apex-dispatch, when installed beside this plugin). Its block sits
 # between the task fields and STATUS; without it the orchestrator routes by

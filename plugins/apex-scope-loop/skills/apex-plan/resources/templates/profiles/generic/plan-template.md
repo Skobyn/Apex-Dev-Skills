@@ -19,6 +19,15 @@ drift between code and intent without having to read the full ADR.
 - [ TODO ]
 - [ TODO ]
 
+## Threat model
+
+Trusted, non-malicious agents and operators. Guard against accidents and realistic misuse. Not a sandbox: deliberate tampering with state, config or the harness by the trusted agent, and obfuscated inputs, are out of scope.
+
+> Every reviewer receives this section verbatim (apex-execute brief `THREAT_MODEL:`, ADR-0004 of
+> apex-scope-loop). Edit it before the first review: name the trust model, the in-scope actors and
+> the out-of-scope classes. A finding outside it is non-blocking and goes to the hardening backlog.
+> A task can override it with a one-line `- Threat:` directive.
+
 ---
 
 ## Execution Strategy
@@ -57,6 +66,7 @@ Gates are checkbox tasks, just like phases. The line between Phase N and Phase N
 >   - Acceptance: {runnable check}
 >   - Swarm: {directive}            (optional — defaults to hierarchical 6)
 >   - Blocked-by: phase-X.Y         (optional)
+>   - Threat: {one line}            (optional — overrides the plan's Threat model for this task)
 > ```
 >
 > **Tags route topology** (see `apex-execute/docs/legacy/SWARM_TOPOLOGIES.md`):

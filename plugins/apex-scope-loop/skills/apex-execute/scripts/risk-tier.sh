@@ -21,7 +21,11 @@
 #   --no-record  print the classification of the diff without recording it
 #               (checkpoint.sh complete recomputes the tier this way).
 #   --tags   extra tags; the task's own tags are always read from the plan.
-#            [security] or [tier:c] force Tier C.
+#            [security] or [tier:c] force Tier C. [tier:a] / [tier:b] are
+#            authoritative over the Tier B signals and the content signals,
+#            never over Tier C path signals or [security] / [tier:c] (ADR-0004).
+#   Content signals in added lines of test/fixture/smoke/example/docs files
+#   are ignored (noted in a REASON line); their paths are still classified.
 #
 # Tier only ratchets upward: a line already recorded as C stays C.
 #
@@ -77,19 +81,19 @@ fi
 # split into delete + add (an auth file moved to a bland name keeps its old
 # path in the list); paths are not octal-quoted.
 # Submodule bumps count even when .gitmodules says ignore = all. Only in a run
-# without a worktree (the plan and the lessons ledger are edited in place in
-# the same checkout) are those two exact files left out: the plan file when it
-# is a regular .md file, the ledger only at .claude/apex-scope-loop/LESSONS.md.
+# without a worktree (the plan and the lessons/backlog ledgers are edited in place in
+# the same checkout) are those exact files left out: the plan file when it
+# is a regular .md file, the ledgers only at .claude/apex-scope-loop/{LESSONS,BACKLOG}.md.
 GIT=(apex_git "$WT")
 DIFF_OPTS=(--no-color --no-renames --ignore-submodules=none --no-ext-diff)
 EXCL=()
 if [[ -z "$(read_field worktree_branch)" ]]; then
-  for p in "$PLAN_ABS" "${LESSONS_LEDGER:-}"; do
+  for p in "$PLAN_ABS" "${LESSONS_LEDGER:-}" "${BACKLOG_LEDGER:-}"; do
     [[ -n "$p" && -f "$p" && ! -L "$p" ]] || continue
     rel="$(python3 -c 'import os,sys; r=os.path.relpath(os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])); print("" if r.startswith("..") else r)' "$p" "$WT")"
     [[ -n "$rel" ]] || continue
     if [[ "$p" == "$PLAN_ABS" ]]; then [[ "$rel" == *.md ]] || continue
-    else [[ "$rel" == ".claude/apex-scope-loop/LESSONS.md" ]] || continue; fi
+    else [[ "$rel" == ".claude/apex-scope-loop/LESSONS.md" || "$rel" == ".claude/apex-scope-loop/BACKLOG.md" ]] || continue; fi
     EXCL+=(":(exclude,top,literal)$rel")
   done
 fi
@@ -112,6 +116,12 @@ raise() { # raise <tier> <reason>
   case "$1$TIER" in C*|BA) TIER="$1" ;; esac
   REASONS+=("$2")
 }
+# An explicit [tier:a] / [tier:b] tag (ADR-0004) is authoritative over the
+# Tier B size/breadth/shared signals and the content signals, never over a
+# Tier C path signal or a [security] / [tier:c] tag (nor the decision layer).
+TAG_TIER=""
+case ",$TAGS," in *,tier:a,*|*,tier-a,*) TAG_TIER=A ;; esac
+case ",$TAGS," in *,tier:b,*|*,tier-b,*) TAG_TIER=B ;; esac
 
 # Tier C: path signals (case-insensitive). Fail closed: a false positive only
 # costs review; a miss lands an auth change unreviewed. Every token matches
@@ -144,14 +154,78 @@ while IFS= read -r f; do
   fi
 done <<<"$FILES"
 
-# Tier C: content signals in added lines (catches risk in innocuously named files).
+# Tier C: content signals in added lines (catches risk in innocuously named
+# files). Calibrated (ADR-0004): added lines of test, fixture, smoke, example
+# and docs files are not scanned (test data that names "stripe" is not money
+# code); their paths still are. A file is exempt only when its diff header
+# parses cleanly; anything unparsed is scanned (fail closed).
 C_CONTENT='(stripe|charge\(|amount_cents|price|currency|bcrypt|argon2|jwt\.|verify_?token|set-cookie|httponly|samesite|csrf|consent|date_of_birth|ssn|social_security|DROP (TABLE|COLUMN)|ALTER TABLE|DELETE FROM|TRUNCATE)'
-ADDED="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null | tr -d '\000' | grep -aE '^\+' | grep -avE '^\+\+\+ (b/|/dev/null)' || true)"
-# Here-strings, not pipes: under pipefail, `printf | grep -q` on a large diff
-# fails with SIGPIPE when grep exits at an early match.
-if [[ -n "$ADDED" ]] && grep -aqiE "$C_CONTENT" <<<"$ADDED"; then
-  hit="$(grep -m1 -aoiE "$C_CONTENT" <<<"$ADDED")"
-  raise C "tier-c content signal in diff: '$hit'"
+CONTENT_OUT="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null \
+  | python3 -c '
+import re, sys
+pat = re.compile(sys.argv[1], re.I)
+EXEMPT_DIR = re.compile(r"(^|/)(tests?|__tests__|spec|fixtures?|examples?|docs?)/", re.I)
+def exempt(path):
+    if path is None:
+        return False
+    base = path.rsplit("/", 1)[-1].lower()
+    return bool(EXEMPT_DIR.search(path) or re.search(r"_test\.[^/]*$", base) or re.search(r"\.test\.[^/]*$", base)
+                or "smoke" in base or base.endswith(".md"))
+def unquote(h):
+    """b/<path> from a +++ header; None when it cannot be read exactly."""
+    h = h.rstrip("\n")
+    if h.startswith("\""):
+        if not h.endswith("\"") or len(h) < 2:
+            return None
+        try:
+            h = h[1:-1].encode("latin-1", "backslashreplace").decode("unicode_escape").encode("latin-1").decode("utf-8")
+        except Exception:
+            return None
+    if "\t" in h:
+        h = h.split("\t", 1)[0]
+    return h[2:] if h.startswith("b/") else None
+cur, in_hdr, hit, skipped = None, False, None, set()
+for raw in sys.stdin.buffer:
+    line = raw.decode("utf-8", "surrogateescape").replace("\0", "")
+    if line.startswith("diff --git "):
+        cur, in_hdr = None, True
+        continue
+    if in_hdr:
+        if line.startswith("+++ "):
+            cur = unquote(line[4:].encode("utf-8", "surrogateescape").decode("utf-8", "replace"))
+        elif line.startswith("@@"):
+            in_hdr = False
+        continue
+    if not line.startswith("+"):
+        continue
+    m = pat.search(line[1:])
+    if not m:
+        continue
+    if exempt(cur):
+        skipped.add(cur)
+        continue
+    if hit is None:
+        hit = (m.group(0), cur or "?")
+if hit:
+    print("HIT\t%s\t%s" % hit)
+for p in sorted(skipped)[:5]:
+    print("SKIP\t" + p)
+if len(skipped) > 5:
+    print("SKIP\t... and %d more" % (len(skipped) - 5))
+' "$C_CONTENT" 2>/dev/null || echo "HIT	(could not scan the diff)	?")"
+CONTENT_HIT=""
+while IFS=$'\t' read -r kind a b; do
+  case "$kind" in
+    HIT) CONTENT_HIT="tier-c content signal in diff: '$a' ($b)" ;;
+    SKIP) REASONS+=("content signals ignored in test/fixture/smoke/example/docs file: $a (its path is still classified)") ;;
+  esac
+done <<<"$CONTENT_OUT"
+if [[ -n "$CONTENT_HIT" ]]; then
+  if [[ -n "$TAG_TIER" ]]; then
+    REASONS+=("$CONTENT_HIT — overridden by the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER")] tag (reviewers: say so if this is real Tier C)")
+  else
+    raise C "$CONTENT_HIT"
+  fi
 fi
 
 # Tier C: explicit tags.
@@ -159,11 +233,19 @@ case ",$TAGS," in
   *,security,*|*,tier:c,*|*,tier-c,*) raise C "task tagged [${TAGS}]" ;;
 esac
 
-# Tier B: size and shared-surface signals.
-[[ "$LINES" -gt 150 ]] && raise B "diff size: $LINES changed lines (>150)"
-[[ "$NFILES" -gt 6 ]] && raise B "diff breadth: $NFILES files (>6)"
+# Tier B: size and shared-surface signals (never above B; a [tier:a] /
+# [tier:b] tag decides instead of them).
+BSIG=()
+[[ "$LINES" -gt 150 ]] && BSIG+=("diff size: $LINES changed lines (>150)")
+[[ "$NFILES" -gt 6 ]] && BSIG+=("diff breadth: $NFILES files (>6)")
 if grep -aqiE '(^|/)(api|routes?|shared|common|core|lib)/' <<<"$FILES"; then
-  raise B "touches a shared module or API route"
+  BSIG+=("touches a shared module or API route")
+fi
+if [[ -n "$TAG_TIER" ]]; then
+  for b in "${BSIG[@]}"; do REASONS+=("$b — the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER")] tag decides"); done
+  [[ "$TAG_TIER" == B ]] && raise B "task tagged [tier:b]"
+else
+  for b in "${BSIG[@]}"; do raise B "$b"; done
 fi
 
 # Decision layer (optional): max(heuristic, decision). The state holds
