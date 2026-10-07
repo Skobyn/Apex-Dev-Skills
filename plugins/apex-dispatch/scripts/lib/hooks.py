@@ -78,7 +78,8 @@ GIT_READ = {"status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree",
             "diff-files", "show-branch", "cherry", "fetch", "ls-remote", "annotate", "hash-object"}
 GIT_CFG_KEYS = re.compile(r"^(core|filter|diff|merge|include|includeif)\.", re.I)
 GIT_CFG_HARMLESS = re.compile(r"^core\.(editor|pager)=", re.I)       # cosmetic; cannot hide or alter content
-LEDGER_CODE = re.compile(r"\bimport\s+ledger\b|\bfrom\s+ledger\s+import\b|ledger\.py\b|\bledger\.append\b")
+LEDGER_CODE = re.compile(r"^\s*(import\s+ledger\s*(;|$)|from\s+ledger\s+import\b)|\bledger\.append\s*\(|apex-dispatch/scripts/lib/ledger\.py\b", re.M)
+LEDGER_PATH = re.compile(r"(^|/)apex-dispatch/scripts/lib/ledger\.py$")
 # Shell reserved words that can lead a simple command; peeled like wrappers.
 RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac", "!", "{", "}", "time"}
 # Commands that print or search text: a bypass flag in their arguments is data, not a flag.
@@ -251,11 +252,14 @@ def halt_reason(ctx):
 
 # ---------------------------------------------------------- protected paths ----
 
-def protected_reason(ctx, path):
-    """Why `path` (absolute, normalised) may not be written by anyone during a run."""
+def protected_reason(ctx, path, removal=True):
+    """Why `path` (absolute, normalised) may not be written by anyone during a run.
+    removal=False: the write cannot delete or move `path` itself (a cp/mv/ln/rsync
+    destination, a patch/chmod/touch target, a find -delete start), so the plan
+    worktree's own root is fair game; removing or moving the root never is."""
     comps = path.split("/")
     wt = ctx.state_worktree
-    if wt and under(path, wt) and path != wt:
+    if wt and under(path, wt) and (path != wt or not removal):
         # apex-scope-loop puts the plan worktree inside the run state
         # (<state>/worktree): its tree is the work, not run state; only a
         # .dev-plan-state nested inside it is.
@@ -683,6 +687,18 @@ class Cmd:
             out += subst_strings(w)
         return out
 
+    def removal_targets(self):
+        """Targets this command deletes or moves away (not merely writes into)."""
+        b, pos = self.base, self.positionals()
+        if b in ("rm", "rmdir", "unlink", "shred"):
+            return set(pos)
+        if b == "mv":
+            tdir = {self.args[k + 1] for k, w in enumerate(self.args) if w in ("-t", "--target-directory") and k + 1 < len(self.args)}
+            if tdir or any(w.startswith("--target-directory=") for w in self.args):
+                return set(pos) - tdir
+            return set(pos[:-1])
+        return set()
+
     def write_targets(self):
         """(targets, write_shaped) for this command, redirects included."""
         b, a, t = self.base, self.args, []
@@ -874,7 +890,11 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
             elif not info:
                 raise Deny("provider CLI %s runs only through bin/worker-*.sh (forced flags, sandbox probe, ledger)" % b)
         # 4. The ledger has one sanctioned writer interface.
-        if re.fullmatch(r"python[0-9.]*", b) and (any(a.endswith("ledger.py") for a in c.args)
+        ledger_py = real(os.path.join(ctx.plugin_root, "scripts", "lib", "ledger.py"))
+        if re.fullmatch(r"python[0-9.]*", b) and (any(os.path.basename(a) == "ledger.py" and (
+                                                        real(resolve_target(ctx, cwd, prefix, a)) == ledger_py
+                                                        or LEDGER_PATH.search(real(resolve_target(ctx, cwd, prefix, a))))
+                                                    for a in c.args)
                                                     or any(LEDGER_CODE.search(a) for a in c.args)
                                                     or ("-m" in c.args and "ledger" in c.args)):
             raise Deny("the ledger is written only in-process by route.py, the hooks and the shims (use ledger.sh)")
@@ -897,13 +917,14 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
                     raise Deny("role %s is read-only: git %s refused" % (role, g.sub))
         # 6. Write-shaped commands: protected paths always; the checkout during GATE/REVIEW or for read-only roles.
         targets, shaped = c.write_targets()
+        removals = c.removal_targets()
         for t in targets:
             if t in ("-",):
                 continue
             path = resolve_target(ctx, cwd, prefix, t)
             if b == "touch" and os.path.basename(path) == "HALT":
                 continue                                  # setting a kill switch only tightens
-            why = protected_reason(ctx, real(path))
+            why = protected_reason(ctx, real(path), removal=t in removals)
             if why:
                 raise Deny("%s (%s %s)" % (why, b or "redirect", t))
             if (ctx.stage in LOCKED_STAGES or read_only) and not path.startswith("/dev/"):
