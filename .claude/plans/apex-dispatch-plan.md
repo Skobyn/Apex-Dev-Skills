@@ -76,19 +76,19 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
 
 ### Phase 3 — Governance hooks and sibling hygiene
 
-- [ ] **Phase 3.1** [security] PreToolUse hooks: pre-agent, pre-bash, pre-edit, pre-mcp
+- [x] **Phase 3.1** [security] PreToolUse hooks: pre-agent, pre-bash, pre-edit, pre-mcp
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh`
   - Blocked-by: Phase 2.5
 
-- [ ] **Phase 3.2** [security] post-agent, subagent-start/stop, stop-gate, post-bash-prune; checkpoint.sh consumes hook-written review records
+- [x] **Phase 3.2** [security] post-agent, subagent-start/stop, stop-gate, post-bash-prune; checkpoint.sh consumes hook-written review records
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-scope-loop/scripts/smoke.sh`
   - Blocked-by: Phase 3.1
 
-- [ ] **Phase 3.3** [security] Sibling hygiene: guardrails bypass-flag denials and command scoping, observability session key, contracts-reliability no allow, dev-harness/project-start/root docs
+- [x] **Phase 3.3** [security] Sibling hygiene: guardrails bypass-flag denials and command scoping, observability session key, contracts-reliability no allow, dev-harness/project-start/root docs
   - Acceptance: `for s in plugins/*/scripts/smoke.sh; do bash "$s" >/dev/null || exit 1; done`
   - Blocked-by: Phase 3.2
 
-- [ ] **Gate 3→4** [gate:human] Phase 3 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
+- [x] **Gate 3→4** [gate:human] Phase 3 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
   - Acceptance: user types approve gate-3-4
 
 ### Phase 4 — Provider workers
