@@ -27,6 +27,7 @@ set -euo pipefail
 
 PLAN="${1:?usage: land.sh PATH_TO_PLAN.md [--force]}"
 FORCE="${2:-}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 
 APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
@@ -301,6 +302,9 @@ sys.stdout.buffer.write(b"".join(o + b"\0" for o in out))' | ix update-index -z 
   git -C "$REPO_ROOT" merge --ff-only -q "$NEW" \
     || { echo "ERROR: could not fast-forward $BASE_BRANCH to ${NEW:0:12} (it moved, or files in $REPO_ROOT are in the way — see git's message above); $BASE_BRANCH holds only the plan record — fix that and re-run land.sh." >&2; exit 1; }
 fi
+
+# Review snapshots (ADR-0004) are per head; none survives the landing.
+"$APEX_EXECUTE_SCRIPTS/snapshot.sh" "$PLAN" prune >/dev/null 2>&1 || true
 
 # 10. Tear down the worktree; delete the branch only if it is fully merged.
 if [[ -d "$WT_PATH" ]]; then

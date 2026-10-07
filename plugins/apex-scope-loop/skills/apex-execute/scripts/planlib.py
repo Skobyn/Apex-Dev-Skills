@@ -25,7 +25,8 @@ The grammar is deliberately small, and nothing in it hides a line:
                 - [ ] **Phase 2.1** [backend][api] Title
   Block       the lines after a task up to the next blank line or task.
   Directive   a block line "- Key: value" indented 0-4 spaces, Key one of
-              Acceptance, Blocked-by, Swarm, Route, Paths, Budget, Threat. Deeper lines
+              Acceptance, Blocked-by, Swarm, Route, Paths, Budget, Threat,
+              Threats, Review. Deeper lines
               are notes, except that "Blocked-by:" counts at any depth (fail closed).
   Blocked-by  comma-separated; phase-2.1 | Phase 2.1 | **Phase 2.1** |
               gate-2-3 | Gate 2→3 | Gate 2-3. Repeated lines merge.
@@ -34,6 +35,12 @@ The grammar is deliberately small, and nothing in it hides a line:
   Budget      usd=<n> spawns=<n> minutes=<n>          (may only lower)
   Threat      one line: the task's threat model for its reviewers (ADR-0004);
               overrides the plan's "## Threat model" section
+  Threats     the threats the builder must cover with failing-first tests:
+              inline ("1) x; 2) y") and/or as deeper list items under it
+  Review      cap=<n> lenses=<lens,lens|all> adversarial=yes|no (ADR-0004
+              addendum; Tier C keeps >= 3 lenses, the adversarial pass and G12)
+  Tier tag    [tier:a reason="..."] / [tier:b reason="..."]: an explicit tier
+              override (needs the reason; see risk-tier.sh)
 
 The plan is a restricted markdown dialect, verified rather than guessed, so
 that what planlib runs is exactly what a CommonMark renderer shows as tasks
@@ -63,7 +70,11 @@ LOOKAHEAD = 8
 TASK_RE = re.compile(r"^- \[( |x|X)\][ \t]+(.*)$")
 ID_RE = re.compile(r"\*\*\s*(Phase\s+[0-9]+(?:\.[0-9]+)*|Gate\s+[^*\s—:]+(?:\s*(?:→|->)\s*[^*\s—:]+)?)")
 TAG_RE = re.compile(r"\[([a-z0-9:@._+-]+)\](?!\()")  # not markdown link text
-KEYS = "Acceptance|Blocked-by|Swarm|Route|Paths|Budget|Threat"
+TIER_OVERRIDE_RE = re.compile(r"\[tier:(a|b)[ \t]+reason=\"([^\"\]]*)\"\]")
+LENS_NAMES = ("correctness", "security", "consent-pii", "money", "performance", "maintainability")
+REVIEW_KEYS = {"cap", "lenses", "adversarial"}
+THREAT_ITEM_RE = re.compile(r"^[ \t]+(?:[-*+]|\d{1,3}[.)])[ \t]+(.*\S)[ \t]*$")
+KEYS = "Acceptance|Blocked-by|Swarm|Route|Paths|Budget|Threats|Threat|Review"
 DIRECTIVE_RE = re.compile(r"^ {0,4}[-*][ \t]+(" + KEYS + r"):\s*(.*?)\s*$")
 ANY_DIRECTIVE_RE = re.compile(r"^\s*(?:[-*+][ \t]+)?(" + KEYS + r"):")
 BLOCKED_ANY_RE = re.compile(r"^\s*(?:[-*+][ \t]+)?Blocked-by:\s*(.*?)\s*$")
@@ -235,10 +246,14 @@ def parse(path):
         idm = ID_RE.search(body)
         tid = re.sub(r"\s+", " ", idm.group(1).strip()) if idm else None
         tags = [t for t in TAG_RE.findall(body) if t not in ("x", " ")]
+        ov = TIER_OVERRIDE_RE.findall(body)
+        tier_override = {"tier": max(t for t, _ in ov), "reason": " ".join(r for t, r in ov if t == max(t for t, _ in ov)).strip()} if ov else None
         d = {"acceptance": "", "blocked_by_raw": [], "swarm": "", "route_raw": "", "paths_raw": "", "budget_raw": "",
-             "threat": ""}
+             "threat": "", "threats_raw": "", "review_raw": ""}
         key_map = {"Acceptance": "acceptance", "Blocked-by": "blocked_by_raw", "Swarm": "swarm",
-                   "Route": "route_raw", "Paths": "paths_raw", "Budget": "budget_raw", "Threat": "threat"}
+                   "Route": "route_raw", "Paths": "paths_raw", "Budget": "budget_raw", "Threat": "threat",
+                   "Threats": "threats_raw", "Review": "review_raw"}
+        threats, in_threats, threats_indent = [], False, 0
         repeated, late, in_example, noncanonical = [], [], [], []
         for j in block(lines, i):
             bm = BLOCKED_ANY_RE.match(lines[j])
@@ -254,6 +269,14 @@ def parse(path):
             if not dm and ANY_DIRECTIVE_RE.match(lines[j]):
                 noncanonical.append(j + 1)       # e.g. "+ Budget:", "Budget:", 5+ spaces: never silently dropped
                 continue
+            if in_threats:
+                tm = THREAT_ITEM_RE.match(lines[j])
+                if tm and len(lines[j]) - len(lines[j].lstrip(WS)) > threats_indent and not inside[j]:
+                    threats.append(tm.group(1))
+                    continue
+                in_threats = False
+            if dm and dm.group(1) == "Threats":
+                in_threats, threats_indent = True, len(lines[j]) - len(lines[j].lstrip(WS))
             if dm:
                 key = key_map[dm.group(1)]
                 if j - i > LOOKAHEAD:
@@ -280,6 +303,10 @@ def parse(path):
             "budget_raw": d["budget_raw"],
             "budget": parse_kv(d["budget_raw"]),
             "threat": d["threat"],
+            "threats": [x.strip() for x in re.split(r"(?:^|;)\s*\d{1,3}[.)]\s+|;", d["threats_raw"]) if x.strip()] + threats,
+            "review_raw": d["review_raw"],
+            "review": parse_kv(d["review_raw"]),
+            "tier_override": tier_override,
             "_repeated": repeated,
             "_late": late,
             "_in_example": in_example,
@@ -493,6 +520,22 @@ def cmd_validate(path):
                 errs.append(f"{where}: Route {k}={v} not one of {', '.join(sorted(ROUTE_VALUES[k]))}")
         if r.get("fanout") == "lanes" and not t["paths"]:
             errs.append(f"{where}: Route fanout=lanes requires a Paths: line")
+        rv = t["review"]
+        for tok in rv.get("_invalid", []):
+            errs.append(f"{where}: Review token '{tok}' is not key=value")
+        for k, v in rv.items():
+            if k == "_invalid":
+                continue
+            if k not in REVIEW_KEYS:
+                errs.append(f"{where}: Review key '{k}' unknown (allowed: adversarial, cap, lenses)")
+            elif k == "cap" and not re.fullmatch(r"[1-9]", v):
+                errs.append(f"{where}: Review cap={v} must be 1-9")
+            elif k == "adversarial" and v not in ("yes", "no"):
+                errs.append(f"{where}: Review adversarial={v} must be yes or no")
+            elif k == "lenses" and v != "all" and (not v or any(x not in LENS_NAMES for x in v.split(","))):
+                errs.append(f"{where}: Review lenses={v} must be 'all' or a comma list of {', '.join(LENS_NAMES)}")
+        if t["tier_override"] is not None and not t["tier_override"]["reason"]:
+            errs.append(f"{where}: [tier:{t['tier_override']['tier']} reason=\"\"] needs a reason")
         b = t["budget"]
         for tok in b.get("_invalid", []):
             errs.append(f"{where}: Budget token '{tok}' is not key=value")

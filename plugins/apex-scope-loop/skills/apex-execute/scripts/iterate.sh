@@ -20,9 +20,11 @@
 #   TASK: <task-line>
 #   ACCEPTANCE: <criteria-line>
 #   BLOCKED_BY: <phase-or-empty>
-#   HEAD_SHA: <worktree HEAD at brief time>
+#   HEAD_SHA: <worktree HEAD at brief time — NOT a diff base; the reviewer's
+#             HEAD_SHA is the head after the build commit>
 #   TASK_BASE: <the task's diff base: the chain floor (ADR-0003); "none" when
 #              no fork point is recorded — risk-tier and complete then refuse>
+#   SINCE: <TASK_BASE again: the value for risk-tier.sh --since and round 1's SINCE>
 #   HARNESS: gibson | off                # APEX_GIBSON=0 turns the harness off
 #   LESSONS: <n> matching ...           # ratchet entries for this task's tags
 #   CONSECUTIVE_FAILURES: <n>
@@ -33,6 +35,11 @@
 #   REVIEW_MODE: full | verify  # round >= 2 re-reviews only the fixes since LAST_REVIEWED
 #   ADVERSARY_BUDGET: <n>       # max [blocking] findings per review (APEX_ADVERSARY_BUDGET, default 3)
 #   BACKLOG: <n> open ...       # hardening backlog items for this plan (backlog.sh)
+#   REVIEW_CAP / REVIEW_DIRECTIVE / FROZEN / THREATS: the task's review cap
+#                 (blocking rounds), Review: directive, freeze and Threats: list
+#   FINDINGS: <path> (<open> open, <residual> residual, <closed> closed)
+#   KNOWN_DEFECT_CLASSES: lessons matching the tags + closed finding classes
+#   LESSON_SUGGESTED: lessons.sh ... add ...  # a finding class seen in two tasks
 #   SWARM / ROUTE_DIRECTIVE / PATHS / BUDGET: the task's directives (0.3.0)
 #   STAGE: BUILD                          # recorded in the ACTIVE lock
 #   LANES: <line,line,...>                # optional; disjoint-Paths lane candidates
@@ -47,6 +54,7 @@
 set -euo pipefail
 
 PLAN="${1:?usage: iterate.sh PATH_TO_PLAN.md}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "STATUS: ERROR plan not found"; exit 1; }
 
 APEX_STATUS_PROTOCOL=1
@@ -225,6 +233,7 @@ echo "BUDGET: $BUDGET"
 echo "LINE_NO: $LINE_NO"
 echo "HEAD_SHA: $HEAD_SHA"
 echo "TASK_BASE: $TASK_BASE"
+echo "SINCE: $TASK_BASE"
 echo "STAGE: BUILD"
 [[ -n "$LANES" ]] && echo "LANES: $LANES"
 if [[ "${APEX_GIBSON:-1}" != "0" ]]; then
@@ -263,6 +272,54 @@ print("REVIEW_MODE: " + ("full" if n == 1 or last == "none" else "verify"))
 PY
 AB="${APEX_ADVERSARY_BUDGET:-3}"; [[ "$AB" =~ ^[1-9][0-9]{0,2}$ ]] || AB=3
 echo "ADVERSARY_BUDGET: $AB"
+# Review directive, cap and freeze (ADR-0004 addendum B, C).
+python3 - "$CHECKPOINT" "$LINE_NO" "$SEL" "${APEX_REVIEW_CAP:-3}" <<'PY' || true
+import json, sys
+path, line_no, sel, envcap = sys.argv[1:]
+t = json.loads(sel)["task"]
+raw = t.get("review_raw") or ""
+print("REVIEW_CAP: %s (blocking rounds per attempt%s)" % ((t.get("review") or {}).get("cap") or envcap, "; Review: directive" if (t.get("review") or {}).get("cap") else ""))
+if raw:
+    print("REVIEW_DIRECTIVE: " + raw)
+fz = (json.load(open(path)).get("freezes") or {}).get(line_no)
+if fz:
+    print("FROZEN: %s (%s/%s verdicts in; review of any other SHA is refused until the round is in or unfreeze)"
+          % (fz.get("sha"), fz.get("recorded", 0), fz.get("reviewers", 1)))
+for i, th in enumerate(t.get("threats") or [], 1):
+    print(("THREATS: %d\n" % len(t["threats"]) if i == 1 else "") + "  %d. %s" % (i, th))
+PY
+# Carried findings (addendum A) and known defect classes (addendum G).
+FSUM="$("$APEX_EXECUTE_SCRIPTS/findings.sh" "$PLAN_ABS" summary "$LINE_NO" 2>/dev/null || echo "? ? ?")"
+read -r F_OPEN F_RES F_CLOSED <<<"$FSUM"
+echo "FINDINGS: $("$APEX_EXECUTE_SCRIPTS/findings.sh" "$PLAN_ABS" path "$LINE_NO" 2>/dev/null) ($F_OPEN open, $F_RES residual, $F_CLOSED closed)"
+python3 - "$PLAN" "$TAGS" "$LESSONS_LEDGER" "$("$APEX_EXECUTE_SCRIPTS/findings.sh" "$PLAN_ABS" classes 2>/dev/null || true)" <<'PY' || true
+import os, re, sys
+plan, tags, ledger, closed = sys.argv[1:]
+want = {t.strip().lower() for t in tags.split(",") if t.strip()}
+lesson_classes, all_slugs = [], set()
+if os.path.isfile(ledger):
+    for b in re.split(r"\n(?=## L-\d+)", open(ledger, encoding="utf-8", errors="replace").read()):
+        m = re.match(r"## (L-\d+) · [^·]* · (\S+)", b)
+        if not m:
+            continue
+        all_slugs.add(m.group(2))
+        tm = re.search(r"^\*\*Tags:\*\*(.*)$", b, re.M)
+        have = {x.lstrip("#").lower() for x in (tm.group(1).split() if tm else [])}
+        if not want or want & have:
+            lesson_classes.append("%s:%s" % (m.group(1), m.group(2)))
+by_class = {}
+for row in closed.splitlines():
+    if "\t" in row:
+        ln, c = row.split("\t", 1)
+        by_class.setdefault(c, set()).add(ln)
+classes = lesson_classes + sorted(by_class)
+print("KNOWN_DEFECT_CLASSES: " + (", ".join(classes) if classes else "none"))
+for c, lines in sorted(by_class.items()):
+    if len(lines) >= 2 and c not in all_slugs and not any(c in s for s in all_slugs):
+        ls = sorted(lines, key=int)
+        print("LESSON_SUGGESTED: lessons.sh \"%s\" add \"%s\" \"finding class %s recurred in the tasks at lines %s\" \"<root cause>\" \"<harness fix>\" \"%s\""
+              % (plan, c, c, ", ".join(ls), tags or c))
+PY
 echo "BACKLOG: $("$APEX_EXECUTE_SCRIPTS/backlog.sh" "$PLAN_ABS" count 2>/dev/null || echo "?") open for this plan — read with: backlog.sh $PLAN list"
 
 # Routing (apex-dispatch, when installed beside this plugin). Its block sits

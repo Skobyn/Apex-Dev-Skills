@@ -88,6 +88,36 @@ apex_state_base() {
   fi
 }
 
+# apex_locate_plan PLAN — the plan file the scripts act on (ADR-0004 addendum
+# H): a path given from inside the plan worktree (apex-scope-loop/* branch)
+# means the base checkout's copy (the one complete ticks and iterate reads);
+# a relative path that does not exist from a linked worktree is looked up in
+# the main checkout. Anything else is returned unchanged.
+apex_locate_plan() {
+  local p="$1" dir top gd cd main rel br
+  if [[ -f "$p" ]]; then dir="$(cd "$(dirname "$p")" && pwd -P)"; else dir="$(pwd -P)"; fi
+  top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || { printf '%s' "$p"; return 0; }
+  gd="$(git -C "$dir" rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
+  cd="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  [[ -n "$gd" && -n "$cd" && "$gd" != "$cd" ]] || { printf '%s' "$p"; return 0; }   # not a linked worktree
+  main="$(git -C "$dir" worktree list --porcelain 2>/dev/null | awk '/^worktree /{p=substr($0,10); getline n; if (n != "bare") print p; exit}')"
+  [[ -n "$main" && -d "$main" ]] || { printf '%s' "$p"; return 0; }
+  top="$(cd "$top" && pwd -P)"; main="$(cd "$main" && pwd -P)"
+  if [[ -f "$p" ]]; then
+    br="$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+    [[ "$br" == apex-scope-loop/* ]] || { printf '%s' "$p"; return 0; }
+    rel="$dir/$(basename "$p")"; rel="${rel#"$top"/}"
+  else
+    rel="$dir/$p"; rel="${rel#"$top"/}"
+  fi
+  if [[ "$rel" != /* && -f "$main/$rel" ]]; then
+    [[ -f "$p" ]] && echo "note: using the base checkout's plan $main/$rel (not the plan worktree's copy)" >&2
+    printf '%s' "$main/$rel"
+  else
+    printf '%s' "$p"
+  fi
+}
+
 # apex_resolve PLAN — set PLAN_ABS, PLAN_TOP, REPO_ROOT, STATE_BASE,
 # PLAN_HASH, STATE_DIR, CHECKPOINT and LESSONS_LEDGER, then run apex_guard (fatal on a
 # repository mismatch unless the caller declared APEX_RESOLVE_MODE=read).

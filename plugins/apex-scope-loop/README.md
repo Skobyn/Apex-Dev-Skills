@@ -134,7 +134,8 @@ build swarm → commit → green-gate.sh check → risk-tier.sh → gibson-revie
 - **A fixed bar.** `[blocking]` means a realistic actor under that model can cause it in an ordinary flow, or Acceptance is unmet, or tests were weakened. At most `APEX_ADVERSARY_BUDGET` (3) blocking findings per pass. Everything else goes to the hardening backlog (`backlog.sh`, `.claude/apex-scope-loop/BACKLOG.md`), which a later docs task consumes.
 - **Verify-only re-reviews.** Round 1 is the full review (and the attempt's one full adversarial pass); later rounds check the prior findings and the fixes since `LAST_REVIEWED`.
 - **Ask the human sooner.** After REQUEST_CHANGES in 2 rounds, `checkpoint.sh review` prints `ASK_HUMAN:`. The human can accept the residual risk at that exact head with `checkpoint.sh waive`; the gate, the tier, G12 and Acceptance still apply, and the completion is recorded as waived, not approved.
-- **Calibrated tiers.** Content signals in tests, fixtures, smoke files, examples and docs no longer raise Tier C (their paths still do), and an explicit `[tier:a]`/`[tier:b]` tag decides over size and content signals, never over Tier C paths or `[security]`/`[tier:c]`.
+- **Carried findings, frozen heads, shared snapshots.** `findings.sh` keeps each task's findings (a defect counted once; non-blocking ones go to the backlog), `checkpoint.sh freeze` holds the head for a review round, `snapshot.sh` gives reviewers one read-only checkout per commit, and `status.sh --review-metrics` measures rounds and minutes. The review cap counts only rounds that requested changes; a task's `Review:` directive can set it.
+- **Calibrated tiers.** Content signals in tests, fixtures, smoke files, examples and docs no longer raise Tier C (their paths still do), and an explicit `[tier:a reason="…"]`/`[tier:b reason="…"]` override decides over size and content signals (the reason is recorded), never over Tier C paths or `[security]`/`[tier:c]`.
 
 Full mapping, and what was deliberately left out (cross-vendor routing, GitHub claims, CI templates): [skills/apex-execute/docs/GIBSON_HARNESS.md](skills/apex-execute/docs/GIBSON_HARNESS.md). For repo-level setup (CI gates, branch protection, labels), run The Gibson's own `gibson-setup` skill against the target repo.
 
@@ -166,7 +167,7 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 50 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, and the review-loop calibration of ADR-0004). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 59 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, and the review-loop calibration of ADR-0004). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 

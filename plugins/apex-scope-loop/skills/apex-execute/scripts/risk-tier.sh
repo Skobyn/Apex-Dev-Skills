@@ -24,6 +24,12 @@
 #            [security] or [tier:c] force Tier C. [tier:a] / [tier:b] are
 #            authoritative over the Tier B signals and the content signals,
 #            never over Tier C path signals or [security] / [tier:c] (ADR-0004).
+#   --raise A|B|C --reason TEXT  record a higher tier a reviewer asked for (with
+#            its reason; the tier only ratchets up). [tier:a]/[tier:b] take
+#            effect only as [tier:a reason="..."] / [tier:b reason="..."];
+#            the reason is recorded in the tier record.
+#   Size and breadth alone never go above Tier B (one six-lens reviewer, no
+#   fan-out, no G12); only Tier C brings the fan-out, adversarial pass and G12.
 #   Content signals in added lines of test/fixture/smoke/example/docs files
 #   are ignored (noted in a REASON line); their paths are still classified.
 #
@@ -35,9 +41,11 @@ set -euo pipefail
 PLAN="${1:?usage: risk-tier.sh PLAN.md LINE_NO [--since SHA] [--tags t1,t2]}"
 LINE_NO="${2:?line_no required}"
 shift 2
-SINCE=""; TAGS=""; CLASSIFY=0; NO_RECORD=0
+SINCE=""; TAGS=""; CLASSIFY=0; NO_RECORD=0; RAISE=""; RAISE_REASON=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --raise) RAISE="${2:?}"; shift 2 ;;
+    --reason) RAISE_REASON="${2-}"; shift 2 ;;
     --since) SINCE="${2:?}"; shift 2 ;;
     --tags)  TAGS="${2-}"; shift 2 ;;
     --classify) CLASSIFY=1; shift ;;
@@ -45,8 +53,13 @@ while [[ $# -gt 0 ]]; do
     *) echo "ERROR: unknown arg $1" >&2; exit 2 ;;
   esac
 done
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 [[ "$LINE_NO" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "ERROR: LINE_NO must be a plan line number, got '$LINE_NO'" >&2; exit 2; }
+if [[ -n "$RAISE" ]]; then
+  [[ "$RAISE" =~ ^[ABC]$ ]] || { echo "ERROR: --raise takes A, B or C" >&2; exit 2; }
+  [[ -n "${RAISE_REASON//[[:space:]]/}" ]] || { echo "ERROR: --raise needs --reason \"<why, e.g. the reviewer's finding>\"" >&2; exit 2; }
+fi
 
 APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
 # shellcheck source=_lib.sh
@@ -62,7 +75,10 @@ WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 BASE_BRANCH="$(read_field base_branch)"
 
 # The task's own tags always count (a caller cannot drop [tier:c]).
-PLAN_TAGS="$(python3 -c 'import json,sys; print(",".join(json.loads(sys.argv[1])["tags"]))' "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO")")"
+TASK_JSON="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO")"
+PLAN_TAGS="$(python3 -c 'import json,sys; print(",".join(json.loads(sys.argv[1])["tags"]))' "$TASK_JSON")"
+# An explicit tier override: [tier:a reason="..."] / [tier:b reason="..."] (the reason is required).
+OVERRIDE="$(python3 -c 'import json,sys; o=json.loads(sys.argv[1]).get("tier_override") or {}; print((o.get("tier") or "").upper() + "\t" + (o.get("reason") or "") if o.get("reason") else "")' "$TASK_JSON")"
 TAGS="${TAGS:+$TAGS,}$PLAN_TAGS"
 # The task's diff base is the chain floor (ADR-0003; apex_floor in _lib.sh).
 # --since may only widen the diff (an ancestor of the floor), never narrow it.
@@ -119,9 +135,13 @@ raise() { # raise <tier> <reason>
 # An explicit [tier:a] / [tier:b] tag (ADR-0004) is authoritative over the
 # Tier B size/breadth/shared signals and the content signals, never over a
 # Tier C path signal or a [security] / [tier:c] tag (nor the decision layer).
-TAG_TIER=""
-case ",$TAGS," in *,tier:a,*|*,tier-a,*) TAG_TIER=A ;; esac
-case ",$TAGS," in *,tier:b,*|*,tier-b,*) TAG_TIER=B ;; esac
+# The override needs a reason (ADR-0004 addendum E); a bare [tier:a] / [tier:b]
+# tag is noted and has no effect.
+TAG_TIER=""; TAG_REASON=""
+if [[ -n "$OVERRIDE" ]]; then TAG_TIER="${OVERRIDE%%$'\t'*}"; TAG_REASON="${OVERRIDE#*$'\t'}"; fi
+case ",$TAGS," in *,tier:a,*|*,tier-a,*|*,tier:b,*|*,tier-b,*)
+  [[ -n "$TAG_TIER" ]] || REASONS+=("a bare [tier:a]/[tier:b] tag has no effect: write [tier:a reason=\"...\"] or [tier:b reason=\"...\"]") ;;
+esac
 
 # Tier C: path signals (case-insensitive). Fail closed: a false positive only
 # costs review; a miss lands an auth change unreviewed. Every token matches
@@ -222,7 +242,7 @@ while IFS=$'\t' read -r kind a b; do
 done <<<"$CONTENT_OUT"
 if [[ -n "$CONTENT_HIT" ]]; then
   if [[ -n "$TAG_TIER" ]]; then
-    REASONS+=("$CONTENT_HIT — overridden by the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER")] tag (reviewers: say so if this is real Tier C)")
+    REASONS+=("$CONTENT_HIT — overridden by the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER") reason=\"$TAG_REASON\"] (reviewers: say so if this is real Tier C)")
   else
     raise C "$CONTENT_HIT"
   fi
@@ -242,11 +262,14 @@ if grep -aqiE '(^|/)(api|routes?|shared|common|core|lib)/' <<<"$FILES"; then
   BSIG+=("touches a shared module or API route")
 fi
 if [[ -n "$TAG_TIER" ]]; then
-  for b in "${BSIG[@]}"; do REASONS+=("$b — the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER")] tag decides"); done
-  [[ "$TAG_TIER" == B ]] && raise B "task tagged [tier:b]"
+  for b in "${BSIG[@]}"; do REASONS+=("$b — the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER") reason=\"$TAG_REASON\"] decides"); done
+  [[ "$TAG_TIER" == B ]] && raise B "task override [tier:b reason=\"$TAG_REASON\"]"
 else
   for b in "${BSIG[@]}"; do raise B "$b"; done
 fi
+
+# A reviewer-raised tier (recorded by the orchestrator with its reason).
+[[ -n "$RAISE" ]] && raise "$RAISE" "raised to Tier $RAISE: $RAISE_REASON"
 
 # Decision layer (optional): max(heuristic, decision). The state holds
 # observed facts only (paths, sizes, tags), never another model's labels.
@@ -290,9 +313,9 @@ fi
 # Persist (tier only ratchets upward — diffs may drift into C, never out).
 # Under checkpoint.sh's state lock, written atomically. --no-record (used by
 # checkpoint.sh complete) prints the heuristic for the diff without recording.
-[[ "$NO_RECORD" == "1" ]] || TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" <<'PY'
+[[ "$NO_RECORD" == "1" ]] || TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" "$TAG_TIER" "$TAG_REASON" "$RAISE" "$RAISE_REASON" <<'PY'
 import fcntl, json, os, sys
-path, line_no, tier, since, lock, head = sys.argv[1:]
+path, line_no, tier, since, lock, head, ov_tier, ov_reason, raise_tier, raise_reason = sys.argv[1:]
 fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(fd, fcntl.LOCK_EX)
 s = json.load(open(path))
@@ -303,7 +326,16 @@ final = tier if order[tier] >= order.get(prev, 0) else prev
 # `head` binds the tier to the code it classified: complete refuses a tier
 # recorded for an older head.
 epoch = s.get("epoch", 0)               # the tier still ratchets across a refork
-tiers[line_no] = {"tier": final, "since": since, "head": head, "epoch": epoch}
+prev_rec = tiers.get(line_no) or {}
+rec = {"tier": final, "since": since, "head": head, "epoch": epoch}
+if ov_tier:
+    rec["override"] = {"tier": ov_tier, "reason": ov_reason}      # the plan's explicit override and why
+raised = list(prev_rec.get("raised") or [])
+if raise_tier:
+    raised.append({"tier": raise_tier, "reason": raise_reason})  # a reviewer raised it (never lowers)
+if raised:
+    rec["raised"] = raised
+tiers[line_no] = rec
 tmp = path + ".tmp"
 try:
     os.unlink(tmp)
