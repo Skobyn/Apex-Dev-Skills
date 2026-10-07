@@ -190,7 +190,7 @@ def exempt(path):
         return False
     base = path.rsplit("/", 1)[-1].lower()
     return bool(EXEMPT_DIR.search(path) or re.search(r"_test\.[^/]*$", base) or re.search(r"\.test\.[^/]*$", base)
-                or "smoke" in base or base.endswith(".md"))
+                or re.search(r"(^|/)(scripts|tests?)/(.*/)?[^/]*smoke[^/]*$", path, re.I))
 def unquote(h):
     """b/<path> from a +++ header; None when it cannot be read exactly."""
     h = h.rstrip("\n")
@@ -240,9 +240,17 @@ while IFS=$'\t' read -r kind a b; do
     SKIP) REASONS+=("content signals ignored in test/fixture/smoke/example/docs file: $a (its path is still classified)") ;;
   esac
 done <<<"$CONTENT_OUT"
+OVERRIDDEN_C=""
 if [[ -n "$CONTENT_HIT" ]]; then
   if [[ -n "$TAG_TIER" ]]; then
     REASONS+=("$CONTENT_HIT — overridden by the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER") reason=\"$TAG_REASON\"] (reviewers: say so if this is real Tier C)")
+    # Bound to its reason: a signal the reason does not mention was not
+    # anticipated by the plan and is printed prominently.
+    if python3 -c 'import re,sys; t=re.sub(r"[^a-z0-9]+","",sys.argv[1].lower()); sys.exit(0 if t and t in re.sub(r"[^a-z0-9]+","",sys.argv[2].lower()) else 1)' "$(sed -n "s/^tier-c content signal in diff: '\(.*\)' (.*/\1/p" <<<"$CONTENT_HIT")" "$TAG_REASON"; then
+      OVERRIDDEN_C="TIER_C_OVERRIDDEN: $CONTENT_HIT — anticipated by the override reason \"$TAG_REASON\""
+    else
+      OVERRIDDEN_C="TIER_C_UNANTICIPATED: $CONTENT_HIT — the override reason \"$TAG_REASON\" does not mention it; reviewers must decide whether this is real Tier C (raise with risk-tier.sh --raise C --reason ...)"
+    fi
   else
     raise C "$CONTENT_HIT"
   fi
@@ -267,6 +275,21 @@ if [[ -n "$TAG_TIER" ]]; then
 else
   for b in "${BSIG[@]}"; do raise B "$b"; done
 fi
+
+# The lens each Tier C signal belongs to (ADR-0004: a Tier C lens narrowing
+# must keep them), from every Tier C reason, an overridden content signal included.
+SIGNAL_LENSES="$(printf '%s\n' ${REASONS[@]+"${REASONS[@]}"} | python3 -c '
+import re, sys
+sig = [l for l in sys.stdin.read().splitlines() if l.startswith(("tier-c ", "task tagged"))]
+txt = "\n".join(sig).lower()
+out = []
+if re.search(r"stripe|paypal|billing|payment|invoice|pricing|price|checkout|subscription|refund|ledger|wallet|charge\(|amount_cents|currency|money", txt):
+    out.append("money")
+if re.search(r"auth|login|logout|session|oauth|password|passwd|credential|permission|secret|crypto|encrypt|security|middleware|jwt|rbac|saml|csp|cors|role|bcrypt|argon2|verify_?token|set-cookie|httponly|samesite|csrf|sso|acl", txt):
+    out.append("security")
+if re.search(r"consent|gdpr|ccpa|privacy|personal|pii|date_of_birth|ssn|social_security", txt):
+    out.append("consent-pii")
+print(",".join(out))' 2>/dev/null || true)"
 
 # A reviewer-raised tier (recorded by the orchestrator with its reason).
 [[ -n "$RAISE" ]] && raise "$RAISE" "raised to Tier $RAISE: $RAISE_REASON"
@@ -313,9 +336,9 @@ fi
 # Persist (tier only ratchets upward — diffs may drift into C, never out).
 # Under checkpoint.sh's state lock, written atomically. --no-record (used by
 # checkpoint.sh complete) prints the heuristic for the diff without recording.
-[[ "$NO_RECORD" == "1" ]] || TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" "$TAG_TIER" "$TAG_REASON" "$RAISE" "$RAISE_REASON" <<'PY'
+[[ "$NO_RECORD" == "1" ]] || TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" "$TAG_TIER" "$TAG_REASON" "$RAISE" "$RAISE_REASON" "$(printf '%s\037' ${REASONS[@]+"${REASONS[@]}"})" "$SIGNAL_LENSES" "$OVERRIDDEN_C" <<'PY'
 import fcntl, json, os, sys
-path, line_no, tier, since, lock, head, ov_tier, ov_reason, raise_tier, raise_reason = sys.argv[1:]
+path, line_no, tier, since, lock, head, ov_tier, ov_reason, raise_tier, raise_reason, reasons, sig, overridden = sys.argv[1:]
 fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(fd, fcntl.LOCK_EX)
 s = json.load(open(path))
@@ -335,6 +358,12 @@ if raise_tier:
     raised.append({"tier": raise_tier, "reason": raise_reason})  # a reviewer raised it (never lowers)
 if raised:
     rec["raised"] = raised
+# What reviewers must see (iterate.sh prints them as TIER_REASONS): every
+# reason, the lenses of the Tier C signals, an overridden Tier C signal.
+rec["reasons"] = [x for x in dict.fromkeys(reasons.split("\x1f")) if x][:30]
+rec["signal_lenses"] = [x for x in sig.split(",") if x]
+if overridden:
+    rec["overridden_c"] = overridden
 tiers[line_no] = rec
 tmp = path + ".tmp"
 try:
@@ -351,6 +380,8 @@ PY
 echo "TIER: $TIER"
 echo "HEAD: $HEAD_NOW"
 echo "DIFF: $NFILES file(s), $LINES line(s) since ${SINCE:0:12}"
+[[ -n "$OVERRIDDEN_C" ]] && echo "$OVERRIDDEN_C"
+echo "SIGNAL_LENSES: $SIGNAL_LENSES"
 if [[ ${#REASONS[@]} -eq 0 ]]; then
   echo "REASON: no elevated-risk signals"
 else

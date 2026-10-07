@@ -32,7 +32,11 @@
 #                 (ADR-0004: every reviewer gets it verbatim)
 #   LAST_REVIEWED: <sha>|none   # last reviewed SHA in this attempt and epoch
 #   REVIEW_ROUND: <n>           # round of the next review (1 = full review)
-#   REVIEW_MODE: full | verify  # round >= 2 re-reviews only the fixes since LAST_REVIEWED
+#   REVIEW_MODE: full | verify  # round >= 2 re-reviews only the fixes since LAST_REVIEWED;
+#                 full again when the tier rose above every tier reviewed in the
+#                 attempt, or a Tier C attempt has no adversarial review yet
+#   REVIEW_SINCE: <sha>         # SINCE for the next review (TASK_BASE when full)
+#   TIER_REASONS: the recorded tier's reasons ("  ! " an overridden Tier C signal)
 #   ADVERSARY_BUDGET: <n>       # max [blocking] findings per review (APEX_ADVERSARY_BUDGET, default 3)
 #   BACKLOG: <n> open ...       # hardening backlog items for this plan (backlog.sh)
 #   REVIEW_CAP / REVIEW_DIRECTIVE / FROZEN / THREATS: the task's review cap
@@ -251,9 +255,9 @@ THREAT_OUT="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" threat "$PLAN_ABS" "$LI
 THREAT_SRC="${THREAT_OUT%%$'\n'*}"
 echo "THREAT_MODEL: source ${THREAT_SRC#SOURCE: }"
 printf '%s\n' "$THREAT_OUT" | sed '1d; s/^/  > /'
-python3 - "$CHECKPOINT" "$LINE_NO" "$HEAD_SHA" <<'PY' || { echo "LAST_REVIEWED: none"; echo "REVIEW_ROUND: 1"; echo "REVIEW_MODE: full"; }
+python3 - "$CHECKPOINT" "$LINE_NO" "$HEAD_SHA" "$TASK_BASE" <<'PY' || { echo "LAST_REVIEWED: none"; echo "REVIEW_ROUND: 1"; echo "REVIEW_MODE: full"; echo "REVIEW_SINCE: $TASK_BASE"; }
 import json, sys
-path, line_no, head = sys.argv[1:]
+path, line_no, head, task_base = sys.argv[1:]
 s = json.load(open(path))
 r = (s.get("reviews") or {}).get(line_no) or {}
 attempt, epoch = r.get("attempt", 1), s.get("epoch", 0)
@@ -266,9 +270,31 @@ if head in rounds and not any(x.get("sha") == head and x.get("verdict") != "APPR
     n = rounds.index(head) + 1
 else:
     n = len(rounds) + 1
+order = {"A": 0, "B": 1, "C": 2}
+trec = (s.get("tiers") or {}).get(line_no) or {}
+tier = trec.get("tier") if trec.get("epoch", 0) == epoch else None
+reviewed_at = max([order.get(x.get("tier") or "A", 0) for x in recs] or [-1])
+why = ""
+if n == 1 or last == "none":
+    mode = "full"
+elif tier in order and order[tier] > reviewed_at:
+    mode, why = "full", "the tier rose to %s after reviews at %s in this attempt" % (tier, "ABC"[max(reviewed_at, 0)])
+elif tier == "C" and not any(x.get("role") == "adversarial" for x in recs):
+    mode, why = "full", "a Tier C attempt with no adversarial review yet"
+else:
+    mode = "verify"
 print("LAST_REVIEWED: " + last)
 print("REVIEW_ROUND: %d" % n)
-print("REVIEW_MODE: " + ("full" if n == 1 or last == "none" else "verify"))
+print("REVIEW_MODE: " + mode + (" (" + why + ")" if why else ""))
+print("REVIEW_SINCE: " + (task_base if mode == "full" else last))
+# The classifier's reasons reach every reviewer (ADR-0004 §8): the recorded
+# tier's REASON lines, an overridden Tier C signal first.
+if tier:
+    print("TIER_REASONS: Tier %s at %s (risk-tier.sh; pass these to every reviewer)" % (tier, str(trec.get("head") or "?")[:12]))
+    if trec.get("overridden_c"):
+        print("  ! " + trec["overridden_c"])
+    for x in trec.get("reasons") or []:
+        print("  - " + x)
 PY
 AB="${APEX_ADVERSARY_BUDGET:-3}"; [[ "$AB" =~ ^[1-9][0-9]{0,2}$ ]] || AB=3
 echo "ADVERSARY_BUDGET: $AB"

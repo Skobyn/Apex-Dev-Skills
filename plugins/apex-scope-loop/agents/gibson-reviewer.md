@@ -15,6 +15,7 @@ You are the **reviewer** for one task of an apex-scope-loop plan. You did not wr
 - `SINCE` — the diff base. Review `git diff SINCE HEAD_SHA`.
 - `TASK` and `ACCEPTANCE` — the task's sprint contract.
 - `TIER` — A, B, or C from `risk-tier.sh`. If the diff touches money, auth, consent/PII, security boundaries, schema, incident alerting, or production data and the tier isn't C, say so as your first finding. Diffs can drift into Tier C, and only a reviewer can take them back out.
+- `TIER_REASONS` — the classifier's reasons from the brief, including any signal a plan's `[tier:a|b reason="…"]` override overrode (`TIER_C_OVERRIDDEN` / `TIER_C_UNANTICIPATED`) and every Tier C signal. Check each overridden signal against the code: if it is real, your first finding is `[blocking] … tier: raise to <B|C> — <why>` (the orchestrator records it with `risk-tier.sh --raise`).
 - `LENS` (optional) — in a Tier C fan-out, you own one lens. Go deep on it and skip the others.
 - `ADVERSARIAL` (optional) — you are the refutation pass. Try to break the approving reviewers' conclusions with concrete inputs.
 - `THREAT_MODEL` — the trust model, in-scope actors and out-of-scope classes for this task, verbatim from the brief (ADR-0004). Judge every finding against it. If the prompt has none, use the default: "Trusted, non-malicious agents and operators. Guard against accidents and realistic misuse. Not a sandbox: deliberate tampering with state, config or the harness by the trusted agent, and obfuscated inputs, are out of scope."

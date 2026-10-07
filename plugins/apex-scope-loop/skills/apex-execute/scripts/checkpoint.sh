@@ -227,9 +227,9 @@ case "$ACTION" in
       COMPUTED="$(sed -n '/^TIER: /{s///p;q;}' <<<"$RT_OUT")"
       [[ "$COMPUTED" =~ ^[ABC]$ && "$(sed -n '/^HEAD: /{s///p;q;}' <<<"$RT_OUT")" == "$HEAD_V" ]] \
         || { echo "[checkpoint] REFUSED complete: the task diff was not classified at the head ${HEAD_V:0:12} (did the head move?)" >&2; exit 1; }
-      CK_OUT="$(python3 - "$CHECKPOINT" "$STATE_DIR/gate/last.json" "$LINE_NO" "$HEAD_V" "$SKIP_REVIEW" "$COMPUTED" "$FLOOR" "$DISPATCH_STATE" "$DISPATCH" "$PLAN_HASH" "$PLAN" "$TASK_JSON" <<'PY'
+      CK_OUT="$(python3 - "$CHECKPOINT" "$STATE_DIR/gate/last.json" "$LINE_NO" "$HEAD_V" "$SKIP_REVIEW" "$COMPUTED" "$FLOOR" "$DISPATCH_STATE" "$DISPATCH" "$PLAN_HASH" "$PLAN" "$TASK_JSON" "$(sed -n '/^SIGNAL_LENSES: /{s///p;q;}' <<<"$RT_OUT")" <<'PY'
 import json, os, sys
-cp, gate_path, line_no, head, skip, computed, floor, dstate, droot, plan_hash, plan_arg, task_json = sys.argv[1:]
+cp, gate_path, line_no, head, skip, computed, floor, dstate, droot, plan_hash, plan_arg, task_json, signal_lenses = sys.argv[1:]
 s = json.load(open(cp))
 problems = []
 order = {"A": 0, "B": 1, "C": 2}
@@ -267,13 +267,29 @@ at_head = [x for x in records if x.get("sha") == head]
 # residual risk. It covers review findings only: the gate, the tier, G12,
 # --skip-review rules, refused/unparsed records and Acceptance still apply,
 # and a reviewer who never reviewed this head is never counted.
-waiver = None
+# Only the REQUEST_CHANGES records the waiver listed when it was written are
+# covered (by index, verdict, SHA and source; the count must match
+# waived_verdicts): a verdict recorded after the waiver is not.
+waiver, waived_ids, covered_rids = None, set(), set()
 for i, w in enumerate(s.get("operator_overrides") or []):
     if isinstance(w, dict) and w.get("kind") == "review_waiver" and str(w.get("line")) == line_no and w.get("sha") == head \
             and w.get("epoch", 0) == epoch and w.get("attempt") == attempt and str(w.get("reply") or "").strip():
-        waiver = (i, w)
+        cov = w.get("covered") if isinstance(w.get("covered"), list) else []
+        ids, rids = set(), set()
+        for c in cov:
+            j = c.get("index") if isinstance(c, dict) else None
+            if isinstance(j, int) and 0 <= j < len(records):
+                x = records[j]
+                if x.get("sha") == head and x.get("verdict") == "REQUEST_CHANGES" and (x.get("source") or "") == (c.get("source") or ""):
+                    ids.add(id(x))
+                    if str(x.get("source") or "").startswith("record:"):
+                        rids.add(x["source"][7:])
+        if ids and len(ids) == w.get("waived_verdicts"):
+            waiver = (i, w)
+            waived_ids |= ids
+            covered_rids |= rids
 def waived(x):
-    return waiver is not None and x.get("verdict") == "REQUEST_CHANGES"
+    return id(x) in waived_ids
 used_waiver = any(waived(x) for x in at_head)
 if any(x.get("verdict") != "APPROVE" and not waived(x) for x in at_head):
     # Any attempt: a failure starts a new attempt, it does not launder a verdict.
@@ -289,30 +305,52 @@ elif not skip:
     elif tier == "C" and not any(x.get("role") == "adversarial" and (x.get("verdict") == "APPROVE" or waived(x)) for x in recs):
         problems.append("Tier C: an adversarial review (--role adversarial) approving this exact head is required")
 # The plan's Review: directive (ADR-0004 addendum B). Tier A/B: it may drop
-# the adversarial pass and choose the lenses. Tier C: it may narrow the lens
-# fan-out to no fewer than 3; the adversarial pass and G12 stay mandatory.
+# the adversarial pass and choose the lenses. Tier C (and, without dispatch
+# state, a task tagged security/auth/money/billing/payment/pii/consent/
+# migration): it may narrow the lens fan-out to no fewer than 3 DISTINCT
+# lenses, which must include the lens of each triggering signal (money,
+# security, consent-pii); the adversarial pass and G12 stay. With dispatch
+# state it never goes below the active route's review shape.
 tj = json.loads(task_json)
 rdir = tj.get("review") or {}
 dir_applied, dir_ignored = [], []
 need_adversarial_override = None          # None = shape decides
 want_lenses = None
+SENSITIVE_TAGS = {"security", "tier:c", "tier-c", "auth", "money", "billing", "payment", "payments", "pii", "consent", "migration"}
+strict = tier == "C" or (not os.path.isdir(dstate) and bool(set(tj.get("tags") or []) & SENSITIVE_TAGS))
+signal = {x for x in signal_lenses.split(",") if x}
+for x in (trec.get("signal_lenses") or []):
+    signal.add(x)
+route_floor = None
+if os.path.isdir(dstate):
+    try:
+        ar = json.load(open(os.path.join(dstate, "active-route.json")))
+        if isinstance(ar, dict) and str(ar.get("line")) == line_no and isinstance(ar.get("router"), dict):
+            route_floor = ar["router"].get("review_shape")
+    except Exception:
+        pass
 if rdir:
     lz = rdir.get("lenses")
     if lz and lz != "all":
-        ls = [x for x in lz.split(",") if x]
-        if tier == "C" and len(ls) < 3:
-            dir_ignored.append(f"lenses={lz} (Tier C keeps at least 3 lenses: all six required)")
+        ls = sorted({x for x in lz.split(",") if x})
+        if route_floor == "fanout6+adversarial":
+            dir_ignored.append(f"lenses={lz} (the active route's review shape {route_floor} needs all six)")
+        elif strict and len(ls) < 3:
+            dir_ignored.append(f"lenses={lz} (Tier C keeps at least 3 distinct lenses: all six required)")
         else:
-            want_lenses = set(ls)
-            dir_applied.append(f"lenses={lz}")
+            want_lenses = set(ls) | (signal if strict else set())
+            extra = sorted(want_lenses - set(ls))
+            dir_applied.append(f"lenses={','.join(ls)}" + (f" (+{','.join(extra)} required by the tier signals)" if extra else ""))
     if rdir.get("adversarial") == "no":
-        if tier == "C":
-            dir_ignored.append("adversarial=no (mandatory for Tier C)")
+        if strict:
+            dir_ignored.append("adversarial=no (mandatory for Tier C / sensitive tasks)")
+        elif route_floor == "fanout6+adversarial":
+            dir_ignored.append(f"adversarial=no (the active route's review shape {route_floor} requires it)")
         else:
             need_adversarial_override = False
             dir_applied.append("adversarial=no")
     if rdir.get("cap"):
-        dir_applied.append(f"cap={rdir['cap']}")
+        dir_applied.append(f"cap={rdir['cap']}" + (" (may only lower the cap here)" if strict else ""))
 if tier == "C":
     a = s.get("approvals", {}).get(line_no)
     if not a or a.get("sha") != head or a.get("epoch", 0) != epoch:
@@ -357,7 +395,7 @@ if os.path.isdir(dstate) and not skip:
         except Exception:
             continue
         if isinstance(rec, dict) and rec.get("head_sha") == head and for_line(rec) and (rec.get("refused") or rec.get("verdict") != "APPROVE") \
-                and not (waiver and not rec.get("refused") and rec.get("verdict") == "REQUEST_CHANGES"):
+                and not (not rec.get("refused") and rec.get("verdict") == "REQUEST_CHANGES" and str(rec.get("record_id") or "") in covered_rids):
             bad.append("%s (%s)" % (f[:-5], "refused by the transcript audit" if rec.get("refused") else rec.get("verdict")))
     try:
         for ln in open(os.path.join(dstate, "ledger.jsonl"), encoding="utf-8"):
@@ -366,7 +404,8 @@ if os.path.isdir(dstate) and not skip:
             except ValueError:
                 continue
             if row.get("event") == "verdict" and row.get("source") in ("hook", "shim") and row.get("head_sha") == head \
-                    and for_line(row) and row.get("verdict") != "APPROVE" and not (waiver and row.get("verdict") == "REQUEST_CHANGES"):
+                    and for_line(row) and row.get("verdict") != "APPROVE" \
+                    and not (row.get("verdict") == "REQUEST_CHANGES" and str(row.get("record_id") or "") in covered_rids):
                 bad.append("ledger seq %s (%s by %s)" % (row.get("seq"), row.get("verdict"), row.get("agent_id") or row.get("role")))
     except OSError:
         pass
@@ -412,8 +451,12 @@ if os.path.isdir(dstate) and not skip:
             print("DIVERSITY_WARN: " + msg + "; " + why)
 if not problems and used_waiver:
     print("WAIVED: %d" % waiver[0])
-if not problems and rdir:
-    print("DIRECTIVE: " + json.dumps({"directive": tj.get("review_raw"), "tier": tier, "applied": dir_applied, "ignored": dir_ignored}))
+if rdir:
+    drec = json.dumps({"directive": tj.get("review_raw"), "tier": tier, "applied": dir_applied, "ignored": dir_ignored})
+    if problems:
+        print("[checkpoint] Review: directive at line " + line_no + ": " + drec, file=sys.stderr)
+    else:
+        print("DIRECTIVE: " + drec)
 if problems:
     print("[checkpoint] REFUSED complete @ line " + line_no + ":", file=sys.stderr)
     for p in problems:
@@ -478,6 +521,7 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$VERDICT" "$LINE_NO" "$SKIP_REVIEW" "$HEAD_
       "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("id") or "")' "$TASK_JSON")" "$WAIVED_IDX" "$DIRECTIVE_REC"
     apex_lock_stage "$PLAN_HASH" DONE   # this plan's lock becomes reclaimable until its next iterate
     "$APEX_EXECUTE_SCRIPTS/snapshot.sh" "$PLAN" prune 9>&- >/dev/null 2>&1 || true   # review snapshots are per head
+    "$APEX_EXECUTE_SCRIPTS/backlog.sh" "$PLAN" confirm "$LINE_NO" "$HEAD_V" 9>&- 2>/dev/null | grep -v 'confirmed nothing' || true
     echo "[checkpoint] complete @ line $LINE_NO ($VERDICT)${WAIVED_IDX:+ — review findings at ${HEAD_V:0:12} accepted by human waiver (operator_overrides[$WAIVED_IDX]); recorded as waived, not approved}"
     ;;
 
@@ -531,8 +575,10 @@ elif n >= int(esc):
 r = s.setdefault("reviews", {}).setdefault(line_no, {})
 r["attempt"] = r.get("attempt", 1) + 1
 r["rounds"] = []
+(s.get("freezes") or {}).pop(line_no, None)     # a new attempt is never frozen
 save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:-2}" "${APEX_ERROR_BUDGET:-3}" "${APEX_ATTEMPT_CAP:-6}" \
       "$PROGRESS" "$HEAD_F" "$FLOOR_F"
+    "$APEX_EXECUTE_SCRIPTS/backlog.sh" "$PLAN" reopen "$LINE_NO" 9>&- >/dev/null 2>&1 || true   # pending closes of a failed attempt
     # apex-dispatch decides the next rung (effort+1, model+1, diagnoser, HALT).
     # (<state>/dispatch-shadow/ holds the route while apex-dispatch is not enforcing.)
     ROUTE_FILE="$DISPATCH_STATE/active-route.json"
@@ -574,16 +620,15 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:
     # A plan's Review: cap=<n> sets this task's cap (ADR-0004 addendum B).
     REVIEW_CAP="${APEX_REVIEW_CAP:-3}"
     DCAP="$(python3 -c 'import json,sys; print((json.loads(sys.argv[1]).get("review") or {}).get("cap") or "")' "$TASK_JSON")"
-    [[ -n "$DCAP" ]] && REVIEW_CAP="$DCAP"
     case "$VERDICT" in APPROVE|REQUEST_CHANGES) ;; *) echo "ERROR: verdict must be APPROVE or REQUEST_CHANGES" >&2; exit 1 ;; esac
     [[ -z "$ROLE" || "$ROLE" =~ ^(reviewer|adversarial|lens:[a-z/-]+)$ ]] || { echo "ERROR: --role must be reviewer, adversarial or lens:<name>" >&2; exit 1; }
     [[ -n "$AGENT_ID" && -n "$WORKER" ]] && { echo "ERROR: --agent-id and --worker are exclusive" >&2; exit 1; }
     ASK_AFTER="${APEX_ASK_HUMAN_AFTER:-2}"; [[ "$ASK_AFTER" =~ ^[1-9][0-9]{0,2}$ ]] || ASK_AFTER=2
     python3 - "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$VERDICT" "$REVIEWER" "$REVIEWER_NAMED" "$ROLE" "$AGENT_ID" "$WORKER" \
-      "$PROVIDER" "$MODEL" "$ROUTE_ID" "$DISPATCH_STATE" "${PLAN_TOP:-$REPO_ROOT}" "$REVIEW_CAP" "$(head_sha)" "$ASK_AFTER" <<'PY'
+      "$PROVIDER" "$MODEL" "$ROUTE_ID" "$DISPATCH_STATE" "${PLAN_TOP:-$REPO_ROOT}" "$REVIEW_CAP" "$(head_sha)" "$ASK_AFTER" "$DCAP" "$TASK_JSON" <<'PY'
 import json, os, re, sys
 (path, now, line_no, sha, verdict, reviewer, reviewer_named, role, agent_id, worker,
- provider, model, route_id, dstate, top, cap, wt_head, ask_after) = sys.argv[1:]
+ provider, model, route_id, dstate, top, cap, wt_head, ask_after, dcap, task_json) = sys.argv[1:]
 def die(msg):
     print(f"[checkpoint] REFUSED review @ line {line_no}: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -598,6 +643,7 @@ def save(s):
         json.dump(s, f, indent=2)
     os.replace(tmp, path)
 ROLE_RE = r"reviewer|adversarial|lens:[a-z/-]+"
+SENSITIVE_TAGS = {"security", "tier:c", "tier-c", "auth", "money", "billing", "payment", "payments", "pii", "consent", "migration"}
 provenance, source = "declared", ""
 s = json.load(open(path))
 if os.path.isdir(dstate):
@@ -697,6 +743,16 @@ if "records" not in r and r.get("sha"):          # 0.2.0 single record = attempt
         r["rounds"] = [r["sha"]]
 attempt = r.setdefault("attempt", 1)
 rounds = r.setdefault("rounds", [])
+# The tier this review is done at (iterate.sh forces a full review when the
+# tier rises above every tier reviewed in the attempt).
+trec = (s.get("tiers") or {}).get(line_no) or {}
+tier_at = trec.get("tier") if trec.get("epoch", 0) == s.get("epoch", 0) else None
+# Review: cap=<n> sets the cap; for Tier C (or a sensitive-tagged task) it may
+# only lower it (ADR-0004).
+if dcap:
+    tags = set(json.loads(task_json).get("tags") or [])
+    sensitive = tier_at == "C" or bool(tags & SENSITIVE_TAGS)
+    cap = str(min(int(dcap), int(cap))) if sensitive else dcap
 # A head frozen for review (checkpoint.sh freeze) takes no verdict for another SHA.
 fz = (s.get("freezes") or {}).get(line_no)
 if fz and fz.get("sha") != sha:
@@ -711,7 +767,7 @@ if sha not in rounds:
         die(f"REVIEW_CAP: {len(blocking_rounds)} review rounds requested changes in this attempt ({', '.join(x[:12] for x in blocking_rounds)}; cap {cap}); "
             "record `checkpoint.sh PLAN fail LINE REASON` and retry, or ask the human (waive)")
     rounds.append(sha)
-r.setdefault("records", []).append({"attempt": attempt, "epoch": s.get("epoch", 0), "sha": sha, "verdict": verdict, "reviewer": reviewer,
+r.setdefault("records", []).append({"attempt": attempt, "epoch": s.get("epoch", 0), "tier": tier_at, "sha": sha, "verdict": verdict, "reviewer": reviewer,
     "role": role, "provider": provider, "model": model, "agent_id": agent_id, "route": route_id,
     "provenance": provenance, "source": source, "at": now})
 r.update({"sha": sha, "verdict": verdict, "reviewer": reviewer, "round": rounds.index(sha) + 1, "at": now})
@@ -732,7 +788,12 @@ if lifted:
 # rounds of this attempt, the orchestrator asks the human instead of looping.
 rc_rounds = sorted({x["sha"] for x in r["records"] if x.get("attempt", 1) == attempt and x.get("verdict") == "REQUEST_CHANGES"},
                    key=lambda x: rounds.index(x) if x in rounds else 99)
-if verdict == "REQUEST_CHANGES" and len(rc_rounds) >= int(ask_after):
+prior_waivers = [w for w in s.get("operator_overrides") or [] if isinstance(w, dict) and w.get("kind") == "review_waiver"
+                 and str(w.get("line")) == line_no and w.get("sha") == sha and w.get("attempt") == attempt and w.get("epoch", 0) == s.get("epoch", 0)]
+if verdict == "REQUEST_CHANGES" and prior_waivers:
+    print(f"ASK_HUMAN: new REQUEST_CHANGES at {sha[:12]} after the waiver — not covered by it; ask the human again "
+          f"(a new waiver covers it: checkpoint.sh PLAN waive {line_no} {sha} \"<their literal reply>\" \"<the residual risk accepted>\")")
+elif verdict == "REQUEST_CHANGES" and len(rc_rounds) >= int(ask_after):
     print(f"ASK_HUMAN: line {line_no} has REQUEST_CHANGES in {len(rc_rounds)} review rounds of attempt {attempt} "
           f"(APEX_ASK_HUMAN_AFTER={ask_after}) — halt and ask the human with the Ask Contract: accept the residual risk "
           f"at {sha[:12]} (reply 'waive {line_no}', then: checkpoint.sh PLAN waive {line_no} {sha} \"<their literal reply>\" "
@@ -774,27 +835,41 @@ print(f"[checkpoint] G12 approval recorded @ line {line_no} for {sha[:12]}")' "$
     need_line "$LINE_NO"
     need_sha "$SHA"
     [[ -n "${REPLY//[[:space:]]/}" ]] || { echo "[checkpoint] REFUSED waive: the human's literal reply is required (it must contain 'waive $LINE_NO')" >&2; exit 1; }
-    shopt -s nocasematch
-    [[ "$REPLY" =~ (^|[^[:alnum:]])waive[[:space:]]+(line[[:space:]]+)?$LINE_NO([^0-9]|$) ]] \
-      || { shopt -u nocasematch; echo "[checkpoint] REFUSED waive: the reply does not contain 'waive $LINE_NO' — record the human's literal reply to the Ask Contract, never a paraphrase" >&2; exit 1; }
-    shopt -u nocasematch
     [[ -n "${RISK//[[:space:]]/}" ]] || { echo "[checkpoint] REFUSED waive: name the residual risk the human accepted (6th argument)" >&2; exit 1; }
-    # Validate against the checkpoint before anything is ledgered.
-    WV="$(python3 - "$CHECKPOINT" "$LINE_NO" "$SHA" <<'PY'
-import json, sys
-path, line_no, sha = sys.argv[1:]
+    # Validate the reply and the checkpoint before anything is ledgered. The
+    # waiver covers exactly the REQUEST_CHANGES records at SHA that exist now
+    # (their indices, sources and times are stored); a verdict recorded later
+    # is never covered.
+    WV="$(python3 - "$CHECKPOINT" "$LINE_NO" "$SHA" "$REPLY" <<'PY'
+import json, re, sys
+path, line_no, sha, reply = sys.argv[1:]
+def refuse(msg):
+    print("[checkpoint] REFUSED waive: " + msg, file=sys.stderr)
+    sys.exit(1)
+# The reply must say "waive <LINE>" in a sentence with no negation (fail closed).
+want = re.compile(r"(?<![a-z0-9])waive\s+(?:line\s+)?%s(?![0-9])" % re.escape(line_no), re.I)
+NEG = re.compile(r"(?<![a-z])(no|not|don'?t|do not|never|keep fixing|cannot|can'?t|won'?t)(?![a-z])", re.I)
+sentences = [x for x in re.split(r"[.!?;\n]+", reply) if want.search(x)]
+if not sentences:
+    refuse(f"the reply does not contain 'waive {line_no}' — record the human's literal reply to the Ask Contract, never a paraphrase")
+if any(NEG.search(x) for x in sentences):
+    refuse(f"the reply negates the waiver (a 'no', 'not', 'don't' or 'keep fixing' beside 'waive {line_no}') — treat it as keep fixing")
 s = json.load(open(path))
+fz = (s.get("freezes") or {}).get(line_no)
+if fz and fz.get("recorded", 0) < int(fz.get("reviewers", 1)):
+    refuse(f"the review round at {str(fz.get('sha'))[:12]} still has verdicts outstanding ({fz.get('recorded', 0)}/{fz.get('reviewers', 1)}) — "
+           "record them (or unfreeze) and ask the human about all of them")
 r = (s.get("reviews") or {}).get(line_no) or {}
 attempt, epoch = r.get("attempt", 1), s.get("epoch", 0)
-rc = [x for x in r.get("records") or [] if x.get("sha") == sha and x.get("verdict") == "REQUEST_CHANGES"
-      and x.get("attempt", 1) == attempt and x.get("epoch", 0) == epoch]
-if not rc:
-    print(f"[checkpoint] REFUSED waive: no review requested changes at {sha[:12]} in attempt {attempt} (epoch {epoch}) of line {line_no} — nothing to waive", file=sys.stderr)
-    sys.exit(1)
-print(attempt, epoch, len(rc))
+cov = [{"index": i, "source": x.get("source") or "", "role": x.get("role"), "at": x.get("at")}
+       for i, x in enumerate(r.get("records") or []) if x.get("sha") == sha and x.get("verdict") == "REQUEST_CHANGES"
+       and x.get("attempt", 1) == attempt and x.get("epoch", 0) == epoch]
+if not cov:
+    refuse(f"no review requested changes at {sha[:12]} in attempt {attempt} (epoch {epoch}) of line {line_no} — nothing to waive")
+print(attempt, epoch, len(cov), json.dumps(cov, separators=(",", ":")))
 PY
 )" || exit 1
-    read -r W_ATTEMPT W_EPOCH W_N <<<"$WV"
+    read -r W_ATTEMPT W_EPOCH W_N W_COV <<<"$WV"
     # With apex-dispatch state, the waiver is ledgered first (a non-provenance
     # human_gate row); no ledger row, no waiver.
     if [[ -d "$DISPATCH_STATE" ]]; then
@@ -807,18 +882,19 @@ PY
     fi
     python3 -c "$PY_SAVE"'
 import sys
-path, now, line_no, sha, reply, risk, attempt, epoch, n = sys.argv[1:]
+path, now, line_no, sha, reply, risk, attempt, epoch, n, cov = sys.argv[1:]
 s = json.load(open(path))
 o = s.setdefault("operator_overrides", [])
 o.append({"kind": "review_waiver", "line": int(line_no), "sha": sha, "epoch": int(epoch), "attempt": int(attempt),
-          "reply": reply, "residual_risk": risk, "waived_verdicts": int(n), "at": now})
-if s.get("halted") and str(s.get("halt_reason", "")).startswith("awaiting human review waiver"):
+          "reply": reply, "residual_risk": risk, "waived_verdicts": int(n), "covered": json.loads(cov), "at": now})
+import re
+if s.get("halted") and re.fullmatch(r"awaiting human review waiver line %s\b.*" % line_no, str(s.get("halt_reason", "")), re.S):
     s["halted"] = False
     s["halt_reason"] = None
 save(path, s)
 print(f"[checkpoint] review waiver recorded @ line {line_no} for {sha[:12]} (attempt {attempt}, epoch {epoch}; "
       f"{n} REQUEST_CHANGES verdict(s) accepted as residual risk; gate, tier, G12 and Acceptance still apply)")' \
-      "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$REPLY" "$RISK" "$W_ATTEMPT" "$W_EPOCH" "$W_N"
+      "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$REPLY" "$RISK" "$W_ATTEMPT" "$W_EPOCH" "$W_N" "$W_COV"
     ;;
 
   freeze)
@@ -941,6 +1017,14 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$BASE_TIP" "$REOPEN"
     LINE_NO="${3:?line_no required}"
     need_line "$LINE_NO"
     if [[ "$(task_field checked)" != "1" ]]; then
+      # Still a rewind of the task's attempt state: a freeze never survives it.
+      python3 -c "$PY_SAVE"'
+import sys
+path, line_no = sys.argv[1:]
+s = json.load(open(path))
+if (s.get("freezes") or {}).pop(line_no, None) is not None:
+    save(path, s)' "$CHECKPOINT" "$LINE_NO"
+      "$APEX_EXECUTE_SCRIPTS/backlog.sh" "$PLAN" reopen "$LINE_NO" 9>&- >/dev/null 2>&1 || true
       echo "[checkpoint] line $LINE_NO is not checked — nothing to rewind"
       exit 0
     fi
@@ -957,7 +1041,9 @@ c = s.get("completes") or []
 idx = [i for i, e in enumerate(c) if e.get("line") == int(line_no)]
 if idx:
     s["completes"] = c[:idx[-1]]
+(s.get("freezes") or {}).pop(line_no, None)
 save(path, s)' "$CHECKPOINT" "$LINE_NO"
+    "$APEX_EXECUTE_SCRIPTS/backlog.sh" "$PLAN" reopen "$LINE_NO" 9>&- >/dev/null 2>&1 || true
     echo "[checkpoint] rewound line $LINE_NO"
     ;;
 

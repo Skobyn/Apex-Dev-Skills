@@ -15,14 +15,20 @@
 #       Record one finding for the task at LINE. Prints "BACKLOG: B-NNN added".
 #   ./backlog.sh PLAN.md list [--all]
 #       "BACKLOG: <n> open for <plan>", then the open items (--all: done ones too).
-#   ./backlog.sh PLAN.md done ID
-#       Mark an item of this plan done (ID is B-NNN).
+#   ./backlog.sh PLAN.md done ID --line LINE --sha SHA
+#       A task closed item ID (B-NNN) in commit SHA: the item is pending-close
+#       until that task's `checkpoint.sh complete` confirms it (SHA must be in
+#       the completed head's history); `fail` or `rewind` of the task reopens it.
+#   ./backlog.sh PLAN.md done ID --now
+#       Mark an item done at once (a human decision outside any task).
+#   ./backlog.sh PLAN.md confirm LINE HEAD   (checkpoint.sh complete)
+#   ./backlog.sh PLAN.md reopen LINE         (checkpoint.sh fail / rewind)
 #   ./backlog.sh PLAN.md count
 #       The number of open items for this plan.
 set -euo pipefail
 
-PLAN="${1:?usage: backlog.sh PLAN.md add|list|done|count ...}"
-ACTION="${2:?action: add|list|done|count}"
+PLAN="${1:?usage: backlog.sh PLAN.md add|list|done|count|confirm|reopen ...}"
+ACTION="${2:?action: add|list|done|count|confirm|reopen}"
 shift 2
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
@@ -33,9 +39,12 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
 PLAN_KEY="${PLAN_ABS#"${PLAN_TOP:-/nonexistent}"/}"
 
-FROM="reviewer"; ALL=0; ARGS=()
+FROM="reviewer"; ALL=0; ARGS=(); D_LINE=""; D_SHA=""; NOW_DONE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --line) D_LINE="${2:?}"; shift 2 ;;
+    --sha) D_SHA="${2:?}"; shift 2 ;;
+    --now) NOW_DONE=1; shift ;;
     --from) FROM="${2:?--from needs a name}"; shift 2 ;;
     --all) ALL=1; shift ;;
     *) ARGS+=("$1"); shift ;;
@@ -50,15 +59,23 @@ case "$ACTION" in
       || { echo "ERROR: line $LINE_NO is not a task in a valid plan $PLAN" >&2; exit 2; }
     TID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("id") or "")' "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN_ABS" "$LINE_NO")")"
     ;;
-  done) ID="${ARGS[0]:?ID required (B-NNN)}"; [[ "$ID" =~ ^B-[0-9]{3,}$ ]] || { echo "ERROR: ID must look like B-001" >&2; exit 2; } ;;
+  done) ID="${ARGS[0]:?ID required (B-NNN)}"; [[ "$ID" =~ ^B-[0-9]{3,}$ ]] || { echo "ERROR: ID must look like B-001" >&2; exit 2; }
+    if [[ "$NOW_DONE" != 1 ]]; then
+      [[ "$D_LINE" =~ ^[1-9][0-9]{0,8}$ && "$D_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+        || { echo "ERROR: done needs --line LINE --sha <full SHA of the closing commit> (pending until that task completes), or --now" >&2; exit 2; }
+    fi ;;
+  confirm) D_LINE="${ARGS[0]:?LINE}"; D_SHA="${ARGS[1]:?HEAD}" ;;
+  reopen) D_LINE="${ARGS[0]:?LINE}" ;;
   list|count) ;;
   *) echo "ERROR: unknown action $ACTION" >&2; exit 2 ;;
 esac
 
 mkdir -p "$STATE_BASE"
-python3 - "$BACKLOG_LEDGER" "$STATE_BASE/.backlog.lock" "$PLAN_KEY" "$ACTION" "$ALL" "${LINE_NO:-}" "${TID:-}" "${TEXT:-}" "$FROM" "${ID:-}" "$(date -u +%F)" <<'PY'
-import fcntl, os, re, sys
-path, lock, plan, action, show_all, line_no, tid, text, src, item, today = sys.argv[1:]
+WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
+python3 - "$BACKLOG_LEDGER" "$STATE_BASE/.backlog.lock" "$PLAN_KEY" "$ACTION" "$ALL" "${LINE_NO:-}" "${TID:-}" "${TEXT:-}" "$FROM" "${ID:-}" "$(date -u +%F)" \
+  "$STATE_DIR/backlog-pending.json" "$D_LINE" "$D_SHA" "$NOW_DONE" "$WT" <<'PY'
+import fcntl, json, os, re, subprocess, sys
+path, lock, plan, action, show_all, line_no, tid, text, src, item, today, pend_path, d_line, d_sha, now_done, wt = sys.argv[1:]
 HEADER = ("# apex-scope-loop Hardening Backlog\n\n"
           "Non-blocking review findings and findings outside a task's threat model\n"
           "(ADR-0004). One section per plan; the plan's next [docs] or hygiene task\n"
@@ -80,6 +97,18 @@ def section(ls):
     return None
 
 sec = section(lines)
+try:
+    pending = json.load(open(pend_path))
+    pending = pending if isinstance(pending, dict) else {}
+except Exception:
+    pending = {}
+def save_pending():
+    if os.path.isdir(os.path.dirname(pend_path)):
+        tmp = pend_path + ".tmp"
+        json.dump(pending, open(tmp, "w"), indent=2)
+        os.replace(tmp, pend_path)
+def mark_done(i, note):
+    lines[i] = "- [x]" + lines[i][5:] + f" (done {today}{note})"
 mine = [l for l in lines[sec[0]:sec[1]] if ITEM_RE.match(l)] if sec else []
 opened = [l for l in mine if l.startswith("- [ ]")]
 
@@ -95,7 +124,9 @@ if action == "count":
 elif action == "list":
     print(f"BACKLOG: {len(opened)} open for {plan} ({path})")
     for l in (mine if show_all == "1" else opened):
-        print(l)
+        m = ITEM_RE.match(l)
+        p = pending.get(m.group(2)) if m else None
+        print(l + (f"  [pending close: line {p['line']} @ {p['sha'][:12]}]" if p and l.startswith("- [ ]") else ""))
 elif action == "add":
     one = " ".join(text.split())                  # one line: a finding can never open a section
     src1 = " ".join(src.split())
@@ -123,8 +154,36 @@ elif action == "done":
     i = hit[0]
     if lines[i].startswith("- [x]"):
         print(f"BACKLOG: {item} was already done")
-    else:
-        lines[i] = "- [x]" + lines[i][5:] + f" (done {today})"
+    elif now_done == "1":
+        mark_done(i, "")
         save(lines)
+        pending.pop(item, None); save_pending()
         print(f"BACKLOG: {item} done")
+    else:
+        pending[item] = {"line": int(d_line), "sha": d_sha, "plan": plan, "at": today}
+        save_pending()
+        print(f"BACKLOG: {item} pending close — confirmed when the task at line {d_line} completes with {d_sha[:12]} in its history")
+elif action == "confirm":
+    done = []
+    for iid, p in list(pending.items()):
+        if str(p.get("line")) != d_line or p.get("plan") != plan:
+            continue
+        ok = subprocess.run(["git", "-C", wt, "merge-base", "--is-ancestor", p.get("sha", ""), d_sha],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        hit = [i for i in range(sec[0], sec[1]) if (m := ITEM_RE.match(lines[i])) and m.group(2) == iid] if sec else []
+        if ok and hit and lines[hit[0]].startswith("- [ ]"):
+            mark_done(hit[0], f" at {d_sha[:12]}, line {d_line}")
+            done.append(iid)
+        if ok or not hit:
+            pending.pop(iid, None)
+    if done:
+        save(lines)
+    save_pending()
+    print("BACKLOG: confirmed " + (", ".join(done) if done else "nothing"))
+elif action == "reopen":
+    back = [iid for iid, p in pending.items() if str(p.get("line")) == d_line and p.get("plan") == plan]
+    for iid in back:
+        pending.pop(iid, None)
+    save_pending()
+    print("BACKLOG: reopened " + (", ".join(back) if back else "nothing"))
 PY

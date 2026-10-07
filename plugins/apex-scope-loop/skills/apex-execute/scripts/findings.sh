@@ -5,8 +5,10 @@
 #   <state>/findings/L<LINE>.json   {"line": N, "items": [ {id, sha, severity, class,
 #                                     at, mechanism, status, from, rounds, created, closed, reason} ]}
 # The orchestrator records every reviewer finding here. A defect is counted
-# once: an item with the same class and file:line is the same finding (it is
-# re-opened if it was closed, and its rounds grow; never a second entry).
+# once: an item with the same class, file:line and (normalised) mechanism is
+# the same finding — its rounds grow and a blocking re-report re-opens it if
+# it was closed; a non-blocking re-report never re-opens anything. Distinct
+# mechanisms at the same file:line stay separate entries.
 # Non-blocking findings are "residuals": status residual, copied to the
 # hardening backlog (backlog.sh), and they never reopen a review round.
 #
@@ -69,7 +71,7 @@ esac
 [[ "$ACTION" == path ]] && { printf '%s\n' "$FDIR/L$LINE_NO.json"; exit 0; }
 mkdir -p "$FDIR"
 OUT="$(python3 - "$FDIR" "$ACTION" "$LINE_NO" "$SEV" "$CLASS" "$AT" "$SHA" "$FROM" "$OPEN" "$REASON" "${ID:-}" "${MECH:-}" "$(date -u +%FT%TZ)" <<'PY'
-import fcntl, glob, json, os, sys
+import fcntl, glob, json, os, re, sys
 fdir, action, line_no, sev, cls, at, sha, src, only_open, reason, item_id, mech, now = sys.argv[1:]
 fd = os.open(os.path.join(fdir, ".lock"), os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -106,17 +108,19 @@ def show(x):
 
 if action == "add":
     one = " ".join(mech.split())
-    same = [x for x in items if x.get("class") == cls and x.get("at") == at]
+    norm = lambda m: re.sub(r"[^a-z0-9]+", " ", m.lower()).strip()
+    same = [x for x in items if x.get("class") == cls and x.get("at") == " ".join(at.split())
+            and norm(x.get("mechanism", "")) == norm(one)]
     if same:
         x = same[0]
         if sha not in x.setdefault("rounds", []):
             x["rounds"].append(sha)
         if sev == "blocking" and x["severity"] == "non-blocking":
             x["severity"] = "blocking"                 # a promotion, never a demotion
-        if x["status"] == "closed" and x["severity"] == "blocking":
+        if sev == "blocking" and x["status"] == "closed":
             x["status"], x["reopened"] = "open", now   # the same defect again: one entry, re-opened
-        elif x["severity"] == "blocking" and x["status"] == "residual":
-            x["status"] = "open"
+        elif sev == "blocking" and x["status"] == "residual":
+            x["status"] = "open"                       # a non-blocking re-report never reopens anything
         save(path, d)
         print(f"FINDING: {x['id']} DUPLICATE (same class and file:line; counted once) -> {x['status']}")
     else:

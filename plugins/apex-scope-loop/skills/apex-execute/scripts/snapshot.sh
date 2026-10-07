@@ -16,7 +16,9 @@
 # are empty). APEX_SNAPSHOT_SETUP (e.g. "npm ci && npm run build"), when set,
 # runs once inside the new snapshot before it is made read-only; a failing
 # setup removes the snapshot (exit 1). Metadata lives beside the tree in
-# <state>/snapshots/<sha>.json, never inside it.
+# <state>/snapshots/<sha>.json, never inside it. In a run without a worktree
+# the snapshots live under <git-common-dir>/apex-scope-loop-snapshots/<plan>/,
+# outside the work tree (the gate's clean-tree check never sees them).
 set -euo pipefail
 
 PLAN="${1:?usage: snapshot.sh PLAN.md [SHA] | prune [--keep SHA]}"
@@ -31,6 +33,12 @@ apex_resolve "$PLAN"
 [[ -f "$CHECKPOINT" ]] || { echo "ERROR: not initialized — run init.sh first" >&2; exit 2; }
 WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 SNAPS="$STATE_DIR/snapshots"
+# A run without a worktree keeps its state in the checkout: its snapshots go
+# outside the work tree, under the repository's common git dir.
+if [[ -z "$(read_field worktree_branch)" ]]; then
+  CD="$(apex_common_dir "$WT")"
+  [[ -n "$CD" ]] && SNAPS="$CD/apex-scope-loop-snapshots/$PLAN_HASH"
+fi
 
 remove_snap() { [[ -e "$1" ]] && { chmod -R u+w "$1" 2>/dev/null || true; rm -rf -- "$1"; }; rm -f -- "$1.json"; }
 

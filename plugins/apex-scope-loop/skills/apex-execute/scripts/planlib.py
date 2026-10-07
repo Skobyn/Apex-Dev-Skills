@@ -246,7 +246,7 @@ def parse(path):
         idm = ID_RE.search(body)
         tid = re.sub(r"\s+", " ", idm.group(1).strip()) if idm else None
         tags = [t for t in TAG_RE.findall(body) if t not in ("x", " ")]
-        ov = TIER_OVERRIDE_RE.findall(body)
+        ov = TIER_OVERRIDE_RE.findall(re.sub(r"`[^`]*`", "", body))   # never inside a code span
         tier_override = {"tier": max(t for t, _ in ov), "reason": " ".join(r for t, r in ov if t == max(t for t, _ in ov)).strip()} if ov else None
         d = {"acceptance": "", "blocked_by_raw": [], "swarm": "", "route_raw": "", "paths_raw": "", "budget_raw": "",
              "threat": "", "threats_raw": "", "review_raw": ""}
@@ -534,6 +534,8 @@ def cmd_validate(path):
                 errs.append(f"{where}: Review adversarial={v} must be yes or no")
             elif k == "lenses" and v != "all" and (not v or any(x not in LENS_NAMES for x in v.split(","))):
                 errs.append(f"{where}: Review lenses={v} must be 'all' or a comma list of {', '.join(LENS_NAMES)}")
+            elif k == "lenses" and v != "all" and len(set(v.split(","))) != len(v.split(",")):
+                errs.append(f"{where}: Review lenses={v} names a lens more than once")
         if t["tier_override"] is not None and not t["tier_override"]["reason"]:
             errs.append(f"{where}: [tier:{t['tier_override']['tier']} reason=\"\"] needs a reason")
         b = t["budget"]

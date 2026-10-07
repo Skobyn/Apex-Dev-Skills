@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # apex-scope-loop structural smoke test
-# Verifies the plugin contract from ADR-0001 (checks 1-10), ADR-0002 (11-13), ADR-0003 (14-43) and ADR-0004 (44-59). Exits non-zero on first failure.
+# Verifies the plugin contract from ADR-0001 (checks 1-10), ADR-0002 (11-13), ADR-0003 (14-43) and ADR-0004 (44-60). Exits non-zero on first failure.
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1593,8 +1593,8 @@ BL="$T49/.claude/apex-scope-loop/BACKLOG.md"; BS="$EX/backlog.sh"
 expect_refusal "a backlog item for a non-task line" "not a task" indir "$T49" "$BS" plans/v-plan.md add 2 "x"
 grep -c '^## Plan: ' "$BL" | grep -qx 1 && grep -q '^- \[ \] B-001 · .* · line 1 (Phase 1.1) · from adversarial — cache dir edge ## Plan: injected$' "$BL" || fail "backlog items are not one line each in one plan section: $(cat "$BL")"
 has '^BACKLOG: 2 open for this plan' "$(brief "$T49" plans/v-plan.md)" || fail "the brief did not count the open backlog items"
-(cd "$T49" && "$BS" plans/v-plan.md done B-001 >/dev/null) || fail "backlog done failed"
-expect_refusal "done for an unknown item" "is not an item" indir "$T49" "$BS" plans/v-plan.md done B-009
+(cd "$T49" && "$BS" plans/v-plan.md done B-001 --now >/dev/null) || fail "backlog done failed"
+expect_refusal "done for an unknown item" "is not an item" indir "$T49" "$BS" plans/v-plan.md done B-009 --now
 O49="$(cd "$T49" && "$BS" plans/v-plan.md list)"; has '^BACKLOG: 1 open' "$O49" && has 'B-002' "$O49" && ! has 'B-001' "$O49" || fail "backlog list is wrong: $O49"
 has 'B-001' "$(cd "$T49" && "$BS" plans/v-plan.md list --all)" || fail "backlog list --all hid a done item"
 # land: the run branch also edits BACKLOG.md; the base's (dirty, uncommitted) copy is what lands.
@@ -1643,7 +1643,7 @@ fx2() { local d="$1"; shift; ( cd "$d" && "$@" ); }
 T51="$SMOKE_TMP/t51"; TW="$(cal_run "$T51" "$TWO")" || fail "init for check 51 failed"
 F1="$(wcommit "$TW" f1 a.md)"; F2="$(wcommit "$TW" f2 a.md)"
 fx2 "$T51" "$FS" plans/v-plan.md add 1 --severity blocking --class stale-cache --at src/a.py:3 --sha "$F1" "cache not invalidated" >/dev/null || fail "findings add failed"
-has 'DUPLICATE' "$(fx2 "$T51" "$FS" plans/v-plan.md add 1 --severity blocking --class stale-cache --at src/a.py:3 --sha "$F2" "same again")" || fail "a repeated defect was not deduplicated"
+has 'DUPLICATE' "$(fx2 "$T51" "$FS" plans/v-plan.md add 1 --severity blocking --class stale-cache --at src/a.py:3 --sha "$F2" "Cache  not invalidated.")" || fail "a repeated defect was not deduplicated"
 O51="$(fx2 "$T51" "$FS" plans/v-plan.md add 1 --severity non-blocking --class symlink --at src/b.py:9 --sha "$F2" "planted symlink" --from adversarial)"
 has 'F-002 residual' "$O51" && has 'BACKLOG: B-001 added' "$O51" || fail "a non-blocking finding was not a residual copied to the backlog: $O51"
 expect_refusal "a finding with a bad severity" "blocking or non-blocking" fx2 "$T51" "$FS" plans/v-plan.md add 1 --severity high --class x --at a:1 --sha "$F2" "m"
@@ -1653,7 +1653,7 @@ has "^FINDINGS: .*/findings/L1.json (1 open, 1 residual, 0 closed)" "$B51" || fa
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); x=d["items"][0]; assert len(d["items"])==2 and x["rounds"]==[sys.argv[2], sys.argv[3]]' "$(fx2 "$T51" "$FS" plans/v-plan.md path 1)" "$F1" "$F2" || fail "a defect was counted twice"
 fx2 "$T51" "$FS" plans/v-plan.md close 1 F-001 --reason "test_cache added" >/dev/null
 has '^FINDINGS: .*(0 open, 1 residual, 1 closed)' "$(fx2 "$T51" "$FS" plans/v-plan.md list 1 --open)" || fail "close did not close the finding"
-has 'DUPLICATE.*-> open' "$(fx2 "$T51" "$FS" plans/v-plan.md add 1 --severity blocking --class stale-cache --at src/a.py:3 --sha "$F2" "back")" || fail "a closed defect found again was not re-opened as the same entry"
+has 'DUPLICATE.*-> open' "$(fx2 "$T51" "$FS" plans/v-plan.md add 1 --severity blocking --class stale-cache --at src/a.py:3 --sha "$F2" "cache not invalidated")" || fail "a closed defect found again was not re-opened as the same entry"
 ok "findings: one entry per defect, residuals to the backlog, close/reopen, FINDINGS in the brief"
 
 # 52. (B) The cap counts only rounds that requested changes; Review: cap=<n>
@@ -1673,7 +1673,7 @@ HC="$(wcommit "$TW" c1 c.md)"; vc "$T52" review 4 "$HC" APPROVE >/dev/null
 (cd "$T52" && "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/v-plan.md 4 >/dev/null); vc "$T52" approve 4 "$HC" "approve G12 4" >/dev/null
 expect_refusal "adversarial=no on Tier C" "adversarial review" vc "$T52" complete 4 ok
 vc "$T52" review 4 "$HC" APPROVE adv --role adversarial >/dev/null
-has '"ignored": \["lenses=correctness,security (Tier C keeps at least 3 lenses' "$(vc "$T52" complete 4 ok 2>&1)" || fail "a Tier C directive below 3 lenses was not reported as ignored"
+has '"ignored": \["lenses=correctness,security (Tier C keeps at least 3 distinct lenses' "$(vc "$T52" complete 4 ok 2>&1)" || fail "a Tier C directive below 3 lenses was not reported as ignored"
 printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  - Review: cap=0 lenses=money,ux adversarial=maybe depth=9\n' >"$SMOKE_TMP/t52-bad.md"
 O52="$(python3 "$EX/planlib.py" validate "$SMOKE_TMP/t52-bad.md" 2>&1 || true)"
 for e in 'cap=0 must be 1-9' "lenses=money,ux must be" 'adversarial=maybe must be' "Review key 'depth' unknown"; do has "$e" "$O52" || fail "Review: directive validation missed: $e"; done
@@ -1791,5 +1791,110 @@ has '^REVIEW_METRIC: 1 2 1 1 [0-9.]* no$' "$O59" && has '^REVIEW_TOTAL: rounds=2
 grep -q 'before/after' "$ADR4" && grep -q 'halt-repair-loop' "$ADR4" || fail "ADR-0004 does not state the measurement or credit the downstream feedback"
 ok "review metrics: rounds, blocking rounds, attempts, minutes per round; measurement stated in ADR-0004"
 
+# 60. Round-1 review fixes (ADR-0004): waiver scope, tier reasons to reviewers,
+#     distinct-lens floor and signal lenses, full review after a tier rise,
+#     directive floors, freeze cleared by fail/rewind, findings key, backlog
+#     pending close, narrower content exemption, no-worktree snapshots.
+# (1) A waiver covers only the REQUEST_CHANGES it listed; not while a freeze
+#     has verdicts outstanding; not a negated reply; it clears only its own line's halt.
+T60="$SMOKE_TMP/t60"; TW="$(cal_run "$T60" "$TWO")" || fail "init for check 60 failed"
+W60="$(wcommit "$TW" w a.md)"; (cd "$T60" && "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/v-plan.md 1 >/dev/null)
+vc "$T60" freeze 1 "$W60" --reviewers 3 >/dev/null
+has '^ASK_HUMAN:' "$(cd "$T60" && APEX_ASK_HUMAN_AFTER=1 "$CP" plans/v-plan.md review 1 "$W60" REQUEST_CHANGES rA 2>&1)" || fail "no ASK_HUMAN with APEX_ASK_HUMAN_AFTER=1"
+expect_refusal "a waiver while the round has verdicts outstanding" "verdicts outstanding (1/3)" vc "$T60" waive 1 "$W60" "waive 1" "r"
+vc "$T60" unfreeze 1 >/dev/null
+expect_refusal "a negated waiver reply" "negates the waiver" vc "$T60" waive 1 "$W60" "I do not want to waive 1" "r"
+expect_refusal "a 'keep fixing' waiver reply" "negates the waiver" vc "$T60" waive 1 "$W60" "waive 1 later, keep fixing for now" "r"
+vc "$T60" halt "awaiting human review waiver line 3" >/dev/null
+vc "$T60" waive 1 "$W60" "yes, waive 1" "rA's finding" >/dev/null || fail "the waiver of rA was refused"
+python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s["halted"]; w=s["operator_overrides"][-1]; assert w["waived_verdicts"]==1 and len(w["covered"])==1' "$(st "$T60" plans/v-plan.md)/checkpoint.json" \
+  || fail "a waiver cleared another line's halt or did not list what it covers"
+vc "$T60" resume "probe" >/dev/null
+O60="$(vc "$T60" review 1 "$W60" REQUEST_CHANGES rB --role lens:money 2>&1)"; has 'after the waiver — not covered' "$O60" || fail "a REQUEST_CHANGES after the waiver did not ask again: $O60"
+expect_refusal "a lens dispatched after the waiver returning REQUEST_CHANGES" "requested changes" vc "$T60" complete 1 ok
+T60B="$SMOKE_TMP/t60b"; TW="$(cal_run "$T60B" "$TWO")" || fail "init for check 60 (b) failed"
+W60="$(wcommit "$TW" w a.md)"; (cd "$T60B" && "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/v-plan.md 1 >/dev/null)
+vc "$T60B" review 1 "$W60" REQUEST_CHANGES rA >/dev/null; vc "$T60B" waive 1 "$W60" "waive 1" "r" >/dev/null
+vc "$T60B" review 1 "$W60" REQUEST_CHANGES rC --role adversarial >/dev/null
+expect_refusal "a late adversarial REQUEST_CHANGES after the waiver" "requested changes" vc "$T60B" complete 1 ok
+vc "$T60B" waive 1 "$W60" "ok, waive 1 as well" "r2" >/dev/null
+python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["operator_overrides"][-1]["waived_verdicts"]=7; s["operator_overrides"][0]["waived_verdicts"]=7; json.dump(s, open(p,"w"))' "$(st "$T60B" plans/v-plan.md)/checkpoint.json"
+expect_refusal "a waiver whose waived_verdicts does not match" "requested changes" vc "$T60B" complete 1 ok
+python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["operator_overrides"][-1]["waived_verdicts"]=2; json.dump(s, open(p,"w"))' "$(st "$T60B" plans/v-plan.md)/checkpoint.json"
+vc "$T60B" complete 1 ok >/dev/null 2>&1 || fail "a waiver covering both REQUEST_CHANGES did not complete"
+# (2) Overridden signals reach the reviewers; an unanticipated one is flagged.
+T60C="$SMOKE_TMP/t60c"; TW="$(cal_run "$T60C" '- [ ] **Phase 1.1** [docs][tier:a reason="vendored code"] a\n  - Acceptance: true\n- [ ] **Phase 1.2** [docs][tier:a reason="stripe charge client stub"] b\n  - Acceptance: true\n')" || fail "init for check 60 (c) failed"
+wcommit "$TW" 'charge(1)' x.py >/dev/null
+O60="$(cd "$T60C" && "$EX/risk-tier.sh" plans/v-plan.md 1)"; has '^TIER_C_UNANTICIPATED: ' "$O60" || fail "an override reason that does not mention the signal was not flagged: $O60"
+has '^TIER_C_OVERRIDDEN: ' "$(cd "$T60C" && "$EX/risk-tier.sh" plans/v-plan.md 3 --no-record)" || fail "an anticipated override was not reported as TIER_C_OVERRIDDEN"
+B60="$(brief "$T60C" plans/v-plan.md)"
+has '^TIER_REASONS: Tier A' "$B60" && has '^  ! TIER_C_UNANTICIPATED: ' "$B60" && has "^  - tier-c content signal in diff: 'charge(' (x.py) — overridden" "$B60" || fail "the brief did not print the recorded tier reasons: $(grep -A3 TIER_REASONS <<<"$B60")"
+for f in "$GR" "$PLUGIN_ROOT/commands/iterate.md" "$MARKET_ROOT/plugins/apex-dispatch/skills/dispatch-route/SKILL.md"; do grep -q 'TIER_REASONS' "$f" || fail "$(basename "$f") does not pass TIER_REASONS to reviewers"; done
+printf -- '- [ ] **Phase 1.1** `[tier:a reason="x"]` a\n  - Acceptance: true\n' >"$SMOKE_TMP/t60-span.md"
+python3 -c 'import json,sys; sys.path.insert(0, sys.argv[1]); import planlib; assert planlib.cmd_task(sys.argv[2], 1)["tier_override"] is None' "$EX" "$SMOKE_TMP/t60-span.md" || fail "an override inside a code span was honoured"
+# (3) Distinct lenses; the lens of each Tier C signal is kept.
+printf -- '- [ ] **Phase 1.1** a\n  - Acceptance: true\n  - Review: lenses=money,money,security\n' >"$SMOKE_TMP/t60-dup.md"
+has 'names a lens more than once' "$(python3 "$EX/planlib.py" validate "$SMOKE_TMP/t60-dup.md" 2>&1 || true)" || fail "a repeated lens name was accepted"
+T60D="$SMOKE_TMP/t60d"; TW="$(cal_run "$T60D" '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n  - Review: lenses=correctness,security,performance\n')" || fail "init for check 60 (d) failed"
+mkdir -p "$TW/src/billing"; HD="$(wcommit "$TW" x src/billing/rates.txt)"
+has '^SIGNAL_LENSES: money$' "$(cd "$T60D" && "$EX/risk-tier.sh" plans/v-plan.md 1)" || fail "a billing path did not name the money lens"
+(cd "$T60D" && "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1); vc "$T60D" review 1 "$HD" APPROVE >/dev/null; vc "$T60D" review 1 "$HD" APPROVE adv --role adversarial >/dev/null; vc "$T60D" approve 1 "$HD" "approve G12 1" >/dev/null
+has 'lenses=correctness,performance,security (+money required by the tier signals)' "$(vc "$T60D" complete 1 ok 2>&1)" || fail "a Tier C lens narrowing dropped the money lens of a billing signal"
+# (4) A mid-attempt tier rise forces a full review.
+T60E="$SMOKE_TMP/t60e"; TW="$(cal_run "$T60E" "$TWO")" || fail "init for check 60 (e) failed"
+E1="$(wcommit "$TW" e1 a.md)"; (cd "$T60E" && "$EX/risk-tier.sh" plans/v-plan.md 1 --raise B --reason "shared helper" >/dev/null); vc "$T60E" review 1 "$E1" REQUEST_CHANGES >/dev/null
+B60="$(brief "$T60E" plans/v-plan.md)"; has '^REVIEW_MODE: verify$' "$B60" && has "^REVIEW_SINCE: $E1$" "$B60" || fail "round 2 at the same tier was not verify since the reviewed SHA"
+(cd "$T60E" && "$EX/risk-tier.sh" plans/v-plan.md 1 --raise C --reason "reviewer: it signs tokens" >/dev/null)
+B60="$(brief "$T60E" plans/v-plan.md)"
+has '^REVIEW_MODE: full (the tier rose to C after reviews at B' "$B60" && has "^REVIEW_SINCE: $(sed -n 's/^TASK_BASE: //p' <<<"$B60")$" "$B60" || fail "a tier rise mid-attempt did not force a full review: $(grep REVIEW_ <<<"$B60")"
+# (5) Directive floors: a sensitive-tagged task keeps the adversarial pass and
+#     cannot raise the cap; with apex-dispatch the route's shape is a floor.
+T60F="$SMOKE_TMP/t60f"; TW="$(cal_run "$T60F" '- [ ] **Phase 1.1** [docs][money] a\n  - Acceptance: true\n  - Review: cap=9 adversarial=no\n')" || fail "init for check 60 (f) failed"
+for i in 1 2 3; do vc "$T60F" review 1 "$(wcommit "$TW" "c$i" a.md)" REQUEST_CHANGES >/dev/null || fail "blocking round $i refused"; done
+expect_refusal "cap=9 raising the cap on a sensitive task" "REVIEW_CAP: 3 review rounds" vc "$T60F" review 1 "$(wcommit "$TW" c4 a.md)" REQUEST_CHANGES
+vc "$T60F" fail 1 x >/dev/null; HF="$(git -C "$TW" rev-parse HEAD)"; vc "$T60F" review 1 "$HF" APPROVE >/dev/null
+(cd "$T60F" && "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/v-plan.md 1 >/dev/null)
+has 'adversarial=no (mandatory for Tier C / sensitive tasks)' "$(vc "$T60F" complete 1 ok 2>&1)" || fail "adversarial=no was applied to a money-tagged task"
+T60G="$SMOKE_TMP/t60g"; TW="$(cal_run "$T60G" '- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n  - Review: adversarial=no\n')" || fail "init for check 60 (g) failed"
+T60GS="$(st "$T60G" plans/v-plan.md)"; mkdir -p "$T60GS/dispatch/reviews-raw"
+printf '{"route_id": "r-x-L1-1", "line": 1, "router": {"review_shape": "fanout6+adversarial", "diversity": "off"}}' >"$T60GS/dispatch/active-route.json"
+HG="$(wcommit "$TW" g a.md)"; (cd "$T60G" && APEX_GATE_TEST=true "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/v-plan.md 1 >/dev/null)
+expect_refusal "adversarial=no below the route's review shape" "review shape fanout6+adversarial requires it" indir "$T60G" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd47" "$CP" plans/v-plan.md complete 1 ok
+# (7) fail and rewind clear a freeze.
+T60H="$SMOKE_TMP/t60h"; TW="$(cal_run "$T60H" "$TWO")" || fail "init for check 60 (h) failed"
+H1="$(wcommit "$TW" h1 a.md)"; vc "$T60H" freeze 1 "$H1" --reviewers 2 >/dev/null; vc "$T60H" fail 1 x >/dev/null
+! has '^FROZEN:' "$(brief "$T60H" plans/v-plan.md)" && vc "$T60H" review 1 "$(wcommit "$TW" h2 a.md)" APPROVE >/dev/null || fail "fail did not clear the freeze"
+H3="$(git -C "$TW" rev-parse HEAD)"; vc "$T60H" freeze 1 "$H3" --reviewers 2 >/dev/null; vc "$T60H" rewind 1 >/dev/null
+python3 -c 'import json,sys; assert "1" not in (json.load(open(sys.argv[1])).get("freezes") or {})' "$(st "$T60H" plans/v-plan.md)/checkpoint.json" || fail "rewind did not clear the freeze"
+# (8) findings: distinct mechanisms stay separate; a non-blocking re-report never reopens.
+T60I="$SMOKE_TMP/t60i"; TW="$(cal_run "$T60I" "$TWO")" || fail "init for check 60 (i) failed"; I1="$(wcommit "$TW" i a.md)"
+fx2 "$T60I" "$FS" plans/v-plan.md add 1 --severity blocking --class race --at a.py:1 --sha "$I1" "lock released early" >/dev/null
+has 'F-002 open' "$(fx2 "$T60I" "$FS" plans/v-plan.md add 1 --severity blocking --class race --at a.py:1 --sha "$I1" "double write on retry")" || fail "a different mechanism at the same file:line was merged"
+fx2 "$T60I" "$FS" plans/v-plan.md close 1 F-001 >/dev/null
+has 'DUPLICATE.*-> closed' "$(fx2 "$T60I" "$FS" plans/v-plan.md add 1 --severity non-blocking --class race --at a.py:1 --sha "$I1" "lock released early")" || fail "a non-blocking re-report reopened a closed blocking finding"
+# (9) backlog: done from a task is pending until that task completes; fail reopens it.
+T60J="$SMOKE_TMP/t60j"; TW="$(cal_run "$T60J" "$TWO")" || fail "init for check 60 (j) failed"
+(cd "$T60J" && "$EX/backlog.sh" plans/v-plan.md add 1 "harden x" >/dev/null); J1="$(wcommit "$TW" j a.md)"
+expect_refusal "done without a closing SHA" "needs --line LINE --sha" indir "$T60J" "$EX/backlog.sh" plans/v-plan.md done B-001
+(cd "$T60J" && "$EX/backlog.sh" plans/v-plan.md done B-001 --line 1 --sha "$J1" >/dev/null)
+has 'pending close: line 1' "$(cd "$T60J" && "$EX/backlog.sh" plans/v-plan.md list)" && [ "$(cd "$T60J" && "$EX/backlog.sh" plans/v-plan.md count)" = 1 ] || fail "a task's done was not pending"
+vc "$T60J" fail 1 x >/dev/null
+! has 'pending close' "$(cd "$T60J" && "$EX/backlog.sh" plans/v-plan.md list)" || fail "fail did not reopen a pending close"
+(cd "$T60J" && "$EX/backlog.sh" plans/v-plan.md done B-001 --line 1 --sha "$J1" >/dev/null && "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/v-plan.md 1 >/dev/null \
+  && "$CP" plans/v-plan.md review 1 "$J1" APPROVE >/dev/null && "$CP" plans/v-plan.md complete 1 ok >/dev/null 2>&1) || fail "complete failed in check 60 (j)"
+[ "$(cd "$T60J" && "$EX/backlog.sh" plans/v-plan.md count)" = 0 ] && grep -q "B-001 .*(done .* at ${J1:0:12}, line 1)" "$T60J/.claude/apex-scope-loop/BACKLOG.md" || fail "complete did not confirm the pending close"
+# (10) Markdown outside docs/ and smoke-named source files are scanned.
+for c in 'README.md|stripe keys live here' 'src/smoke_helper.py|import stripe'; do
+  has '^TIER: C' "$(rtc '[docs]' "${c%%|*}" "${c#*|}")" || fail "content in ${c%%|*} was exempted"
+done
+# (11) A run without a worktree keeps snapshots outside the work tree.
+T60K="$SMOKE_TMP/t60k"; mkdir -p "$T60K/plans"; git init -q -b main "$T60K"; printf '.dev-plan-state/\n' >"$T60K/.gitignore"
+printf -- "$TWO" >"$T60K/plans/v-plan.md"; git -C "$T60K" add -A; git -C "$T60K" commit -qm k
+( cd "$T60K" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/v-plan.md >/dev/null 2>&1 ) || fail "no-worktree init failed in check 60"
+SPK="$(cd "$T60K" && "$EX/snapshot.sh" plans/v-plan.md | sed -n 's/^REVIEW_SNAPSHOT: //p')"
+case "$SPK" in "$T60K/.git/apex-scope-loop-snapshots/"*) ;; *) fail "a no-worktree snapshot is not under the common git dir: $SPK" ;; esac
+has 'GATE: SKIPPED\|GATE: PASS' "$(cd "$T60K" && "$EX/green-gate.sh" plans/v-plan.md check 2>&1)" || fail "a no-worktree snapshot dirtied the gate"
+ok "round-1 fixes: waiver covers only its listed verdicts (freeze, negation, own-line halt, late verdicts); TIER_REASONS and unanticipated overrides; distinct and signal lenses; full review after a tier rise; directive floors; freeze cleared; findings key; backlog pending close; narrower exemption; no-worktree snapshots"
+
 echo ""
-echo "smoke passed: 59/59 checks"
+echo "smoke passed: 60/60 checks"
