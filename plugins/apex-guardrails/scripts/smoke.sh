@@ -142,6 +142,11 @@ deny_cmds=(
   'timeout -s KILL 30 codex --full-auto'
   $'echo "<<EOF"\nclaude --yolo\nEOF'
   $'cat <<EOF\n$(claude --yolo)\nEOF'
+  $'sh <<\'EOF\'\nclaude --yolo\nEOF'
+  $'bash <<EOF\nclaude --yolo\nEOF'
+  $'bash -s <<\'EOF\'\ncodex --full-auto\nEOF'
+  $'cat <<\'EOF\' | bash\nclaude --yolo\nEOF'
+  $'ssh host <<\'EOF\'\nclaude --yolo\nEOF'
 )
 allow_cmds=(
   'grep -rn -- --yolo docs/'
@@ -154,6 +159,9 @@ allow_cmds=(
   $'cat > notes.md <<\'EOF\'\nNever run `claude --dangerously-skip-permissions`.\nEOF'
   "gh issue comment 5 --body 'see \`codex --full-auto\` docs'"
   'echo $((1<<4))'
+  $'cat <<\'EOF\' > notes.md\nclaude --yolo\nEOF'
+  $'python3 - <<\'EOF\'\nprint(\'--yolo\')\nEOF'
+  "gh pr create --title 'Deny --yolo flag' --body 'avoid --yolo please'"
 )
 for c in "${deny_cmds[@]}"; do n=$((n+1)); bash_event "$c" >"$SMOKE_TMP/d$n.json"; expect deny "$SMOKE_TMP/d$n.json"; expect deny "$SMOKE_TMP/d$n.json" --bypass-only; done
 for c in "${allow_cmds[@]}"; do n=$((n+1)); bash_event "$c" >"$SMOKE_TMP/a$n.json"; expect allow "$SMOKE_TMP/a$n.json"; done
@@ -178,7 +186,7 @@ for f in d1 d3 d5 d7; do [ "$(nopy "$SMOKE_TMP/$f.json")" = deny ] || fail "no-p
 n_allow_first=$(( ${#deny_cmds[@]} + 1 ))
 for i in 0 1 2; do f="a$((n_allow_first + i))"; [ "$(nopy "$SMOKE_TMP/$f.json")" = allow ] || fail "no-python fallback falsely denied $(cat "$SMOKE_TMP/$f.json")"; done
 [ "$(nopy "$SMOKE_TMP/decoy-first.json")" = deny ] || fail "no-python fallback read a decoy \"command\" key outside tool_input"
-ok "bypass flags always denied (${#deny_cmds[@]} forms incl. launchers, wrapper option values, heredoc/arithmetic edges); single-quoted and quoted-heredoc text and text tools pass (${#allow_cmds[@]}); command scoped to tool_input.command; pure-bash fallback agrees"
+ok "bypass flags always denied (${#deny_cmds[@]} forms incl. launchers, wrapper option values, heredoc/arithmetic edges, heredocs fed to sh/bash/ssh or piped into a shell); single-quoted and quoted-heredoc text, heredocs to non-shells, gh/glab bodies and text tools pass (${#allow_cmds[@]}); command scoped to tool_input.command; pure-bash fallback agrees"
 
 echo ""
 echo "smoke passed: 12/12 checks"

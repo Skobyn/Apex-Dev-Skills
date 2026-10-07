@@ -84,7 +84,12 @@ backticks outside quotes, in double quotes and in unquoted heredocs are; `<<` in
 an argument with whitespace is checked as a nested command and `<shell> -c ARG`
 anywhere in its arguments is too (`tmux new-session '…'`, `ssh host '…'`,
 `docker run img sh -c '…'`, `script -qc '…'`, `su -c '…'`), and wrapper option values
-are skipped (`sudo -u git …`, `timeout -s KILL 30 …`). This is the same
+are skipped (`sudo -u git …`, `timeout -s KILL 30 …`). `gh` and `glab` are exempt from
+the launcher rule (their arguments are titles and bodies). A heredoc fed to a shell,
+`ssh` or `su` — directly (`bash <<EOF`, `bash -s <<'EOF'`, `ssh host <<'EOF'`) or
+through a pipe (`cat <<'EOF' | bash`) — is a script, so its body is checked as
+commands whatever its quoting; a heredoc to anything else (`cat > notes.md`,
+`python3 -`) stays data. This is the same
 approach as apex-dispatch's `pre-bash` hook (step 2 of `bash_rules` in
 `plugins/apex-dispatch/scripts/lib/hooks.py`), reimplemented here in
 `hooks/bash_scope.py` so the two plugins stay independent.

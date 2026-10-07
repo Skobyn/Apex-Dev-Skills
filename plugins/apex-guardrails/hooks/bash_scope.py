@@ -39,7 +39,13 @@ command line (tmux, screen, docker, script -c, su -c, ssh, ...). So every
 argument of such a program that contains whitespace is checked as a nested
 command (literally: its own backticks are not expanded), and `<shell> -c ARG`
 anywhere in its arguments is checked as a full nested command. Nesting is
-depth-capped.
+depth-capped. gh and glab are exempt from the launcher rule (their arguments
+are titles and bodies); their direct flag arguments are still checked.
+
+Heredocs fed to a command interpreter: when a segment's program is a shell,
+ssh or su (`bash <<EOF`, `bash -s <<'EOF'`, `ssh host <<'EOF'`), or the
+segment is piped into one (`cat <<'EOF' | bash`), the heredoc body is checked
+as commands whatever its quoting.
 """
 import json
 import os
@@ -69,6 +75,12 @@ WRAPPER_VALUE_OPTS = {
 WRAPPER_SKIP_POSITIONAL = {"timeout": 1}
 RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac", "!", "{", "}"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
+# Programs that run what arrives on stdin as commands: a heredoc fed to them is a script.
+STDIN_RUNNERS = SHELLS | {"ssh", "su"}
+# Programs whose whitespace arguments are titles/bodies, not command lines (no launcher rule).
+PROSE_ARG_TOOLS = {"gh", "glab"}
+HEREDOC = "__APEX_HEREDOC_%d__"
+HEREDOC_RE = re.compile(r"^__APEX_HEREDOC_(\d+)__$")
 SEPARATORS = {";", "&&", "||", "|", "&", "|&", ";;", "(", ")", "\n"}
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 SUBST = "__APEX_SUBST__"
@@ -150,8 +162,11 @@ def scan(cmd, expand=True):
     substs -- the bodies of the command substitutions bash would run
              (outside quotes, in double quotes, in unquoted heredoc bodies).
     expand=False treats substitutions as literal text (removed from code, not
-    returned): used for argument strings handed to another program."""
-    out, substs, pending = [], [], []
+    returned): used for argument strings handed to another program.
+    heredocs -- every heredoc body, indexed by the placeholder word
+             (__APEX_HEREDOC_<k>__) that replaces its `<<DELIM` in code.
+    Returns (code, substs, heredocs)."""
+    out, substs, pending, heredocs = [], [], [], []
     i, n, dq = 0, len(cmd), False
 
     def subst_at(k):
@@ -168,7 +183,7 @@ def scan(cmd, expand=True):
     def heredoc_bodies(k):
         """cmd[k] is the newline ending a line with pending heredocs: skip their bodies."""
         k += 1
-        for delim, quoted, strip in pending:
+        for delim, quoted, strip, idx in pending:
             while k < n:
                 e = cmd.find("\n", k)
                 e = n if e < 0 else e
@@ -176,6 +191,7 @@ def scan(cmd, expand=True):
                 k = e + 1
                 if (line.lstrip("\t") if strip else line) == delim:
                     break
+                heredocs[idx].append(line)
                 if not quoted and expand:
                     for body in scan_body(line):
                         substs.append(body)
@@ -230,14 +246,16 @@ def scan(cmd, expand=True):
         if cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
             h = _heredoc_delim(cmd, i)
             if h:
-                pending.append(h[:3])
-                out.append(cmd[i:h[3]]); i = h[3]; continue
+                pending.append(h[:3] + (len(heredocs),))
+                out.append(" " + HEREDOC % len(heredocs) + " ")
+                heredocs.append([])
+                i = h[3]; continue
         if c == "\n" and pending:
             out.append(c)
             i = heredoc_bodies(i)
             continue
         out.append(c); i += 1
-    return "".join(out), substs
+    return "".join(out), substs, ["\n".join(b) for b in heredocs]
 
 
 def _sub_in(text, k):
@@ -261,16 +279,17 @@ def tokens(cmd):
 
 
 def segments(cmd):
+    """[(words, separator_after)] for each simple command."""
     segs, words = [], []
     for t in tokens(cmd):
         if t in SEPARATORS or (t and all(c in ";&|()\n" for c in t)):
             if words:
-                segs.append(words)
+                segs.append((words, t))
             words = []
         else:
             words.append(t)
     if words:
-        segs.append(words)
+        segs.append((words, None))
     return segs
 
 
@@ -308,12 +327,30 @@ def bypass_flag(cmd, depth=0, expand=True):
     """The first permission-bypass flag `cmd` would pass to a program, or None."""
     if depth > MAX_DEPTH or not cmd:
         return None
-    code, substs = scan(cmd, expand)
+    code, substs, heredocs = scan(cmd, expand)
     for inner in substs:
         hit = bypass_flag(inner, depth + 1)
         if hit:
             return hit
-    for words in segments(code):
+    segs = segments(code)
+    progs = [program(w)[0] for w, _ in segs]
+    # A heredoc whose segment runs a shell (or ssh/su), or that is piped into one later
+    # in the same pipeline, is a script: check its body as commands, quoted or not.
+    for n, (words, _) in enumerate(segs):
+        runs = progs[n] in STDIN_RUNNERS
+        k = n
+        while not runs and segs[k][1] in ("|", "|&") and k + 1 < len(segs):
+            k += 1
+            runs = progs[k] in STDIN_RUNNERS
+        if not runs:
+            continue
+        for w in words:
+            m = HEREDOC_RE.match(w)
+            if m:
+                hit = bypass_flag(heredocs[int(m.group(1))], depth + 1)
+                if hit:
+                    return hit
+    for words, _ in segs:
         base, args = program(words)
         if base.startswith(BYPASS_PREFIXES):
             return base
@@ -322,6 +359,8 @@ def bypass_flag(cmd, depth=0, expand=True):
         for a in args:
             if a.startswith(BYPASS_PREFIXES):
                 return a.split("=", 1)[0]
+        if base in PROSE_ARG_TOOLS:
+            continue                      # gh/glab arguments are titles and bodies, not command lines
         # Launchers: `<shell> -c ARG` anywhere in the arguments runs ARG as a script ...
         for n, a in enumerate(args):
             prev = os.path.basename(args[n - 1]) if n else base
@@ -332,7 +371,7 @@ def bypass_flag(cmd, depth=0, expand=True):
                     return hit
         # ... and any argument with whitespace may be a command line (tmux, ssh, docker, script -c, ...).
         for a in args:
-            if any(ch in a for ch in " \t\n") and a != SUBST:
+            if any(ch in a for ch in " \t\n") and a != SUBST and not HEREDOC_RE.match(a):
                 hit = bypass_flag(a, depth + 1, expand=False)
                 if hit:
                     return hit

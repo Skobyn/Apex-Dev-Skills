@@ -1393,14 +1393,15 @@ VERDICT_LINE_RE = re.compile(r"^verdict\s*:\s*(.*)$", re.I)
 APPROVE_RE = re.compile(r"approve[.!]?", re.I)                 # exactly APPROVE (any case)
 # APPROVE, a separator (whitespace + dash/en/em dash, or colon/comma/paren), then a remark.
 APPROVE_REMARK_RE = re.compile(r"approve(\s*[:,(\u2014\u2013]|\s+-)(.*)$", re.I | re.S)
-# A remark with any of these words is a condition, not an approval ("non-blocking" is allowed).
-REMARK_DENY_RE = re.compile(r"request|block|\bfix|\bonce\b|\bafter|\buntil\b|\bpending\b|\bcondition"
-                            r"|\bunless\b|\bif\b|\bnot\b|\bbut\b|\bbefore\b", re.I)
+# A remark counts only if every word is one of these (an allowlist: anything else may be a condition).
+REMARK_WORDS = {"nit", "nits", "nitpick", "nitpicks", "non-blocking", "nonblocking", "minor", "optional", "cosmetic",
+                "style", "lgtm", "only", "with", "and", "a", "few", "some", "small", "suggestions", "comments", "notes"}
 CHANGES_RE = re.compile(r"request[ _-]?changes\b", re.I)      # trailing text allowed
 # A template placeholder naming both outcomes ("APPROVE or VERDICT: REQUEST_CHANGES", "<APPROVE|REQUEST_CHANGES>").
 TOKEN = r"(approve|request[ _-]?changes)"
 TEMPLATE_RE = re.compile(r"^\W*" + TOKEN + r"\W*(\bor\b|\||/)\W*(verdict\s*:\s*)?\W*" + TOKEN + r"\W*$", re.I)
-BLOCKING_LINE_RE = re.compile(r"^\s*(?:[-*+]\s*)?\[blocking\]", re.I)
+BLOCKING_LINE_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])?\s*(?:\[blocking\]|\(blocking\))(.*)$", re.I)
+BLOCKING_NONE = {"none", "n/a", "na", "nothing"}
 FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
 LENS_RE = re.compile(r"^LENS:\s*(.{1,60})$", re.I)
 # The six canonical lenses (and the adversarial pass); anything else is no lens.
@@ -1429,8 +1430,10 @@ def verdict_value(v):
     if CHANGES_RE.match(v):
         return "REQUEST_CHANGES"
     m = APPROVE_REMARK_RE.match(v)
-    if m and not REMARK_DENY_RE.search(re.sub(r"non-blocking", " ", m.group(2), flags=re.I)):
-        return "APPROVE"
+    if m:
+        words = [w.strip("-") for w in re.sub(r"[^a-z-]+", " ", m.group(2).lower()).split()]
+        if all(w in REMARK_WORDS for w in words if w):
+            return "APPROVE"
     return "UNPARSED"
 
 
@@ -1440,8 +1443,9 @@ def parse_review(msg):
     Every line `verdict: <value>` (any case, markdown emphasis and backticks
     ignored) is a verdict line. Its value is APPROVE when it is exactly APPROVE,
     or APPROVE + a separator (whitespace then - / en or em dash, or : , ( ) + a
-    remark with none of request, block(ing), fix, once, after, until, pending,
-    condition(al), unless, if, not, but, before ("non-blocking" is fine);
+    remark whose every word is in REMARK_WORDS (nits, non-blocking, minor,
+    optional, cosmetic, style, LGTM, only, suggestions, ...): an allowlist, so
+    "APPROVE, provided ..." or "APPROVE (assuming CI goes green)" is UNPARSED;
     REQUEST_CHANGES when it starts with REQUEST CHANGES / REQUEST_CHANGES /
     request-changes; a template placeholder naming both outcomes joined by
     or / | / slash is no verdict; anything else ("APPROVED", "APPROVE-ish",
@@ -1450,8 +1454,10 @@ def parse_review(msg):
     Context only discounts approvals: an APPROVE line inside a fenced code block,
     a blockquote (`>`) or indented code (4+ spaces or a tab) is an example and is
     skipped, but a REQUEST_CHANGES or UNPARSED line counts wherever it is. A fence
-    left open at the end of the message adds UNPARSED. Any line that starts with
-    `[blocking]` (optionally as a list item) forces REQUEST_CHANGES.
+    left open at the end of the message adds UNPARSED. Any line outside a code
+    fence that starts with `[blocking]` or `(blocking)` (optionally as a `-`/`*`
+    or numbered list item) forces REQUEST_CHANGES, unless the text after the tag
+    is none / n/a.
 
     The result is REQUEST_CHANGES if a blocking finding is listed; otherwise the
     last non-approving value if any; otherwise APPROVE if there is at least one
@@ -1462,7 +1468,8 @@ def parse_review(msg):
         if FENCE_RE.match(raw):
             fenced = not fenced
             continue
-        if BLOCKING_LINE_RE.match(re.sub(r"[*_`]", "", raw.lstrip(" \t>"))):
+        b = None if fenced else BLOCKING_LINE_RE.match(re.sub(r"[*_`]", "", raw.lstrip(" \t>")))
+        if b and b.group(1).strip(" :.-\u2014\u2013").lower() not in BLOCKING_NONE:
             blocking = True
         example = fenced or raw.startswith(("    ", "\t")) or raw.lstrip().startswith(">")
         line = re.sub(r"[*`]", "", raw).strip().strip("_#> ").strip()

@@ -71,7 +71,10 @@ plugins/apex-guardrails/
   non-text-tool program, arguments containing whitespace and `<shell> -c ARG` anywhere
   in the arguments are checked as nested commands (launchers such as tmux, screen,
   docker, script, su, ssh), depth-capped; wrapper option values (`sudo -u USER`,
-  `timeout -s SIG DURATION`, `env -u VAR`, `nice -n N`) are skipped (the approach of apex-dispatch's `pre-bash`
+  `timeout -s SIG DURATION`, `env -u VAR`, `nice -n N`) are skipped; `gh`/`glab`
+  arguments are titles and bodies, exempt from the launcher rule; a heredoc whose
+  segment runs a shell, `ssh` or `su`, or that is piped into one, is checked as
+  commands regardless of quoting (other heredocs stay literal data) (the approach of apex-dispatch's `pre-bash`
   hook, reimplemented in `hooks/bash_scope.py` so no code is shared across plugins).
   It then denies `rm -rf /`, `rm -rf ~`/`$HOME`, force-push to `main`/`master`,
   `git reset --hard` onto a protected branch, and curl/wget piped into a shell.
