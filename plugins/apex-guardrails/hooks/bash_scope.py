@@ -103,7 +103,8 @@ OPTION_TOKEN_RE = re.compile(r"--?[A-Za-z][\w-]*(=\S*)?")
 def prose_shorts(base, args):
     """Short option letters that take a prose value for this subcommand (empty if none):
     git commit/tag/merge/notes add|append: m F; git log/show/shortlog: S G; gh/glab
-    pr|issue|release|mr create|edit|comment|review|close|note: t b d n f F; gh api: f F."""
+    pr|issue|release|mr create|edit|comment|review|close|note: t b d n f F; gh pr merge: t b F
+    (its -d is the boolean --delete-branch); gh api: f F."""
     pos, i = [], 0
     while i < len(args) and len(pos) < 2:
         a = args[i]
@@ -123,6 +124,8 @@ def prose_shorts(base, args):
         return set()
     if sub == "api" and base == "gh":
         return set("fF")
+    if sub == "pr" and act == "merge" and base == "gh":
+        return set("tbF")                             # -t subject, -b body, -F body-file; -d is --delete-branch
     if sub in ("pr", "issue", "release", "mr") and act in _GH_ACTIONS:
         return set("tbdnfF")
     if sub in ("repo", "gist") and act == "create":
@@ -363,8 +366,11 @@ def strip_prose_values(base, args):
     """Drop the values of prose options (titles, bodies, messages, search strings) for
     gh/glab/git: long options everywhere (`--body V`, `--body=V`); short ones only where the
     subcommand gives them a prose value (`-b V`, `-bV`, `git commit -am V`). A next argument
-    that starts with `-` is an option, never a value, so it is kept. Everything else is kept
-    for the launcher rules (git rebase -S/-m --exec, gh codespace ssh -d ... stay checked)."""
+    is an option (kept, and the prose option takes no value) only when it is shaped like one
+    (OPTION_TOKEN_RE: `-x`, `--name`, `--name=value`); any other next argument is the value and
+    is dropped, even when it starts with `-` (`-b '- removes --yolo'`). Everything else is kept
+    for the launcher rules (git rebase -S/-m --exec, gh codespace ssh -d, gh pr merge -d ... stay
+    checked)."""
     if base not in PROSE_FLAGS:
         return args
     longs, shorts = PROSE_FLAGS[base], prose_shorts(base, args)
@@ -372,8 +378,7 @@ def strip_prose_values(base, args):
     while i < len(args):
         a = args[i]
         # The next argument is an option (kept) only if it looks like one; '- removes --yolo' is a value.
-        nxt_is_value = i + 1 < len(args) and not (OPTION_TOKEN_RE.fullmatch(args[i + 1])
-                                                   and not any(c in args[i + 1] for c in " \t\n"))
+        nxt_is_value = i + 1 < len(args) and not OPTION_TOKEN_RE.fullmatch(args[i + 1])
         if a in longs:
             i += 2 if nxt_is_value else 1
             continue

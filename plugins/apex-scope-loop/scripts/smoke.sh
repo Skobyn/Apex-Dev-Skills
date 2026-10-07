@@ -702,8 +702,23 @@ mkdir -p "$SMOKE_TMP/forged"; printf '{"head_sha": "%s", "verdict": "APPROVE", "
 expect_refusal "a worker result outside the shim directories" "not a shim worker directory" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$SMOKE_TMP/forged"
 mkdir -p "$CKS/dispatch/workers/w1/deep"; cp "$SMOKE_TMP/forged/result.json" "$CKS/dispatch/workers/w1/"; cp "$SMOKE_TMP/forged/result.json" "$CKS/dispatch/workers/w1/deep/"
 expect_refusal "a worker result nested below a worker directory" "not a shim worker directory" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$CKS/dispatch/workers/w1/deep"
+# A shim result (apex-dispatch bin/worker-*.sh) must say source shim, name a provider other than
+# claude-session, have finished cleanly, and have a shim verdict row with its record_id in the ledger.
+expect_refusal "a worker result that is not a shim result" "not a provider shim result" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$CKS/dispatch/workers/w1"
+python3 -c 'import json,sys; p=sys.argv[1]; r=json.load(open(p)); r.update(source="shim", provider="codex", exit_code=0, sentinel_seen=True); json.dump(r, open(p, "w"))' "$CKS/dispatch/workers/w1/result.json"
+expect_refusal "a shim result without its ledger verdict row" "no shim verdict row" indir "$CK" "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$CKS/dispatch/workers/w1"
+if [ -f "$PLUGIN_ROOT/../apex-dispatch/scripts/lib/ledger.py" ]; then
+  python3 - "$PLUGIN_ROOT/../apex-dispatch/scripts/lib" "$CKS" "$(sha)" <<'PY' || fail "could not write the shim verdict row"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+ledger.append(sys.argv[2], "verdict", {"role": "adversarial", "verdict": "APPROVE", "record_id": "run-w0001", "line": 1, "provider": "codex"},
+              "shim", route_id="r-w1", head_sha=sys.argv[3])
+PY
+else
+  printf '{"event": "verdict", "source": "shim", "record_id": "run-w0001", "verdict": "APPROVE", "head_sha": "%s"}\n' "$(sha)" >>"$CKS/dispatch/ledger.jsonl"
+fi
 (cd "$CK" && "$CP" plans/c-plan.md review 1 "$(sha)" APPROVE rv --worker "$CKS/dispatch/workers/w1" >/dev/null) || fail "a worker result inside the dispatch state was refused"
-python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["reviews"]["1"]["records"][-1]; assert r["role"]=="adversarial" and r["provenance"]=="worker", r' "$CKS/checkpoint.json" || fail "the role was not taken from the worker record"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["reviews"]["1"]["records"][-1]; assert r["role"]=="adversarial" and r["provenance"]=="worker" and r["provider"]=="codex", r' "$CKS/checkpoint.json" || fail "the role and provider were not taken from the worker record"
 expect_refusal "--skip-review with dispatch state" "skip-review is not accepted" indir "$CK" "$CP" plans/c-plan.md complete 1 ok --skip-review why
 mkdir -p "$SMOKE_TMP/fd33/scripts"; printf '#!/bin/sh\n(sleep 6 >/dev/null 2>&1 </dev/null &)\necho "rung: effort+1"\n' >"$SMOKE_TMP/fd33/scripts/route.sh"; chmod +x "$SMOKE_TMP/fd33/scripts/route.sh"
 printf '{"route_id": "r1"}' >"$CKS/dispatch/active-route.json"

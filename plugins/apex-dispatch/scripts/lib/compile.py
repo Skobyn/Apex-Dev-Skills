@@ -83,10 +83,16 @@ def dumps(obj):
     return json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
+def _no_constant(name):
+    """json parse_constant hook: NaN, Infinity and -Infinity are not JSON (RFC 8259)
+    and compare false against every bound, so they would slip past min/max checks."""
+    raise ValueError("non-finite number %s is not allowed" % name)
+
+
 def load_json(path, what):
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            return json.load(f, parse_constant=_no_constant)
     except FileNotFoundError:
         raise PolicyError(["%s not found: %s" % (what, path)])
     except (ValueError, OSError) as e:
@@ -151,6 +157,8 @@ def check_overlay_shape(overlay, sections, src):
             if not isinstance(e, dict) or not isinstance(e.get("id"), str) or not e["id"]:
                 errs.append("overlay %s: %s[%d] must be an object with a non-empty string id" % (src, key, i))
             elif sec["merge"] == "subtract":
+                if "section" in e and not isinstance(e["section"], str):
+                    errs.append("overlay %s: disabled entry '%s': section must be a string" % (src, e["id"]))
                 r = e.get("reason")
                 if not isinstance(r, str) or not r.strip():
                     errs.append("overlay %s: disabled entry '%s' has no reason (a reason is required)" % (src, e["id"]))
@@ -241,9 +249,13 @@ def overlay_allowlist(default, overlay, src):
             errs.append("%s.enabled: must be true or false" % where)
         for k in ("allowed_classes", "roles_allowed"):
             if k in o:
-                if not isinstance(o[k], list) or not set(o[k]) <= set(d[k]):
+                if not isinstance(o[k], list) or not all(isinstance(x, str) for x in o[k]):
+                    errs.append("%s.%s: must be a list of strings" % (where, k))
+                elif not set(o[k]) <= set(d[k]):
                     errs.append("%s.%s: an overlay may only narrow it to a subset of the default %s" % (where, k, json.dumps(d[k])))
-        if "max_tier" in o and trank.get(o["max_tier"], 1 << 30) > trank[d["max_tier"]]:
+        if "max_tier" in o and not isinstance(o["max_tier"], str):
+            errs.append("%s.max_tier: must be a tier id string" % where)
+        elif "max_tier" in o and trank.get(o["max_tier"], 1 << 30) > trank[d["max_tier"]]:
             errs.append("%s.max_tier: an overlay may only lower it (default %s)" % (where, json.dumps(d["max_tier"])))
         if "min_acceptance" in o:
             v = o["min_acceptance"]
@@ -777,10 +789,17 @@ def merged_with_overlay(inputs, overlay_path):
     bounds (overlay_checks). Raises PolicyError naming every problem."""
     overlay = load_json(overlay_path, "overlay")
     secs = inputs["sections"]["sections"]
-    merged = apply_disabled(merge_policy(inputs["default"], overlay, secs, overlay_path), secs, inputs["schema"])
-    default_policy = apply_disabled(merge_policy(inputs["default"], {}, secs), secs, inputs["schema"])
-    validate_policy(merged, inputs["schema"], "merged policy (overlay %s)" % overlay_path,
-                    extra=lambda m: overlay_checks(default_policy, m))
+    try:
+        merged = apply_disabled(merge_policy(inputs["default"], overlay, secs, overlay_path), secs, inputs["schema"])
+        default_policy = apply_disabled(merge_policy(inputs["default"], {}, secs), secs, inputs["schema"])
+        validate_policy(merged, inputs["schema"], "merged policy (overlay %s)" % overlay_path,
+                        extra=lambda m: overlay_checks(default_policy, m))
+    except (TypeError, KeyError, AttributeError) as e:
+        # A value of the wrong shape (a list or object where an id, tag or flag
+        # string belongs) that the named checks did not catch first: still a
+        # named refusal, never a traceback.
+        raise PolicyError(["overlay %s: a value has the wrong type for its field (%s: %s); ids, tags, classes, "
+                           "roles and flags are strings" % (overlay_path, type(e).__name__, e)])
     return merged
 
 

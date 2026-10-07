@@ -3,8 +3,8 @@
 
 The single writer of <state>/dispatch/ledger.jsonl (<state>/dispatch-shadow/ while not enforcing,
 see enforcing()). route.py and the hooks (scripts/lib/hooks.py) import it
-(`import ledger; ledger.append(...)`); the provider shims will too.
-Provenance events (route, spawn_request, spawn, worker_run, verdict) are written
+(`import ledger; ledger.append(...)`), and so do the provider shims (scripts/lib/worker.py).
+Provenance events (route, spawn_request, spawn, worker_run, verdict, worker_applied) are written
 in-process only; scripts/ledger.sh (the CLI) refuses them.
 
 Row format. Every row is one JSON object on one line. The caller's fields are
@@ -107,19 +107,26 @@ def enforcing(root=None):
 
 def second_families(doc, root=None):
     """Providers that give a Tier C review a second reviewer family *now* (spec
-    §5.2 step 7): enabled and available in doctor.json (claude-p also needs
-    claude_p_auth "available"), not the in-session provider, AND shipped as an
-    executable bin/worker-<provider>.sh in this plugin, because pre-bash.sh lets
-    provider CLIs run only through those shims. doctor.py (tier_c_diversity) and
-    apex-scope-loop's checkpoint.sh complete both use this one rule; an empty
-    list means diversity degrades to a ledgered warning, never a stall."""
+    §5.2 step 7): enabled and available in doctor.json with their auth OK
+    (claude-p: claude_p_auth "available"; any other: auth_ok true), not refusing
+    their forced flags (flags_ok not false), not the in-session provider, AND
+    shipped as an executable bin/worker-<provider>.sh in this plugin, because
+    pre-bash.sh lets provider CLIs run only through those shims. doctor.py
+    (tier_c_diversity) and apex-scope-loop's checkpoint.sh complete both use this
+    one rule; an empty list means diversity degrades to a ledgered warning, never
+    a stall."""
     root = root or plugin_root()
     doc = doc if isinstance(doc, dict) else {}
     out = []
     for pid, v in sorted((doc.get("providers") or {}).items()):
         if pid == "claude-session" or not isinstance(v, dict) or not (v.get("enabled") and v.get("available")):
             continue
-        if pid == "claude-p" and doc.get("claude_p_auth") != "available":
+        if v.get("flags_ok") is False:
+            continue
+        if pid == "claude-p":
+            if doc.get("claude_p_auth") != "available":
+                continue
+        elif v.get("auth_ok") is not True:
             continue
         shim = os.path.join(root, "bin", "worker-%s.sh" % pid)
         if os.path.isfile(shim) and os.access(shim, os.X_OK):

@@ -344,7 +344,8 @@ if os.path.isdir(dstate) and not skip:
         if div == "block" and second:
             problems.append(msg + " — add a review from a second family (%s: bin/worker-<provider>.sh --role reviewer)" % ", ".join(second))
         else:
-            why = ("no second family is available (no available provider ships a bin/worker-*.sh shim yet)"
+            why = ("no second family is available (doctor.json shows no enabled provider with a shipped bin/worker-*.sh shim, "
+                   "working auth and accepted forced flags)"
                    if div == "block" else "advisory for this shape")
             print("DIVERSITY_WARN: " + msg + "; " + why)
 if problems:
@@ -466,10 +467,10 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:
     [[ -z "$ROLE" || "$ROLE" =~ ^(reviewer|adversarial|lens:[a-z/-]+)$ ]] || { echo "ERROR: --role must be reviewer, adversarial or lens:<name>" >&2; exit 1; }
     [[ -n "$AGENT_ID" && -n "$WORKER" ]] && { echo "ERROR: --agent-id and --worker are exclusive" >&2; exit 1; }
     python3 - "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$VERDICT" "$REVIEWER" "$REVIEWER_NAMED" "$ROLE" "$AGENT_ID" "$WORKER" \
-      "$PROVIDER" "$MODEL" "$ROUTE_ID" "$DISPATCH_STATE" "${PLAN_TOP:-$REPO_ROOT}" "${APEX_REVIEW_CAP:-3}" <<'PY'
+      "$PROVIDER" "$MODEL" "$ROUTE_ID" "$DISPATCH_STATE" "${PLAN_TOP:-$REPO_ROOT}" "${APEX_REVIEW_CAP:-3}" "$(head_sha)" <<'PY'
 import json, os, re, sys
 (path, now, line_no, sha, verdict, reviewer, reviewer_named, role, agent_id, worker,
- provider, model, route_id, dstate, top, cap) = sys.argv[1:]
+ provider, model, route_id, dstate, top, cap, wt_head) = sys.argv[1:]
 def die(msg):
     print(f"[checkpoint] REFUSED review @ line {line_no}: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -545,6 +546,31 @@ if os.path.isdir(dstate):
         for x in rv.get("records", []):
             if x.get("source") == source:
                 die(f"that provenance record is already recorded (line {ln}, {x.get('role')} on {str(x.get('sha'))[:12]})")
+    if worker:
+        # A shim result (apex-dispatch bin/worker-<provider>.sh): a finished run of a
+        # provider other than the in-session one, reviewing the worktree's current
+        # HEAD, whose verdict the shim also wrote to the hash-chained ledger.
+        if rec.get("source") != "shim" or str(rec.get("provider") or "") in ("", "claude-session"):
+            die("the worker record is not a provider shim result (source shim, provider other than claude-session)")
+        if rec.get("exit_code") != 0 or not rec.get("sentinel_seen"):
+            die(f"the worker run did not finish cleanly (exit {rec.get('exit_code')}, sentinel {rec.get('sentinel_seen')})")
+        if sha != wt_head:
+            die(f"the worker reviewed {sha[:12]} but the worktree HEAD is {wt_head[:12]}: re-review the current head")
+        found = False
+        try:
+            for ln in open(os.path.join(dstate, "ledger.jsonl"), encoding="utf-8"):
+                try:
+                    row = json.loads(ln)
+                except ValueError:
+                    continue
+                if row.get("event") == "verdict" and row.get("source") == "shim" and row.get("record_id") == rid \
+                        and row.get("verdict") == rec.get("verdict") and row.get("head_sha") == sha:
+                    found = True
+                    break
+        except OSError:
+            pass
+        if not found:
+            die("no shim verdict row in the ledger carries this record_id at that SHA (the result was not written by a shim run)")
     # Provider and family come from the record (what ran), never from the caller.
     provider = str(rec.get("provider") or "")
     model = model or rec.get("model", "")

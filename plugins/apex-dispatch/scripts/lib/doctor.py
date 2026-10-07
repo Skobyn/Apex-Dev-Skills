@@ -127,14 +127,37 @@ class Doctor:
                  + (out.strip().splitlines() or ["no output"])[-1])
         return ledger.read_json(os.path.join(self.root, "resources", "compiled", "policy.json"), {}) or {}
 
+    # Credentials files a CLI reads when its key variable is unset (looked at, never read
+    # or sent anywhere): Claude Code's OAuth login, codex's `codex login`.
+    CRED_FILES = {"claude-p": ("CLAUDE_CONFIG_DIR", ".claude", ".credentials.json"),
+                  "codex": ("CODEX_HOME", ".codex", "auth.json")}
+    EXTRA_AUTH_ENV = {"claude-p": ("CLAUDE_CODE_OAUTH_TOKEN",)}
+    FLAG_ERRORS = re.compile(r"unexpected argument|unknown option|unrecognized option|unknown flag|invalid option", re.I)
+
+    def auth_of(self, pid, p):
+        """env | credentials-file | none | n/a: how the provider would authenticate (no network call)."""
+        keys = ([p["key_env"]] if p.get("key_env") else []) + list(self.EXTRA_AUTH_ENV.get(pid, ()))
+        if any(os.environ.get(k) for k in keys):
+            return "env"
+        cf = self.CRED_FILES.get(pid)
+        if cf:
+            base = os.environ.get(cf[0]) or os.path.join(os.path.expanduser("~"), cf[1])
+            if os.path.isfile(os.path.join(base, cf[2])):
+                return "credentials-file"
+        return "none" if keys or cf else "n/a"
+
     def providers(self, pol):
         prov = {}
         for p in pol.get("providers", []):
             pid = p.get("id")
-            entry = {"enabled": bool(p.get("enabled")), "available": False, "binary": p.get("binary"), "version": None}
+            status = p.get("status")
+            shim = os.path.join(self.root, "bin", "worker-%s.sh" % pid)
+            has_shim = os.path.isfile(shim) and os.access(shim, os.X_OK)
+            entry = {"enabled": bool(p.get("enabled")), "available": False, "binary": p.get("binary"), "version": None,
+                     "status": status, "verified": status == "verified", "shim": has_shim}
             prov[pid] = entry
             if not p.get("enabled"):
-                self.add("provider:%s" % pid, "skipped", "disabled in policy")
+                self.add("provider:%s" % pid, "skipped", "disabled in policy (status %s)" % status)
                 continue
             if p.get("kind") == "in-session":
                 entry["available"] = self.facts.get("claude_version") is not None
@@ -142,33 +165,57 @@ class Doctor:
                          "in-session (needs the claude binary)")
                 continue
             b = p.get("binary")
-            if not b:
+            if not b or p.get("kind") == "stub":
+                entry["why"] = "stub"
                 self.add("provider:%s" % pid, "skipped", "no binary (%s)" % p.get("kind"))
                 continue
             path = shutil.which(os.environ.get("APEX_CLAUDE_BIN") or b) if b == "claude" else shutil.which(b)
             if not path:
+                entry["why"] = "binary %s not on PATH" % b
                 self.add("provider:%s" % pid, "warn", "binary %r not on PATH: routes fall back to claude-session" % b)
                 continue
             rc, out = run([path, "--version"], timeout=5)
             v = vtuple(out) if rc == 0 else None
-            entry.update({"available": True, "path": path, "version": vstr(v) if v else None})
-            key = p.get("key_env")
-            if key and not os.environ.get(key):
-                entry["auth"] = "unknown"
-                self.add("provider:%s" % pid, "warn", "%s %s at %s; %s is not set (subscription login may still work; "
-                         "unverified)" % (b, vstr(v) if v else "(version unknown)", path, key))
-            else:
-                entry["auth"] = "env" if key else "n/a"
-                self.add("provider:%s" % pid, "ok", "%s %s at %s" % (b, vstr(v) if v else "(version unknown)", path))
+            auth = self.auth_of(pid, p)
+            entry.update({"available": True, "path": path, "version": vstr(v) if v else None, "auth": auth,
+                          "auth_ok": auth in ("env", "credentials-file", "n/a")})
+            # Forced flags verified by running the exact forced set with --help (spec §5.1):
+            # a CLI that no longer accepts one says "unexpected argument" (codex 0.160 on -a).
+            frc, fout = run([path] + list(p.get("forced_flags") or []) + ["--help"], timeout=15)
+            bad = self.FLAG_ERRORS.search(fout or "")
+            entry["flags_ok"] = frc == 0 and not bad
+            entry["flags_detail"] = ("exit %d%s" % (frc, ": " + bad.group(0) if bad else "")) if not entry["flags_ok"] else "accepted"
+            parts = ["%s %s at %s" % (b, vstr(v) if v else "(version unknown)", path), "auth %s" % auth,
+                     "shim %s" % ("bin/worker-%s.sh" % pid if has_shim else "missing"), "forced flags %s" % entry["flags_detail"]]
+            st = "ok"
+            if status != "verified":
+                st = "warn"
+                parts.append("status %s: enabled by this repository's overlay, not verified (shims refuse it unless "
+                             "the overlay enables it explicitly)" % status)
+            if not entry["flags_ok"]:
+                st, entry["available"] = "warn", False
+                entry["why"] = "forced flags rejected (%s)" % entry["flags_detail"]
+            if not entry["auth_ok"]:
+                st = "warn"
+                parts.append("no auth: %s unset and no credentials file" % (p.get("key_env") or "key"))
+            if not has_shim:
+                st = "warn"
+            self.add("provider:%s" % pid, st, "; ".join(parts))
         self.facts["providers"] = prov
         cp = prov.get("claude-p") or {}
-        self.facts["claude_p_auth"] = "available" if cp.get("available") and cp.get("auth") == "env" else "unavailable"
+        self.facts["claude_p_auth"] = "available" if cp.get("available") and cp.get("auth_ok") else "unavailable"
         return prov
 
     def forbidden_flags(self):
-        return self.add("provider-forced-flags-probe", "unverified",
-                        "deferred: forced flags are verified by running each shim's exact forced set with --help "
-                        "(parse for 'unexpected argument') once bin/worker-*.sh ship (Phase 4)")
+        probed = {k: v for k, v in (self.facts.get("providers") or {}).items() if "flags_ok" in v}
+        if not probed:
+            return self.add("provider-forced-flags-probe", "unverified",
+                            "no enabled subprocess provider binary on PATH, so no forced flag set could be probed with --help")
+        bad = sorted(k for k, v in probed.items() if not v["flags_ok"])
+        if bad:
+            return self.add("provider-forced-flags-probe", "warn", "forced flags rejected by %s (those providers are "
+                            "marked unavailable)" % ", ".join(bad))
+        return self.add("provider-forced-flags-probe", "ok", "forced flags accepted with --help by %s" % ", ".join(sorted(probed)))
 
     def subagent_model_env(self):
         hits = sorted(k for k in os.environ if k.startswith("CLAUDE_CODE_SUBAGENT_MODEL"))
@@ -246,9 +293,14 @@ class Doctor:
             self.add("claude-plugin-validate", "unverified", "claude binary unavailable")
 
     def sandbox(self):
-        return self.add("sandbox-confinement", "unverified",
-                        "probed in-process by each provider shim (touch $HOME/probe, non-allowed host) once "
-                        "bin/worker-*.sh ship (Phase 4)")
+        # Non-writing probe (the spec's `touch $HOME/probe` would write): is HOME writable here?
+        home = os.path.expanduser("~")
+        if home and os.access(home, os.W_OK):
+            return self.add("sandbox-confinement", "warn",
+                            "no OS sandbox detected (HOME is writable): provider shims still run in a throwaway worktree or "
+                            "snapshot with a scrubbed environment and apply.sh checks every path, but the OS does not "
+                            "confine them; apply resources/settings-snippet.json's sandbox settings for layer I")
+        return self.add("sandbox-confinement", "ok", "HOME is not writable: an OS sandbox appears active")
 
 
 def main(argv):
@@ -297,7 +349,8 @@ def main(argv):
     # shim ships, since pre-bash.sh refuses provider CLIs outside the shims.
     second = ledger.second_families({"providers": d.facts.get("providers") or {},
                                      "claude_p_auth": d.facts.get("claude_p_auth")}, root)
-    tier_c_diversity = "block" if second else "warn (no second reviewer family: no available provider has a bin/worker-*.sh shim yet)"
+    tier_c_diversity = "block" if second else ("warn (no second reviewer family: no enabled provider with a shipped "
+                                               "bin/worker-*.sh shim is available with working auth and flags)")
     out = {"schema": 1, "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "status": overall, "profile": profile, "repo": repo, "state": opts["state"], "temp_state": bool(opts.get("temp")),
            "enforcing": ledger.enforcing(root), "claude_version": d.facts.get("claude_version"),

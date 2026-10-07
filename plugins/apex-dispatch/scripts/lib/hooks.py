@@ -62,6 +62,7 @@ TAMPER_ENV = {
     "APEX_REVIEW_CAP": None,
     "APEX_ERROR_BUDGET": None,
     "APEX_ESCALATE_AFTER": None,
+    "APEX_DISPATCH_WORKER_WT": None,                     # set only by worker.py for a claude -p write worker
 }
 # Layer A bypass families: denied anywhere in a command.
 BYPASS_PREFIXES = ("--dangerously-", "--yolo", "--always-approve", "--full-auto")
@@ -151,7 +152,31 @@ class Ctx:
         self._policy = self._route = self._worktree = None
         wt = self.checkpoint.get("worktree_path")
         self.state_worktree = real(wt) if isinstance(wt, str) and wt and os.path.isdir(wt) else None
+        self.worker_wt = self._worker_worktree()
         self.notes = []
+
+    def _worker_worktree(self):
+        """A claude -p write worker's throwaway worktree (spec §5.4): worker.py sets
+        APEX_DISPATCH_WORKER_WT in that session's environment only. It counts only
+        when a running write-mode worker of the active route registered exactly that
+        path in <D>/workers/<run>/worker.json; then the session's hooks treat it as
+        the plan worktree (pre-edit confinement, lanes' Paths) and not as run state.
+        pre-bash refuses any command that sets or unsets the variable."""
+        env = os.environ.get("APEX_DISPATCH_WORKER_WT")
+        if not env or not self.state_dir:
+            return None
+        path = real(env)
+        wdir = os.path.join(ledger.dispatch_dir(self.state_dir), "workers")
+        try:
+            names = sorted(os.listdir(wdir))[:2000]
+        except OSError:
+            return None
+        for n in names:
+            reg = read_json(os.path.join(wdir, n, "worker.json"))
+            if isinstance(reg, dict) and reg.get("mode") == "write" and reg.get("status") == "running" \
+                    and isinstance(reg.get("worktree"), str) and real(reg["worktree"]) == path and os.path.isdir(path):
+                return path
+        return None
 
     def stale(self):
         """An owner whose stage is DONE or whose plan landed is reclaimable: no run."""
@@ -159,6 +184,8 @@ class Ctx:
 
     @property
     def worktree(self):
+        if self._worktree is None and self.worker_wt:
+            self._worktree = self.worker_wt
         if self._worktree is None:
             wt = self.checkpoint.get("worktree_path")
             if isinstance(wt, str) and os.path.isdir(wt):
@@ -271,7 +298,13 @@ def protected_reason(ctx, path, removal=True):
                 return "removing or moving %s would delete %s (%s) during a run" % (path, what, p)
     if wt and path == wt and removal:
         return "the plan worktree root is not removed or moved during a run (land.sh removes it)"
-    if wt and under(path, wt) and (path != wt or not removal):
+    ww = ctx.worker_wt
+    if ww and under(path, ww) and path != ww:
+        # A claude -p write worker's registered throwaway worktree (<D>/worktrees/<run>):
+        # its tree is that worker's work, not run state.
+        if ".dev-plan-state" in os.path.relpath(path, ww).split("/"):
+            return "run state (.dev-plan-state/) is written only by the apex-scope-loop and apex-dispatch scripts"
+    elif wt and under(path, wt) and (path != wt or not removal):
         # apex-scope-loop puts the plan worktree inside the run state
         # (<state>/worktree): its tree is the work, not run state; only a
         # .dev-plan-state nested inside it is.
@@ -1187,7 +1220,7 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
                 raise Deny("bypass flag %s is forbidden" % w)
         # 3. Provider CLIs only through bin/worker-*.sh.
         b = c.base
-        if re.fullmatch(r"worker-[a-z0-9-]+\.sh", b) or (b in SHELLS and c.args and re.search(r"/bin/worker-[a-z0-9-]+\.sh$", c.args[0])):
+        if re.fullmatch(r"worker-[a-z0-9-]+\.sh", b) or (b in SHELLS and c.args and re.search(r"(^|/)bin/worker-[a-z0-9-]+\.sh$", c.args[0])):
             shim = b if b.startswith("worker-") else os.path.basename(c.args[0])
             if role and role != "provider-runner":
                 raise Deny("provider shims run only from the orchestrator or provider-runner, not %s" % role)
@@ -1669,6 +1702,8 @@ def stop_gate(ctx, p):
     route that is not READY/enforced, stage other than BUILD, the lock released."""
     if p.get("stop_hook_active") or halt_reason(ctx) or not ctx.enforcing_route() or ctx.stage != "BUILD":
         return {}
+    if caller_role(p) and not p.get("agent_id"):
+        return {}                                         # a worker session (claude -p --agent): the shim judges it
     rid = ctx.route.get("route_id")
     rows = ledger.read_rows(ctx.state_dir)
     blocks = [r for r in rows if r.get("event") == "hook_advisory" and r.get("hook") == "stop-gate.sh" and r.get("blocked")]

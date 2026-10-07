@@ -166,6 +166,8 @@ deny_cmds=(
   $'git rebase -m --exec=\'claude --yolo\' main'
   $'gh codespace ssh -d \'claude --yolo\''
   $'git commit -m -x \'claude --yolo\''
+  $'gh pr merge 3 -d \'x --yolo\''
+  $'gh pr merge 3 -d -s \'claude --full-auto\''
 )
 allow_cmds=(
   'grep -rn -- --yolo docs/'
@@ -207,6 +209,8 @@ allow_cmds=(
   $'gh pr merge 3 --squash -t \'x --yolo\''
   $'gh repo create o/r -d \'no --yolo here\''
   $'gh gist create -d \'about --full-auto\' f.txt'
+  $'gh pr merge 3 -d -b \'merged; see --yolo note\''
+  $'gh pr merge 3 -F - -t \'x --full-auto\''
 )
 for c in "${deny_cmds[@]}"; do n=$((n+1)); bash_event "$c" >"$SMOKE_TMP/d$n.json"; expect deny "$SMOKE_TMP/d$n.json"; expect deny "$SMOKE_TMP/d$n.json" --bypass-only; done
 for c in "${allow_cmds[@]}"; do n=$((n+1)); bash_event "$c" >"$SMOKE_TMP/a$n.json"; expect allow "$SMOKE_TMP/a$n.json"; done

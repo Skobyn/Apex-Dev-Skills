@@ -630,7 +630,12 @@ pass "report.sh: routes by class/tier/provider/mode, spawns, verdicts, escalatio
 # 38. doctor.sh writes doctor.json with a status per check; claude absent/old → fail (JSON still written)
 mkdir -p "$WORK/fakebin"; printf '#!/bin/sh\n[ "$1" = --version ] && echo "2.1.300 (Claude Code)"; exit 0\n' >"$WORK/fakebin/claude"; chmod +x "$WORK/fakebin/claude"
 printf '#!/bin/sh\necho "2.1.100 (Claude Code)"\n' >"$WORK/fakebin/claude-old"; chmod +x "$WORK/fakebin/claude-old"
-doc() { (cd "$FX" && env -u CLAUDE_CODE_SUBAGENT_MODEL "$@" bash "$DOCTOR" --state "$WORK/ds" --repo "$FX") >"$WORK/doc.out" 2>&1; }
+# A stub codex shadows any real one (doctor runs --version and the forced flags with --help);
+# no provider key and empty config dirs keep the auth facts independent of this machine.
+printf '#!/bin/sh\ncase "$*" in *--version*) echo "codex-cli 0.160.0" ;; *--help*) echo "Usage: codex exec [OPTIONS]" ;; *) exit 1 ;; esac\n' >"$WORK/fakebin/codex"; chmod +x "$WORK/fakebin/codex"
+mkdir -p "$WORK/nocfg"
+doc() { (cd "$FX" && env -u CLAUDE_CODE_SUBAGENT_MODEL -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
+  PATH="$WORK/fakebin:$PATH" CLAUDE_CONFIG_DIR="$WORK/nocfg" CODEX_HOME="$WORK/nocfg" "$@" bash "$DOCTOR" --state "$WORK/ds" --repo "$FX") >"$WORK/doc.out" 2>&1; }
 dj() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); c={x["id"]:x["status"] for x in d["checks"]}; exec(sys.argv[2])' "$WORK/ds/dispatch-shadow/doctor.json" "$1"; }
 RC=0; doc APEX_CLAUDE_BIN="$WORK/fakebin/claude" || RC=$?
 [ "$RC" = 0 ] || fail "doctor.sh with claude 2.1.300 exited $RC: $(cat "$WORK/doc.out")"
@@ -641,7 +646,10 @@ for k in ("scope-loop-sibling", "compile-check", "subagent-model-env", "settings
           "probe:agent-id-in-tool-stdin", "probe:updatedinput-model", "installed-version", "compiled-version"):
     assert k in c, k
 assert c["scope-loop-sibling"] == "ok" and c["compile-check"] == "ok" and c["subagent-model-env"] == "ok"
-assert c["settings-snippet"] == "warn" and c["probe:agent-id-in-tool-stdin"] == "unverified" and c["provider-forced-flags-probe"] == "unverified"
+assert c["settings-snippet"] == "warn" and c["probe:agent-id-in-tool-stdin"] == "unverified" and c["provider-forced-flags-probe"] == "ok"
+cx = d["providers"]["codex"]
+assert cx["available"] and cx["shim"] and cx["verified"] and cx["version"] == "0.160.0" and cx["auth"] == "none" and cx["auth_ok"] is False and cx["flags_ok"], cx
+assert d["claude_p_auth"] == "unavailable" and d["second_families"] == [] and d["tier_c_diversity"].startswith("warn"), d
 assert d["profile"] and d["providers"]["claude-session"]["available"] is True
 ' || fail "doctor.json (claude present) wrong: $(cat "$WORK/doc.out")"
 has '^DOCTOR_FILE: .*/dispatch-shadow/doctor.json' "$(cat "$WORK/doc.out")" || fail "doctor did not print DOCTOR_FILE"
@@ -1243,13 +1251,18 @@ python3 - "$PLUGIN_ROOT/scripts/lib" "$WORK/sf" <<'PY' || fail "ledger.second_fa
 import os, sys
 sys.path.insert(0, sys.argv[1]); import ledger
 root = sys.argv[2]; os.makedirs(os.path.join(root, "bin"), exist_ok=True)
-doc = {"claude_p_auth": "available", "providers": {"codex": {"enabled": True, "available": True},
+doc = {"claude_p_auth": "available", "providers": {"codex": {"enabled": True, "available": True, "auth_ok": True},
        "claude-p": {"enabled": True, "available": True}, "claude-session": {"enabled": True, "available": True}}}
 assert ledger.second_families(doc, root) == [], "counted a provider without a shim"
 assert ledger.second_families(doc) == [] or os.path.isdir(os.path.join(ledger.plugin_root(), "bin")), "this plugin ships no shims yet"
 for p in ("codex", "claude-p"):
     f = os.path.join(root, "bin", "worker-%s.sh" % p); open(f, "w").write("#!/bin/sh\n"); os.chmod(f, 0o755)
 assert ledger.second_families(doc, root) == ["claude-p", "codex"], ledger.second_families(doc, root)
+doc["providers"]["codex"]["auth_ok"] = False
+assert ledger.second_families(doc, root) == ["claude-p"], "codex without auth still counted"
+doc["providers"]["codex"].update(auth_ok=True, flags_ok=False)
+assert ledger.second_families(doc, root) == ["claude-p"], "codex rejecting its forced flags still counted"
+doc["providers"]["codex"]["flags_ok"] = True
 doc["claude_p_auth"] = "unavailable"; doc["providers"]["codex"]["available"] = False
 assert ledger.second_families(doc, root) == [], "claude-p without auth or codex unavailable still counted"
 PY
@@ -1434,6 +1447,411 @@ assert named and named <= {x["model"] for x in pol["tiers"]}, (named, row)
 assert "**`none`:**" in t and "every ledger row you write" not in t
 PY
 pass "3.3 carry-overs: empty ledger = EMPTY/exit 3; --overlay alone = --check (no rewrite), --write regenerates; ad-hoc state derived from ROUTE_FILE/apex_state_base; ROUTE_MODEL only tier models; REVIEW_SHAPE none documented"
+
+# --- Phase 4.1: provider shims (bin/worker-*.sh), apply.sh, real Tier C diversity ---
+# Every provider CLI below is a stub on a fixture PATH (no network, no account): it logs
+# its argv, cwd, stdin and environment names as JSON and prints canned output.
+STUB="$WORK/stub"; SLOG="$WORK/stub-log"; mkdir -p "$STUB" "$SLOG"; echo approve >"$STUB/mode"
+cat >"$STUB/claude" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, sys, time
+LOG, MODEFILE = "$SLOG", "$STUB/mode"
+a = sys.argv[1:]
+if a[:1] in (["--version"], ["-v"]):
+    print("2.1.300 (Claude Code)"); sys.exit(0)
+if "--help" in a:
+    print("Usage: claude [options] [command] [prompt]"); sys.exit(0)
+if a[:2] == ["plugin", "validate"]:
+    print("Validation passed"); sys.exit(0)
+mode = open(MODEFILE).read().strip()
+stdin = sys.stdin.read()
+n = len(os.listdir(LOG))
+json.dump({"bin": "claude", "argv": a, "cwd": os.getcwd(), "stdin": stdin, "env": sorted(os.environ)},
+          open(os.path.join(LOG, "%03d-claude.json" % n), "w"))
+if mode == "sleep":
+    time.sleep(30)
+if mode == "edit":
+    os.makedirs("docs", exist_ok=True); open("docs/guide.md", "a").write("claude edit\n")
+text = {"approve": "Checked the diff.\nVERDICT: APPROVE", "changes": "[blocking] a.py:1 breaks\nVERDICT: REQUEST_CHANGES"}.get(mode, "done")
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text, "total_cost_usd": 0.0123,
+                  "usage": {"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 500, "cache_creation_input_tokens": 0},
+                  "modelUsage": {"claude-sonnet-5-5": {}}}))
+PYSTUB
+cat >"$STUB/codex" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, sys, time
+LOG, MODEFILE = "$SLOG", "$STUB/mode"
+a = sys.argv[1:]
+if "--version" in a:
+    print("codex-cli 0.160.0"); sys.exit(0)
+if "--help" in a:
+    print("Usage: codex exec [OPTIONS] [PROMPT]"); sys.exit(0)
+if a[:1] != ["exec"] or "-C" not in a or "-o" not in a or "--" not in a:
+    print("error: unexpected invocation", file=sys.stderr); sys.exit(2)
+cdir, out, prompt = a[a.index("-C") + 1], a[a.index("-o") + 1], a[a.index("--") + 1]
+mode = open(MODEFILE).read().strip()
+n = len(os.listdir(LOG))
+json.dump({"bin": "codex", "argv": a, "cwd": os.getcwd(), "prompt": prompt, "env": sorted(os.environ)},
+          open(os.path.join(LOG, "%03d-codex.json" % n), "w"))
+if mode == "sleep":
+    time.sleep(30)
+if mode == "fail":
+    print(json.dumps({"type": "turn.failed", "error": {"message": "boom"}})); sys.exit(1)
+if mode == "edit":
+    os.makedirs(os.path.join(cdir, "docs"), exist_ok=True); open(os.path.join(cdir, "docs", "guide.md"), "a").write("codex edit\n")
+if mode == "edit-outside":
+    os.makedirs(os.path.join(cdir, "src"), exist_ok=True); open(os.path.join(cdir, "src", "x.py"), "w").write("x = 1\n")
+if mode == "edit-protected":
+    os.makedirs(os.path.join(cdir, ".claude"), exist_ok=True); open(os.path.join(cdir, ".claude", "settings.json"), "w").write("{}\n")
+text = {"approve": "LENS: security\nNo findings.\nVERDICT: APPROVE", "changes": "[blocking] a.py:1 breaks\nVERDICT: REQUEST_CHANGES"}.get(mode, "done")
+for e in ({"type": "thread.started", "thread_id": "t1"}, {"type": "item.completed", "item": {"type": "agent_message", "text": text}},
+          {"type": "turn.completed", "usage": {"input_tokens": 1200, "cached_input_tokens": 300, "output_tokens": 150}}):
+    print(json.dumps(e))
+open(out, "w").write(text)
+PYSTUB
+chmod +x "$STUB/claude" "$STUB/codex"
+mkdir -p "$WORK/wcfg/claude" "$WORK/wcfg/codex" "$WORK/wcfg/none"
+echo '{"stub": true}' >"$WORK/wcfg/claude/.credentials.json"; echo '{"stub": true}' >"$WORK/wcfg/codex/auth.json"
+# wenv CMD... -> run with the stub PATH and stub credentials (auth OK); wenv_noauth -> no credentials anywhere
+wenv() { env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN -u APEX_DISPATCH_ENFORCE -u CLAUDE_CODE_SUBAGENT_MODEL \
+  PATH="$STUB:$PATH" APEX_CLAUDE_BIN="$STUB/claude" CLAUDE_CONFIG_DIR="$WORK/wcfg/claude" CODEX_HOME="$WORK/wcfg/codex" \
+  SMOKE_SECRET=do-not-leak "$@"; }
+wenv_noauth() { env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN -u APEX_DISPATCH_ENFORCE -u CLAUDE_CODE_SUBAGENT_MODEL \
+  PATH="$STUB:$PATH" APEX_CLAUDE_BIN="$STUB/claude" CLAUDE_CONFIG_DIR="$WORK/wcfg/none" CODEX_HOME="$WORK/wcfg/none" "$@"; }
+[ "$(wenv sh -c 'command -v codex')" = "$STUB/codex" ] && [ "$(wenv sh -c 'command -v claude')" = "$STUB/claude" ] || fail "the stub provider CLIs do not shadow PATH"
+CODEXW="$PLUGIN_ROOT/bin/worker-codex.sh"; CLAUDEW="$PLUGIN_ROOT/bin/worker-claude-p.sh"; APPLY="$PLUGIN_ROOT/scripts/apply.sh"
+# wrun DIR CMD... -> stdout in $WOUT, stderr in $WORK/w.err, exit code in $WRC
+wrun() { local d="$1"; shift; WRC=0; WOUT="$( (cd "$d" && wenv "$@") 2>"$WORK/w.err")" || WRC=$?; }
+lastlog() { ls "$SLOG" | tail -1 | sed "s|^|$SLOG/|"; }
+shimrows() { python3 -c 'import json, sys
+r = [json.loads(l) for l in open(sys.argv[1])]
+print(sum(1 for x in r if x["event"] == sys.argv[2] and x.get("source") == "shim" and all(str(x.get(k)) == v for k, v in (a.split("=", 1) for a in sys.argv[3:]))))' "$@"; }
+
+# 62. shims ship: worker-common.sh + worker-claude-p.sh + worker-codex.sh + apply.sh, executable, bash -n clean;
+#     no forbidden or bypass flag literal anywhere in bin/; usage errors and no-run refusals have their exit codes
+for f in bin/worker-common.sh bin/worker-claude-p.sh bin/worker-codex.sh scripts/apply.sh scripts/lib/worker.py; do
+  [ -f "$PLUGIN_ROOT/$f" ] || fail "missing $f"
+done
+for f in bin/worker-common.sh bin/worker-claude-p.sh bin/worker-codex.sh scripts/apply.sh; do
+  [ -x "$PLUGIN_ROOT/$f" ] && bash -n "$PLUGIN_ROOT/$f" || fail "$f is not executable or does not parse"
+done
+python3 - "$PLUGIN_ROOT" <<'PY' || fail "a forbidden or bypass flag literal appears in bin/"
+import glob, json, os, re, sys
+root = sys.argv[1]
+pol = json.load(open(os.path.join(root, "resources", "compiled", "policy.json")))
+flags = {f for p in pol["providers"] for f in p["forbidden_flags"]} | {"--dangerously-", "--yolo", "--always-approve", "--full-auto"}
+hits = []
+for f in glob.glob(os.path.join(root, "bin", "*")):
+    t = open(f).read()
+    for x in flags:
+        if re.search(r"(^|[\s`'\"])" + re.escape(x) + r"(?=$|[\s`'\"=]|(?<=-)\w)", t, re.M):
+            hits.append("%s: %s" % (os.path.basename(f), x))
+assert not hits, hits
+PY
+WRC=0; bash "$PLUGIN_ROOT/bin/worker-common.sh" >/dev/null 2>&1 || WRC=$?; [ "$WRC" = 2 ] || fail "worker-common.sh ran as a program (rc=$WRC)"
+NOX="$WORK/nolock"; mkdir -p "$NOX"; git init -q -b main "$NOX"; git -C "$NOX" commit -q --allow-empty -m n; echo brief >"$WORK/brief.md"
+wrun "$NOX" bash "$CODEXW" --route r-x --role reviewer --brief "$WORK/brief.md"; [ "$WRC" = 3 ] && grep -q 'no ACTIVE run' "$WORK/w.err" || fail "a shim ran without an ACTIVE run (rc=$WRC: $(cat "$WORK/w.err"))"
+wrun "$NOX" bash "$APPLY" --worker "$NOX"; [ "$WRC" = 3 ] || fail "apply.sh without an ACTIVE run did not refuse with 3 (rc=$WRC)"
+[ "$(bash "$APPLY" >/dev/null 2>&1; echo $?)" = 2 ] || fail "apply.sh without arguments is not a usage error"
+[ -z "$(ls "$SLOG")" ] || fail "a provider stub ran during the refusals"
+pass "shims: worker-common/claude-p/codex + apply.sh ship executable and parse; no forbidden/bypass flag literal in bin/; no ACTIVE run = refused (3); usage = 2"
+
+# Fixture: a [docs] task routed to codex (Route: provider=codex), state + plan worktree by init.sh.
+WX="$WORK/wx"; mkdir -p "$WX/plans" "$WX/docs"; git init -q -b main "$WX"
+printf '# W\n\n- [ ] **Phase 1.1** [docs] refresh the guide\n  - Acceptance: `true`\n  - Route: provider=codex\n  - Paths: docs/**\n' >"$WX/plans/p.md"
+printf '.dev-plan-state/\n' >"$WX/.gitignore"; echo guide >"$WX/docs/guide.md"; git -C "$WX" add -A; git -C "$WX" commit -qm wx
+(cd "$WX" && wenv bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the worker fixture"
+O="$(cd "$WX" && wenv bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_PROVIDER "$O")" = codex ] && [ "$(val ROUTE_ENFORCED "$O")" = yes ] || fail "the worker fixture route is not an enforced codex route: $O"
+WRID="$(val ROUTE_ID "$O")"; WSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; WWT="$WSD/worktree"; WD="$WSD/dispatch"
+WOWN="$WX/.dev-plan-state/ACTIVE/owner.json"
+printf 'Refresh docs/guide.md. Change nothing outside docs/**.\n' >"$WORK/wbrief.md"
+
+# 63. doctor reports per-provider shim, version, auth (env | credentials file | none) and the forced-flag
+#     probe; a shim refuses without doctor.json, with the provider unavailable or its auth missing (4),
+#     and refuses unverified/unshipped providers (3)
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 4 ] && grep -q 'doctor.sh' "$WORK/w.err" || fail "a shim ran without doctor.json (rc=$WRC: $(cat "$WORK/w.err"))"
+(cd "$WX" && wenv_noauth bash "$DOCTOR" --state "$WSD" --repo "$WX" >/dev/null 2>&1) || true
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); c=d["providers"]["codex"]; assert c["shim"] and c["available"] and c["auth"]=="none" and not c["auth_ok"] and d["claude_p_auth"]=="unavailable" and d["second_families"]==[] and d["tier_c_diversity"].startswith("warn"), d' "$WD/doctor.json" \
+  || fail "doctor.json without auth: codex/claude-p auth or the diversity degrade is wrong"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 4 ] && grep -q 'no auth for codex' "$WORK/w.err" || fail "a shim ran with doctor.json showing no auth (rc=$WRC: $(cat "$WORK/w.err"))"
+(cd "$WX" && wenv bash "$DOCTOR" --state "$WSD" --repo "$WX" >"$WORK/wdoc.out" 2>&1) || true
+python3 - "$WD/doctor.json" "$STUB" <<'PY' || fail "doctor.json with stub CLIs and credentials: per-provider facts wrong: $(cat "$WORK/wdoc.out")"
+import json, sys
+d = json.load(open(sys.argv[1]))
+c, p = d["providers"]["codex"], d["providers"]["claude-p"]
+assert c["shim"] and c["available"] and c["verified"] and c["version"] == "0.160.0" and c["auth"] == "credentials-file" and c["auth_ok"] and c["flags_ok"], c
+assert p["shim"] and p["available"] and p["version"] == "2.1.300" and p["auth"] == "credentials-file" and p["path"] == sys.argv[2] + "/claude", p
+g = d["providers"]["grok"]
+assert g["status"] == "flagged-off" and not g["verified"] and not g["available"] and not g["shim"], g
+assert d["claude_p_auth"] == "available" and d["second_families"] == ["claude-p", "codex"] and d["tier_c_diversity"] == "block", d
+chk = {x["id"]: x for x in d["checks"]}
+assert chk["provider-forced-flags-probe"]["status"] == "ok" and chk["sandbox-confinement"]["status"] in ("ok", "warn"), chk
+PY
+# A provider whose forced flags the CLI rejects is unavailable (doctor's --help probe).
+mkdir -p "$WORK/badflags"; printf '#!/bin/sh\ncase "$*" in *--version*) echo "codex-cli 0.147.0" ;; *) echo "error: unexpected argument --ignore-user-config" >&2; exit 2 ;; esac\n' >"$WORK/badflags/codex"; chmod +x "$WORK/badflags/codex"
+(cd "$WX" && wenv env PATH="$WORK/badflags:$STUB:$PATH" bash "$DOCTOR" --state "$WORK/bfs" --repo "$WX" >/dev/null 2>&1) || true
+python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["providers"]["codex"]; assert c["flags_ok"] is False and c["available"] is False and "unexpected argument" in c["flags_detail"], c' "$WORK/bfs/dispatch/doctor.json" \
+  || fail "doctor did not mark a provider that rejects its forced flags unavailable"
+# Unverified (flagged-off) and unshipped providers are refused by the shared engine.
+wrun "$WX" bash -c 'source "$1"; apex_worker_main grok --route "$2" --role docs --brief "$3"' _ "$PLUGIN_ROOT/bin/worker-common.sh" "$WRID" "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q 'disabled in the policy (status flagged-off)' "$WORK/w.err" || fail "an unverified, disabled provider was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
+printf '{"providers":[{"id":"grok","enabled":true}]}\n' >"$WORK/grok-on.json"
+wrun "$WX" env APEX_DISPATCH_POLICY="$WORK/grok-on.json" bash -c 'source "$1"; apex_worker_main grok --route "$2" --role docs --brief "$3"' _ "$PLUGIN_ROOT/bin/worker-common.sh" "$WRID" "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q 'no worker shim is shipped for provider grok' "$WORK/w.err" || fail "an explicitly enabled but unshipped provider was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md" --model gpt-9; [ "$WRC" = 2 ] && grep -q 'takes no provider flags' "$WORK/w.err" || fail "a caller-supplied flag was not a usage error (rc=$WRC)"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role reviewer --mode build --brief "$WORK/wbrief.md"; [ "$WRC" = 2 ] || fail "a reviewer in build mode was not a usage error (rc=$WRC)"
+wrun "$WX" bash "$CODEXW" --route r-000000000000-L3-9 --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'not the ACTIVE task' "$WORK/w.err" || fail "a shim ran for another route (rc=$WRC)"
+wrun "$WX" bash "$CLAUDEW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'routes its builders to codex' "$WORK/w.err" || fail "claude-p built on a route that pins codex (rc=$WRC: $(cat "$WORK/w.err"))"
+[ -z "$(ls "$SLOG")" ] || fail "a provider stub ran during the refusals"
+pass "doctor: per-provider shim/version/auth/forced-flag probe, unverified providers flagged, second families only with auth; shims refuse without doctor.json, without auth (4), for flagged-off, unshipped, other-route and unpinned providers and caller flags (2/3)"
+
+# 64. write-mode codex worker: a detached worktree off HEAD under <D>/worktrees, the policy's forced flags only
+#     (workspace-write; no forbidden flag), a scrubbed environment, result.json + patch.diff, shim worker_run row;
+#     apply.sh commits it with Dispatch-* trailers, writes worker_applied and removes the worktree
+WH0="$(git -C "$WWT" rev-parse HEAD)"
+echo edit >"$STUB/mode"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md" --base "$WH0"
+[ "$WRC" = 0 ] && [ "$(printf '%s\n' "$WOUT" | tail -1)" = "DISPATCH-DONE exit=0" ] || fail "the codex build worker failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+WO1="$(val WORKER_OUT "$WOUT")"; [ "$(dirname "$WO1")" = "$(cd "$WD/workers" && pwd -P)" ] || fail "the worker out dir is not one level inside <D>/workers: $WO1"
+python3 - "$(lastlog)" "$WO1/result.json" "$WD" "$PLUGIN_ROOT/resources/compiled/policy.json" "$WH0" <<'PY' || fail "the codex build command or its result is wrong"
+import json, os, sys
+log, res, wd, pol, head = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3], json.load(open(sys.argv[4])), sys.argv[5]
+a = log["argv"]
+codex = next(p for p in pol["providers"] if p["id"] == "codex")
+assert a[:len(codex["forced_flags"])] == codex["forced_flags"], a          # exactly the policy's forced flags first
+assert a[a.index("--sandbox") + 1] == "workspace-write" and "approval_policy=never" in a
+for f in codex["forbidden_flags"] + ["--dangerously-bypass-approvals-and-sandbox", "danger-full-access"]:
+    assert not any(x == f or x.startswith(f + "=") for x in a), f
+wt = a[a.index("-C") + 1]
+assert os.path.realpath(wt) == os.path.realpath(log["cwd"]) and os.path.realpath(wt).startswith(os.path.realpath(wd) + "/worktrees/"), (wt, log["cwd"])
+assert "SMOKE_SECRET" not in log["env"] and "PATH" in log["env"] and "CODEX_HOME" in log["env"], log["env"]
+assert res["provider"] == "codex" and res["mode"] == "write" and res["worker_role"] == "docs" and res["exit_code"] == 0 and res["sentinel_seen"]
+assert res["files_changed"] == ["docs/guide.md"] and res["patch_sha256"] and res["head_sha"] == head and res["verdict"] is None
+assert res["usage"] == {"input": 1200, "output": 150, "cache_read": 300} and res["timeout_sec"] > 0 and res["confinement"]["kind"] == "git-worktree"
+for k in ("provider", "model", "role", "route", "head_sha", "verdict", "usage", "usd_estimate", "exit_code", "started_at", "ended_at"):
+    assert k in res, k
+assert os.path.isdir(wt), "the write worktree was removed before apply"
+PY
+[ "$(shimrows "$WD/ledger.jsonl" worker_run route_id="$WRID" provider=codex role=docs exit_code=0)" = 1 ] || fail "no shim worker_run row for the build worker"
+[ "$(jget "$WO1/worker.json" status)" = ready-to-apply ] && [ "$(jget "$WD/agents/$(basename "$WO1").json" stopped_by)" = shim ] || fail "the worker registry/agent registration was not closed"
+WT1="$(jget "$WO1/worker.json" worktree)"
+wrun "$WX" bash "$APPLY" --worker "$WO1" --route "$WRID"; [ "$WRC" = 0 ] || fail "apply.sh refused a clean in-Paths patch (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+WH1="$(git -C "$WWT" rev-parse HEAD)"; [ "$(val APPLIED "$WOUT")" = "$WH1" ] && [ "$(git -C "$WWT" rev-parse HEAD~1)" = "$WH0" ] || fail "apply.sh did not make one commit on the plan worktree"
+MSG="$(git -C "$WWT" log -1 --format=%B)"
+for t in "Dispatch-Route: $WRID" "Dispatch-Provider: codex" "Dispatch-Model: " "Dispatch-Result: $(jget "$WO1/result.json" record_id)"; do
+  grep -qF "$t" <<<"$MSG" || fail "the applied commit lacks the trailer '$t': $MSG"
+done
+grep -q 'codex edit' "$WWT/docs/guide.md" && [ -z "$(git -C "$WWT" status --porcelain)" ] || fail "the applied change is not committed cleanly"
+[ ! -e "$WT1" ] && ! git -C "$WWT" worktree list | grep -qF "$WT1" || fail "apply.sh did not remove the throwaway worktree"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; a=[x for x in r if x["event"]=="worker_applied"]; assert len(a)==1 and a[0]["source"]=="shim" and a[0]["head_sha"]==sys.argv[2]==a[0]["commit_sha"] and a[0]["files"]==["docs/guide.md"], a' "$WD/ledger.jsonl" "$WH1" \
+  || fail "no worker_applied row bound to the new HEAD"
+wrun "$WX" bash "$APPLY" --worker "$WO1"; [ "$WRC" = 3 ] && grep -q 'already applied' "$WORK/w.err" || fail "a worker patch was applied twice (rc=$WRC)"
+bash "$LEDGER" append worker_applied '{"route_id":"x","provider":"codex","run_id":"r","commit_sha":"c"}' --state "$WSD" --source cli >/dev/null 2>&1 && fail "the CLI appended a worker_applied provenance row"
+bash "$LEDGER" verify --state "$WSD" >/dev/null || fail "the ledger does not verify after the worker and apply rows"
+pass "write-mode codex worker: worktree off HEAD under <D>/worktrees, exactly the policy's forced flags (workspace-write, nothing forbidden), scrubbed env, result.json/patch.diff, shim worker_run; apply.sh: one commit with Dispatch-* trailers, worker_applied at the new HEAD, worktree removed, never twice"
+
+# 65. pre-bash: shims only from the orchestrator or provider-runner (relative bin/ paths too); direct codex /
+#     claude -p stay denied; APEX_DISPATCH_WORKER_WT is tamper-protected. pre-edit: a claude -p write worker's
+#     registered worktree is its workspace, an unregistered one is not (payloads fed from files)
+PJS="$WORK/p41"; mkdir -p "$PJS"; n=0
+wpb() { n=$((n + 1)); pl bash "$WWT" "$@" >"$PJS/$n.json"; (cd "$WWT" && bash "$PLUGIN_ROOT/hooks/pre-bash.sh" <"$PJS/$n.json" 2>/dev/null) | one; }
+wpe() { n=$((n + 1)); pl edit "$WWT" "$@" >"$PJS/$n.json"; }
+for c in "bash $CODEXW --route r --role reviewer --brief b" "bash bin/worker-codex.sh --route r --role reviewer --brief b"; do
+  [ "$(wpb "$c")" = "{}" ] || fail "the orchestrator was denied a shim call: $c"
+  [ "$(wpb "$c" agent_type=apex-dispatch:provider-runner agent_id=pr1)" = "{}" ] || fail "provider-runner was denied a shim call: $c"
+  [ "$(wpb "$c" agent_type=apex-dispatch:builder agent_id=b1)" = deny ] || fail "a builder was allowed a shim call: $c"
+  [ "$(wpb "$c" agent_type=apex-dispatch:builder)" = deny ] || fail "a builder worker session was allowed a shim call: $c"
+done
+for c in 'codex exec "do it"' 'claude -p hi' 'claude --print hi' 'npx @openai/codex exec x' 'APEX_DISPATCH_WORKER_WT=/tmp/x bash y' 'export APEX_DISPATCH_WORKER_WT=/tmp/x'; do
+  [ "$(wpb "$c")" = deny ] || fail "pre-bash allowed: $c"
+done
+[ "$(wpb 'codex --version')" = "{}" ] && [ "$(wpb "bash $APPLY --worker x")" = "{}" ] || fail "pre-bash denied codex --version or apply.sh"
+FWT="$WD/worktrees/w-claude-p-fake01"; mkdir -p "$FWT/docs" "$WD/workers/w-claude-p-fake01"
+printf '{"run_id":"w-claude-p-fake01","mode":"write","status":"running","worktree":"%s","route_id":"x"}\n' "$FWT" >"$WD/workers/w-claude-p-fake01/worker.json"
+wpe "$FWT/docs/a.md" agent_type=apex-dispatch:builder
+ped() { (cd "$FWT" && env "$@" bash "$PLUGIN_ROOT/hooks/pre-edit.sh" <"$PJS/$n.json" 2>/dev/null) | one; }
+[ "$(ped APEX_DISPATCH_WORKER_WT="$FWT")" = "{}" ] || fail "pre-edit denied a claude -p write worker inside its registered worktree"
+[ "$(ped APEX_DISPATCH_WORKER_WT=)" = deny ] || fail "pre-edit allowed a write into run state without a worker registration"
+[ "$(ped APEX_DISPATCH_WORKER_WT="$WORK")" = deny ] || fail "pre-edit honoured an unregistered APEX_DISPATCH_WORKER_WT"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["status"]="finished"; json.dump(d, open(p,"w"))' "$WD/workers/w-claude-p-fake01/worker.json"
+[ "$(ped APEX_DISPATCH_WORKER_WT="$FWT")" = deny ] || fail "pre-edit honoured a finished worker's worktree"
+wpe "$FWT/.dev-plan-state/x" agent_type=apex-dispatch:builder
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["status"]="running"; json.dump(d, open(p,"w"))' "$WD/workers/w-claude-p-fake01/worker.json"
+[ "$(ped APEX_DISPATCH_WORKER_WT="$FWT")" = deny ] || fail "pre-edit allowed run state nested in a worker worktree"
+rm -rf "$FWT" "$WD/workers/w-claude-p-fake01"
+pass "pre-bash: shims only from the orchestrator or provider-runner (absolute and relative bin/ paths), direct codex/claude -p denied, APEX_DISPATCH_WORKER_WT tamper-protected; pre-edit: a running claude -p write worker's registered worktree is writable, unregistered/finished ones and nested run state are not"
+
+# 66. apply.sh refuses out-of-Paths and never-touch paths (patch kept under <D>/rejected/), a moved base and
+#     GATE/REVIEW; a failed or timed-out worker run is exit 1 with result.json, no verdict, the worktree removed.
+#     Builder-side worker runs count against the route's spawn budget (docs: 2), so the fixture re-routes.
+reroute() { local o; o="$(cd "$WX" && wenv bash "$ROUTE" plan plans/p.md --line 3 2>&1)"; WRID="$(val ROUTE_ID "$o")"; [ "$(val ROUTE_STATUS "$o")" = READY ] || fail "re-route failed: $o"; }
+reroute
+for m in edit-outside edit-protected; do
+  echo "$m" >"$STUB/mode"
+  wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 0 ] || fail "the $m worker failed (rc=$WRC)"
+  WOX="$(val WORKER_OUT "$WOUT")"
+  wrun "$WX" bash "$APPLY" "$WOX"; [ "$WRC" = 1 ] || fail "apply.sh accepted a $m patch (rc=$WRC)"
+  [ -f "$WD/rejected/$(basename "$WOX").diff" ] || fail "the refused $m patch was not kept under rejected/"
+  [ "$(git -C "$WWT" rev-parse HEAD)" = "$WH1" ] && [ -z "$(git -C "$WWT" status --porcelain)" ] || fail "a refused $m patch touched the plan worktree"
+done
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'spawn budget is spent (2 of 2' "$WORK/w.err" || fail "a third builder-side worker run on a 2-spawn route was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
+python3 - "$WD/rejected" <<'PY' || fail "apply.sh refusals do not name the out-of-Paths and never-touch reasons"
+import glob, json, sys
+why = " | ".join(json.load(open(f))["reason"] for f in glob.glob(sys.argv[1] + "/*.json"))
+assert "src/x.py (outside the route's owned Paths (docs/**))" in why and ".claude/settings.json (never-touch path: .claude/settings*.json)" in why, why
+PY
+echo edit >"$STUB/mode"; reroute
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; WOM="$(val WORKER_OUT "$WOUT")"
+git -C "$WWT" commit -q --allow-empty -m moved; WH2="$(git -C "$WWT" rev-parse HEAD)"
+wrun "$WX" bash "$APPLY" "$WOM"; [ "$WRC" = 1 ] && grep -q 'moved since the worker forked' "$WORK/w.err" || fail "apply.sh applied onto a moved base (rc=$WRC)"
+echo sleep >"$STUB/mode"; reroute; T0=$SECONDS
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md" --timeout-sec 2
+[ "$WRC" = 1 ] && [ $((SECONDS - T0)) -lt 15 ] || fail "the timeout was not honoured (rc=$WRC, $((SECONDS - T0)) s)"
+WOT="$(val WORKER_OUT "$WOUT")"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["timed_out"] and r["exit_code"] in (124, 137) and r["timeout_sec"] == 2 and not r["ok"] and r["verdict"] is None, r' "$WOT/result.json" || fail "a timed-out run's result.json is wrong"
+grep -q '^DISPATCH-DONE exit=12[4]$\|^DISPATCH-DONE exit=137$' <<<"$WOUT" || fail "a timed-out run did not print its sentinel with the exit"
+[ ! -e "$(jget "$WOT/worker.json" worktree)" ] || fail "a failed worker's worktree was kept"
+echo fail >"$STUB/mode"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 1 ] || fail "a failing provider run was not exit 1"
+wrun "$WX" bash "$APPLY" "$(val WORKER_OUT "$WOUT")"; [ "$WRC" = 1 ] && grep -q 'did not finish cleanly' "$WORK/w.err" || fail "apply.sh applied a failed run (rc=$WRC)"
+[ "$(shimrows "$WD/ledger.jsonl" worker_run route_id="$WRID" exit_code=1)" -ge 1 ] || fail "a failed worker run wrote no worker_run row"
+pass "apply.sh refuses out-of-Paths and never-touch paths (kept under rejected/), a moved base and failed runs; timeouts honoured (exit 1, 124/137, no verdict, worktree removed)"
+
+# 67. reviewers: read-only on a git-archive snapshot (codex --sandbox read-only; claude -p --agent reviewer with
+#     Read/Grep/Glob, --max-budget-usd, the plugin dirs, the brief on stdin, never --bare); only after a gate at
+#     HEAD (-> stage REVIEW); result.json + shim verdict row; checkpoint.sh review --worker takes it once, at HEAD only
+echo approve >"$STUB/mode"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role reviewer --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'green gate bound to HEAD' "$WORK/w.err" || fail "a reviewer worker ran before the gate (rc=$WRC: $(cat "$WORK/w.err"))"
+(cd "$WX" && wenv bash "$EXS/green-gate.sh" plans/p.md check >/dev/null 2>&1) || fail "green-gate check failed in the worker fixture"
+[ "$(jget "$WOWN" stage)" = GATE ] || fail "the worker fixture did not reach GATE"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'during stage GATE' "$WORK/w.err" || fail "a build worker ran during GATE (rc=$WRC)"
+wrun "$WX" bash "$APPLY" "$WOM"; [ "$WRC" = 3 ] && grep -q 'during stage GATE' "$WORK/w.err" || fail "apply.sh ran during GATE (rc=$WRC)"
+(cd "$WX" && bash "$EXS/risk-tier.sh" plans/p.md 3 --since "$(jget "$WSD/checkpoint.json" fork_sha)" >/dev/null 2>&1) || fail "risk-tier.sh failed in the worker fixture"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role reviewer --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] && [ "$(val WORKER_VERDICT "$WOUT")" = APPROVE ] || fail "the codex reviewer failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+[ "$(jget "$WOWN" stage)" = REVIEW ] || fail "a reviewer worker did not move the stage to REVIEW"
+WOR="$(val WORKER_OUT "$WOUT")"; WHR="$(git -C "$WWT" rev-parse HEAD)"
+python3 - "$(lastlog)" "$WOR/result.json" "$WHR" <<'PY' || fail "the codex reviewer command or result is wrong"
+import json, os, sys
+log, res, head = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3]
+a = log["argv"]
+assert a[a.index("--sandbox") + 1] == "read-only" and "workspace-write" not in a, a
+assert not os.path.exists(os.path.join(log["cwd"], ".git")) and not os.path.exists(log["cwd"]), "the snapshot is a checkout or was kept"
+assert res["role"] == "lens:security" and res["worker_role"] == "reviewer" and res["verdict"] == "APPROVE" and res["head_sha"] == head == res["sha"]
+assert res["provider"] == "codex" and res["family"] == "openai" and res["mode"] == "readonly" and res["record_id"] and res["confinement"]["kind"] == "git-archive-snapshot"
+PY
+[ "$(shimrows "$WD/ledger.jsonl" verdict route_id="$WRID" provider=codex verdict=APPROVE head_sha="$WHR")" = 1 ] || fail "no shim verdict row for the codex review"
+WCK="$EXS/checkpoint.sh"
+O="$(cd "$WX" && bash "$WCK" plans/p.md review 3 "$WH1" APPROVE codex-reviewer --worker "$WOR" 2>&1)" && fail "review --worker accepted a record at another SHA"
+grep -q "reviewed ${WHR:0:12}" <<<"$O" || fail "review --worker at another SHA refused for the wrong reason: $O"
+(cd "$WX" && bash "$WCK" plans/p.md review 3 "$WHR" APPROVE codex-reviewer --worker "$WOR" >"$WORK/rv.out" 2>&1) || fail "checkpoint.sh review --worker refused the shim record: $(cat "$WORK/rv.out")"
+python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); r=s["reviews"]["3"]["records"][-1]; assert r["provider"]=="codex" and r["provenance"]=="worker" and r["role"]=="lens:security" and r["sha"]==sys.argv[2], r' "$WSD/checkpoint.json" "$WHR" \
+  || fail "the recorded review does not carry the provider and role from result.json"
+O="$(cd "$WX" && bash "$WCK" plans/p.md review 3 "$WHR" APPROVE codex-reviewer --worker "$WOR" 2>&1)" && fail "a worker record was used twice"
+grep -q 'already recorded' <<<"$O" || fail "the second use was refused for the wrong reason: $O"
+# A copied result with a fresh record_id has no shim verdict row: refused.
+FAKE="$WD/workers/w-forged-000000"; mkdir -p "$FAKE"; python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); r["record_id"]="w-forged-000000-0123456789abcdef"; json.dump(r, open(sys.argv[2], "w"))' "$WOR/result.json" "$FAKE/result.json"
+O="$(cd "$WX" && bash "$WCK" plans/p.md review 3 "$WHR" APPROVE codex-reviewer --worker "$FAKE" 2>&1)" && fail "a forged worker result was accepted"
+grep -q 'no shim verdict row' <<<"$O" || fail "a forged worker result was refused for the wrong reason: $O"
+# claude -p reviewer: the same contract on the separate-session family.
+wrun "$WX" bash "$CLAUDEW" --route "$WRID" --role reviewer --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] && [ "$(val WORKER_VERDICT "$WOUT")" = APPROVE ] || fail "the claude-p reviewer failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+python3 - "$(lastlog)" "$(val WORKER_OUT "$WOUT")/result.json" "$PLUGIN_ROOT" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "the claude -p reviewer command or result is wrong"
+import json, os, sys
+log, res, root, pol = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3], json.load(open(sys.argv[4]))
+a = log["argv"]
+cp = next(p for p in pol["providers"] if p["id"] == "claude-p")
+assert a[:len(cp["forced_flags"])] == cp["forced_flags"], a
+for f in cp["forbidden_flags"]:
+    assert f not in a, f
+assert a[a.index("--agent") + 1] == "apex-dispatch:reviewer" and a[a.index("--model") + 1] == "haiku", a
+assert a[a.index("--plugin-dir") + 1] == root and a[a.index("--max-budget-usd") + 1] == "0.50", a
+assert a[a.index("--allowedTools") + 1:] == ["Read", "Grep", "Glob"], a
+assert log["stdin"].startswith("Refresh docs/guide.md") and "SMOKE_SECRET" not in log["env"] and "CLAUDE_CONFIG_DIR" in log["env"]
+assert res["provider"] == "claude-p" and res["family"] == "anthropic-separate-session" and res["verdict"] == "APPROVE" and res["role"] == "reviewer"
+assert res["model"] == "claude-sonnet-5-5" and res["usd_reported"] == 0.0123 and res["usage"]["cache_read"] == 500 and res["max_budget_usd"] == 0.5
+PY
+(cd "$WX" && bash "$WCK" plans/p.md complete 3 "reviewed by codex" >"$WORK/wc.out" 2>&1) || fail "complete refused a task built and reviewed by shims: $(cat "$WORK/wc.out")"
+bash "$LEDGER" evidence --state "$WSD" --line 3 --head "$WHR" >/dev/null && bash "$LEDGER" verify --state "$WSD" >/dev/null || fail "ledger evidence/verify after the shim flow"
+pass "reviewers: codex read-only snapshot and claude -p --agent reviewer (Read/Grep/Glob, --max-budget-usd, plugin dirs, brief on stdin) only after a gate at HEAD (-> REVIEW); shim verdict rows; review --worker once, at its SHA, provider from the record, forged copies refused; complete passes on shim evidence"
+
+# 68. Tier C: with a second family available (doctor: shim + auth), diversity blocks complete until a codex review
+#     is recorded; with the shim present but the provider unavailable, or without shims, it degrades to warn
+TC="$WORK/tc"; mkdir -p "$TC/plans" "$TC/src"; git init -q -b main "$TC"
+printf '# T\n\n- [ ] **Phase 1.1** [security] harden the token check\n  - Acceptance: `true`\n  - Paths: src/**\n' >"$TC/plans/p.md"
+printf '.dev-plan-state/\n' >"$TC/.gitignore"; echo 'def check(t): return bool(t)' >"$TC/src/auth.py"; git -C "$TC" add -A; git -C "$TC" commit -qm tc
+(cd "$TC" && wenv bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the Tier C fixture"
+O="$(cd "$TC" && wenv bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_CLASS "$O")" = security ] && [ "$(val ROUTE_DIVERSITY "$O")" = block ] || fail "the Tier C fixture is not class security with diversity block: $O"
+TRID="$(val ROUTE_ID "$O")"; TSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; TWT="$TSD/worktree"
+th() { HRC=0; HOUT="$( (cd "$TWT" && printf '%s' "$2" | wenv bash "$PLUGIN_ROOT/hooks/$1.sh" 2>"$WORK/hr.err") )" || HRC=$?; }
+th pre-agent "$(pl agent "$TWT" apex-dispatch:builder-high opus)"; [ "$HOUT" = "{}" ] || fail "Tier C: the builder spawn was denied: $HOUT"
+th subagent-start "$(pj agent_id=tb1 agent_type=apex-dispatch:builder-high "cwd=$TWT")"
+echo 'def check(t): return isinstance(t, str) and len(t) > 8' >"$TWT/src/auth.py"; git -C "$TWT" commit -qam harden
+th subagent-stop "$(pj agent_id=tb1 agent_type=apex-dispatch:builder-high last_assistant_message=done "cwd=$TWT")"
+(cd "$TC" && wenv bash "$EXS/green-gate.sh" plans/p.md check >/dev/null 2>&1) || fail "Tier C: green-gate check failed"
+(cd "$TC" && bash "$EXS/risk-tier.sh" plans/p.md 3 --since "$(jget "$TSD/checkpoint.json" fork_sha)" >/dev/null 2>&1) || fail "Tier C: risk-tier.sh failed"
+THEAD="$(git -C "$TWT" rev-parse HEAD)"
+i=0
+for lens in correctness security consent-pii money performance maintainability adversarial; do
+  i=$((i + 1)); at=apex-dispatch:reviewer; [ "$lens" = adversarial ] && at=apex-dispatch:adversarial-reviewer
+  th pre-agent "$(pl agent "$TWT" "$at" '')"; [ "$HOUT" = "{}" ] || fail "Tier C: reviewer $lens spawn denied: $HOUT"
+  th subagent-start "$(pj agent_id="tr$i" agent_type="$at" "cwd=$TWT")"
+  th subagent-stop "$(pj agent_id="tr$i" agent_type="$at" "last_assistant_message=$(printf 'LENS: %s\nVERDICT: APPROVE' "$lens")" "cwd=$TWT")"
+  (cd "$TC" && bash "$WCK" plans/p.md review 3 "$THEAD" APPROVE "$at" --agent-id "tr$i" >/dev/null 2>&1) || fail "Tier C: review --agent-id tr$i refused"
+done
+tcomplete() { TCRC=0; (cd "$TC" && wenv env "$@" bash "$WCK" plans/p.md complete 3 "tier c" >"$WORK/tc.out" 2>&1) || TCRC=$?; }
+(cd "$TC" && wenv bash "$DOCTOR" --state "$TSD" --repo "$TC" >/dev/null 2>&1) || true
+[ "$(jget "$TSD/dispatch/doctor.json" tier_c_diversity)" = block ] || fail "Tier C: doctor with codex/claude-p shims and auth did not make diversity block"
+tcomplete; [ "$TCRC" = 1 ] && grep -q 'reviewer family diversity (block)' "$WORK/tc.out" && grep -q 'claude-p, codex' "$WORK/tc.out" \
+  || fail "Tier C: complete did not block on diversity with a second family available (rc=$TCRC): $(cat "$WORK/tc.out")"
+# Shim present but the provider unavailable (no auth): degrade to warn (only G12 is missing then).
+(cd "$TC" && wenv_noauth bash "$DOCTOR" --state "$TSD" --repo "$TC" >/dev/null 2>&1) || true
+tcomplete; [ "$TCRC" = 1 ] && ! grep -q 'reviewer family diversity' "$WORK/tc.out" && grep -q 'human approval (G12)' "$WORK/tc.out" \
+  || fail "Tier C: diversity did not degrade with the shims present but the providers unavailable: $(cat "$WORK/tc.out")"
+# No shims at all (a copy of the plugin without bin/worker-*.sh), auth available: degrade to warn as well.
+(cd "$TC" && wenv bash "$DOCTOR" --state "$TSD" --repo "$TC" >/dev/null 2>&1) || true
+cp -R "$PLUGIN_ROOT" "$WORK/noshims"; rm -f "$WORK/noshims"/bin/worker-*.sh
+tcomplete APEX_DISPATCH_ROOT="$WORK/noshims"; [ "$TCRC" = 1 ] && ! grep -q 'reviewer family diversity' "$WORK/tc.out" \
+  || fail "Tier C: diversity did not degrade without shims: $(cat "$WORK/tc.out")"
+# A codex review at HEAD satisfies diversity; with G12 recorded, complete passes.
+# The brief is a prompt, not flags: text naming a bypass flag does not trip the built-command check.
+printf 'Review src/auth.py at HEAD. Workers never get danger-full-access or --yolo.\n' >"$WORK/tcbrief.md"
+wrun "$TC" bash "$CODEXW" --route "$TRID" --role reviewer --brief "$WORK/tcbrief.md"; [ "$WRC" = 0 ] || fail "Tier C: the codex reviewer failed (rc=$WRC): $(cat "$WORK/w.err")"
+(cd "$TC" && bash "$WCK" plans/p.md review 3 "$THEAD" APPROVE codex-reviewer --worker "$(val WORKER_OUT "$WOUT")" >/dev/null 2>&1) || fail "Tier C: the codex review was not recorded"
+tcomplete; [ "$TCRC" = 1 ] && ! grep -q 'reviewer family diversity' "$WORK/tc.out" || fail "Tier C: the codex review did not satisfy diversity: $(cat "$WORK/tc.out")"
+(cd "$TC" && bash "$WCK" plans/p.md approve 3 "$THEAD" "approved: ship it" >/dev/null 2>&1) || fail "Tier C: G12 approve failed"
+tcomplete; [ "$TCRC" = 0 ] || fail "Tier C: complete refused with six lenses, adversarial, a codex review and G12: $(cat "$WORK/tc.out")"
+pass "Tier C: diversity blocks complete when doctor shows a shim-backed second family with auth; a codex shim review satisfies it; shim present but provider unavailable, or no shims, degrade to warn"
+
+# 69. carry-overs: compile.py refuses non-finite numbers and wrong-typed overlay values with a named error
+for j in '{"providers":[{"id":"codex","min_acceptance":NaN}]}' '{"providers":[{"id":"codex","min_acceptance":Infinity}]}' '{"escalation":{"max_review_rounds":-Infinity}}'; do
+  printf '%s\n' "$j" >"$WORK/ov-nf.json"
+  if bash "$COMPILE" --print-merged --overlay "$WORK/ov-nf.json" >/dev/null 2>"$WORK/nf.err"; then fail "overlay with a non-finite number accepted: $j"; fi
+  grep -q 'non-finite number' "$WORK/nf.err" && ! grep -q Traceback "$WORK/nf.err" || fail "non-finite overlay not refused by name: $j: $(cat "$WORK/nf.err")"
+done
+for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_classes: must be a list of strings' \
+         '{"providers":[{"id":"codex","max_tier":[]}]}|max_tier: must be a tier id string' \
+         '{"disabled":[{"id":"x","section":[],"reason":"r"}]}|section must be a string' \
+         '{"providers":[{"id":"codex","roles_allowed":[["reviewer"]]}]}|roles_allowed: must be a list of strings'; do
+  printf '%s\n' "${j%%|*}" >"$WORK/ov-uh.json"
+  if bash "$COMPILE" --print-merged --overlay "$WORK/ov-uh.json" >/dev/null 2>"$WORK/uh.err"; then fail "overlay with an unhashable value accepted: ${j%%|*}"; fi
+  grep -qF "${j#*|}" "$WORK/uh.err" && ! grep -q Traceback "$WORK/uh.err" || fail "unhashable overlay value not refused by name: ${j%%|*}: $(cat "$WORK/uh.err")"
+done
+pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
+
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.2.0 everywhere
+for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
+  grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
+  if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
+  if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
+done
+V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
+[ "$V" = 0.2.0 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.2.0 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.2.0 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
 
 echo ""
 echo "smoke passed: $N/$N checks"
