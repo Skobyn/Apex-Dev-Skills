@@ -57,9 +57,15 @@ else
   first="$(printf '%s' "$CMD" | sed -E 's/^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*//' | awk '{print $1}')"
   first="${first##*/}"
   case "$first" in
-    echo|printf|grep|egrep|fgrep|rg|ag|git|sed|awk|cat|head|tail|less|wc|jq|cut|sort)
+    echo|printf|grep|egrep|fgrep|rg|ag|sed|awk|cat|head|tail|less|wc|jq|cut|sort)
       # A text tool alone only mentions the flag; anything chained after it is checked.
-      printf '%s' "$CMD" | grep -qE '[;&|`]|\$\(' || first="__text__" ;;
+      printf '%s' "$CMD" | grep -qE '[;&|`<]|\$\(' || first="__text__" ;;
+    git)
+      # git can execute (rebase -x, bisect run, aliases): only its message/log forms count as text.
+      if printf '%s' "$CMD" | grep -qE '^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?git[[:space:]]+(commit|log|tag|notes|show)[[:space:]]' \
+         && ! printf '%s' "$CMD" | grep -qE '[;&|`<]|\$\(|(^|[[:space:]])-(x|-exec)([[:space:]=]|$)'; then
+        first="__text__"
+      fi ;;
   esac
   if [ "$first" != "__text__" ]; then
     FLAG="$(printf '%s' "$CMD" | { grep -oE '(^|[[:space:]=;&|(])--(dangerously-[A-Za-z0-9-]*|yolo|always-approve|full-auto)' || true; } \

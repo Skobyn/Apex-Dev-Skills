@@ -39,13 +39,20 @@ command line (tmux, screen, docker, script -c, su -c, ssh, ...). So every
 argument of such a program that contains whitespace is checked as a nested
 command (literally: its own backticks are not expanded), and `<shell> -c ARG`
 anywhere in its arguments is checked as a full nested command. Nesting is
-depth-capped. gh and glab are exempt from the launcher rule (their arguments
-are titles and bodies); their direct flag arguments are still checked.
+depth-capped. The launcher rules apply to every program that is not a pure
+text tool, including git, gh and glab; for those three only the VALUES of
+prose options are exempt (gh/glab --title/--body/--description/--notes/
+--message/--field/..., git -m/--message/-F/--author/--grep/-S/-G/--format/
+--pretty), so `gh codespace ssh '...'`, `gh alias set x '...'`,
+`git rebase -x '...'` and `git bisect run ...` are checked.
 
-Heredocs fed to a command interpreter: when a segment's program is a shell,
-ssh or su (`bash <<EOF`, `bash -s <<'EOF'`, `ssh host <<'EOF'`), or the
-segment is piped into one (`cat <<'EOF' | bash`), the heredoc body is checked
-as commands whatever its quoting.
+Heredocs fed to a command interpreter are scripts and their bodies are checked
+as commands whatever their quoting: the segment's program is a shell, ssh or su
+(`bash <<EOF`, `bash -s <<'EOF'`); or, for a program that is not a text tool,
+a shell/ssh/su is among its arguments (`docker exec -i c sh <<EOF`,
+`kubectl exec -i pod -- bash <<EOF`, `ssh -t host bash <<EOF`); or the segment,
+or the ( ) / { } group containing it, is piped into such a command later in
+the pipeline (`cat <<'EOF' | bash`, `(cat <<EOF) | bash`, `{ cat <<'EOF'; } | sh`).
 """
 import json
 import os
@@ -54,7 +61,8 @@ import shlex
 import sys
 
 BYPASS_PREFIXES = ("--dangerously-", "--yolo", "--always-approve", "--full-auto")
-TEXT_TOOLS = {"echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "git", "sed", "awk", "cat", "head", "tail",
+# Text tools that cannot execute their arguments: their arguments are data, not flags or commands.
+TEXT_TOOLS = {"echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "sed", "awk", "cat", "head", "tail",
               "less", "wc", "jq", "cut", "sort"}
 # Wrappers run the rest of their arguments as the command; value-taking options per wrapper.
 WRAPPER_VALUE_OPTS = {
@@ -77,8 +85,15 @@ RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", 
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 # Programs that run what arrives on stdin as commands: a heredoc fed to them is a script.
 STDIN_RUNNERS = SHELLS | {"ssh", "su"}
-# Programs whose whitespace arguments are titles/bodies, not command lines (no launcher rule).
-PROSE_ARG_TOOLS = {"gh", "glab"}
+# Exec-capable programs with prose options: only the VALUE of these options is exempt from the
+# launcher rules (git rebase -x, git bisect run, gh codespace ssh, gh alias set still are checked).
+_GH_PROSE = ({"--title", "--body", "--description", "--notes", "--message", "--subject", "--field",
+              "--raw-field", "--comment", "--text"}, set("tbdnmfF"))
+PROSE_FLAGS = {
+    "gh": _GH_PROSE,
+    "glab": _GH_PROSE,
+    "git": ({"--message", "--file", "--author", "--grep", "--format", "--pretty"}, set("mFSG")),
+}
 HEREDOC = "__APEX_HEREDOC_%d__"
 HEREDOC_RE = re.compile(r"^__APEX_HEREDOC_(\d+)__$")
 SEPARATORS = {";", "&&", "||", "|", "&", "|&", ";;", "(", ")", "\n"}
@@ -278,21 +293,6 @@ def tokens(cmd):
         return re.findall(r"[^\s;&|()<>]+|[;&|()<>\n]+", cmd)
 
 
-def segments(cmd):
-    """[(words, separator_after)] for each simple command."""
-    segs, words = [], []
-    for t in tokens(cmd):
-        if t in SEPARATORS or (t and all(c in ";&|()\n" for c in t)):
-            if words:
-                segs.append((words, t))
-            words = []
-        else:
-            words.append(t)
-    if words:
-        segs.append((words, None))
-    return segs
-
-
 def program(words):
     """(basename of the program, its arguments) after assignments, reserved words
     and wrappers (with their option values) are peeled off."""
@@ -323,6 +323,124 @@ def program(words):
     return "", []
 
 
+def strip_prose_values(base, args):
+    """Drop the values of prose options (titles, bodies, messages, search strings) for
+    gh/glab/git: `--body V`, `--body=V`, `-b V`, `-bV`, and a short cluster ending in a
+    prose letter (`git commit -am V`). Everything else is kept for the launcher rules."""
+    if base not in PROSE_FLAGS:
+        return args
+    longs, shorts = PROSE_FLAGS[base]
+    out, i = [], 0
+    while i < len(args):
+        a = args[i]
+        if a in longs:
+            i += 2
+            continue
+        if a.startswith("--") and a.split("=", 1)[0] in longs and "=" in a:
+            i += 1
+            continue
+        if re.fullmatch(r"-[A-Za-z]+", a) and a[-1] in shorts:
+            i += 2                                    # -m V, -am V
+            continue
+        if len(a) > 2 and a[0] == "-" and a[1] != "-" and a[1] in shorts:
+            i += 1                                    # -bVALUE
+            continue
+        out.append(a)
+        i += 1
+    return out
+
+
+def _split_sep(t):
+    """A separator token (possibly fused, e.g. ')|') into events."""
+    ev, i = [], 0
+    while i < len(t):
+        for op, kind in (("||", "SEP"), ("|&", "PIPE"), ("&&", "SEP"), (";;", "SEP"), ("|", "PIPE"),
+                         (";", "SEP"), ("&", "SEP"), ("\n", "SEP"), ("(", "OPEN"), (")", "CLOSE")):
+            if t.startswith(op, i):
+                ev.append(kind)
+                i += len(op)
+                break
+        else:
+            i += 1
+    return ev
+
+
+def structure(code):
+    """Pipelines of units at the top level. A unit is ('seg', words) or ('grp', pipelines)
+    for a ( ... ) subshell or { ...; } group; units of one pipeline are joined by |."""
+    events, words = [], []
+    for t in tokens(code):
+        if t in SEPARATORS or (t and all(c in ";&|()\n" for c in t)):
+            if words:
+                events.append(("SEG", words))
+            words = []
+            events += [(k, None) for k in _split_sep(t)]
+        elif not words and t in ("{", "}"):
+            events.append(("OPEN" if t == "{" else "CLOSE", None))
+        else:
+            words.append(t)
+    if words:
+        events.append(("SEG", words))
+
+    def parse(i, depth):
+        pipelines, cur = [], []
+        while i < len(events):
+            kind, w = events[i]
+            if kind == "SEG":
+                cur.append(("seg", w))
+            elif kind == "OPEN":
+                sub, i = parse(i + 1, depth + 1)
+                cur.append(("grp", sub))
+                continue
+            elif kind == "CLOSE" and depth > 0:
+                if cur:
+                    pipelines.append(cur)
+                return pipelines, i + 1
+            elif kind != "PIPE":                      # SEP (or a stray close at top level)
+                if cur:
+                    pipelines.append(cur)
+                cur = []
+            i += 1
+        if cur:
+            pipelines.append(cur)
+        return pipelines, i
+
+    return parse(0, 0)[0]
+
+
+def is_runner(words):
+    """Does this simple command run its stdin as commands? A shell/ssh/su program, or (for a
+    program that is not a text tool) a shell/ssh/su among its arguments: docker exec -i c sh,
+    kubectl exec -i pod -- bash, ssh -t host bash."""
+    base, args = program(words)
+    if base in STDIN_RUNNERS:
+        return True
+    return base not in TEXT_TOOLS and any(os.path.basename(a) in STDIN_RUNNERS for a in args)
+
+
+def script_heredocs(pipelines, forced=False):
+    """Indices of heredocs whose bodies a shell will run."""
+    out = []
+    for units in pipelines:
+        runner_at = [n for n, (kind, v) in enumerate(units) if kind == "seg" and is_runner(v)]
+        for n, (kind, v) in enumerate(units):
+            fed = forced or any(r > n for r in runner_at)
+            if kind == "grp":
+                out += script_heredocs(v, forced=fed)
+            elif fed or n in runner_at:
+                out += [int(m.group(1)) for m in (HEREDOC_RE.match(w) for w in v) if m]
+    return out
+
+
+def flat_segments(pipelines):
+    for units in pipelines:
+        for kind, v in units:
+            if kind == "grp":
+                yield from flat_segments(v)
+            else:
+                yield v
+
+
 def bypass_flag(cmd, depth=0, expand=True):
     """The first permission-bypass flag `cmd` would pass to a program, or None."""
     if depth > MAX_DEPTH or not cmd:
@@ -332,25 +450,14 @@ def bypass_flag(cmd, depth=0, expand=True):
         hit = bypass_flag(inner, depth + 1)
         if hit:
             return hit
-    segs = segments(code)
-    progs = [program(w)[0] for w, _ in segs]
-    # A heredoc whose segment runs a shell (or ssh/su), or that is piped into one later
-    # in the same pipeline, is a script: check its body as commands, quoted or not.
-    for n, (words, _) in enumerate(segs):
-        runs = progs[n] in STDIN_RUNNERS
-        k = n
-        while not runs and segs[k][1] in ("|", "|&") and k + 1 < len(segs):
-            k += 1
-            runs = progs[k] in STDIN_RUNNERS
-        if not runs:
-            continue
-        for w in words:
-            m = HEREDOC_RE.match(w)
-            if m:
-                hit = bypass_flag(heredocs[int(m.group(1))], depth + 1)
-                if hit:
-                    return hit
-    for words, _ in segs:
+    pipelines = structure(code)
+    # A heredoc fed to a shell (or ssh/su) -- by its own command, a shell among that command's
+    # arguments, or a pipe from it (or from its group) into one -- is a script: check its body.
+    for k in script_heredocs(pipelines):
+        hit = bypass_flag(heredocs[k], depth + 1)
+        if hit:
+            return hit
+    for words in flat_segments(pipelines):
         base, args = program(words)
         if base.startswith(BYPASS_PREFIXES):
             return base
@@ -359,8 +466,7 @@ def bypass_flag(cmd, depth=0, expand=True):
         for a in args:
             if a.startswith(BYPASS_PREFIXES):
                 return a.split("=", 1)[0]
-        if base in PROSE_ARG_TOOLS:
-            continue                      # gh/glab arguments are titles and bodies, not command lines
+        args = strip_prose_values(base, args)       # gh/glab/git: prose option values only
         # Launchers: `<shell> -c ARG` anywhere in the arguments runs ARG as a script ...
         for n, a in enumerate(args):
             prev = os.path.basename(args[n - 1]) if n else base

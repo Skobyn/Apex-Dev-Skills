@@ -1340,6 +1340,12 @@ cases = {"VERDICT: REQUEST CHANGES": "REQUEST_CHANGES", "VERDICT: REQUEST_CHANGE
          "1. [blocking] races on retry\nVERDICT: APPROVE": "REQUEST_CHANGES", "2) [blocking] x\nVERDICT: APPROVE": "REQUEST_CHANGES",
          "(blocking) no tenant check\nVERDICT: APPROVE": "REQUEST_CHANGES",
          "```\n- [blocking] <file:line> <scenario>\n```\nVERDICT: APPROVE": "APPROVE",
+         "```\n[blocking] src/a.py:3 drops tenant check\n```\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "[blocking] none found\nVERDICT: APPROVE": "APPROVE", "[blocking] (none)\nVERDICT: APPROVE": "APPROVE",
+         "- [blocking] none identified\nVERDICT: APPROVE": "APPROVE",
+         "VERDICT: APPROVE \u2014 looks good": "APPROVE", "VERDICT: APPROVE (no blockers)": "APPROVE",
+         "VERDICT: APPROVE (all lenses clear)": "APPROVE", "VERDICT: APPROVE (nits noted above)": "APPROVE",
+         "VERDICT: APPROVE \u2014 no, needs rework": "UNPARSED",
          "[blocking]: none\nVERDICT: APPROVE": "APPROVE", "- [blocking] n/a\nVERDICT: APPROVE": "APPROVE",
          # round 2 review: the remark is an allowlist; any other word means no approval
          "VERDICT: APPROVE \u2014 don't merge yet": "UNPARSED", "VERDICT: APPROVE, provided the migration is reverted": "UNPARSED",

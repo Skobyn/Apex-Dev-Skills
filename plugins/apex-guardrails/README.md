@@ -74,8 +74,9 @@ even when the policy declares no `destructive_bash` family (then with
 
 **Bypass flags.** `--dangerously-*`, `--yolo`, `--always-approve` and `--full-auto`
 switch an agent CLI's own approvals off; any program given one is denied. Text tools
-(`echo`, `printf`, `grep`, `rg`, `git`, `sed`, `cat`, …) only mention a flag, so
-`grep -- --yolo notes.md` or `git commit -m "deny --full-auto"` pass; chained,
+(`echo`, `printf`, `grep`, `rg`, `sed`, `cat`, …) only mention a flag, so
+`grep -- --yolo notes.md` passes (git, gh and glab are exec-capable and not text tools; their
+prose option values are exempt, so `git commit -m "deny --full-auto"` passes); chained,
 `bash -c`, `$(…)` and backtick commands are checked on their own. Quoting follows
 bash: single-quoted text and quoted-heredoc bodies (`<<'EOF'`) are literal, so a
 flag in backticks there (a commit message, a PR body) is not a command; `$(…)` and
@@ -84,12 +85,18 @@ backticks outside quotes, in double quotes and in unquoted heredocs are; `<<` in
 an argument with whitespace is checked as a nested command and `<shell> -c ARG`
 anywhere in its arguments is too (`tmux new-session '…'`, `ssh host '…'`,
 `docker run img sh -c '…'`, `script -qc '…'`, `su -c '…'`), and wrapper option values
-are skipped (`sudo -u git …`, `timeout -s KILL 30 …`). `gh` and `glab` are exempt from
-the launcher rule (their arguments are titles and bodies). A heredoc fed to a shell,
-`ssh` or `su` — directly (`bash <<EOF`, `bash -s <<'EOF'`, `ssh host <<'EOF'`) or
-through a pipe (`cat <<'EOF' | bash`) — is a script, so its body is checked as
-commands whatever its quoting; a heredoc to anything else (`cat > notes.md`,
-`python3 -`) stays data. This is the same
+are skipped (`sudo -u git …`, `timeout -s KILL 30 …`). The launcher rules apply to every
+program that is not a pure text tool — git, gh and glab included — so
+`gh codespace ssh '…'`, `gh alias set x '…'`, `git rebase -x '…'` and `git bisect run …`
+are checked; for those three only the *values* of prose options are exempt (gh/glab
+`--title`, `--body`, `--description`, `--notes`, `--message`, `--field`, …; git `-m`,
+`--message`, `-F`, `--author`, `--grep`, `-S`, `-G`, `--format`, `--pretty`), in `--opt V`,
+`--opt=V`, `-oV` and `-am V` forms. A heredoc fed to a shell, `ssh` or `su` is a script and
+its body is checked as commands whatever its quoting: directly (`bash <<EOF`,
+`bash -s <<'EOF'`), via a shell argument of a non-text program (`docker exec -i c sh <<EOF`,
+`kubectl exec -i pod -- bash <<EOF`, `ssh -t host bash <<EOF`), or piped into one, also from
+a `( )` / `{ }` group (`cat <<'EOF' | bash`, `(cat <<EOF) | bash`). A heredoc to anything
+else (`cat > notes.md`, `python3 -`, `gh … --body-file -`, `./run.sh`) stays data. This is the same
 approach as apex-dispatch's `pre-bash` hook (step 2 of `bash_rules` in
 `plugins/apex-dispatch/scripts/lib/hooks.py`), reimplemented here in
 `hooks/bash_scope.py` so the two plugins stay independent.

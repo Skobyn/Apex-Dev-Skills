@@ -147,6 +147,21 @@ deny_cmds=(
   $'bash -s <<\'EOF\'\ncodex --full-auto\nEOF'
   $'cat <<\'EOF\' | bash\nclaude --yolo\nEOF'
   $'ssh host <<\'EOF\'\nclaude --yolo\nEOF'
+  $'gh codespace ssh \'claude --yolo\''
+  $'gh codespace ssh -- bash -c \'claude --yolo\''
+  $'gh cs ssh -- sh -c \'codex --yolo\''
+  $'gh cs ssh -- claude --dangerously-skip-permissions'
+  $'gh alias set x \'claude --yolo\''
+  $'git rebase -x \'claude --yolo\' main'
+  $'git bisect run claude --yolo'
+  $'docker exec -i c sh <<EOF\nclaude --yolo\nEOF'
+  $'kubectl exec -i pod -- bash <<EOF\nclaude --yolo\nEOF'
+  $'sudo docker exec -i c sh <<\'EOF\'\nclaude --yolo\nEOF'
+  $'(cat <<EOF) | bash\nclaude --yolo\nEOF'
+  $'(cat <<\'EOF\')|bash\nclaude --yolo\nEOF'
+  $'{ cat <<\'EOF\'; } | sh\nclaude --yolo\nEOF'
+  $'ssh -t host bash <<\'EOF\'\nclaude --yolo\nEOF'
+  $'gh pr create --body "$(claude --yolo)"'
 )
 allow_cmds=(
   'grep -rn -- --yolo docs/'
@@ -162,6 +177,19 @@ allow_cmds=(
   $'cat <<\'EOF\' > notes.md\nclaude --yolo\nEOF'
   $'python3 - <<\'EOF\'\nprint(\'--yolo\')\nEOF'
   "gh pr create --title 'Deny --yolo flag' --body 'avoid --yolo please'"
+  $'gh pr create --title \'Deny --yolo\' --body \'avoid --yolo; never run bash -c "claude --yolo"\''
+  $'gh pr create -b \'see ssh host "claude --yolo"\''
+  $'gh pr create --body=\'note --full-auto\''
+  $'gh pr comment 1 --body-file - <<\'EOF\'\nclaude --yolo\nEOF'
+  $'gh api -f body=\'hello bash -c foo --yolo\' repos/o/r/issues/1/comments'
+  $'glab mr create --description \'drop --always-approve\' --title \'x\''
+  $'git commit -m \'run bash -c "x --yolo"\''
+  $'git log --grep=\'--full-auto\''
+  $'grep bash <<EOF\n--yolo\nEOF'
+  $'docker exec -i c sh <<\'EOF\'\nls -la\nEOF'
+  $'cat <<\'EOF\' | bash\nls\nEOF'
+  $'# pinned: a heredoc to an arbitrary script is data (not a known runner)\n./run.sh <<\'EOF\'\nclaude --yolo\nEOF'
+  $'gh pr create --body "$(cat <<\'EOF\'\n- guardrails deny `--yolo`\nEOF\n)"'
 )
 for c in "${deny_cmds[@]}"; do n=$((n+1)); bash_event "$c" >"$SMOKE_TMP/d$n.json"; expect deny "$SMOKE_TMP/d$n.json"; expect deny "$SMOKE_TMP/d$n.json" --bypass-only; done
 for c in "${allow_cmds[@]}"; do n=$((n+1)); bash_event "$c" >"$SMOKE_TMP/a$n.json"; expect allow "$SMOKE_TMP/a$n.json"; done
@@ -186,7 +214,7 @@ for f in d1 d3 d5 d7; do [ "$(nopy "$SMOKE_TMP/$f.json")" = deny ] || fail "no-p
 n_allow_first=$(( ${#deny_cmds[@]} + 1 ))
 for i in 0 1 2; do f="a$((n_allow_first + i))"; [ "$(nopy "$SMOKE_TMP/$f.json")" = allow ] || fail "no-python fallback falsely denied $(cat "$SMOKE_TMP/$f.json")"; done
 [ "$(nopy "$SMOKE_TMP/decoy-first.json")" = deny ] || fail "no-python fallback read a decoy \"command\" key outside tool_input"
-ok "bypass flags always denied (${#deny_cmds[@]} forms incl. launchers, wrapper option values, heredoc/arithmetic edges, heredocs fed to sh/bash/ssh or piped into a shell); single-quoted and quoted-heredoc text, heredocs to non-shells, gh/glab bodies and text tools pass (${#allow_cmds[@]}); command scoped to tool_input.command; pure-bash fallback agrees"
+ok "bypass flags always denied (${#deny_cmds[@]} forms incl. launchers, wrapper option values, heredoc/arithmetic edges, heredocs fed to sh/bash/ssh, to a shell argument (docker/kubectl exec) or piped into a shell incl. ( )/{ } groups; gh/git launchers: codespace ssh, alias set, rebase -x, bisect run); single-quoted and quoted-heredoc text, heredocs to non-shells (./run.sh pinned allow), gh/glab/git prose option values and text tools pass (${#allow_cmds[@]}); command scoped to tool_input.command; pure-bash fallback agrees"
 
 echo ""
 echo "smoke passed: 12/12 checks"

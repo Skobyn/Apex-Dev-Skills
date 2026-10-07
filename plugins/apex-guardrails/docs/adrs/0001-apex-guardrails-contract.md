@@ -64,17 +64,21 @@ plugins/apex-guardrails/
   denies permission-bypass flags — `--dangerously-*` (incl.
   `--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`),
   `--yolo`, `--always-approve`, `--full-auto` — passed to any program, whatever the
-  policy declares. Text tools (`echo`, `printf`, `grep`, `rg`, `git`, `sed`, `cat`, …)
+  policy declares. Text tools (`echo`, `printf`, `grep`, `rg`, `sed`, `cat`, …)
   only mention such a flag and are not denied; nested `bash -c`, `$(…)` and backtick
   commands are checked in their own right, with bash's quoting (single-quoted text and
   quoted-heredoc bodies are literal; `<<` in `$(( ))` is not a heredoc); for any
   non-text-tool program, arguments containing whitespace and `<shell> -c ARG` anywhere
   in the arguments are checked as nested commands (launchers such as tmux, screen,
   docker, script, su, ssh), depth-capped; wrapper option values (`sudo -u USER`,
-  `timeout -s SIG DURATION`, `env -u VAR`, `nice -n N`) are skipped; `gh`/`glab`
-  arguments are titles and bodies, exempt from the launcher rule; a heredoc whose
-  segment runs a shell, `ssh` or `su`, or that is piped into one, is checked as
-  commands regardless of quoting (other heredocs stay literal data) (the approach of apex-dispatch's `pre-bash`
+  `timeout -s SIG DURATION`, `env -u VAR`, `nice -n N`) are skipped; the launcher rules
+  apply to every program that is not a pure text tool (git, gh and glab are not text
+  tools), and for git/gh/glab only the values of prose options (titles, bodies,
+  messages, `--grep`, `--format`, …) are exempt; a heredoc is a script — its body checked
+  as commands regardless of quoting — when its command is a shell/`ssh`/`su`, when a
+  non-text program has a shell/`ssh`/`su` argument (`docker exec -i c sh`,
+  `kubectl exec … -- bash`), or when it (or its `( )`/`{ }` group) is piped into such a
+  command; other heredocs stay literal data (the approach of apex-dispatch's `pre-bash`
   hook, reimplemented in `hooks/bash_scope.py` so no code is shared across plugins).
   It then denies `rm -rf /`, `rm -rf ~`/`$HOME`, force-push to `main`/`master`,
   `git reset --hard` onto a protected branch, and curl/wget piped into a shell.
