@@ -104,7 +104,7 @@ Three layers, each enforced by something a smoke test can assert: apex-scope-loo
 - [x] **Gate 4→5** [gate:human] Phase 4 G12 batch approval (every Tier C task in the phase, bound to the phase-end head)
   - Acceptance: user types approve gate-4-5
 
-- [ ] **Gate 4→done** [gate:auto] Every plugin smoke passes on the final head
+- [x] **Gate 4→done** [gate:auto] Every plugin smoke passes on the final head
   - Acceptance: `for s in plugins/*/scripts/smoke.sh; do bash "$s" >/dev/null || exit 1; done`
   - Blocked-by: Phase 4.2
 
