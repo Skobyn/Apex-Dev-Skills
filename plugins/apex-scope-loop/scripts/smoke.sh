@@ -1366,7 +1366,7 @@ raw l1 lens:correctness
 (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id l1 --provider codex >/dev/null) || fail "a lens record was refused"
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["reviews"]["1"]["records"][-1]; assert r["provider"]=="claude-session" and r["role"]=="lens:correctness", r' "$P3S/checkpoint.json" \
   || fail "the review record took the caller's --provider instead of the record's"
-for l in security consent/pii money performance; do i="l$(printf '%s' "$l" | tr -dc a-z)"; raw "$i" "lens:$l"; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id "$i" >/dev/null) || fail "lens $l refused"; done
+for l in security consent-pii money performance; do i="l$(printf '%s' "$l" | tr -dc a-z)"; raw "$i" "lens:$l"; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id "$i" >/dev/null) || fail "lens $l refused"; done
 raw adv adversarial; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id adv >/dev/null) || fail "the adversarial record was refused"
 python3 - "$P3S/checkpoint.json" "$(p3sha)" <<'PY'
 import json, sys
@@ -1376,15 +1376,49 @@ PY
 mkdir -p "$SMOKE_TMP/fd43/scripts"; printf '#!/bin/sh\nexit 0\n' >"$SMOKE_TMP/fd43/scripts/route.sh"
 printf '#!/bin/sh\necho "$*" >>"$(dirname "$0")/calls.log"\nexit 0\n' >"$SMOKE_TMP/fd43/scripts/ledger.sh"; chmod +x "$SMOKE_TMP/fd43/scripts/"*.sh
 expect_refusal "Tier C with five lenses" "six distinct lens approvals" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
+# A typed (declared) record never counts toward the lenses in provenance mode.
+python3 - "$P3S/checkpoint.json" "$(p3sha)" <<'PY'
+import json, sys
+p, h = sys.argv[1:]; s = json.load(open(p))
+s["reviews"]["1"]["records"].append({"attempt": s["reviews"]["1"].get("attempt", 1), "epoch": s.get("epoch", 0), "sha": h,
+    "verdict": "APPROVE", "role": "lens:maintainability", "provenance": "declared", "source": ""})
+json.dump(s, open(p, "w"))
+PY
+expect_refusal "a declared lens record counted in provenance mode" "six distinct lens approvals" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
 raw lm lens:maintainability; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id lm >/dev/null) || fail "the sixth lens record was refused"
-printf '{"claude_p_auth": "available", "providers": {}}' >"$P3S/dispatch/doctor.json"
-expect_refusal "Tier C without a second family while one is available" "family diversity (block)" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
-printf '{"claude_p_auth": "unavailable", "providers": {"codex": {"enabled": true, "available": false}}}' >"$P3S/dispatch/doctor.json"
-OUT="$(cd "$P3" && APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok 2>&1)" || fail "Tier C with no second family available did not complete: $OUT"
+# The shared second-family rule needs apex-dispatch's ledger.py beside the fake root.
+mkdir -p "$SMOKE_TMP/fd43/scripts/lib" "$SMOKE_TMP/fd43/resources"; cp "$MARKET_ROOT/plugins/apex-dispatch/scripts/lib/ledger.py" "$SMOKE_TMP/fd43/scripts/lib/"
+# A non-approving review at this head is final: neither an unrecorded raw record nor a ledger verdict row can be discarded.
+raw rsec2 lens:security REQUEST_CHANGES
+expect_refusal "an unrecorded REQUEST_CHANGES raw record at HEAD" "did not approve" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
+rm -f "$P3S/dispatch/reviews-raw/rsec2.json"
+printf '{"event": "verdict", "source": "hook", "line": 1, "head_sha": "%s", "verdict": "REQUEST_CHANGES", "agent_id": "gone", "seq": 0}\n' "$(p3sha)" >"$P3S/dispatch/ledger.jsonl"
+expect_refusal "a REQUEST_CHANGES verdict row at HEAD" "did not approve" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
+printf '{"agent_id": "bad2", "refused": "audit", "head_sha": "%s", "line": 1}' "$(p3sha)" >"$P3S/dispatch/reviews-raw/bad2.json"
+rm -f "$P3S/dispatch/ledger.jsonl"
+expect_refusal "an audit-refused record at HEAD" "refused by the transcript audit" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
+# Only a new commit (and fresh reviews of it) supersedes them.
+echo c >"$P3W/c.md"; git -C "$P3W" add -A; git -C "$P3W" commit -qm c; p3stage BUILD
+(cd "$P3" && APEX_GATE_TEST=true "$EX/green-gate.sh" plans/c-plan.md check >/dev/null 2>&1) || fail "the gate failed on the new head"
+python3 - "$P3S/checkpoint.json" "$(p3sha)" <<'PY'
+import json, sys
+p, h = sys.argv[1:]; s = json.load(open(p)); s.setdefault("tiers", {})["1"] = {"tier": "C", "head": h}; json.dump(s, open(p, "w"))
+PY
+(cd "$P3" && "$CP" plans/c-plan.md approve 1 "$(p3sha)" "approve G12 1" >/dev/null)
+for l in correctness security consent-pii money performance maintainability; do
+  i="n$(printf '%s' "$l" | tr -dc a-z)"; raw "$i" "lens:$l"; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id "$i" >/dev/null) || fail "new-head lens $l refused"
+done
+raw nadv adversarial; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id nadv >/dev/null) || fail "new-head adversarial refused"
+# Diversity: a second family counts only when doctor shows it available AND its bin/worker-*.sh shim ships.
+printf '{"claude_p_auth": "available", "providers": {"claude-p": {"enabled": true, "available": true}}}' >"$P3S/dispatch/doctor.json"
+mkdir -p "$SMOKE_TMP/fd43/bin"; printf '#!/bin/sh\nexit 0\n' >"$SMOKE_TMP/fd43/bin/worker-claude-p.sh"; chmod +x "$SMOKE_TMP/fd43/bin/worker-claude-p.sh"
+expect_refusal "Tier C without a second family while its shim ships" "family diversity (block)" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
+rm -f "$SMOKE_TMP/fd43/bin/worker-claude-p.sh"
+OUT="$(cd "$P3" && APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok 2>&1)" || fail "Tier C with no shipped second-family shim did not complete: $OUT"
 has 'warning: reviewer family diversity (block)' "$OUT" && grep -q '^evidence ' "$SMOKE_TMP/fd43/scripts/calls.log" \
   && grep -q '^append hook_advisory .*family diversity.* --source cli' "$SMOKE_TMP/fd43/scripts/calls.log" || fail "the diversity degrade was not warned and ledgered, or evidence was not asked"
 [ "$(p3stage)" = DONE ] || fail "complete did not move the stage to DONE"
-ok "Phase 3.2: green-gate PASS = BUILD -> GATE (only from BUILD); refused raw records refused; provider from the record; provenance complete needs six lenses + adversarial and family diversity (degraded to a ledgered warning without a second family); DONE"
+ok "Phase 3.2: green-gate PASS = BUILD -> GATE (only from BUILD); refused raw records refused; provider from the record; provenance complete needs six canonical lenses + adversarial (declared records do not count), refuses any non-approving review at HEAD until a new commit, and needs family diversity only when a second family has a shipped shim (else a ledgered warning); DONE"
 
 echo ""
 echo "smoke passed: 43/43 checks"

@@ -48,6 +48,6 @@ Correctness: … · Security: … · Consent/PII: … · Money: … · Performan
 VERDICT: APPROVE
 ```
 
-When the prompt gave you a `LENS`, put a line that is exactly `LENS: <lens>` (`correctness`, `security`, `consent/pii`, `money`, `performance` or `maintainability`) just above the verdict; as the `ADVERSARIAL` pass, `LENS: adversarial`. With apex-dispatch installed, its SubagentStop hook records these two lines as your review record.
+When the prompt gave you a `LENS`, put a line that is exactly `LENS: <lens>` (`correctness`, `security`, `consent-pii`, `money`, `performance` or `maintainability`) just above the verdict; as the `ADVERSARIAL` pass, `LENS: adversarial`. With apex-dispatch installed, its SubagentStop hook records these two lines as your review record.
 
 The last line must be exactly `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`. Any blocking finding, or an unmet acceptance criterion, means `REQUEST_CHANGES`. Don't soften a finding because it's awkward, and don't invent one to look thorough.

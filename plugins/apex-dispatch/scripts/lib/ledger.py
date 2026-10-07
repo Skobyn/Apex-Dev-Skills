@@ -105,6 +105,28 @@ def enforcing(root=None):
     return os.path.isfile(os.path.join(root or plugin_root(), "hooks", "subagent-stop.sh"))
 
 
+def second_families(doc, root=None):
+    """Providers that give a Tier C review a second reviewer family *now* (spec
+    §5.2 step 7): enabled and available in doctor.json (claude-p also needs
+    claude_p_auth "available"), not the in-session provider, AND shipped as an
+    executable bin/worker-<provider>.sh in this plugin, because pre-bash.sh lets
+    provider CLIs run only through those shims. doctor.py (tier_c_diversity) and
+    apex-scope-loop's checkpoint.sh complete both use this one rule; an empty
+    list means diversity degrades to a ledgered warning, never a stall."""
+    root = root or plugin_root()
+    doc = doc if isinstance(doc, dict) else {}
+    out = []
+    for pid, v in sorted((doc.get("providers") or {}).items()):
+        if pid == "claude-session" or not isinstance(v, dict) or not (v.get("enabled") and v.get("available")):
+            continue
+        if pid == "claude-p" and doc.get("claude_p_auth") != "available":
+            continue
+        shim = os.path.join(root, "bin", "worker-%s.sh" % pid)
+        if os.path.isfile(shim) and os.access(shim, os.X_OK):
+            out.append(pid)
+    return out
+
+
 def dispatch_dir(state_dir, write=False, root=None):
     """<state>/dispatch/ when it exists (an enforcing run started it; keep one
     chain) or when writing while enforcing; otherwise <state>/dispatch-shadow/."""

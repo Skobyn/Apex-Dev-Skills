@@ -210,9 +210,9 @@ case "$ACTION" in
       COMPUTED="$(sed -n '/^TIER: /{s///p;q;}' <<<"$RT_OUT")"
       [[ "$COMPUTED" =~ ^[ABC]$ && "$(sed -n '/^HEAD: /{s///p;q;}' <<<"$RT_OUT")" == "$HEAD_V" ]] \
         || { echo "[checkpoint] REFUSED complete: the task diff was not classified at the head ${HEAD_V:0:12} (did the head move?)" >&2; exit 1; }
-      CK_OUT="$(python3 - "$CHECKPOINT" "$STATE_DIR/gate/last.json" "$LINE_NO" "$HEAD_V" "$SKIP_REVIEW" "$COMPUTED" "$FLOOR" "$DISPATCH_STATE" <<'PY'
+      CK_OUT="$(python3 - "$CHECKPOINT" "$STATE_DIR/gate/last.json" "$LINE_NO" "$HEAD_V" "$SKIP_REVIEW" "$COMPUTED" "$FLOOR" "$DISPATCH_STATE" "$DISPATCH" "$PLAN_HASH" <<'PY'
 import json, os, sys
-cp, gate_path, line_no, head, skip, computed, floor, dstate = sys.argv[1:]
+cp, gate_path, line_no, head, skip, computed, floor, dstate, droot, plan_hash = sys.argv[1:]
 s = json.load(open(cp))
 problems = []
 order = {"A": 0, "B": 1, "C": 2}
@@ -283,12 +283,46 @@ if os.path.isdir(dstate) and not skip:
             shape = router["review_shape"]
         if router.get("diversity") in DIV and DIV.index(router["diversity"]) > DIV.index(div):
             div = router["diversity"]
-    approved = [x for x in at_head if x.get("attempt", 1) == attempt and x.get("epoch", 0) == epoch and x.get("verdict") == "APPROVE"]
+    # Only verdicts with provenance count here (a typed "declared" record does not).
+    approved = [x for x in at_head if x.get("attempt", 1) == attempt and x.get("epoch", 0) == epoch
+                and x.get("verdict") == "APPROVE" and x.get("provenance") != "declared"]
+    # An unfavourable review at this head cannot be discarded by re-spawning
+    # reviewers at the same SHA: any hook/shim verdict row or raw record for this
+    # line at HEAD that is not APPROVE (an audit-refused record included) blocks
+    # complete; only a new commit supersedes it.
+    prefix = "r-%s-L%s-" % (plan_hash, line_no)
+    def for_line(x):
+        return str(x.get("line")) == line_no or str(x.get("route_id") or x.get("route") or "").startswith(prefix)
+    bad = []
+    rdir = os.path.join(dstate, "reviews-raw")
+    for f in sorted(os.listdir(rdir)) if os.path.isdir(rdir) else []:
+        try:
+            rec = json.load(open(os.path.join(rdir, f)))
+        except Exception:
+            continue
+        if isinstance(rec, dict) and rec.get("head_sha") == head and for_line(rec) and (rec.get("refused") or rec.get("verdict") != "APPROVE"):
+            bad.append("%s (%s)" % (f[:-5], "refused by the transcript audit" if rec.get("refused") else rec.get("verdict")))
+    try:
+        for ln in open(os.path.join(dstate, "ledger.jsonl"), encoding="utf-8"):
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                continue
+            if row.get("event") == "verdict" and row.get("source") in ("hook", "shim") and row.get("head_sha") == head \
+                    and for_line(row) and row.get("verdict") != "APPROVE":
+                bad.append("ledger seq %s (%s by %s)" % (row.get("seq"), row.get("verdict"), row.get("agent_id") or row.get("role")))
+    except OSError:
+        pass
+    if bad:
+        problems.append(f"a review of the head {head[:12]} did not approve ({'; '.join(bad[:4])}) — address it in a new commit "
+                        "and re-review; another reviewer at the same SHA does not supersede it")
+    LENSES = {"correctness", "security", "consent-pii", "money", "performance", "maintainability"}
     if shape == "fanout6+adversarial":
-        lenses = sorted({x["role"][5:] for x in approved if str(x.get("role", "")).startswith("lens:")})
+        lenses = sorted({x["role"][5:] for x in approved if str(x.get("role", "")).startswith("lens:")} & LENSES)
         if len(lenses) < 6:
             problems.append(f"review shape {shape}: six distinct lens approvals are required at {head[:12]} "
-                            f"(have {len(lenses)}: {', '.join(lenses) or 'none'}) — one reviewer per lens, each ending LENS: <lens>")
+                            f"(have {len(lenses)}: {', '.join(lenses) or 'none'}) — one reviewer per lens "
+                            f"({', '.join(sorted(LENSES))}), each ending LENS: <lens>")
         if not any(x.get("role") == "adversarial" for x in approved):
             problems.append(f"review shape {shape}: an adversarial approval at {head[:12]} is required")
     if div != "off" and approved and not any(x.get("provider") not in (None, "", "claude-session") for x in approved):
@@ -296,15 +330,22 @@ if os.path.isdir(dstate) and not skip:
             doc = json.load(open(os.path.join(dstate, "doctor.json")))
         except Exception:
             doc = {}
-        provs = doc.get("providers") or {}
-        second = doc.get("claude_p_auth") == "available" or any(
-            isinstance(v, dict) and v.get("available") and v.get("enabled") for k, v in provs.items()
-            if k not in ("claude-session", "claude-p"))
+        # One rule with doctor.sh: apex-dispatch's ledger.second_families (an
+        # available provider whose bin/worker-*.sh shim ships).
+        second = []
+        if droot:
+            try:
+                sys.path.insert(0, os.path.join(droot, "scripts", "lib"))
+                import ledger
+                second = ledger.second_families(doc, droot)
+            except Exception as e:
+                print(f"[checkpoint] warning: could not evaluate reviewer families ({e})", file=sys.stderr)
         msg = ("reviewer family diversity (%s): every approval at %s is from the in-session Claude family" % (div, head[:12]))
         if div == "block" and second:
-            problems.append(msg + " — add a review from a second family (bin/worker-claude-p.sh or worker-codex.sh --role reviewer)")
+            problems.append(msg + " — add a review from a second family (%s: bin/worker-<provider>.sh --role reviewer)" % ", ".join(second))
         else:
-            why = "no second family is available (doctor.json)" if div == "block" else "advisory for this shape"
+            why = ("no second family is available (no available provider ships a bin/worker-*.sh shim yet)"
+                   if div == "block" else "advisory for this shape")
             print("DIVERSITY_WARN: " + msg + "; " + why)
 if problems:
     print("[checkpoint] REFUSED complete @ line " + line_no + ":", file=sys.stderr)

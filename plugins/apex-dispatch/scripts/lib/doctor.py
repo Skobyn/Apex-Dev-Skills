@@ -292,11 +292,18 @@ def main(argv):
                    "providers": {k: v.get("available") for k, v in (d.facts.get("providers") or {}).items()},
                    "checks": {c["id"]: c["status"] for c in d.checks}}
     profile = hashlib.sha256(json.dumps(profile_src, sort_keys=True).encode()).hexdigest()[:12]
+    # One rule with checkpoint.sh complete (ledger.second_families): a second
+    # family counts only when its provider is available AND its bin/worker-*.sh
+    # shim ships, since pre-bash.sh refuses provider CLIs outside the shims.
+    second = ledger.second_families({"providers": d.facts.get("providers") or {},
+                                     "claude_p_auth": d.facts.get("claude_p_auth")}, root)
+    tier_c_diversity = "block" if second else "warn (no second reviewer family: no available provider has a bin/worker-*.sh shim yet)"
     out = {"schema": 1, "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "status": overall, "profile": profile, "repo": repo, "state": opts["state"], "temp_state": bool(opts.get("temp")),
            "enforcing": ledger.enforcing(root), "claude_version": d.facts.get("claude_version"),
            "claude_p_auth": d.facts.get("claude_p_auth"),
-           "tier_c_diversity": "block" if d.facts.get("claude_p_auth") == "available" else "warn (claude -p auth unavailable)",
+           "tier_c_diversity": tier_c_diversity,
+           "second_families": second,
            "providers": d.facts.get("providers") or {}, "checks": d.checks,
            "counts": {s: sts.count(s) for s in ("ok", "warn", "fail", "unverified", "skipped")}}
     ddir = ledger.dispatch_dir(opts["state"], write=True, root=root)

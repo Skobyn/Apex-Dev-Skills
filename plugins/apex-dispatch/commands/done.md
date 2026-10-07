@@ -23,7 +23,7 @@ There is no plan line, so `checkpoint.sh` and `ledger.sh evidence` (which takes 
 
 1. `<state>` = `.dev-plan-state/adhoc/<id>` (the `<id>` of `a-<id>-<n>`). `$D/ledger.sh verify --state <state>` must pass.
 2. Report delegation honestly: state which roles you spawned; the hooks recorded each allowed spawn (`spawn_request`, `spawn`, `worker_run`) and each reviewer verdict (`verdict`, with a raw record under `reviews-raw/`) in the ad-hoc state's ledger, but nothing checks them at close yet.
-3. The Acceptance command passed on the current HEAD and a reviewer returned `VERDICT: APPROVE` for it in this session. If not, do not close.
+3. The Acceptance command passed on the current HEAD and a reviewer returned `VERDICT: APPROVE` for it in this session (its record is `<state>/dispatch/reviews-raw/<agent_id>.json`; reviewer spawns needed a committed, clean HEAD). If any reviewer at that HEAD did not approve, or its record was refused, do not close.
 4. Release the lock (only the owner's id releases it):
    ```bash
    bash -c 'set -euo pipefail; source "$1/_lib.sh"; STATE_BASE="$(apex_state_base "$PWD")"; apex_lock_release "$2"; apex_lock_owner' _ "$S" <id>

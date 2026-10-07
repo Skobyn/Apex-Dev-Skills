@@ -1069,7 +1069,7 @@ start e1 Explore; start ../x apex-dispatch:builder
 [ ! -e "$UD/agents/e1.json" ] && [ -z "$(ls "$UD/agents" | grep -v '^b1.json$' || true)" ] || fail "a foreign agent type or a path-like agent_id was registered"
 mkdir -p "$USD_/gate"; printf '{"result":"PASS","head_sha":"%s"}\n' "$(git -C "$UX" rev-parse HEAD)" >"$USD_/gate/last.json"
 O="$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')")"
-grep -q 'still running' <<<"$O" || fail "a reviewer spawn was allowed while builder b1 is live: $O"
+grep -q 'still registered as running' <<<"$O" || fail "a reviewer spawn was allowed while builder b1 is live: $O"
 stopa b1 apex-dispatch:builder 'done'
 [ -n "$(jget "$UD/agents/b1.json" stopped_at)" ] && [ "$(jget "$UD/agents/b1.json" stopped_at)" != None ] || fail "subagent-stop did not record b1's stop"
 [ "$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "the reviewer spawn was denied after the builder stopped"
@@ -1231,6 +1231,80 @@ for want in [("route", "cli"), ("spawn_request", "hook"), ("spawn", "hook"), ("w
     assert want in ev, (want, ev)
 PY
 pass "end to end, enforced by default: route (dispatch/) -> pre-agent/subagent-start/stop/post-agent rows -> green-gate PASS = GATE -> reviewer = REVIEW -> raw record -> review --agent-id (once) -> complete with ledger evidence -> DONE"
+
+# 59. review round 1: one second-family rule (available AND a shipped bin/worker-*.sh shim) in doctor and checkpoint;
+#     foreground stops recorded by post-agent; audits judge the agent's own identity; canonical lenses;
+#     live background builders never spend a stop-gate block; GATE denials say how to return to BUILD;
+#     ad-hoc reviewers need a committed, clean HEAD
+python3 - "$PLUGIN_ROOT/scripts/lib" "$WORK/sf" <<'PY' || fail "ledger.second_families does not require an available provider with a shipped shim"
+import os, sys
+sys.path.insert(0, sys.argv[1]); import ledger
+root = sys.argv[2]; os.makedirs(os.path.join(root, "bin"), exist_ok=True)
+doc = {"claude_p_auth": "available", "providers": {"codex": {"enabled": True, "available": True},
+       "claude-p": {"enabled": True, "available": True}, "claude-session": {"enabled": True, "available": True}}}
+assert ledger.second_families(doc, root) == [], "counted a provider without a shim"
+assert ledger.second_families(doc) == [] or os.path.isdir(os.path.join(ledger.plugin_root(), "bin")), "this plugin ships no shims yet"
+for p in ("codex", "claude-p"):
+    f = os.path.join(root, "bin", "worker-%s.sh" % p); open(f, "w").write("#!/bin/sh\n"); os.chmod(f, 0o755)
+assert ledger.second_families(doc, root) == ["claude-p", "codex"], ledger.second_families(doc, root)
+doc["claude_p_auth"] = "unavailable"; doc["providers"]["codex"]["available"] = False
+assert ledger.second_families(doc, root) == [], "claude-p without auth or codex unavailable still counted"
+PY
+grep -q 'second_families' "$PLUGIN_ROOT/scripts/lib/doctor.py" && grep -q 'second_families' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/checkpoint.sh" \
+  || fail "doctor.py and checkpoint.sh do not share ledger.second_families"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["tier_c_diversity"].startswith("warn") and d["second_families"] == []' "$WORK/ds/dispatch-shadow/doctor.json" \
+  || fail "doctor.json claims a Tier C second family although no worker shim ships"
+# Canonical lenses and emphasis
+python3 - "$PLUGIN_ROOT/scripts/lib" <<'PY' || fail "LENS/VERDICT parsing is not normalised"
+import sys; sys.path.insert(0, sys.argv[1]); import hooks
+assert hooks.parse_review("x\n**LENS:** Consent / PII\n**VERDICT:** APPROVE") == ("APPROVE", "consent-pii")
+assert hooks.parse_review("LENS: `Security`\nVERDICT: REQUEST_CHANGES.") == ("REQUEST_CHANGES", "security")
+assert hooks.parse_review("LENS: vibes\nVERDICT: APPROVE") == ("APPROVE", None)
+assert hooks.parse_review("_LENS: Maintainability_\nVERDICT: APPROVE") == ("APPROVE", "maintainability")
+PY
+start l1 apex-dispatch:reviewer; stopa l1 apex-dispatch:reviewer "$(printf '**LENS:** Consent / PII\n**VERDICT:** APPROVE')"
+[ "$(jget "$UD/reviews-raw/l1.json" role)" = lens:consent-pii ] || fail "an emphasised Consent / PII lens did not become lens:consent-pii"
+start l2 apex-dispatch:reviewer; stopa l2 apex-dispatch:reviewer "$(printf 'LENS: vibes\nVERDICT: APPROVE')"
+[ "$(jget "$UD/reviews-raw/l2.json" role)" = reviewer ] || fail "an unknown lens counted as a lens"
+# Audits judge the agent as live pre-bash did
+tr_write "$TR/g3.jsonl" Bash '{"command": "git commit -am gibson-at-build"}' 0
+start g3 apex-scope-loop:gibson-reviewer; stopa g3 apex-scope-loop:gibson-reviewer 'VERDICT: APPROVE' false "$TR/g3.jsonl"
+[ "$HRC" = 0 ] && [ "$(jget "$UD/reviews-raw/g3.json" verdict)" = APPROVE ] || fail "gibson-reviewer's record was refused for a command pre-bash allowed it (rc=$HRC)"
+tr_write "$TR/p1.jsonl" Bash "{\"command\": \"bash $PLUGIN_ROOT/bin/worker-codex.sh --route r --role reviewer --mode readonly\"}" 0
+start p1 apex-dispatch:provider-runner; stopa p1 apex-dispatch:provider-runner 'done' false "$TR/p1.jsonl"
+[ "$HRC" = 0 ] && [ "$(rowsin "$UL" policy_violation agent_id=p1)" = 0 ] || fail "provider-runner running a worker shim was audited as a violation (rc=$HRC)"
+# Foreground stops from post-agent; the live-agent denial says how to clear it
+O="$(cd "$UX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"; URID3="$(val ROUTE_ID "$O")"; git -C "$UX" commit -q --allow-empty -m r3
+printf '{"result":"PASS","head_sha":"%s"}\n' "$(git -C "$UX" rev-parse HEAD)" >"$USD_/gate/last.json"
+start f1 apex-dispatch:builder; start f2 apex-dispatch:builder
+O="$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')")"; grep -q 're-route' <<<"$O" || fail "the live-agent denial does not say how to clear a stuck registration: $O"
+pa x1 PostToolUseFailure tool_response.agentId=f1 error=interrupted
+pa x2 PostToolUse tool_response.agentId=f2 tool_response.status=interrupted
+[ "$(jget "$UD/agents/f1.json" stopped_by)" = post-agent-failure ] && [ "$(jget "$UD/agents/f2.json" stopped_by)" = post-agent ] || fail "post-agent did not record foreground stops"
+[ "$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "review stayed blocked after the foreground builders ended"; ustage BUILD
+# Live background builders never spend a block; a dirty worktree with no live builder does
+start bg1 apex-dispatch:builder; echo wip >"$UX/src/wip.py"; NB="$(rowsin "$UL" hook_advisory blocked=True)"
+sg; [ "$HRC" = 0 ] && [ "$(rowsin "$UL" hook_advisory blocked=True)" = "$NB" ] || fail "stop-gate spent a block on a live background builder (rc=$HRC)"
+stopa bg1 apex-dispatch:builder done; sg; [ "$HRC" = 2 ] && grep -q 'uncommitted' "$WORK/hr.err" || fail "stop-gate did not block on a dirty worktree once the builder stopped (rc=$HRC)"
+rm -f "$UX/src/wip.py"
+# GATE/REVIEW denials name the way back to BUILD
+ustage GATE
+for c in 'git commit -m fix' 'echo x > src/a.py'; do
+  hk2o="$(cd "$UX" && printf '%s' "$(pl bash "$UX" "$c")" | bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null)"
+  grep -q 'route.sh plan / iterate.sh' <<<"$hk2o" || fail "the GATE denial of '$c' does not say how to return to BUILD: $hk2o"
+done
+grep -q 'route.sh plan / iterate.sh' <<<"$(cd "$UX" && printf '%s' "$(pl edit "$UX" src/a.py)" | bash "$PLUGIN_ROOT/hooks/pre-edit.sh" 2>/dev/null)" \
+  || fail "the GATE edit denial does not say how to return to BUILD"
+ustage BUILD
+# Ad-hoc reviewers: a committed, clean HEAD instead of a gate result
+AX="$WORK/ax"; mkdir -p "$AX"; git init -q -b main "$AX"; printf '.dev-plan-state/\n' >"$AX/.gitignore"; echo a >"$AX/a.md"; git -C "$AX" add -A; git -C "$AX" commit -qm ax
+O="$(cd "$AX" && bash "$ROUTE" adhoc --tags docs --acceptance 'true' 2>&1)"; [ "$(val ROUTE_STATUS "$O")" = READY ] || fail "ad-hoc fixture route is not READY: $O"
+ax() { (cd "$AX" && printf '%s' "$1" | bash "$PLUGIN_ROOT/hooks/pre-agent.sh" 2>/dev/null); }
+echo b >>"$AX/a.md"
+grep -q 'committed, clean HEAD' <<<"$(ax "$(pl agent "$AX" apex-dispatch:reviewer '')")" || fail "an ad-hoc reviewer spawn on a dirty worktree was allowed"
+git -C "$AX" commit -qam b
+[ "$(ax "$(pl agent "$AX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "an ad-hoc reviewer spawn on a committed, clean HEAD was denied (no gate result exists for ad-hoc routes)"
+pass "round 1: second family = available + shipped shim (doctor and checkpoint share it); canonical lenses and emphasised VERDICT; audits judge the agent's own identity; post-agent records foreground stops; stuck registrations explained; live background builders spend no stop-gate block; GATE denials name re-route; ad-hoc reviewers need a clean committed HEAD"
 
 echo ""
 echo "smoke passed: $N/$N checks"

@@ -377,8 +377,9 @@ def write_json_atomic(path, obj, exclusive=False):
 # SubagentStart registers agent_id -> role -> route_id as <D>/agents/<agent_id>.json
 # (one file per agent: parallel starts never contend); SubagentStop (and
 # PostToolUse Agent, for a foreground agent) records the stop. The live set is
-# the registrations without a stop, younger than the route's wall-clock budget
-# (default LIVE_TTL_MIN): a lost SubagentStop can delay review by that long, never wedge it.
+# the current route's registrations without a stop, younger than the route's
+# wall-clock budget (default LIVE_TTL_MIN): a lost SubagentStop delays review by
+# at most that, never wedges it, and a re-route (a new route id) clears it.
 
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LIVE_TTL_MIN = 120
@@ -417,6 +418,8 @@ def live_agents(ctx):
         rec = read_json(os.path.join(d, f))
         if not isinstance(rec, dict) or rec.get("stopped_at"):
             continue
+        if ctx.route.get("route_id") and rec.get("route_id") not in (None, ctx.route.get("route_id")):
+            continue                                      # another route's agent: a re-route starts clean
         age = age_minutes(rec.get("started_at"))
         if age is None or age > ttl:
             continue
@@ -511,17 +514,26 @@ def pre_agent(ctx, p):
         if role is None or role not in roster:
             raise Deny("subagent_type %r is not on route %s's roster (%s); spawn only apex-dispatch:<role> for a roster role"
                        % (st, rid, ",".join(roster) or "empty"))
-        if is_reviewer:
+        if is_reviewer and ctx.owner.get("kind") == "adhoc":
+            # An ad-hoc route has no plan line, so no green-gate.sh result: its
+            # reviewers need a committed, clean HEAD (the Acceptance command is the
+            # orchestrator's to run before review, as /apex-dispatch:run says).
+            if not git(ctx.worktree, "rev-parse", "HEAD") or worktree_dirty(ctx.worktree):
+                raise Deny("an ad-hoc route's reviewers need a committed, clean HEAD: commit the work first")
+        elif is_reviewer:
             gate = read_json(os.path.join(ctx.state_dir, "gate", "last.json"), {}) or {}
             head = git(ctx.worktree, "rev-parse", "HEAD")
             if gate.get("result") not in GATE_OK or not head or gate.get("head_sha") != head:
                 raise Deny("reviewer spawns need a green gate bound to HEAD (gate/last.json: result %s at %s; HEAD %s) — run green-gate.sh check"
                            % (gate.get("result") or "none", str(gate.get("head_sha") or "-")[:12], (head or "?")[:12]))
+        if is_reviewer:
             # Spec §5.3 D: the move to REVIEW is refused while builder-side
             # agents are still running (registered by subagent-start.sh, no stop yet).
             busy = [a for a in live_agents(ctx) if a.get("role") not in REVIEWER_ROLES]
             if busy:
-                raise Deny("%d builder-side agent(s) are still running (%s); wait for them to finish and commit before review"
+                raise Deny("%d builder-side agent(s) are still registered as running (%s); wait for them to finish and "
+                           "commit before review. A registration whose stop was lost clears itself after the route's "
+                           "minutes budget, or re-route (route.sh plan / iterate.sh) to start a fresh route"
                            % (len(busy), ", ".join("%s %s" % (a.get("role"), a.get("agent_id")) for a in busy[:4])))
         else:
             if ctx.stage in LOCKED_STAGES:
@@ -621,7 +633,8 @@ def pre_edit(ctx, p):
     if why:
         raise Deny("%s (%s)" % (why, target))
     if ctx.stage in LOCKED_STAGES:
-        raise Deny("writes are refused during stage %s: the gate and the reviewers are bound to HEAD" % ctx.stage)
+        raise Deny("writes are refused during stage %s: the gate and the reviewers are bound to HEAD; re-route "
+                   "(route.sh plan / iterate.sh) to return to BUILD before committing fixes" % ctx.stage)
     role = caller_role(p)
     if role and (ctx.roles().get(role) or {}).get("read_only"):
         raise Deny("role %s is read-only" % role)
@@ -1217,7 +1230,8 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
                 if bad:
                     raise Deny("git -c %s on a mutating command overrides core/filter/diff/merge configuration" % bad[0])
                 if ctx.stage in LOCKED_STAGES:
-                    raise Deny("git %s is refused during stage %s (the gate and reviewers are bound to HEAD)" % (g.sub, ctx.stage))
+                    raise Deny("git %s is refused during stage %s (the gate and reviewers are bound to HEAD); re-route "
+                               "(route.sh plan / iterate.sh) to return to BUILD before committing fixes" % (g.sub, ctx.stage))
                 if read_only:
                     raise Deny("role %s is read-only: git %s refused" % (role, g.sub))
         # 6. Write-shaped commands: protected paths always; the checkout during GATE/REVIEW or for read-only roles.
@@ -1243,7 +1257,9 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
                 raise Deny("%s (%s %s)" % (why, b or "redirect", t))
             if (ctx.stage in LOCKED_STAGES or read_only) and not path.startswith("/dev/"):
                 if "$" in t or "`" in t or in_checkout(ctx, real(path)):
-                    raise Deny("write to %s refused %s" % (t, "during stage " + ctx.stage if ctx.stage in LOCKED_STAGES else "for read-only role " + role))
+                    raise Deny("write to %s refused %s" % (t, "during stage %s; re-route (route.sh plan / iterate.sh) to return to "
+                                                                "BUILD before committing fixes" % ctx.stage
+                                                           if ctx.stage in LOCKED_STAGES else "for read-only role " + role))
         # Nested command strings, then cd tracking for later segments.
         for inner in c.nested():
             bash_rules(ctx, p, inner, depth + 1, prefix)
@@ -1301,6 +1317,11 @@ def post_agent(ctx, p):
     usage = norm_usage(resp.get("usage"))
     agent_id = resp.get("agentId")
     status = resp.get("status") or ("failed" if failed else "unknown")
+    if isinstance(agent_id, str):
+        if failed:
+            mark_stopped(ctx, agent_id, "post-agent-failure")
+        elif str(status).lower() not in ("async_launched", "running"):
+            mark_stopped(ctx, agent_id, "post-agent")  # a foreground agent is over, however it ended
     if not failed and not resolved and usage is None:
         # A background launch returns before the agent ran: nothing to price yet.
         ctx.ledger_row("hook_advisory", {"hook": "post-agent.sh", "tool_use_id": tuid,
@@ -1319,8 +1340,6 @@ def post_agent(ctx, p):
         data["error"] = str(p.get("error") or resp.get("error") or "")[:300]
     data["usd_estimate"] = round(row_usd(price_table(ctx), data), 6)
     row = ctx.ledger_row("worker_run", data, route_id=rid)
-    if isinstance(agent_id, str) and str(status).lower() == "completed":
-        mark_stopped(ctx, agent_id, "post-agent")
     notes = []
     router = ctx.route.get("router") or {}
     rmodel = router.get("model")
@@ -1363,9 +1382,22 @@ def subagent_start(ctx, p):
     return {}
 
 
-VERDICT_RE = re.compile(r"VERDICT:\s*(APPROVE|REQUEST_CHANGES)\b")
-LENS_RE = re.compile(r"^LENS:\s*([a-z][a-z/-]{0,40})\s*$", re.I)
-READ_ONLY_PROBE = "apex-dispatch:reviewer"                # bash_rules identity for the transcript audit
+VERDICT_RE = re.compile(r"VERDICT:\s*(APPROVE|REQUEST_CHANGES)")
+LENS_RE = re.compile(r"^LENS:\s*(.{1,60})$", re.I)
+# The six canonical lenses (and the adversarial pass); anything else is no lens.
+LENSES = ("correctness", "security", "consent-pii", "money", "performance", "maintainability")
+
+
+def canonical_lens(raw):
+    """'Consent / PII', 'consent/pii', 'PII' -> consent-pii; 'Security' -> security;
+    'adversarial' -> adversarial; unknown -> None."""
+    v = re.sub(r"[^a-z]+", "-", str(raw or "").lower()).strip("-")
+    if v in LENSES or v == "adversarial":
+        return v
+    if v in ("consent", "pii", "consent-and-pii", "privacy", "consent-privacy"):
+        return "consent-pii"
+    return None
+READ_ONLY_PROBE = "apex-dispatch:reviewer"                # audit identity when the payload names none
 
 
 def parse_review(msg):
@@ -1373,14 +1405,14 @@ def parse_review(msg):
     the last LENS line (markdown emphasis and backticks ignored)."""
     verdict = lens = None
     for raw in str(msg or "").splitlines():
-        line = raw.strip().strip("*`#>_ .").strip()
+        line = re.sub(r"[*`]", "", raw).strip().strip("_#> .").strip()
         m = VERDICT_RE.fullmatch(line)
         if m:
             verdict = m.group(1)
             continue
         m = LENS_RE.match(line)
         if m:
-            lens = m.group(1).lower()
+            lens = canonical_lens(m.group(1))
     return verdict, lens
 
 
@@ -1427,8 +1459,11 @@ def audit_transcript(ctx, p):
         elif name in ("Agent", "Task"):
             out.append("%s spawn of %s" % (name, inp.get("subagent_type") or "?"))
         elif name == "Bash" and isinstance(inp.get("command"), str):
+            # The agent's own identity, as live pre-bash saw it: provider-runner may
+            # run bin/worker-*.sh; gibson-reviewer (no apex-dispatch role) gets what
+            # pre-bash allowed it, so a record is never refused for an allowed command.
             probe = {"cwd": cwd if isinstance(cwd, str) and os.path.isdir(cwd) else p.get("cwd"),
-                     "agent_type": READ_ONLY_PROBE, "agent_id": "audit"}
+                     "agent_type": p.get("agent_type") or READ_ONLY_PROBE, "agent_id": p.get("agent_id") or "audit"}
             try:
                 bash_rules(ctx, probe, inp["command"])
             except Deny as d:
@@ -1464,7 +1499,10 @@ def subagent_stop(ctx, p):
                                                 "violation": reason[:800], "count": len(viol)}, route_id=rid)
         if reviewer and not os.path.exists(rec_path):
             try:
+                o = ctx.owner if ctx.owner_ok else {}
                 write_json_atomic(rec_path, {"agent_id": aid, "agent_type": at, "refused": reason[:800],
+                                             "head_sha": git(ctx.worktree, "rev-parse", "HEAD"), "route": rid,
+                                             "line": ctx.route.get("line") if ctx.route.get("line") is not None else o.get("line_no"),
                                              "written_at": now_ts(), "source": "hook:subagent-stop"}, exclusive=True)
             except OSError:
                 pass
@@ -1484,7 +1522,7 @@ def subagent_stop(ctx, p):
         return {}                                          # one record per review run
     if role == "adversarial-reviewer" or (gibson and lens == "adversarial"):
         rrole = "adversarial"
-    elif lens and lens != "adversarial":
+    elif lens in LENSES:
         rrole = "lens:" + lens
     else:
         rrole = "reviewer"
@@ -1529,8 +1567,9 @@ def stop_gate(ctx, p):
     stop_hook_active). Blocks at most once per route, and at most STOP_BLOCK_CAP
     times per run, while an enforced route is in BUILD and ending the turn would
     lose or bypass routed work: HEAD moved with no spawn/worker row (work done
-    inline), builder-side subagents still registered as running, or uncommitted
-    changes in the plan worktree. Everything else is allowed. Escapes: HALT, a
+    inline), or uncommitted changes in the plan worktree while no builder-side
+    subagent is registered as running (live background builders never spend a
+    block). Everything else is allowed. Escapes: HALT, a
     route that is not READY/enforced, stage other than BUILD, the lock released."""
     if p.get("stop_hook_active") or halt_reason(ctx) or not ctx.enforcing_route() or ctx.stage != "BUILD":
         return {}
@@ -1546,11 +1585,12 @@ def stop_gate(ctx, p):
     if not spawned and head and ctx.route.get("head_sha") and head != ctx.route.get("head_sha"):
         reasons.append("HEAD moved since route %s was emitted but no subagent or worker was spawned for it (routed work "
                        "done inline): dispatch the route's roster, or record checkpoint.sh fail" % rid)
+    # Live background builders are the documented run_in_background flow: ending
+    # the turn while they run loses nothing, so they never spend a block (and a
+    # dirty worktree is theirs to commit). A stuck registration clears after the
+    # route's minutes budget or with a re-route.
     live = [a for a in live_agents(ctx) if a.get("role") not in REVIEWER_ROLES]
-    if live:
-        reasons.append("%d builder-side subagent(s) are still running (%s): wait for them and commit their work"
-                       % (len(live), ", ".join(str(a.get("agent_id")) for a in live[:4])))
-    elif worktree_dirty(ctx.worktree):
+    if not live and worktree_dirty(ctx.worktree):
         reasons.append("the plan worktree %s has uncommitted changes: commit them, or discard them and record "
                        "checkpoint.sh fail" % ctx.worktree)
     if not reasons:
