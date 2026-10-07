@@ -39,7 +39,7 @@ Tier: <A|B|C> (<agree | disagree: why>)
 Acceptance: <met | not met> — <evidence: command + result>
 
 ### Findings
-- [blocking] path/to/file.ts:42 — <lens> — <failure scenario>
+- [blocking] <path:line> — <lens> — <failure scenario>
 - [non-blocking] ...
 
 ### Lens clearance
@@ -50,4 +50,4 @@ VERDICT: APPROVE
 
 When the prompt gave you a `LENS`, put a line that is exactly `LENS: <lens>` (`correctness`, `security`, `consent-pii`, `money`, `performance` or `maintainability`) just above the verdict; as the `ADVERSARIAL` pass, `LENS: adversarial`. With apex-dispatch installed, its SubagentStop hook records these two lines as your review record.
 
-The last line must be exactly `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`. Mark each blocking finding `[blocking]`. With apex-dispatch installed the verdict is read fail-closed: any `[blocking]` finding (anywhere, code fences included, unless it is only a `<placeholder>` or says none) makes it REQUEST_CHANGES; an APPROVE with a remark counts only when the remark is nits/minor/optional/cosmetic/style/LGTM/looks-good/no-blockers-type words (anything else, e.g. "provided…", "assuming…", "except…", is unparsed); an APPROVE line inside a code fence, blockquote or indented code does not count, while a REQUEST_CHANGES or unreadable verdict line counts wherever it appears, and an unclosed code fence is unparsed. A missing or unreadable verdict is recorded as unparsed and blocks the task at this head, like a request for changes. Any blocking finding, or an unmet acceptance criterion, means `REQUEST_CHANGES`. Don't soften a finding because it's awkward, and don't invent one to look thorough.
+The last line must be exactly `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`. Mark each blocking finding `[blocking]`. With apex-dispatch installed the verdict is read fail-closed: any `[blocking]` finding (anywhere, code fences included, unless it is only the template's `<path:line> — <lens> — <failure scenario>` placeholders or says none) makes it REQUEST_CHANGES; an APPROVE with a remark counts only when the remark is nits/minor/optional/cosmetic/style/LGTM/looks-good words or "no blockers" (anything else, e.g. "provided…", "assuming…", "except…", is unparsed); an APPROVE line inside a code fence, blockquote or indented code does not count, while a REQUEST_CHANGES or unreadable verdict line counts wherever it appears, and an unclosed code fence is unparsed. A missing or unreadable verdict is recorded as unparsed and blocks the task at this head, like a request for changes. Any blocking finding, or an unmet acceptance criterion, means `REQUEST_CHANGES`. Don't soften a finding because it's awkward, and don't invent one to look thorough.

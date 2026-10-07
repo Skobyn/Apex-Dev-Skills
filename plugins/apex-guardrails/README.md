@@ -88,10 +88,14 @@ anywhere in its arguments is too (`tmux new-session '…'`, `ssh host '…'`,
 are skipped (`sudo -u git …`, `timeout -s KILL 30 …`). The launcher rules apply to every
 program that is not a pure text tool — git, gh and glab included — so
 `gh codespace ssh '…'`, `gh alias set x '…'`, `git rebase -x '…'` and `git bisect run …`
-are checked; for those three only the *values* of prose options are exempt (gh/glab
-`--title`, `--body`, `--description`, `--notes`, `--message`, `--field`, …; git `-m`,
-`--message`, `-F`, `--author`, `--grep`, `-S`, `-G`, `--format`, `--pretty`), in `--opt V`,
-`--opt=V`, `-oV` and `-am V` forms. A heredoc fed to a shell, `ssh` or `su` is a script and
+are checked; for those three only the *values* of prose options are exempt: long ones
+everywhere (gh/glab `--title`, `--body`, `--description`, `--notes`, `--message`, `--field`,
+…; git `--message`, `--file`, `--author`, `--grep`, `--format`, `--pretty`), short ones only
+for the subcommands where they take prose (git `commit`/`tag`/`merge`/`notes add` `-m`/`-F`,
+git `log`/`show`/`shortlog` `-S`/`-G`; gh/glab `pr|issue|release|mr` `create|edit|comment|
+review|close|note` `-t -b -d -n -f -F`; `gh api -f -F`), in `--opt V`, `--opt=V`, `-oV` and
+`-am V` forms, and never an argument that starts with `-` (so `git rebase -S --exec='…'` and
+`gh codespace ssh -d '…'` are still checked). A heredoc fed to a shell, `ssh` or `su` is a script and
 its body is checked as commands whatever its quoting: directly (`bash <<EOF`,
 `bash -s <<'EOF'`), via a shell argument of a non-text program (`docker exec -i c sh <<EOF`,
 `kubectl exec -i pod -- bash <<EOF`, `ssh -t host bash <<EOF`), or piped into one, also from

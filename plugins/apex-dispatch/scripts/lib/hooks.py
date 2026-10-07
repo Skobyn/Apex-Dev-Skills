@@ -1396,14 +1396,17 @@ APPROVE_REMARK_RE = re.compile(r"approve(\s*[:,(\u2014\u2013]|\s+-)(.*)$", re.I 
 # A remark counts only if every word is one of these (an allowlist: anything else may be a condition).
 REMARK_WORDS = {"nit", "nits", "nitpick", "nitpicks", "non-blocking", "nonblocking", "minor", "optional", "cosmetic",
                 "style", "lgtm", "only", "with", "and", "a", "few", "some", "small", "suggestions", "comments", "notes",
-                "looks", "good", "no", "blockers", "findings", "clear", "all", "lenses", "cleanups", "noted", "above"}
+                "looks", "good", "blockers", "findings", "clear", "all", "lenses", "cleanups", "noted"}
+# Multi-word allowed phrases, replaced before the word check ("no" alone is ambiguous).
+REMARK_PHRASES = ("no blocking findings", "no blockers")
 CHANGES_RE = re.compile(r"request[ _-]?changes\b", re.I)      # trailing text allowed
 # A template placeholder naming both outcomes ("APPROVE or VERDICT: REQUEST_CHANGES", "<APPROVE|REQUEST_CHANGES>").
 TOKEN = r"(approve|request[ _-]?changes)"
 TEMPLATE_RE = re.compile(r"^\W*" + TOKEN + r"\W*(\bor\b|\||/)\W*(verdict\s*:\s*)?\W*" + TOKEN + r"\W*$", re.I)
 BLOCKING_LINE_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])?\s*(?:\[blocking\]|\(blocking\))(.*)$", re.I)
 BLOCKING_NONE = {"none", "n/a", "na", "nothing", "none found", "none identified"}
-PLACEHOLDERS_RE = re.compile(r"^(<[^<>]*>\s*)+$")       # `<file:line> <scenario>`: a template, not a finding
+# The reviewer template's own placeholder tokens: a line made only of these is a pasted template.
+PLACEHOLDERS_RE = re.compile(r"^((<path:line>|<file:line>|<lens>|<failure scenario>|<scenario>)[\s\u2014\u2013-]*)+$", re.I)
 FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
 LENS_RE = re.compile(r"^LENS:\s*(.{1,60})$", re.I)
 # The six canonical lenses (and the adversarial pass); anything else is no lens.
@@ -1433,7 +1436,10 @@ def verdict_value(v):
         return "REQUEST_CHANGES"
     m = APPROVE_REMARK_RE.match(v)
     if m:
-        words = [w.strip("-") for w in re.sub(r"[^a-z-]+", " ", m.group(2).lower()).split()]
+        remark = re.sub(r"[^a-z-]+", " ", m.group(2).lower())
+        for phrase in REMARK_PHRASES:
+            remark = re.sub(r"\b%s\b" % phrase, " ", remark)
+        words = [w.strip("-") for w in remark.split()]
         if all(w in REMARK_WORDS for w in words if w):
             return "APPROVE"
     return "UNPARSED"
@@ -1446,8 +1452,9 @@ def parse_review(msg):
     ignored) is a verdict line. Its value is APPROVE when it is exactly APPROVE,
     or APPROVE + a separator (whitespace then - / en or em dash, or : , ( ) + a
     remark whose every word is in REMARK_WORDS (nits, non-blocking, minor,
-    optional, cosmetic, style, LGTM, only, suggestions, looks good, no
-    blockers, all lenses clear, noted above, ...): an allowlist, so
+    optional, cosmetic, style, LGTM, only, suggestions, looks good, all lenses
+    clear, nits noted, ... plus the phrases "no blockers" / "no blocking
+    findings"; a bare "no" or "above" is not allowed): an allowlist, so
     "APPROVE, provided ..." or "APPROVE (assuming CI goes green)" is UNPARSED;
     REQUEST_CHANGES when it starts with REQUEST CHANGES / REQUEST_CHANGES /
     request-changes; a template placeholder naming both outcomes joined by
@@ -1460,7 +1467,8 @@ def parse_review(msg):
     left open at the end of the message adds UNPARSED. Any line -- inside a code
     fence too -- that starts with `[blocking]` or `(blocking)` (optionally as a
     `-`/`*` or numbered list item) forces REQUEST_CHANGES, unless the text after
-    the tag is only angle-bracket placeholders (`<file:line> <scenario>`) or says
+    the tag is only the template's own placeholders (`<path:line>`, `<file:line>`,
+    `<lens>`, `<failure scenario>`, `<scenario>`) or says
     none / (none) / n/a / none found / none identified.
 
     The result is REQUEST_CHANGES if a blocking finding is listed; otherwise the

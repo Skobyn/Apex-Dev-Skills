@@ -41,9 +41,12 @@ command (literally: its own backticks are not expanded), and `<shell> -c ARG`
 anywhere in its arguments is checked as a full nested command. Nesting is
 depth-capped. The launcher rules apply to every program that is not a pure
 text tool, including git, gh and glab; for those three only the VALUES of
-prose options are exempt (gh/glab --title/--body/--description/--notes/
---message/--field/..., git -m/--message/-F/--author/--grep/-S/-G/--format/
---pretty), so `gh codespace ssh '...'`, `gh alias set x '...'`,
+prose options are exempt: long ones always (gh/glab --title/--body/
+--description/--notes/--message/--field/..., git --message/--file/--author/
+--grep/--format/--pretty), short ones only for the subcommands where they take
+prose (git commit/tag/merge/notes -m -F, git log/show/shortlog -S -G, gh/glab
+pr|issue|release|mr create|edit|comment|review|close|note -t -b -d -n -f -F,
+gh api -f -F), and never an argument that itself starts with `-`, so `gh codespace ssh '...'`, `gh alias set x '...'`,
 `git rebase -x '...'` and `git bisect run ...` are checked.
 
 Heredocs fed to a command interpreter are scripts and their bodies are checked
@@ -87,13 +90,42 @@ SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 STDIN_RUNNERS = SHELLS | {"ssh", "su"}
 # Exec-capable programs with prose options: only the VALUE of these options is exempt from the
 # launcher rules (git rebase -x, git bisect run, gh codespace ssh, gh alias set still are checked).
-_GH_PROSE = ({"--title", "--body", "--description", "--notes", "--message", "--subject", "--field",
-              "--raw-field", "--comment", "--text"}, set("tbdnmfF"))
-PROSE_FLAGS = {
-    "gh": _GH_PROSE,
-    "glab": _GH_PROSE,
-    "git": ({"--message", "--file", "--author", "--grep", "--format", "--pretty"}, set("mFSG")),
-}
+_GH_LONG = {"--title", "--body", "--description", "--notes", "--message", "--subject", "--field",
+            "--raw-field", "--comment", "--text"}
+# Long prose options are prose for every subcommand; short letters only where they mean prose.
+PROSE_FLAGS = {"gh": _GH_LONG, "glab": _GH_LONG,
+               "git": {"--message", "--file", "--author", "--grep", "--format", "--pretty"}}
+_GH_ACTIONS = {"create", "edit", "comment", "review", "close", "note"}
+
+
+def prose_shorts(base, args):
+    """Short option letters that take a prose value for this subcommand (empty if none):
+    git commit/tag/merge/notes add|append: m F; git log/show/shortlog: S G; gh/glab
+    pr|issue|release|mr create|edit|comment|review|close|note: t b d n f F; gh api: f F."""
+    pos, i = [], 0
+    while i < len(args) and len(pos) < 2:
+        a = args[i]
+        if base == "git" and a in ("-C", "-c"):
+            i += 2
+            continue
+        if not a.startswith("-"):
+            pos.append(a)
+        i += 1
+    sub = pos[0] if pos else ""
+    act = pos[1] if len(pos) > 1 else ""
+    if base == "git":
+        if sub in ("commit", "tag", "merge") or (sub == "notes" and act in ("add", "append")):
+            return set("mF")
+        if sub in ("log", "show", "shortlog"):
+            return set("SG")
+        return set()
+    if sub == "api" and base == "gh":
+        return set("fF")
+    if sub in ("pr", "issue", "release", "mr") and act in _GH_ACTIONS:
+        return set("tbdnfF")
+    return set()
+
+
 HEREDOC = "__APEX_HEREDOC_%d__"
 HEREDOC_RE = re.compile(r"^__APEX_HEREDOC_(\d+)__$")
 SEPARATORS = {";", "&&", "||", "|", "&", "|&", ";;", "(", ")", "\n"}
@@ -325,25 +357,28 @@ def program(words):
 
 def strip_prose_values(base, args):
     """Drop the values of prose options (titles, bodies, messages, search strings) for
-    gh/glab/git: `--body V`, `--body=V`, `-b V`, `-bV`, and a short cluster ending in a
-    prose letter (`git commit -am V`). Everything else is kept for the launcher rules."""
+    gh/glab/git: long options everywhere (`--body V`, `--body=V`); short ones only where the
+    subcommand gives them a prose value (`-b V`, `-bV`, `git commit -am V`). A next argument
+    that starts with `-` is an option, never a value, so it is kept. Everything else is kept
+    for the launcher rules (git rebase -S/-m --exec, gh codespace ssh -d ... stay checked)."""
     if base not in PROSE_FLAGS:
         return args
-    longs, shorts = PROSE_FLAGS[base]
+    longs, shorts = PROSE_FLAGS[base], prose_shorts(base, args)
     out, i = [], 0
     while i < len(args):
         a = args[i]
+        nxt_is_value = i + 1 < len(args) and not args[i + 1].startswith("-")
         if a in longs:
-            i += 2
+            i += 2 if nxt_is_value else 1
             continue
-        if a.startswith("--") and a.split("=", 1)[0] in longs and "=" in a:
+        if a.startswith("--") and "=" in a and a.split("=", 1)[0] in longs:
             i += 1
             continue
-        if re.fullmatch(r"-[A-Za-z]+", a) and a[-1] in shorts:
-            i += 2                                    # -m V, -am V
+        if shorts and re.fullmatch(r"-[A-Za-z]+", a) and a[-1] in shorts:
+            i += 2 if nxt_is_value else 1             # -m V, -am V
             continue
-        if len(a) > 2 and a[0] == "-" and a[1] != "-" and a[1] in shorts:
-            i += 1                                    # -bVALUE
+        if shorts and len(a) > 2 and a[0] == "-" and a[1] != "-" and a[1] in shorts:
+            i += 1                                    # -bVALUE, -S'text'
             continue
         out.append(a)
         i += 1

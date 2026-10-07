@@ -1344,7 +1344,12 @@ cases = {"VERDICT: REQUEST CHANGES": "REQUEST_CHANGES", "VERDICT: REQUEST_CHANGE
          "[blocking] none found\nVERDICT: APPROVE": "APPROVE", "[blocking] (none)\nVERDICT: APPROVE": "APPROVE",
          "- [blocking] none identified\nVERDICT: APPROVE": "APPROVE",
          "VERDICT: APPROVE \u2014 looks good": "APPROVE", "VERDICT: APPROVE (no blockers)": "APPROVE",
-         "VERDICT: APPROVE (all lenses clear)": "APPROVE", "VERDICT: APPROVE (nits noted above)": "APPROVE",
+         "VERDICT: APPROVE (all lenses clear)": "APPROVE", "VERDICT: APPROVE (nits noted)": "APPROVE",
+         "VERDICT: APPROVE (no blocking findings)": "APPROVE",
+         "VERDICT: APPROVE, no": "UNPARSED", "VERDICT: APPROVE \u2014 no, findings above": "UNPARSED",
+         "VERDICT: APPROVE (nits noted above)": "UNPARSED",
+         "- [blocking] <path:line> \u2014 <lens> \u2014 <failure scenario>\nVERDICT: APPROVE": "APPROVE",
+         "- [blocking] <a.py:1> <the parser drops it>\nVERDICT: APPROVE": "REQUEST_CHANGES",
          "VERDICT: APPROVE \u2014 no, needs rework": "UNPARSED",
          "[blocking]: none\nVERDICT: APPROVE": "APPROVE", "- [blocking] n/a\nVERDICT: APPROVE": "APPROVE",
          # round 2 review: the remark is an allowlist; any other word means no approval

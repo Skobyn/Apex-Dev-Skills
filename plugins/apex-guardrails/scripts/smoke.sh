@@ -162,6 +162,9 @@ deny_cmds=(
   $'{ cat <<\'EOF\'; } | sh\nclaude --yolo\nEOF'
   $'ssh -t host bash <<\'EOF\'\nclaude --yolo\nEOF'
   $'gh pr create --body "$(claude --yolo)"'
+  $'git rebase -S --exec=\'claude --yolo\' main'
+  $'git rebase -m --exec=\'claude --yolo\' main'
+  $'gh codespace ssh -d \'claude --yolo\''
 )
 allow_cmds=(
   'grep -rn -- --yolo docs/'
@@ -190,6 +193,10 @@ allow_cmds=(
   $'cat <<\'EOF\' | bash\nls\nEOF'
   $'# pinned: a heredoc to an arbitrary script is data (not a known runner)\n./run.sh <<\'EOF\'\nclaude --yolo\nEOF'
   $'gh pr create --body "$(cat <<\'EOF\'\n- guardrails deny `--yolo`\nEOF\n)"'
+  $'git commit -am \'msg: run bash -c "x --yolo"\''
+  $'git log -S\'some text --yolo\''
+  $'gh pr create -t \'x --yolo\' -b \'y --full-auto\''
+  $'gh api -f body=\'a --yolo b\' repos/o/r/issues/1/comments'
 )
 for c in "${deny_cmds[@]}"; do n=$((n+1)); bash_event "$c" >"$SMOKE_TMP/d$n.json"; expect deny "$SMOKE_TMP/d$n.json"; expect deny "$SMOKE_TMP/d$n.json" --bypass-only; done
 for c in "${allow_cmds[@]}"; do n=$((n+1)); bash_event "$c" >"$SMOKE_TMP/a$n.json"; expect allow "$SMOKE_TMP/a$n.json"; done
@@ -214,7 +221,7 @@ for f in d1 d3 d5 d7; do [ "$(nopy "$SMOKE_TMP/$f.json")" = deny ] || fail "no-p
 n_allow_first=$(( ${#deny_cmds[@]} + 1 ))
 for i in 0 1 2; do f="a$((n_allow_first + i))"; [ "$(nopy "$SMOKE_TMP/$f.json")" = allow ] || fail "no-python fallback falsely denied $(cat "$SMOKE_TMP/$f.json")"; done
 [ "$(nopy "$SMOKE_TMP/decoy-first.json")" = deny ] || fail "no-python fallback read a decoy \"command\" key outside tool_input"
-ok "bypass flags always denied (${#deny_cmds[@]} forms incl. launchers, wrapper option values, heredoc/arithmetic edges, heredocs fed to sh/bash/ssh, to a shell argument (docker/kubectl exec) or piped into a shell incl. ( )/{ } groups; gh/git launchers: codespace ssh, alias set, rebase -x, bisect run); single-quoted and quoted-heredoc text, heredocs to non-shells (./run.sh pinned allow), gh/glab/git prose option values and text tools pass (${#allow_cmds[@]}); command scoped to tool_input.command; pure-bash fallback agrees"
+ok "bypass flags always denied (${#deny_cmds[@]} forms incl. launchers, wrapper option values, heredoc/arithmetic edges, heredocs fed to sh/bash/ssh, to a shell argument (docker/kubectl exec) or piped into a shell incl. ( )/{ } groups; gh/git launchers: codespace ssh (-d), alias set, rebase -x/-S/-m --exec, bisect run); single-quoted and quoted-heredoc text, heredocs to non-shells (./run.sh pinned allow), gh/glab/git prose option values (short letters per subcommand) and text tools pass (${#allow_cmds[@]}); command scoped to tool_input.command; pure-bash fallback agrees"
 
 echo ""
 echo "smoke passed: 12/12 checks"

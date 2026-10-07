@@ -73,8 +73,11 @@ plugins/apex-guardrails/
   docker, script, su, ssh), depth-capped; wrapper option values (`sudo -u USER`,
   `timeout -s SIG DURATION`, `env -u VAR`, `nice -n N`) are skipped; the launcher rules
   apply to every program that is not a pure text tool (git, gh and glab are not text
-  tools), and for git/gh/glab only the values of prose options (titles, bodies,
-  messages, `--grep`, `--format`, …) are exempt; a heredoc is a script — its body checked
+  tools), and for git/gh/glab only the values of prose options are exempt — long
+  options (titles, bodies, messages, `--grep`, `--format`, …) everywhere, short letters
+  only for the subcommands where they take prose (e.g. `-m` for `git commit` but not
+  `git rebase`, `-d` for `gh pr create` but not `gh codespace ssh`), and never a next
+  argument that starts with `-`; a heredoc is a script — its body checked
   as commands regardless of quoting — when its command is a shell/`ssh`/`su`, when a
   non-text program has a shell/`ssh`/`su` argument (`docker exec -i c sh`,
   `kubectl exec … -- bash`), or when it (or its `( )`/`{ }` group) is piped into such a
