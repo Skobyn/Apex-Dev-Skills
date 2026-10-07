@@ -517,6 +517,8 @@ if os.path.isdir(dstate):
         die(f"no readable provenance record at {rec_path}")
     if rec.get("refused"):
         die(f"the review record was refused by apex-dispatch's transcript audit: {str(rec['refused'])[:300]}")
+    if rec.get("stale"):
+        die(f"the review record is stale ({str(rec['stale'])[:200]}): it reviewed {str(rec.get('head_sha'))[:12]}, re-review the current head")
     # A record's identity is the record_id its writer (hook or shim) gives each
     # review run: copies, links, aliases and re-serialisations of one run are
     # one record; a new run is a new record wherever its file lands.

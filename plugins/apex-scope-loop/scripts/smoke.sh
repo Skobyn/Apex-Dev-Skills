@@ -1392,6 +1392,11 @@ mkdir -p "$SMOKE_TMP/fd43/scripts/lib" "$SMOKE_TMP/fd43/resources"; cp "$MARKET_
 raw rsec2 lens:security REQUEST_CHANGES
 expect_refusal "an unrecorded REQUEST_CHANGES raw record at HEAD" "did not approve" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
 rm -f "$P3S/dispatch/reviews-raw/rsec2.json"
+raw unp1 reviewer UNPARSED
+expect_refusal "an UNPARSED (unreadable verdict) raw record at HEAD" "did not approve" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
+rm -f "$P3S/dispatch/reviews-raw/unp1.json"
+raw stl1 lens:security; python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); r["stale"]="HEAD moved"; json.dump(r, open(sys.argv[1], "w"))' "$P3S/dispatch/reviews-raw/stl1.json"
+expect_refusal "a stale raw record" "is stale" indir "$P3" "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id stl1
 printf '{"event": "verdict", "source": "hook", "line": 1, "head_sha": "%s", "verdict": "REQUEST_CHANGES", "agent_id": "gone", "seq": 0}\n' "$(p3sha)" >"$P3S/dispatch/ledger.jsonl"
 expect_refusal "a REQUEST_CHANGES verdict row at HEAD" "did not approve" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
 printf '{"agent_id": "bad2", "refused": "audit", "head_sha": "%s", "line": 1}' "$(p3sha)" >"$P3S/dispatch/reviews-raw/bad2.json"
@@ -1418,7 +1423,7 @@ OUT="$(cd "$P3" && APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md co
 has 'warning: reviewer family diversity (block)' "$OUT" && grep -q '^evidence ' "$SMOKE_TMP/fd43/scripts/calls.log" \
   && grep -q '^append hook_advisory .*family diversity.* --source cli' "$SMOKE_TMP/fd43/scripts/calls.log" || fail "the diversity degrade was not warned and ledgered, or evidence was not asked"
 [ "$(p3stage)" = DONE ] || fail "complete did not move the stage to DONE"
-ok "Phase 3.2: green-gate PASS = BUILD -> GATE (only from BUILD); refused raw records refused; provider from the record; provenance complete needs six canonical lenses + adversarial (declared records do not count), refuses any non-approving review at HEAD until a new commit, and needs family diversity only when a second family has a shipped shim (else a ledgered warning); DONE"
+ok "Phase 3.2: green-gate PASS = BUILD -> GATE (only from BUILD); refused raw records refused; provider from the record; provenance complete needs six canonical lenses + adversarial (declared records do not count), refuses any non-approving or unreadable (UNPARSED) review at HEAD until a new commit, refuses stale records, and needs family diversity only when a second family has a shipped shim (else a ledgered warning); DONE"
 
 echo ""
 echo "smoke passed: 43/43 checks"

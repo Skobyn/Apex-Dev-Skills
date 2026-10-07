@@ -28,9 +28,9 @@
     },
     "verdict": {
       "provenance": true,
-      "description": "A reviewer verdict captured by subagent-stop.sh or a shim result.json, bound to a head.",
+      "description": "A reviewer verdict captured by subagent-stop.sh or a shim result.json, bound to a head. UNPARSED = no final, parseable APPROVE/REQUEST_CHANGES (fail-closed: blocks complete at that head); stale = HEAD moved while the reviewer ran (bound to the start head).",
       "required": {"route_id": "string", "role": "string", "verdict": "string"},
-      "enums": {"verdict": ["APPROVE", "REQUEST_CHANGES"]}
+      "enums": {"verdict": ["APPROVE", "REQUEST_CHANGES", "UNPARSED"]}
     },
     "model_mismatch": {
       "description": "post-agent.sh: a builder-side subagent ran on a model family other than the route's ROUTE_MODEL (advisory; the spawn was already pinned by pre-agent.sh).",

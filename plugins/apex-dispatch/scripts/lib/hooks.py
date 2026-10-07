@@ -1294,6 +1294,12 @@ def response_obj(p):
     return r if isinstance(r, dict) else {}
 
 
+# Agent tool_response statuses that mean the agent is over (Phase 0 spike 6 saw
+# "completed"; the rest are the failure/stop spellings). Missing or unknown
+# (async_launched, running, ...) leaves the registration live.
+TERMINAL_STATUSES = {"completed", "failed", "error", "cancelled", "canceled", "interrupted", "killed", "aborted"}
+
+
 def post_agent(ctx, p):
     """PostToolUse / PostToolUseFailure, Agent|Task (spec §5.1, Phase 0 spike 6):
     a worker_run row per tool_use_id with resolvedModel, usage, duration and tool
@@ -1320,7 +1326,7 @@ def post_agent(ctx, p):
     if isinstance(agent_id, str):
         if failed:
             mark_stopped(ctx, agent_id, "post-agent-failure")
-        elif str(status).lower() not in ("async_launched", "running"):
+        elif str(status).lower() in TERMINAL_STATUSES:
             mark_stopped(ctx, agent_id, "post-agent")  # a foreground agent is over, however it ended
     if not failed and not resolved and usage is None:
         # A background launch returns before the agent ran: nothing to price yet.
@@ -1375,14 +1381,17 @@ def subagent_start(ctx, p):
         return {}
     rid = ctx.route.get("route_id")
     rec = {"agent_id": aid, "agent_type": at, "role": role, "route_id": rid, "stage": ctx.stage,
-           "session_id": p.get("session_id"), "started_at": now_ts(), "stopped_at": None}
+           "session_id": p.get("session_id"), "started_at": now_ts(), "stopped_at": None,
+           "head_at_start": git(ctx.worktree, "rev-parse", "HEAD")}
     write_json_atomic(os.path.join(agents_dir(ctx, write=True), aid + ".json"), rec)
     ctx.ledger_row("spawn", {"agent_id": aid, "role": role, "agent_type": at, "stage": ctx.stage,
                              "session_id": p.get("session_id")}, route_id=rid or "unrouted")
     return {}
 
 
-VERDICT_RE = re.compile(r"VERDICT:\s*(APPROVE|REQUEST_CHANGES)")
+VERDICT_LINE_RE = re.compile(r"^verdict\s*:\s*(.*)$", re.I)
+APPROVE_RE = re.compile(r"approve[.!]?", re.I)                 # exactly APPROVE (any case)
+CHANGES_RE = re.compile(r"request[ _-]?changes\b", re.I)      # trailing text allowed
 LENS_RE = re.compile(r"^LENS:\s*(.{1,60})$", re.I)
 # The six canonical lenses (and the adversarial pass); anything else is no lens.
 LENSES = ("correctness", "security", "consent-pii", "money", "performance", "maintainability")
@@ -1401,19 +1410,29 @@ READ_ONLY_PROBE = "apex-dispatch:reviewer"                # audit identity when 
 
 
 def parse_review(msg):
-    """(verdict, lens) from a reviewer's last message: the last VERDICT line and
-    the last LENS line (markdown emphasis and backticks ignored)."""
-    verdict = lens = None
+    """(verdict, lens) from a reviewer's last message, fail-closed. Every line
+    `verdict: <value>` (any case, markdown emphasis and backticks ignored) is a
+    verdict line: a value that is exactly APPROVE is APPROVE, one starting with
+    REQUEST CHANGES / REQUEST_CHANGES / request-changes is REQUEST_CHANGES,
+    anything else is UNPARSED. The result is APPROVE only when there is at least
+    one verdict line and every verdict line is APPROVE; otherwise the last
+    non-approving value (REQUEST_CHANGES or UNPARSED), or UNPARSED when there is
+    no verdict line at all. The lens is the last `LENS:` line, canonicalised."""
+    values, lens = [], None
     for raw in str(msg or "").splitlines():
-        line = re.sub(r"[*`]", "", raw).strip().strip("_#> .").strip()
-        m = VERDICT_RE.fullmatch(line)
+        line = re.sub(r"[*`]", "", raw).strip().strip("_#> ").strip()
+        m = VERDICT_LINE_RE.match(line)
         if m:
-            verdict = m.group(1)
+            v = m.group(1).strip().strip("_*` ")
+            values.append("APPROVE" if APPROVE_RE.fullmatch(v) else "REQUEST_CHANGES" if CHANGES_RE.match(v) else "UNPARSED")
             continue
-        m = LENS_RE.match(line)
+        m = LENS_RE.match(line.rstrip("."))
         if m:
             lens = canonical_lens(m.group(1))
-    return verdict, lens
+    if values and all(v == "APPROVE" for v in values):
+        return "APPROVE", lens
+    bad = [v for v in values if v != "APPROVE"]
+    return (bad[-1] if bad else "UNPARSED"), lens
 
 
 def audit_transcript(ctx, p):
@@ -1483,7 +1502,7 @@ def subagent_stop(ctx, p):
     role = role_of(at)
     if role is None or not (isinstance(aid, str) and AGENT_ID_RE.match(aid)):
         return {}
-    mark_stopped(ctx, aid, "subagent-stop")
+    reg = mark_stopped(ctx, aid, "subagent-stop")
     gibson = at == "apex-scope-loop:gibson-reviewer"
     reviewer = role in REVIEWER_ROLES or gibson
     read_only = reviewer or bool((ctx.roles().get(role) or {}).get("read_only"))
@@ -1512,12 +1531,9 @@ def subagent_stop(ctx, p):
         return {}
     if not reviewer:
         return {}
+    # Fail closed: a missing or unreadable verdict is recorded as UNPARSED, which
+    # blocks checkpoint.sh complete at this head like a REQUEST_CHANGES.
     verdict, lens = parse_review(p.get("last_assistant_message"))
-    if verdict is None:
-        ctx.ledger_row("hook_advisory", {"hook": "subagent-stop.sh", "agent_id": aid,
-                                         "advisory": "reviewer %s stopped without a VERDICT line; no review record" % aid},
-                       route_id=rid)
-        return {}
     if os.path.exists(rec_path):
         return {}                                          # one record per review run
     if role == "adversarial-reviewer" or (gibson and lens == "adversarial"):
@@ -1526,7 +1542,14 @@ def subagent_stop(ctx, p):
         rrole = "lens:" + lens
     else:
         rrole = "reviewer"
+    # The review is of the HEAD the reviewer started on (subagent-start stamps it);
+    # if HEAD moved before it stopped, the record keeps the start HEAD and is
+    # marked stale: never credited to (nor blocking) the new HEAD.
     head = git(ctx.worktree, "rev-parse", "HEAD")
+    start_head = (reg or {}).get("head_at_start") if isinstance(reg, dict) else None
+    stale = bool(start_head and head and start_head != head)
+    if start_head:
+        head = start_head
     o = ctx.owner if ctx.owner_ok else {}
     line = ctx.route.get("line") if ctx.route.get("line") is not None else o.get("line_no")
     record_id = "%s-%s" % (aid[:48], os.urandom(8).hex())
@@ -1534,13 +1557,15 @@ def subagent_stop(ctx, p):
            "verdict": verdict, "agent_id": aid, "agent_type": at, "route": rid, "provider": "claude-session",
            "family": "anthropic", "plan_hash": o.get("id"), "session_id": p.get("session_id"),
            "written_at": now_ts(), "source": "hook:subagent-stop"}
+    if stale:
+        rec["stale"] = "HEAD moved from %s to %s while the reviewer ran" % (start_head[:12], git(ctx.worktree, "rev-parse", "HEAD")[:12])
     try:
         write_json_atomic(rec_path, rec, exclusive=True)
     except FileExistsError:
         return {}
     ctx.ledger_row("verdict", {"role": rrole, "verdict": verdict, "agent_id": aid, "record_id": record_id,
                                "line": line, "lens": lens, "provider": "claude-session", "family": "anthropic",
-                               "head_sha": head}, route_id=rid or "unrouted")
+                               "head_sha": head, "stale": stale}, route_id=rid or "unrouted")
     return {}
 
 

@@ -1091,11 +1091,11 @@ start a1 apex-dispatch:adversarial-reviewer; stopa a1 apex-dispatch:adversarial-
 start g1 apex-scope-loop:gibson-reviewer; stopa g1 apex-scope-loop:gibson-reviewer "$(printf 'LENS: adversarial\nVERDICT: APPROVE')"
 [ "$(jget "$UD/reviews-raw/g1.json" role)" = adversarial ] || fail "gibson-reviewer's LENS: adversarial did not give role adversarial"
 start n1 apex-dispatch:reviewer; stopa n1 apex-dispatch:reviewer 'I approve of this.'
-[ ! -e "$UD/reviews-raw/n1.json" ] && [ "$(rowsin "$UL" hook_advisory agent_id=n1)" = 1 ] || fail "a reviewer without a VERDICT line got a record (or no advisory row)"
+[ "$(jget "$UD/reviews-raw/n1.json" verdict)" = UNPARSED ] && [ "$(rowsin "$UL" verdict agent_id=n1 verdict=UNPARSED)" = 1 ] || fail "a reviewer without a VERDICT line did not get a fail-closed UNPARSED record + verdict row"
 python3 -c 'import json, sys; json.dump({"agent_id": "old1", "role": "builder", "started_at": "2000-01-01T00:00:00Z", "stopped_at": None}, open(sys.argv[1], "w"))' "$UD/agents/old1.json"
 [ "$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "a registration older than the route's wall-clock budget still blocked review"
 ustage BUILD
-pass "subagent-start registers agent_id -> role -> route + spawn row; REVIEW refused while a builder is live; subagent-stop: reviews-raw record (record_id, line, HEAD, role/lens, verdict, family) once per agent + verdict row; adversarial/gibson roles; no VERDICT, no record"
+pass "subagent-start registers agent_id -> role -> route + spawn row; REVIEW refused while a builder is live; subagent-stop: reviews-raw record (record_id, line, HEAD, role/lens, verdict, family) once per agent + verdict row; adversarial/gibson roles; no VERDICT line = an UNPARSED record (fail closed)"
 
 # 54. transcript audit of read-only roles: a write or git mutation refuses the record, writes policy_violation, exits 2 once
 TR="$WORK/transcripts"; mkdir -p "$TR"
@@ -1305,6 +1305,39 @@ grep -q 'committed, clean HEAD' <<<"$(ax "$(pl agent "$AX" apex-dispatch:reviewe
 git -C "$AX" commit -qam b
 [ "$(ax "$(pl agent "$AX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "an ad-hoc reviewer spawn on a committed, clean HEAD was denied (no gate result exists for ad-hoc routes)"
 pass "round 1: second family = available + shipped shim (doctor and checkpoint share it); canonical lenses and emphasised VERDICT; audits judge the agent's own identity; post-agent records foreground stops; stuck registrations explained; live background builders spend no stop-gate block; GATE denials name re-route; ad-hoc reviewers need a clean committed HEAD"
+
+# 60. review round 2: verdicts fail closed; a reviewer's record is bound to the HEAD it started on;
+#     post-agent stops an agent only on an explicit terminal status
+python3 - "$PLUGIN_ROOT/scripts/lib" <<'PY' || fail "verdict parsing is not lenient and fail-closed"
+import sys; sys.path.insert(0, sys.argv[1]); import hooks
+cases = {"VERDICT: REQUEST CHANGES": "REQUEST_CHANGES", "VERDICT: REQUEST_CHANGES (1 blocking finding)": "REQUEST_CHANGES",
+         "Verdict: REQUEST_CHANGES": "REQUEST_CHANGES", "no verdict line at all": "UNPARSED",
+         "**VERDICT:** APPROVE": "APPROVE", "verdict: approve": "APPROVE", "VERDICT: APPROVE (with nits)": "UNPARSED",
+         "VERDICT: LGTM": "UNPARSED", "VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "VERDICT: APPROVE\nVERDICT: maybe": "UNPARSED", "`VERDICT: APPROVE`.": "APPROVE"}
+for msg, want in cases.items():
+    got = hooks.parse_review(msg.replace("\\n", "\n"))[0]
+    assert got == want, (msg, got, want)
+PY
+H0="$(git -C "$UX" rev-parse HEAD)"; i=0
+for m in 'VERDICT: REQUEST CHANGES' 'VERDICT: REQUEST_CHANGES (1 blocking finding)' 'Verdict: REQUEST_CHANGES' 'Looks fine to me.'; do
+  i=$((i + 1)); start "fc$i" apex-dispatch:reviewer; stopa "fc$i" apex-dispatch:reviewer "$(printf 'findings\n%s' "$m")"
+  v="$(jget "$UD/reviews-raw/fc$i.json" verdict)"; [ "$v" != APPROVE ] && [ "$(jget "$UD/reviews-raw/fc$i.json" head_sha)" = "$H0" ] \
+    && [ "$(rowsin "$UL" verdict agent_id="fc$i" verdict="$v")" = 1 ] || fail "'$m' did not leave a non-approving record + verdict row at HEAD ($v)"
+done
+for m in '**VERDICT:** APPROVE' 'verdict: approve'; do
+  i=$((i + 1)); start "fc$i" apex-dispatch:reviewer; stopa "fc$i" apex-dispatch:reviewer "$m"
+  [ "$(jget "$UD/reviews-raw/fc$i.json" verdict)" = APPROVE ] || fail "'$m' did not count as APPROVE"
+done
+start sl1 apex-dispatch:reviewer; [ "$(jget "$UD/agents/sl1.json" head_at_start)" = "$H0" ] || fail "subagent-start did not stamp the HEAD"
+git -C "$UX" commit -q --allow-empty -m moved
+stopa sl1 apex-dispatch:reviewer 'VERDICT: APPROVE'
+[ "$(jget "$UD/reviews-raw/sl1.json" head_sha)" = "$H0" ] && grep -q 'HEAD moved' "$UD/reviews-raw/sl1.json" || fail "a reviewer whose HEAD moved was credited to the new HEAD or not marked stale"
+pa y1 PostToolUse tool_response.agentId=f9; start f9 apex-dispatch:builder; pa y2 PostToolUse tool_response.agentId=f9 tool_response.status=weird
+[ "$(jget "$UD/agents/f9.json" stopped_at)" = None ] || fail "an unknown post-agent status stopped a live agent"
+pa y3 PostToolUse tool_response.agentId=f9 tool_response.status=cancelled
+[ "$(jget "$UD/agents/f9.json" stopped_by)" = post-agent ] || fail "a terminal post-agent status did not stop the agent"
+pass "round 2: lenient verdict parsing, fail-closed (no/unreadable/mixed verdict = UNPARSED or REQUEST_CHANGES record + row at HEAD); records bound to the start HEAD and marked stale if it moved; only terminal post-agent statuses stop an agent"
 
 echo ""
 echo "smoke passed: $N/$N checks"
