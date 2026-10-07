@@ -29,16 +29,21 @@ The result is a system that **thinks alongside you**: it watches reality, persis
 
 ## Prerequisites
 
-> **apex-scope-loop builds on [ruflo](https://github.com/ruvnet/ruflo). The ruflo plugin suite is required, not optional.**
-
 | Requirement | Why |
 |---|---|
-| **ruflo plugin suite** *(required)* | Provides the `memory_*`, `swarm_init`, `agent_spawn`, and `hooks_route` MCP tools that the EXECUTE loop uses to dispatch swarms and accumulate cross-session memory. Set it up with `ruflo init`. |
 | **Claude Code 2.0+** *(required)* | Needs `/loop`, `/schedule`, `AskUserQuestion`, `ScheduleWakeup`, and `Agent`. |
-| `@claude-flow/cli` v3.6+ *(runtime, via `npx`)* | Used by `iterate.sh` when a phase dispatches a claude-flow swarm. Consumed at runtime; not a declared dependency. |
 | Python 3.11+ *(optional)* | Matches the surrounding apex toolchain; plugin scripts themselves are bash. |
+| A memory store *(optional, via `APEX_MEMORY_CMD`)* | Seeds a plan record into the `apex-scope-loop` namespace. Unset means the seed is skipped quietly. |
 
-Without ruflo's MCP tools the authoring phases still work, but the autonomous EXECUTE loop has nothing to dispatch to — so install ruflo first.
+The loop runs on plain Claude Code subagents. Nothing else needs installing.
+
+Memory seeding is optional and happens only when `APEX_MEMORY_CMD` is set. `init.sh` runs it with `APEX_MEMORY_NAMESPACE`, `APEX_MEMORY_KEY` and `APEX_MEMORY_VALUE` in its environment. With the optional [ruflo](https://github.com/ruvnet/ruflo) CLI, for example (APEX_MEMORY_CMD):
+
+```bash
+export APEX_MEMORY_CMD='npx -y @claude-flow/cli@latest memory store --namespace "$APEX_MEMORY_NAMESPACE" --key "$APEX_MEMORY_KEY" --value "$APEX_MEMORY_VALUE"'
+```
+
+`Swarm:` directives in a plan are advisory (optional ruflo/claude-flow swarms, or apex-dispatch `fanout` once available). Without them, each task runs as a single subagent.
 
 ## Install
 
@@ -128,13 +133,13 @@ Full mapping, and what was deliberately left out (cross-vendor routing, GitHub c
 ## Compatibility
 
 - **Claude Code:** 2.0+ (requires `/loop`, `/schedule`, AskUserQuestion, ScheduleWakeup, Agent)
-- **ruflo plugin suite:** required — supplies the `memory_*`, `swarm_init`, `agent_spawn`, and `hooks_route` MCP tools the EXECUTE loop dispatches through (`ruflo init`)
-- **`@claude-flow/cli`:** v3.6 major+minor when `iterate.sh` dispatches via claude-flow's `swarm_init`/`agent_spawn` (consumed at runtime via `npx`; not declared as a plugin dependency)
-- **Python:** 3.11+ (matches the apex repo's overall toolchain; `start.sh` and `promote-to-loop.sh` are bash but the surrounding apex project uses `uv run`)
+- **git:** 2.40+ (the clean-worktree check builds its comparison checkout with `--attr-source=HEAD`; older git makes the gate fail closed on files git converts on checkout)
+- **bash** 4+ and **python3** 3.8+ (stdlib only)
+- **ruflo / `@claude-flow/cli`:** optional — used only when `APEX_MEMORY_CMD` seeds memory or a plan's advisory `Swarm:` directive is run through it
 
 ## Namespace coordination
 
-This plugin claims the AgentDB / memory namespace **`apex-scope-loop`**, following the kebab-case `<plugin-stem>-<intent>` convention from ruflo-agentdb ADR-0001 §"Namespace convention". Sub-keys:
+This plugin claims the AgentDB / memory namespace **`apex-scope-loop`**, following the kebab-case `<plugin-stem>-<intent>` convention (borrowed from the optional ruflo-agentdb ADR-0001 §"Namespace convention"). Sub-keys:
 
 | Key prefix | Holds |
 |---|---|
@@ -151,12 +156,13 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 13 structural checks (frontmatter, namespace declaration, ADR status, script executability, README sections, and the Gibson harness surface). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 42 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, and the clean-worktree inventory). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 
 - [ADR-0001 — apex-scope-loop plugin contract](docs/adrs/0001-apex-scope-loop-contract.md) — Status: **Proposed**. Defines surface, namespace, compatibility, and smoke contract.
 - [ADR-0002 — Adopt The Gibson's harness disciplines](docs/adrs/0002-gibson-harness.md) — Status: **Proposed**. Green gate, independent review, Tier C / G12, ratchet, kill switch.
+- [ADR-0003 — Portability, the per-run guarantee, and apex-dispatch as a consumer](docs/adrs/0003-portability-and-dispatch-consumer.md) — Status: **Proposed**. ruflo optional, template profiles, the chain and epochs, landing without merge machinery, the clean-worktree contract and what lies outside it.
 
 ## Migration from `.claude/skills/`
 

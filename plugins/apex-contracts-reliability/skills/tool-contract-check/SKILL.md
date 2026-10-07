@@ -27,7 +27,10 @@ ${CLAUDE_PROJECT_DIR:-$PWD}/.claude/contracts-reliability/ledger.jsonl
 
 Each record stores the *shape* of the tool input (and, on PostToolUse, the
 output) — a field-name → JSON-type map, one level deep. Shapes, not raw values,
-so the ledger never hoards secrets or large payloads.
+so the ledger never hoards secrets or large payloads. Records also carry
+`phase`, `tool`, `session` and `tool_use_id` (which pairs a call's Pre and Post
+records). The hook is observational: it prints nothing and never allows or
+denies a call.
 
 ## How a schema is inferred
 

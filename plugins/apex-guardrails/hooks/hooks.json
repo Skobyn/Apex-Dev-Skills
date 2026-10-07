@@ -6,11 +6,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/block-sensitive-paths.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/block-sensitive-paths.sh\""
           },
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/secret-scan.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/secret-scan.sh\""
           }
         ]
       },
@@ -19,11 +19,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/block-destructive-bash.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/block-destructive-bash.sh\""
           },
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/secret-scan.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/secret-scan.sh\""
           }
         ]
       }

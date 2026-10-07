@@ -10,7 +10,7 @@
 
 Build six themed plugins covering 13 researched ideas in under-served niches (agent observability, deterministic guardrails, RAG/memory lifecycle, legacy comprehension, agent-team coordination, tool-contract/reliability), deliberately avoiding the saturated code-review/test-gen/scan/scaffold space. Reference exemplar for the contract: `plugins/apex-scope-loop`.
 
-**Bounded contexts**: the marketplace repo only — `plugins/<name>/`, `.claude-plugin/marketplace.json`, root `README.md`.
+**Bounded contexts**: the marketplace repo only — `plugins/{name}/`, `.claude-plugin/marketplace.json`, root `README.md`.
 
 **Non-negotiable constraints**:
 
@@ -30,8 +30,8 @@ Build six themed plugins covering 13 researched ideas in under-served niches (ag
 
 | Directive | Meaning |
 |-----------|---------|
-| `Swarm: single [<agent-type>]` | One `Agent` tool invocation; orchestrator picks subagent_type |
-| `Swarm: multi <count> [...]` | N parallel `Agent` calls in one message |
+| `Swarm: single [{agent-type}]` | One `Agent` tool invocation; orchestrator picks subagent_type |
+| `Swarm: multi {count} [...]` | N parallel `Agent` calls in one message |
 
 ### Approval gates (between phases)
 
@@ -46,8 +46,8 @@ Build six themed plugins covering 13 researched ideas in under-served niches (ag
 > **Task format** (apex-execute `iterate.sh` parses these):
 > ```
 > - [x] **Phase X.Y** [tag1][tag2] Imperative task title
->   - Acceptance: <runnable check>
->   - Swarm: <directive>
+>   - Acceptance: {runnable check}
+>   - Swarm: {directive}
 >   - Blocked-by: phase-X.Y
 > ```
 

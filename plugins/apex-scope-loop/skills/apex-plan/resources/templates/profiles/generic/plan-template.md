@@ -30,10 +30,10 @@ drift between code and intent without having to read the full ADR.
 
 | Directive | Meaning |
 |-----------|---------|
-| `Swarm: single [<agent-type>]` | One `Agent` tool invocation; orchestrator picks subagent_type |
-| `Swarm: multi <count> [<t1>, <t2>, ...]` | N parallel `Agent` calls **in one message** |
-| `Swarm: hierarchical <count> [<t1>, <t2>, ...]` | `mcp__claude-flow__swarm_init` + N spawns, queen-led |
-| `Swarm: mesh <count> [<t1>, <t2>, ...]` | Peer-to-peer mesh topology, no queen |
+| `Swarm: single [{agent-type}]` | One `Agent` tool invocation; orchestrator picks subagent_type |
+| `Swarm: multi {count} [{t1}, {t2}, ...]` | N parallel `Agent` calls **in one message** |
+| `Swarm: hierarchical {count} [{t1}, {t2}, ...]` | optional: `mcp__claude-flow__swarm_init` + N spawns, queen-led (advisory without ruflo) |
+| `Swarm: mesh {count} [{t1}, {t2}, ...]` | Peer-to-peer mesh topology, no queen |
 
 If `Swarm:` is omitted, the orchestrator uses **hierarchical 6 [architect, coder, tester, reviewer, researcher, analyst]**.
 
@@ -43,7 +43,7 @@ If `Swarm:` is omitted, the orchestrator uses **hierarchical 6 [architect, coder
 |----------|----------|
 | `[gate:auto]` | Orchestrator runs the Acceptance check; advances on pass, halts on fail |
 | `[gate:human]` | Orchestrator halts; user must type the approval phrase from Acceptance |
-| `[gate:partner:<email>]` | Orchestrator writes inbox item to `<email>`, halts until consumed |
+| `[gate:partner:{email}]` | Orchestrator notifies `{email}` via `$APEX_PARTNER_NOTIFY_CMD` (gate JSON on stdin) and halts until approved; with no notify command it degrades to `[gate:human]` |
 
 Gates are checkbox tasks, just like phases. The line between Phase N and Phase N+1 is a Gate task that blocks Phase N+1 via `Blocked-by:`.
 
@@ -54,14 +54,14 @@ Gates are checkbox tasks, just like phases. The line between Phase N and Phase N
 > **Task format** (the apex-execute `iterate.sh` parses these):
 > ```
 > - [ ] **Phase X.Y** [tag1][tag2] Imperative task title
->   - Acceptance: <runnable check>
->   - Swarm: <directive>            (optional — defaults to hierarchical 6)
+>   - Acceptance: {runnable check}
+>   - Swarm: {directive}            (optional — defaults to hierarchical 6)
 >   - Blocked-by: phase-X.Y         (optional)
 > ```
 >
-> **Tags route topology** (see `apex-execute/docs/SWARM_TOPOLOGIES.md`):
+> **Tags route topology** (see `apex-execute/docs/legacy/SWARM_TOPOLOGIES.md`):
 > `[backend]` `[frontend]` `[security]` `[perf]` `[ml-serving]` `[infra]`
-> `[research]` `[docs]` `[tests]` `[refactor]` `[tier:c]` `[gate:auto]` `[gate:human]` `[gate:partner:<email>]`
+> `[research]` `[docs]` `[tests]` `[refactor]` `[tier:c]` `[gate:auto]` `[gate:human]` `[gate:partner:{email}]`
 >
 > `[tier:c]` marks money / auth / consent-PII / security / schema / alerting / prod-data work: it gets a
 > six-lens + adversarial review and a human G12 approval before check-off (The Gibson harness).
@@ -106,7 +106,7 @@ Translate the ADR's pseudocode section into module stubs, type signatures, and i
   - Blocked-by: phase-2.1
 
 - [ ] **Phase 2.3** [frontend][architect] Scaffold UI component tree (if user-facing)
-  - Acceptance: every Surface Matrix row marked "yes" in the ADR has a stub component at `ui/src/...`; `npm run typecheck` passes
+  - Acceptance: every Surface Matrix row marked "yes" in the ADR has a stub component; the frontend typecheck (`{typecheck command}`) passes
   - Swarm: hierarchical 3 [architect, coder, reviewer]
   - Blocked-by: phase-2.1
 
@@ -125,7 +125,7 @@ Wire the modules together. Data model migrations, API contracts, and integration
   - Swarm: hierarchical 4 [security-architect, security-auditor, coder, tester]
   - Blocked-by: gate-2-3
 
-- [ ] **Phase 3.2** [backend][infra] Apply Firestore/BigQuery/migration changes
+- [ ] **Phase 3.2** [backend][infra] Apply schema / data migration changes
   - Acceptance: `python backend/scripts/migrate_{{slug}}.py --dry-run` succeeds; data shapes match ADR Data Model table
   - Swarm: hierarchical 3 [architect, coder, reviewer]
   - Blocked-by: gate-2-3
@@ -136,7 +136,7 @@ Wire the modules together. Data model migrations, API contracts, and integration
   - Blocked-by: phase-3.1, phase-3.2
 
 - [ ] **Gate 3→4** [gate:partner:{{REVIEWER_EMAIL}}] Architecture review
-  - Acceptance: inbox item `kind=phase-gate-approval gate=3-4` consumed by {{REVIEWER_EMAIL}}
+  - Acceptance: user types `approve gate-3-4` after {{REVIEWER_EMAIL}} approves the architecture
   - Blocked-by: phase-3.3
 
 ---
@@ -186,7 +186,7 @@ Integration, deployment, monitoring, docs. The "make it real" phase.
   - Blocked-by: phase-5.1
 
 - [ ] **Phase 5.3** [docs] Update `CLAUDE.md`, `MEMORY.md`, and developer guides
-  - Acceptance: `grep -q '{{SLUG}}' CLAUDE.md`; new entry in `ui/src/developer/data/guides/` registered in `guide-registry.js`
+  - Acceptance: `grep -q '{{SLUG}}' CLAUDE.md`; developer docs mention the new behaviour
   - Swarm: single [docs-writer]
   - Blocked-by: phase-5.1
 
@@ -223,10 +223,10 @@ Run alongside `/loop`:
 
 ```bash
 # Nightly progress audit
-/schedule "0 2 * * *" .claude/skills/apex-execute/scripts/audit.sh .claude/plans/{{SLUG}}-plan.md
+/schedule "0 2 * * *" ${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts/audit.sh .claude/plans/{{SLUG}}-plan.md
 
 # Weekly architecture drift review
-/schedule "0 9 * * 1" .claude/skills/apex-execute/scripts/architecture-review.sh .claude/plans/{{SLUG}}-plan.md
+/schedule "0 9 * * 1" ${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts/architecture-review.sh .claude/plans/{{SLUG}}-plan.md
 ```
 
 ---
@@ -235,8 +235,8 @@ Run alongside `/loop`:
 
 ```bash
 # Current state
-.claude/skills/apex-plan/scripts/status.sh {{SLUG}}
+${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/status.sh {{SLUG}}
 
 # Evaluate a single gate without /loop running
-.claude/skills/apex-plan/scripts/gate.sh .claude/plans/{{SLUG}}-plan.md gate-3-4
+${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/gate.sh .claude/plans/{{SLUG}}-plan.md gate-3-4
 ```

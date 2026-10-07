@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-05-29
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-contracts-reliability v0.1.0
+- **Plugin:** apex-contracts-reliability v0.2.0 (contract introduced in v0.1.0)
 
 ## Context
 
@@ -75,9 +75,13 @@ tool is FLAKY when `0 < rate < 1`, or it has retry runs, or it has flip-flops. A
 
 ### Reliability of the hook itself
 
-The capture hook is **observational only**: it never blocks a tool call. On any
-error it emits an allow/continue verdict and exits 0, so a malformed event or a
-missing `python3` can never wedge the agent. Without `python3` it degrades to a
+The capture hook is **observational only**: it never decides a tool call. It
+exits 0 and prints nothing — no `permissionDecision`, in particular never
+`allow` (v0.1.0 printed one; in Claude Code's parallel, deny-first composition an
+observer's `allow` is a vote it has no business casting). On any error it still
+exits 0 silently, so a malformed event or a missing `python3` can never wedge the
+agent. Each record carries the call's `tool_use_id` (the join key between its Pre
+and Post records and other ledgers). Without `python3` it degrades to a
 raw-line append; the analyzer tolerates and skips unparseable lines.
 
 ### Compatibility
@@ -126,6 +130,11 @@ on success:
    Verification, Architecture Decisions).
 8. This ADR exists with `Status: Proposed`.
 9. All `*.sh` files are executable.
+10. The capture hook, fed Pre/PostToolUse fixtures and garbage, exits 0, prints
+    nothing, and records `tool_use_id`.
+11. Marketplace-wide: no plugin other than apex-guardrails and apex-dispatch emits
+    a `permissionDecision` of `allow` — no such literal in any non-doc file, and
+    no registered `bash` hook command prints one for Pre/PostToolUse fixtures.
 
 ## Consequences
 
@@ -154,3 +163,5 @@ on success:
 ## Status changes
 
 - 2026-05-29 — Proposed (initial scaffold).
+- 2026-10-07 — v0.2.0: capture hook prints no decision; `tool_use_id` recorded;
+  quoted `"${CLAUDE_PLUGIN_ROOT}"`; marketplace-wide no-`allow` smoke check. Still Proposed.

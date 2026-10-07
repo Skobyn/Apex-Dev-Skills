@@ -19,9 +19,11 @@ Each line is a JSON object:
 |---|---|
 | `ts` | ISO-8601 UTC timestamp (orders the timeline) |
 | `event` | `SubagentStart` / `SubagentStop` / `PreToolUse` / `PostToolUse` |
-| `session` | the Claude Code session id |
+| `session` | the Claude Code session id (the payload's `session_id`; else `$APEX_TRACE_SESSION`; else `local`) |
 | `subagent_id` | which subagent the event belongs to (or `null` for root) |
 | `parent_id` | the agent that spawned this one |
+| `agent_type` | the subagent's type, e.g. `apex-dispatch:builder` (SubagentStart/Stop; else `null`) |
+| `agent_transcript_path` | the subagent's own transcript (SubagentStop; else `null`) |
 | `tool` | tool name for tool-use events |
 | `token_estimate` | rough token count (~chars/4) for the payload |
 | `edge` | `parent->child` for `SubagentStart`, the execution-order edge |

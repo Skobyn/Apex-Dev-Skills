@@ -1,0 +1,28 @@
+{
+  "merge_rules": {
+    "by-id": "List section. Overlay omitted: inherit. Overlay []: clear. Non-empty: entries merge by id; an overlay entry with a known id is merged field by field over the default entry (nested objects deep-merge, scalars and plain lists are replaced, the project wins); a new id is appended. Entries can be removed through disabled.",
+    "add-only": "List section that holds hard rules. Overlay omitted: inherit. The overlay may append entries with new ids; it may not clear the section, replace an existing id, or disable an entry (hard rules outrank everything below them). Matching route_floor hard rules combine by max (strictest wins); an appended rule may not be weaker than a default rule whose `when` it overlaps.",
+    "deep": "Map section. Overlay omitted: inherit. Overlay object: deep-merged over the default (the project wins on scalars and plain lists; lists of objects with ids merge by id; [] clears a list).",
+    "subtract": "The disabled list: entries {section?, id, reason} merge by (section, id), then each named entry is removed from its by-id section after the merge. A reason is required. section may be omitted when the id exists in exactly one by-id section."
+  },
+  "field_rules": {
+    "providers": "Allowlist. An overlay may name only providers the default defines (no new ids) and may set only: enabled; allowed_classes and roles_allowed narrowed to a subset of the default; max_tier lowered; min_acceptance raised; forbidden_flags added to (unioned onto the default's, [] refused); model (the local model a provider runs, e.g. ollama/<m>) set; verified_versions set (the provider versions a human attests passed the per-version smoke; a provider whose status is not verified runs only at a listed version). Every other field is refused.",
+    "tiers": "Not overlayable: an overlay may not change, add, clear or disable a tier. The default's ranks are monotonic with model strength (haiku < sonnet < opus = fable) and effort (low < medium < high < xhigh).",
+    "roles": "For a default role an overlay may not make a read-only role writable, grant a tool the default does not, or remove a disallowed tool. Roles a hard rule's review shape needs (reviewer; adversarial-reviewer for fanout6+adversarial) cannot be disabled.",
+    "hard_rules": "Append only. An appended route_floor rule may not set tier_ceiling and may not be weaker than a default rule whose `when` it overlaps.",
+    "escalation": "max_review_rounds <= 3 and the halt rung's at_failures <= 3; an overlay may only lower either."
+  },
+  "sections": [
+    { "name": "tiers", "kind": "list", "merge": "by-id" },
+    { "name": "providers", "kind": "list", "merge": "by-id" },
+    { "name": "roles", "kind": "list", "merge": "by-id" },
+    { "name": "classes", "kind": "list", "merge": "by-id" },
+    { "name": "tag_classes", "kind": "list", "merge": "by-id" },
+    { "name": "hard_rules", "kind": "list", "merge": "add-only" },
+    { "name": "escalation", "kind": "map", "merge": "deep" },
+    { "name": "semantic", "kind": "map", "merge": "deep" },
+    { "name": "pruning", "kind": "map", "merge": "deep" },
+    { "name": "mcp", "kind": "map", "merge": "deep" },
+    { "name": "disabled", "kind": "list", "merge": "subtract" }
+  ]
+}

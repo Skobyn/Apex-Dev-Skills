@@ -55,7 +55,7 @@ score  answer: { score, probabilities, confidence [, legend] }
 noul criteria wire keys: `true` / `false`
 ```
 
-Limits: choice ≤ 255 options, score 2–10 levels, ~32k request ceiling, $0.042 per 1M input tokens, output free. Alternative transports: OpenRouter `/api/alpha/decisions` (`typesafe/jev-1.13`, provider pinned), Vercel AI Gateway v4 evaluation-model headers. **Pinning is unverified**: jegrep reports the hosted service rejected `jev-1.13.0` and only `jev-latest` worked; three other repos pin `1.13.0` in code without live tests.
+Limits: choice ≤ 255 options, score 2–10 levels, 64k tokens per request and 32k for state plus the longest question (per the SDK wire models; see the follow-up table below), $0.042 per 1M input tokens, output free. Alternative transports serving the same shape: OpenRouter `/api/v1/systemone` (`typesafe/jev-1.13`, provider pinned) and Vercel `ai-gateway.vercel.sh/typesafe`. OpenRouter's native `/api/alpha/decisions` and Vercel's native `/v1/evaluate` rename fields (noul → boolean, `probability`) and are not the contract. **Pinning is unverified**: jegrep reports the hosted service rejected `jev-1.13.0` and only `jev-latest` worked; three other repos pin `1.13.0` in code without live tests.
 
 **Validator (union of the repos):** every requested id answered and no extras; probabilities keyset == criteria keyset; each value finite in [0,1]; sum within 1 ± 0.02; `choice` equals argmax within 1e-6; score in [0, n−1] with distribution mean within 0.02 of score; booleans rejected; malformed → reject, never clamp; HTTP 200 with zero valid answers == failure; a missing answer keeps the local estimate, never a neutral default; a null confidence never satisfies a threshold.
 

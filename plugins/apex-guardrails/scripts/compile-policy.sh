@@ -37,18 +37,26 @@ emit_hooks_json() {
 
   # Build PreToolUse hook entries. Write/Edit family gets path + secret hooks;
   # Bash gets destructive + secret hooks — but only for families the policy declares.
+  # Exception: block-destructive-bash.sh is ALWAYS wired on Bash, because its
+  # permission-bypass-flag denial (--dangerously-*, --yolo, --always-approve,
+  # --full-auto) is always on; without a destructive_bash family it runs with
+  # --bypass-only.
   local write_hooks=() bash_hooks=()
   $has_paths  && write_hooks+=("block-sensitive-paths.sh")
   $has_secret && write_hooks+=("secret-scan.sh")
-  $has_bash   && bash_hooks+=("block-destructive-bash.sh")
+  if $has_bash; then bash_hooks+=("block-destructive-bash.sh"); else bash_hooks+=("block-destructive-bash.sh --bypass-only"); fi
   $has_secret && bash_hooks+=("secret-scan.sh")
 
   hook_array() {
     local first=true
+    local s script args
     for s in "$@"; do
       $first || printf ',\n'
       first=false
-      printf '          {\n            "type": "command",\n            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/%s"\n          }' "$s"
+      script="${s%% *}"; args=""
+      [ "$script" = "$s" ] || args=" ${s#* }"
+      # ${CLAUDE_PLUGIN_ROOT} is quoted so an install path with spaces still resolves.
+      printf '          {\n            "type": "command",\n            "command": "bash \\"${CLAUDE_PLUGIN_ROOT}/hooks/%s\\"%s"\n          }' "$script" "$args"
     done
   }
 

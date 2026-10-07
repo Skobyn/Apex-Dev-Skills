@@ -13,6 +13,11 @@
 #   2. <worktree>/.agents/gate.json   (The Gibson's machine-readable gate twin;
 #                                     a top-level "gate" object is also read)
 #   3. package.json "scripts" entries of the same name → `npm run -s <step>`
+#   4. toolchain autodetect: a Makefile target named after the step; Python
+#      (pyproject/setup.*: pytest when tests/ or pytest config exist, ruff and
+#      mypy when configured; via `uv run` when uv.lock is present and uv is
+#      installed, else `python3 -m`); Cargo (test, clippy, build); Go (test,
+#      vet, build)
 # Empty / unresolved steps are skipped and reported as such.
 #
 # Env:
@@ -21,7 +26,7 @@
 # Emits (machine-readable):
 #   GATE_STEP: <step> <PASS|FAIL|NEW_FAILURE|PREEXISTING|SKIPPED> [exit=N]
 #   HEAD_SHA: <sha the check ran against>
-#   GATE: PASS | FAIL | SKIPPED
+#   GATE: PASS | FAIL | SKIPPED   (check PASS/SKIPPED moves the ACTIVE lock BUILD -> GATE)
 # Exit codes: 0 PASS/SKIPPED/baseline written · 1 FAIL · 2 bad args / not initialized
 set -euo pipefail
 
@@ -29,14 +34,12 @@ PLAN="${1:?usage: green-gate.sh PLAN.md baseline|check}"
 MODE="${2:?mode: baseline|check}"
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 
-PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
-PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-STATE_DIR="$REPO_ROOT/.dev-plan-state/$PLAN_HASH"
-CHECKPOINT="$STATE_DIR/checkpoint.json"
+APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
+# shellcheck source=_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+apex_resolve "$PLAN"
 [[ -f "$CHECKPOINT" ]] || { echo "ERROR: not initialized — run init.sh first" >&2; exit 2; }
 
-read_field() { grep -o "\"$1\": \"[^\"]*\"" "$CHECKPOINT" | head -1 | sed 's/.*: "//; s/"$//'; }
 WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 [[ -d "$WT" ]] || { echo "ERROR: worktree missing at $WT — re-run init.sh" >&2; exit 2; }
 
@@ -69,8 +72,40 @@ if os.path.isfile(pj):
     try:
         if step in (json.load(open(pj)).get("scripts") or {}):
             print(f"npm run -s {step}", end="")
+            sys.exit(0)
     except Exception:
         pass
+# 4. Toolchain autodetect (ADR-0003): a real stop signal in non-npm repos.
+import re, shutil
+def has(*names):
+    return any(os.path.exists(os.path.join(wt, n)) for n in names)
+mk = os.path.join(wt, "Makefile")
+if os.path.isfile(mk):
+    try:
+        if re.search(rf"^{re.escape(step)}\s*:(?!=)", open(mk, errors="replace").read(), re.M):
+            print(f"make {step}", end="")
+            sys.exit(0)
+    except Exception:
+        pass
+cmds = {}
+if has("pyproject.toml", "setup.py", "setup.cfg"):
+    py = "uv run" if (has("uv.lock") and shutil.which("uv")) else "python3 -m"
+    cfg = ""
+    for n in ("pyproject.toml", "setup.cfg", "ruff.toml", ".ruff.toml", "mypy.ini", "pytest.ini", "tox.ini"):
+        p = os.path.join(wt, n)
+        if os.path.isfile(p):
+            cfg += open(p, errors="replace").read()
+    if has("tests", "test") or "[tool.pytest" in cfg or has("pytest.ini"):
+        cmds["test"] = f"{py} pytest -q"
+    if "[tool.ruff" in cfg or has("ruff.toml", ".ruff.toml"):
+        cmds["lint"] = f"{py} ruff check ."
+    if "[tool.mypy" in cfg or has("mypy.ini"):
+        cmds["typecheck"] = f"{py} mypy ."
+elif has("Cargo.toml"):
+    cmds = {"test": "cargo test --quiet", "lint": "cargo clippy --quiet", "build": "cargo build --quiet"}
+elif has("go.mod"):
+    cmds = {"test": "go test ./...", "lint": "go vet ./...", "build": "go build ./..."}
+print(cmds.get(step, ""), end="")
 PY
 }
 
@@ -83,11 +118,12 @@ run_step() {
   fi
 }
 
-HEAD_SHA="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo unknown)"
+HEAD_SHA="$(apex_git "$WT" rev-parse HEAD 2>/dev/null || echo unknown)"
 
-if [[ "$MODE" == "check" ]] && [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; then
+if [[ "$MODE" == "check" ]] && DIRTY_WHY="$(apex_dirty "$WT")" && [[ -n "$DIRTY_WHY" ]]; then
   echo "HEAD_SHA: $HEAD_SHA"
-  echo "GATE: FAIL uncommitted changes in $WT — commit first; the gate and the reviewer bind to an exact head SHA"
+  echo "GATE: FAIL the working tree in $WT is not its head (uncommitted, untracked or hidden edits) — the gate and the reviewer bind to an exact head SHA"
+  printf '%s\n' "$DIRTY_WHY" | sed 's/^/  /' >&2
   exit 1
 fi
 
@@ -104,9 +140,41 @@ for step in "${STEPS[@]}"; do
   code=0
   run_step "$cmd" "$GATE_DIR/$MODE-$step.log" || code=$?
   printf '%s\t%s\t%s\n' "$step" "$cmd" "$code" >>"$RESULTS"
+  # A step the baseline never ran with this command (a 0.2.x baseline, or a
+  # newly detected toolchain) is baselined now at the fork SHA, so the check
+  # compares like with like instead of blaming the plan for pre-existing red.
+  if [[ "$MODE" == "check" && "$code" != "0" && -f "$BASELINE" ]]; then
+    BCMD="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("steps",{}).get(sys.argv[2]) or {}).get("cmd") or "")' "$BASELINE" "$step")"
+    if [[ "$BCMD" != "$cmd" ]]; then
+      BSHA="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("head_sha",""))' "$BASELINE")"
+      BWT="$(mktemp -d "${TMPDIR:-/tmp}/apex-gate-baseline.XXXXXX")"
+      bcode=""
+      if [[ -n "$BSHA" ]] && git -C "$WT" worktree add -q --detach "$BWT/wt" "$BSHA" 2>/dev/null; then
+        # Only when the fork itself resolves the same command: a step the plan
+        # introduced (say it added the Makefile) stays strict — any red is new.
+        FORK_CMD="$(WT="$BWT/wt" resolve_cmd "$step")"
+        if [[ "$FORK_CMD" == "$cmd" ]]; then
+          bcode=0
+          (cd "$BWT/wt" && if command -v timeout >/dev/null 2>&1; then timeout "$TIMEOUT_S" bash -c "$cmd"; else bash -c "$cmd"; fi) \
+            >"$GATE_DIR/baseline-$step.log" 2>&1 || bcode=$?
+        fi
+        git -C "$WT" worktree remove --force "$BWT/wt" >/dev/null 2>&1 || true
+      fi
+      rm -rf "$BWT"
+      python3 - "$BASELINE" "$step" "$cmd" "${bcode:-}" <<'PY'
+import datetime, json, sys
+path, step, cmd, code = sys.argv[1:]
+b = json.load(open(path))
+b.setdefault("steps", {})[step] = {"cmd": cmd, "exit": int(code) if code != "" else None,
+    "rebaselined_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+json.dump(b, open(path, "w"), indent=2)
+PY
+    fi
+  fi
 done
 
-python3 - "$MODE" "$RESULTS" "$BASELINE" "$GATE_DIR" "$HEAD_SHA" "$ran" <<'PY'
+GATE_RC=0
+python3 - "$MODE" "$RESULTS" "$BASELINE" "$GATE_DIR" "$HEAD_SHA" "$ran" <<'PY' || GATE_RC=$?
 import json, os, sys, datetime
 mode, results, baseline_path, gate_dir, head, ran = sys.argv[1:]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -153,3 +221,12 @@ else:
     print(f"GATE: {result}")
 sys.exit(1 if failed else 0)
 PY
+# Spec §5.3 D: a check that passes (or skips) at HEAD moves this plan's ACTIVE
+# lock from BUILD to GATE, under the same flock as every other stage write
+# (apex_lock). In GATE apex-dispatch's hooks refuse git mutation and writes in
+# the checkout; a reviewer spawn moves it on to REVIEW. Only from BUILD: a
+# re-run during review, or after complete (DONE), leaves the stage alone.
+if [[ "$MODE" == "check" && "$GATE_RC" == 0 ]]; then
+  apex_lock_stage "$PLAN_HASH" GATE BUILD 2>/dev/null || echo "[green-gate] warning: could not set stage GATE on the ACTIVE lock" >&2
+fi
+exit "$GATE_RC"

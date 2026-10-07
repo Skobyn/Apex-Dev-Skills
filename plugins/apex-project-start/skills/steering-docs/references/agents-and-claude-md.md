@@ -35,11 +35,11 @@ tests/ mirrors src/; cmd/<name> is the only entrypoint." Only what isn't obvious
 
 ## Building new features
 This repo was initialized by Apex Project Start with governance, tests, CI, and the
-Apex/ruflo toolchain wired up. For any non-trivial feature, work *within* those frameworks:
+Apex toolchain wired up. For any non-trivial feature, work *within* those frameworks:
 1. **Plan first — apex-plan:** `/apex-scope-loop:start <feature-slug>` → ADR + phased, gated plan before coding.
 2. **Execute — apex-loop:** `/apex-scope-loop:iterate <plan-path>` → advance the plan phase-by-phase (swarm + acceptance gates).
 3. Follow this file's conventions, keep CI green, add tests, and write an ADR in `docs/adr/` for significant decisions.
-4. One-file/trivial fixes skip the ceremony. (ruflo provides the memory + swarm MCP tools these commands use.)
+4. One-file/trivial fixes skip the ceremony. (ruflo is optional; set `APEX_MEMORY_CMD` to seed memory through it.)
 
 ## Maintenance (periodic, tracked in `.apex/maintenance.json`)
 Some hygiene runs on a cadence, not per-PR. Last-run dates live in `.apex/maintenance.json`.
@@ -60,7 +60,7 @@ Some hygiene runs on a cadence, not per-PR. Last-run dates live in `.apex/mainte
 - <any project-specific security rule, e.g. "all DB access must check row ownership">
 ```
 
-> Generate the **Building new features** section only when the Apex suite was provisioned. If just ruflo was installed, reference ruflo orchestration instead. If neither, omit the section.
+> Generate the **Building new features** section only when the Apex suite was provisioned. If just the optional ruflo layer was installed, reference ruflo orchestration instead. If neither, omit the section.
 
 **Monorepos:** add a nested `AGENTS.md` per package; agents read the nearest file in the tree. Don't repeat the root content — only the package-specific deltas.
 

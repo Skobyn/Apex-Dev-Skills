@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "description": "The apex-dispatch ledger event schema. ledger.sh append validates each row's caller-supplied fields against `required` (field -> type) and `enums`, then stamps the fields in `stamped`. Events marked `provenance` are written in-process only (route.py, hooks, shims importing scripts/lib/ledger.py); the ledger.sh CLI refuses them. Types: string, integer, number, boolean, object, array; a trailing '|null' allows null. Extra fields are kept as given.",
+  "sources": ["hook", "shim", "cli"],
+  "stamped": ["seq", "event", "ts", "source", "route_id", "head_sha", "route_mode", "doctor_profile", "prev_hash", "hash"],
+  "route_modes": ["baseline", "table", "decision", "shadow", "escalated"],
+  "events": {
+    "route": {
+      "provenance": true,
+      "description": "route.sh emitted (or, in baseline/shadow mode, computed) a route.",
+      "required": {"route_id": "string", "status": "string", "origin": "string", "router": "object"},
+      "enums": {"status": ["READY", "NEEDS_SPEC", "HUMAN_GATE", "HALTED", "BUSY"], "origin": ["plan", "adhoc"]}
+    },
+    "spawn_request": {
+      "provenance": true,
+      "description": "pre-agent.sh allowed an Agent/Task spawn for the active route.",
+      "required": {"route_id": "string", "role": "string", "model": "string"}
+    },
+    "spawn": {
+      "provenance": true,
+      "description": "subagent-start.sh registered a running subagent (agent_id -> role -> route_id); post-agent.sh may add usage and resolved_model.",
+      "required": {"route_id": "string", "agent_id": "string", "role": "string"}
+    },
+    "worker_run": {
+      "provenance": true,
+      "description": "A worker finished: post-agent.sh for an in-session subagent (provider claude-session; resolved_model, usage, duration_ms, tool_count, usd_estimate) or a provider shim (bin/worker-*.sh).",
+      "required": {"route_id": "string", "provider": "string", "role": "string", "exit_code": "integer"}
+    },
+    "verdict": {
+      "provenance": true,
+      "description": "A reviewer verdict captured by subagent-stop.sh or a shim result.json, bound to a head. UNPARSED = no final, parseable APPROVE/REQUEST_CHANGES (fail-closed: blocks complete at that head); stale = HEAD moved while the reviewer ran (bound to the start head).",
+      "required": {"route_id": "string", "role": "string", "verdict": "string"},
+      "enums": {"verdict": ["APPROVE", "REQUEST_CHANGES", "UNPARSED"]}
+    },
+    "worker_applied": {
+      "provenance": true,
+      "description": "scripts/apply.sh committed a write-mode shim worker's patch to the plan worktree (Dispatch-* trailers); head_sha is the new commit.",
+      "required": {"route_id": "string", "provider": "string", "run_id": "string", "commit_sha": "string"}
+    },
+    "model_mismatch": {
+      "description": "post-agent.sh: a builder-side subagent ran on a model family other than the route's ROUTE_MODEL (advisory; the spawn was already pinned by pre-agent.sh).",
+      "required": {"route_model": "string", "resolved_model": "string"}
+    },
+    "policy_violation": {
+      "description": "subagent-stop.sh: a read-only role's transcript shows a write, an agent spawn or a git mutation; its review record is refused.",
+      "required": {"hook": "string", "agent_id": "string", "role": "string", "violation": "string"}
+    },
+    "escalate": {
+      "description": "route.sh escalate chose the next rung of the escalation ladder.",
+      "required": {"prior_route_id": "string", "failures": "integer", "rung": "string", "action": "string"},
+      "enums": {"action": ["effort_up", "model_up", "halt"]}
+    },
+    "hook_error": {
+      "description": "A hook failed open (unparseable stdin, internal error).",
+      "required": {"hook": "string", "error": "string"}
+    },
+    "hook_advisory": {
+      "description": "A hook allowed something it noted (e.g. an open route with no progress).",
+      "required": {"hook": "string", "advisory": "string"}
+    },
+    "human_gate": {
+      "description": "A human gate was opened or answered (G12, budget exhaustion).",
+      "required": {"gate": "string", "decision": "string"},
+      "enums": {"decision": ["opened", "approved", "rejected", "cleared"]}
+    },
+    "baseline": {
+      "description": "ledger.sh baseline capture: the environment a baseline/shadow comparison is measured against.",
+      "required": {"label": "string"}
+    },
+    "decision_shadow": {
+      "description": "An uncalibrated decision-layer answer logged beside the deterministic choice.",
+      "required": {"rubric": "string", "deterministic_choice": "string", "decision_choice": "string|null"}
+    }
+  }
+}

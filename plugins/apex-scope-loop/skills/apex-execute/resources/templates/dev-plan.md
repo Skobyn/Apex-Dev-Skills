@@ -18,11 +18,11 @@ section to detect drift in the code.
 > **Task format** (the orchestrator parses these):
 > ```
 > - [ ] **Phase X.Y** [tag1][tag2] Short imperative task title
->   - Acceptance: <runnable check the swarm verdicts against>
+>   - Acceptance: {runnable check the swarm verdicts against}
 >   - Blocked-by: phase-X.Y   (optional)
 > ```
 >
-> **Tags** route the swarm topology — see `docs/SWARM_TOPOLOGIES.md`:
+> **Tags** route the swarm topology — see `docs/legacy/SWARM_TOPOLOGIES.md`:
 > `[backend]` `[frontend]` `[security]` `[perf]` `[ml-serving]` `[infra]`
 > `[research]` `[docs]` `[tests]` `[refactor]`
 
@@ -42,7 +42,7 @@ section to detect drift in the code.
   - Blocked-by: phase-1.2
 
 - [ ] **Phase 2.2** [backend][security] Wire authn/authz boundary
-  - Acceptance: integration test rejects unauthorized requests with 401/403
+  - Acceptance: `{integration test command}` passes (unauthorized requests rejected with 401/403)
   - Blocked-by: phase-2.1
 
 - [ ] **Phase 2.3** [perf] Add benchmarks for hot paths
