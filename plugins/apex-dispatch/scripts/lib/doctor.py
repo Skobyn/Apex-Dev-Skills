@@ -151,10 +151,14 @@ class Doctor:
         for p in pol.get("providers", []):
             pid = p.get("id")
             status = p.get("status")
-            shim = os.path.join(self.root, "bin", "worker-%s.sh" % pid)
+            shim = os.path.join(self.root, "bin", ledger.shim_name(pid))
             has_shim = os.path.isfile(shim) and os.access(shim, os.X_OK)
             entry = {"enabled": bool(p.get("enabled")), "available": False, "binary": p.get("binary"), "version": None,
-                     "status": status, "verified": status == "verified", "shim": has_shim}
+                     "status": status, "verified": status == "verified", "shim": has_shim,
+                     "shim_file": "bin/" + ledger.shim_name(pid), "kind": p.get("kind"),
+                     "roles_allowed": list(p.get("roles_allowed") or []),
+                     "allowed_classes": list(p.get("allowed_classes") or []),
+                     "verified_versions": list(p.get("verified_versions") or [])}
             prov[pid] = entry
             if not p.get("enabled"):
                 self.add("provider:%s" % pid, "skipped", "disabled in policy (status %s)" % status)
@@ -176,6 +180,13 @@ class Doctor:
                 continue
             rc, out = run([path, "--version"], timeout=5)
             v = vtuple(out) if rc == 0 else None
+            if pid == "grok" and ("vibe-kit" in os.path.realpath(path) or "grok-cli" in os.path.realpath(path)
+                                  or "vibe-kit" in (out or "").lower()):
+                # @vibe-kit/grok-cli installs a `grok` binary that is not xAI's Grok Build (spec §5.1).
+                entry["why"] = "the grok on PATH is the colliding @vibe-kit/grok-cli, not xAI Grok Build"
+                entry.update({"path": path, "colliding": True})
+                self.add("provider:%s" % pid, "warn", "%s at %s: rejected" % (entry["why"], path))
+                continue
             auth = self.auth_of(pid, p)
             entry.update({"available": True, "path": path, "version": vstr(v) if v else None, "auth": auth,
                           "auth_ok": auth in ("env", "credentials-file", "n/a")})
@@ -190,8 +201,12 @@ class Doctor:
             st = "ok"
             if status != "verified":
                 st = "warn"
-                parts.append("status %s: enabled by this repository's overlay, not verified (shims refuse it unless "
-                             "the overlay enables it explicitly)" % status)
+                entry["version_verified"] = entry["version"] is not None and entry["version"] in entry["verified_versions"]
+                parts.append("status %s: enabled by this repository's overlay; installed version %s %s the overlay's "
+                             "verified_versions (%s) (shims refuse it unless both hold)"
+                             % (status, entry["version"] or "unknown",
+                                "is in" if entry["version_verified"] else "is NOT in",
+                                ", ".join(entry["verified_versions"]) or "none"))
             if not entry["flags_ok"]:
                 st, entry["available"] = "warn", False
                 entry["why"] = "forced flags rejected (%s)" % entry["flags_detail"]
@@ -347,8 +362,10 @@ def main(argv):
     # One rule with checkpoint.sh complete (ledger.second_families): a second
     # family counts only when its provider is available AND its bin/worker-*.sh
     # shim ships, since pre-bash.sh refuses provider CLIs outside the shims.
+    # Tier C routes are class security (hard rule tier-c-floor), so the families
+    # counted here are those allowed to review class security.
     second = ledger.second_families({"providers": d.facts.get("providers") or {},
-                                     "claude_p_auth": d.facts.get("claude_p_auth")}, root)
+                                     "claude_p_auth": d.facts.get("claude_p_auth")}, root, cls="security")
     tier_c_diversity = "block" if second else ("warn (no second reviewer family: no enabled provider with a shipped "
                                                "bin/worker-*.sh shim is available with working auth and flags)")
     out = {"schema": 1, "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

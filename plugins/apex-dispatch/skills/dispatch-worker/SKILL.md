@@ -6,12 +6,14 @@ allowed-tools: Bash Read Grep Glob Agent
 
 # dispatch-worker — external workers behind one ledger
 
-In-session subagents are Claude-only. Every other worker (a separate `claude -p` session, `codex`; grok, opencode and aider stay flagged off and have no shim yet) runs as a **Bash call to a shim**, from the orchestrator or the `apex-dispatch:provider-runner` role, never by invoking the provider CLI directly: `pre-bash.sh` denies `codex …` and `claude -p …` outside the shims, and denies the shims to every other role.
+In-session subagents are Claude-only. Every other worker (a separate `claude -p` session, `codex`; grok, opencode and aider ship flagged off) runs as a **Bash call to a shim**, from the orchestrator or the `apex-dispatch:provider-runner` role, never by invoking the provider CLI directly: `pre-bash.sh` denies `codex …` and `claude -p …` outside the shims, and denies the shims to every other role.
 
 | Provider | Shim |
 |---|---|
 | `codex` (OpenAI; the Tier C diversity reviewer when configured) | `${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh` |
 | `claude-p` (a separate Claude session, family of record `anthropic-separate-session`) | `${CLAUDE_PLUGIN_ROOT}/bin/worker-claude-p.sh` |
+| `grok`, `opencode-ollama`, `aider-ollama` (flagged off: only with an overlay `enabled: true` + `verified_versions`) | `${CLAUDE_PLUGIN_ROOT}/bin/worker-grok.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-opencode.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-aider.sh` |
+| `openai-sdk` (stub seam, exit 6) | `${CLAUDE_PLUGIN_ROOT}/bin/worker-openai-sdk.sh` |
 
 ## The contract
 
@@ -26,7 +28,7 @@ bash "$W" --route <ROUTE_ID> --role builder|tester|docs|reviewer|adversarial-rev
 - **Pass nothing else.** The provider command comes only from the overlay-merged policy (`forced_flags` plus the route's model, budget and the role); an unknown argument is a usage error (exit 2).
 - The shim needs a current `doctor.json`: run `${CLAUDE_PLUGIN_ROOT}/scripts/doctor.sh --plan <plan>` once per run (and again after installing or logging in to a provider).
 
-What the shim does: refuses first when the route, provider, role, stage, budget or doctor says no; forks a detached throwaway worktree off the plan worktree HEAD (build) or a `git archive` snapshot (readonly) under `<state>/dispatch/worktrees/`; scrubs the environment to an allowlist; wraps the run in `timeout` (the route's remaining minutes; `--timeout-sec` can only lower it); passes `claude -p` its `--max-budget-usd` from the route's remaining USD; writes `result.json` (`provider, model, role, route, head_sha, record_id, verdict, usage, usd_estimate, exit_code, timed_out, files_changed, patch_sha256, started_at, ended_at, …`), `patch.diff` (build), `stdout.log`, `stderr.log`, `result.last.md`; appends `worker_run` (and `verdict` for reviewers) to the ledger; and prints `DISPATCH-DONE exit=N` last. **No sentinel = truncated = failure.**
+What the shim does: refuses first when the route, provider, role, stage, budget or doctor says no; forks a detached throwaway worktree off the plan worktree HEAD (build) or a plain-file `git checkout-index` snapshot of HEAD (readonly) under `<state>/dispatch/worktrees/`; scrubs the environment to an allowlist; wraps the run in `timeout` (the route's remaining minutes; `--timeout-sec` can only lower it); passes `claude -p` its `--max-budget-usd` from the route's remaining USD (reviewers at least $2.00); writes `result.json` (`provider, model, role, route, head_sha, record_id, verdict, usage, usd_estimate, exit_code, timed_out, files_changed, patch_sha256, started_at, ended_at, …`), `patch.diff` (build), `stdout.log`, `stderr.log`, `result.last.md`; appends `worker_run` (and `verdict` for reviewers) to the ledger; and prints `DISPATCH-DONE exit=N` last. **No sentinel = truncated = failure.**
 
 | Exit | Meaning | What you do |
 |---|---|---|
@@ -50,7 +52,7 @@ The brief file is the worker's entire context; it gets no conversation history. 
 
 ### Which provider for which role
 
-Policy decides (`ROUTE_PROVIDER`, `ROUTE_DIAGNOSER_PROVIDER`, `review-shape`); you do not. External builders only for docs, tests, mechanical and bugfix at tier ≤ standard, never for a Tier C task, and only on a route whose `ROUTE_PROVIDER` names that provider; any enabled provider whose shim ships may review or diagnose. A Tier C diversity reviewer is `${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh --role reviewer` when `doctor.json` lists `codex` in `second_families`, else `${CLAUDE_PLUGIN_ROOT}/bin/worker-claude-p.sh --role reviewer`.
+Policy decides (`ROUTE_PROVIDER`, `ROUTE_DIAGNOSER_PROVIDER`, `review-shape`); you do not. External builders only for docs, tests, mechanical and bugfix at tier ≤ standard, never for a Tier C task, and only on a route whose `ROUTE_PROVIDER` names that provider; any enabled provider whose shim ships may review or diagnose. The flagged-off shims (`${CLAUDE_PLUGIN_ROOT}/bin/worker-grok.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-opencode.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-aider.sh`) take the same arguments but refuse with exit 3 unless the repository overlay enables the provider and lists its installed version under `verified_versions`; `${CLAUDE_PLUGIN_ROOT}/bin/worker-openai-sdk.sh` is a stub that always exits 6 (not implemented). Never enable one yourself: that is the human's per-version smoke decision. A Tier C diversity reviewer is `${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh --role reviewer` when `doctor.json` lists `codex` in `second_families`, else `${CLAUDE_PLUGIN_ROOT}/bin/worker-claude-p.sh --role reviewer`.
 
 ### Applying a build patch
 

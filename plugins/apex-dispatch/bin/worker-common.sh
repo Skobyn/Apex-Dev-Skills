@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 # worker-common.sh — the shared library of apex-dispatch's provider shims
-# (bin/worker-claude-p.sh, bin/worker-codex.sh) and scripts/apply.sh. Sourced,
+# (bin/worker-claude-p.sh, -codex, -grok, -opencode, -aider) and scripts/apply.sh. Sourced,
 # never executed. Spec §5.4 (uniform worker contract), §5.3 H/I.
 #
 # It resolves the plugin root, the sibling apex-scope-loop and the run's state

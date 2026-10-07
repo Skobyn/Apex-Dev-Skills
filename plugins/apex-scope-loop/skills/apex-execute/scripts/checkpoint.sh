@@ -331,13 +331,17 @@ if os.path.isdir(dstate) and not skip:
         except Exception:
             doc = {}
         # One rule with doctor.sh: apex-dispatch's ledger.second_families (an
-        # available provider whose bin/worker-*.sh shim ships).
+        # available, verified provider whose bin/worker-*.sh shim ships and that
+        # may review this route's class).
         second = []
         if droot:
             try:
                 sys.path.insert(0, os.path.join(droot, "scripts", "lib"))
                 import ledger
-                second = ledger.second_families(doc, droot)
+                try:
+                    second = ledger.second_families(doc, droot, cls=(router.get("class") if str(route.get("line")) == line_no else None) or None)
+                except TypeError:                     # an apex-dispatch before 0.3.0
+                    second = ledger.second_families(doc, droot)
             except Exception as e:
                 print(f"[checkpoint] warning: could not evaluate reviewer families ({e})", file=sys.stderr)
         msg = ("reviewer family diversity (%s): every approval at %s is from the in-session Claude family" % (div, head[:12]))

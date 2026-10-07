@@ -1251,8 +1251,9 @@ python3 - "$PLUGIN_ROOT/scripts/lib" "$WORK/sf" <<'PY' || fail "ledger.second_fa
 import os, sys
 sys.path.insert(0, sys.argv[1]); import ledger
 root = sys.argv[2]; os.makedirs(os.path.join(root, "bin"), exist_ok=True)
-doc = {"claude_p_auth": "available", "providers": {"codex": {"enabled": True, "available": True, "auth_ok": True},
-       "claude-p": {"enabled": True, "available": True}, "claude-session": {"enabled": True, "available": True}}}
+RV = {"verified": True, "roles_allowed": ["reviewer"], "allowed_classes": ["security"]}
+doc = {"claude_p_auth": "available", "providers": {"codex": dict(RV, enabled=True, available=True, auth_ok=True),
+       "claude-p": dict(RV, enabled=True, available=True), "claude-session": {"enabled": True, "available": True}}}
 assert ledger.second_families(doc, root) == [], "counted a provider without a shim"
 assert ledger.second_families(doc) == [] or os.path.isdir(os.path.join(ledger.plugin_root(), "bin")), "this plugin ships no shims yet"
 for p in ("codex", "claude-p"):
@@ -1583,7 +1584,7 @@ c, p = d["providers"]["codex"], d["providers"]["claude-p"]
 assert c["shim"] and c["available"] and c["verified"] and c["version"] == "0.160.0" and c["auth"] == "credentials-file" and c["auth_ok"] and c["flags_ok"], c
 assert p["shim"] and p["available"] and p["version"] == "2.1.300" and p["auth"] == "credentials-file" and p["path"] == sys.argv[2] + "/claude", p
 g = d["providers"]["grok"]
-assert g["status"] == "flagged-off" and not g["verified"] and not g["available"] and not g["shim"], g
+assert g["status"] == "flagged-off" and not g["verified"] and not g["available"] and g["shim"] and g["shim_file"] == "bin/worker-grok.sh", g
 assert d["claude_p_auth"] == "available" and d["second_families"] == ["claude-p", "codex"] and d["tier_c_diversity"] == "block", d
 chk = {x["id"]: x for x in d["checks"]}
 assert chk["provider-forced-flags-probe"]["status"] == "ok" and chk["sandbox-confinement"]["status"] in ("ok", "warn"), chk
@@ -1598,7 +1599,7 @@ wrun "$WX" bash -c 'source "$1"; apex_worker_main grok --route "$2" --role docs 
 [ "$WRC" = 3 ] && grep -q 'disabled in the policy (status flagged-off)' "$WORK/w.err" || fail "an unverified, disabled provider was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
 printf '{"providers":[{"id":"grok","enabled":true}]}\n' >"$WORK/grok-on.json"
 wrun "$WX" env APEX_DISPATCH_POLICY="$WORK/grok-on.json" bash -c 'source "$1"; apex_worker_main grok --route "$2" --role docs --brief "$3"' _ "$PLUGIN_ROOT/bin/worker-common.sh" "$WRID" "$WORK/wbrief.md"
-[ "$WRC" = 3 ] && grep -q 'no worker shim is shipped for provider grok' "$WORK/w.err" || fail "an explicitly enabled but unshipped provider was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
+[ "$WRC" = 3 ] && grep -q 'no per-version smoke is recorded' "$WORK/w.err" || fail "an explicitly enabled flagged-off provider without verified_versions was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
 wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md" --model gpt-9; [ "$WRC" = 2 ] && grep -q 'takes no provider flags' "$WORK/w.err" || fail "a caller-supplied flag was not a usage error (rc=$WRC)"
 wrun "$WX" bash "$CODEXW" --route "$WRID" --role reviewer --mode build --brief "$WORK/wbrief.md"; [ "$WRC" = 2 ] || fail "a reviewer in build mode was not a usage error (rc=$WRC)"
 wrun "$WX" bash "$CODEXW" --route r-000000000000-L3-9 --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'not the ACTIVE task' "$WORK/w.err" || fail "a shim ran for another route (rc=$WRC)"
@@ -1739,7 +1740,7 @@ a = log["argv"]
 assert a[a.index("--sandbox") + 1] == "read-only" and "workspace-write" not in a, a
 assert not os.path.exists(os.path.join(log["cwd"], ".git")) and not os.path.exists(log["cwd"]), "the snapshot is a checkout or was kept"
 assert res["role"] == "lens:security" and res["worker_role"] == "reviewer" and res["verdict"] == "APPROVE" and res["head_sha"] == head == res["sha"]
-assert res["provider"] == "codex" and res["family"] == "openai" and res["mode"] == "readonly" and res["record_id"] and res["confinement"]["kind"] == "git-archive-snapshot"
+assert res["provider"] == "codex" and res["family"] == "openai" and res["mode"] == "readonly" and res["record_id"] and res["confinement"]["kind"] == "git-checkout-index-snapshot"
 PY
 [ "$(shimrows "$WD/ledger.jsonl" verdict route_id="$WRID" provider=codex verdict=APPROVE head_sha="$WHR")" = 1 ] || fail "no shim verdict row for the codex review"
 WCK="$EXS/checkpoint.sh"
@@ -1766,11 +1767,11 @@ assert a[:len(cp["forced_flags"])] == cp["forced_flags"], a
 for f in cp["forbidden_flags"]:
     assert f not in a, f
 assert a[a.index("--agent") + 1] == "apex-dispatch:reviewer" and a[a.index("--model") + 1] == "haiku", a
-assert a[a.index("--plugin-dir") + 1] == root and a[a.index("--max-budget-usd") + 1] == "0.50", a
+assert a[a.index("--plugin-dir") + 1] == root and a[a.index("--max-budget-usd") + 1] == "2.00", a          # the reviewer floor
 assert a[a.index("--allowedTools") + 1:] == ["Read", "Grep", "Glob"], a
 assert log["stdin"].startswith("Refresh docs/guide.md") and "SMOKE_SECRET" not in log["env"] and "CLAUDE_CONFIG_DIR" in log["env"]
 assert res["provider"] == "claude-p" and res["family"] == "anthropic-separate-session" and res["verdict"] == "APPROVE" and res["role"] == "reviewer"
-assert res["model"] == "claude-sonnet-5-5" and res["usd_reported"] == 0.0123 and res["usage"]["cache_read"] == 500 and res["max_budget_usd"] == 0.5
+assert res["model"] == "claude-sonnet-5-5" and res["usd_reported"] == 0.0123 and res["usage"]["cache_read"] == 500 and res["max_budget_usd"] == 2.0
 PY
 (cd "$WX" && bash "$WCK" plans/p.md complete 3 "reviewed by codex" >"$WORK/wc.out" 2>&1) || fail "complete refused a task built and reviewed by shims: $(cat "$WORK/wc.out")"
 bash "$LEDGER" evidence --state "$WSD" --line 3 --head "$WHR" >/dev/null && bash "$LEDGER" verify --state "$WSD" >/dev/null || fail "ledger evidence/verify after the shim flow"
@@ -1841,17 +1842,420 @@ for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_cla
 done
 pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
 
-# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.2.0 everywhere
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.3.0 everywhere
 for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
   grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
   if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
   if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
 done
 V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
-[ "$V" = 0.2.0 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
-  || fail "the 0.2.0 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+[ "$V" = 0.3.0 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.3.0 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
 grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
-pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.2.0 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.3.0 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+
+# --- Phase 4.2: flagged-off grok/opencode/aider shims, openai-sdk stub, compile --target codex,
+#     report --compare/--decision, carried hardening. Provider CLIs are stubs on a fixture PATH. ---
+STUB2="$WORK/stub2"; mkdir -p "$STUB2"
+cat >"$STUB2/grok" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, sys
+LOG, MODEFILE = "$SLOG", "$STUB/mode"
+a = sys.argv[1:]
+if "--version" in a:
+    print("grok 0.9.2"); sys.exit(0)
+if "--help" in a:
+    print("Usage: grok [options]"); sys.exit(0)
+mode = open(MODEFILE).read().strip()
+pf = a[a.index("--prompt-file") + 1] if "--prompt-file" in a else None
+try:
+    settings = json.load(open(os.path.join(".claude", "settings.json")))
+except Exception:
+    settings = None
+files = sorted(os.path.relpath(os.path.join(d, f), ".") for d, _, fs in os.walk(".") for f in fs)
+n = len(os.listdir(LOG))
+json.dump({"bin": "grok", "argv": a, "cwd": os.getcwd(), "prompt": open(pf).read() if pf else None, "settings": settings,
+           "files": files, "env": sorted(os.environ), "stdin": sys.stdin.read()}, open(os.path.join(LOG, "%03d-grok.json" % n), "w"))
+text = {"approve": "Checked the diff.\nVERDICT: APPROVE", "changes": "[blocking] a.py:1 breaks\nVERDICT: REQUEST_CHANGES"}.get(mode, "done")
+print(json.dumps({"type": "system", "subtype": "init"}))
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text,
+                  "usage": {"input_tokens": 50, "output_tokens": 5}, "modelUsage": {"grok-4": {}}}))
+PYSTUB
+cat >"$STUB2/opencode" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, sys
+LOG, MODEFILE = "$SLOG", "$STUB/mode"
+a = sys.argv[1:]
+if "--version" in a:
+    print("1.2.3"); sys.exit(0)
+if "--help" in a:
+    print("Usage: opencode run [message..]"); sys.exit(0)
+mode = open(MODEFILE).read().strip()
+cfgp = os.environ.get("OPENCODE_CONFIG")
+d = a[a.index("--dir") + 1]
+n = len(os.listdir(LOG))
+json.dump({"bin": "opencode", "argv": a, "cwd": os.getcwd(), "config_path": cfgp, "config": json.load(open(cfgp)) if cfgp else None,
+           "env": sorted(os.environ)}, open(os.path.join(LOG, "%03d-opencode.json" % n), "w"))
+if mode == "edit":
+    open(os.path.join(d, "docs", "guide.md"), "a").write("opencode edit\n")
+print(json.dumps({"type": "text", "part": {"text": "Updated the guide."}}))
+print(json.dumps({"type": "step_finish", "part": {"tokens": {"input": 100, "output": 20, "cache": {"read": 5}}}}))
+PYSTUB
+cat >"$STUB2/aider" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, sys
+LOG, MODEFILE = "$SLOG", "$STUB/mode"
+a = sys.argv[1:]
+if "--version" in a:
+    print("aider 0.86.1"); sys.exit(0)
+if "--help" in a:
+    print("usage: aider [options] [FILE ...]"); sys.exit(0)
+mode = open(MODEFILE).read().strip()
+mf, conf = a[a.index("--message-file") + 1], a[a.index("--config") + 1]
+n = len(os.listdir(LOG))
+json.dump({"bin": "aider", "argv": a, "cwd": os.getcwd(), "message": open(mf).read(), "config": open(conf).read(),
+           "stdin": sys.stdin.read(), "env": sorted(os.environ)}, open(os.path.join(LOG, "%03d-aider.json" % n), "w"))
+if mode == "edit":
+    open(os.path.join("docs", "guide.md"), "a").write("aider edit\n")
+print("Applied edit to docs/guide.md")
+PYSTUB
+chmod +x "$STUB2/grok" "$STUB2/opencode" "$STUB2/aider"
+GKW="$PLUGIN_ROOT/bin/worker-grok.sh"; OCW="$PLUGIN_ROOT/bin/worker-opencode.sh"; AIW="$PLUGIN_ROOT/bin/worker-aider.sh"; SDKW="$PLUGIN_ROOT/bin/worker-openai-sdk.sh"
+OVA="$WORK/ov-all.json"; OVN="$WORK/ov-noverify.json"; OVM="$WORK/ov-mismatch.json"; OVAI="$WORK/ov-aider.json"
+printf '{"providers":[{"id":"opencode-ollama","enabled":true,"verified_versions":["1.2.3"]},{"id":"aider-ollama","enabled":true,"verified_versions":["0.86.1"]},{"id":"grok","enabled":true,"verified_versions":["0.9.2"]}]}\n' >"$OVA"
+printf '{"providers":[{"id":"opencode-ollama","enabled":true}]}\n' >"$OVN"
+printf '{"providers":[{"id":"opencode-ollama","enabled":true,"verified_versions":["9.9.9"]}]}\n' >"$OVM"
+printf '{"providers":[{"id":"opencode-ollama","enabled":false},{"id":"aider-ollama","enabled":true,"verified_versions":["0.86.1"]},{"id":"grok","enabled":true,"verified_versions":["0.9.2"]}]}\n' >"$OVAI"
+# gx OVERLAY CMD... -> wrun in the 4.2 fixture with the second stub dir first on PATH and OVERLAY as the policy overlay
+# (XAI_API_KEY is a dummy: the grok stub never sends it anywhere)
+gx() { local ov="$1"; shift; wrun "$WG" env PATH="$STUB2:$STUB:$PATH" APEX_DISPATCH_POLICY="$ov" XAI_API_KEY=stub-not-a-key "$@"; }
+groute() { local o; o="$(cd "$WG" && wenv env PATH="$STUB2:$STUB:$PATH" APEX_DISPATCH_POLICY="$1" bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+  [ "$(val ROUTE_STATUS "$o")" = READY ] && [ "$(val ROUTE_PROVIDER "$o")" = "$2" ] || fail "the 4.2 fixture did not route to $2: $o"; GRID="$(val ROUTE_ID "$o")"; GSD="$(dirname "$(dirname "$(val ROUTE_FILE "$o")")")"; }
+gdoc() { (cd "$WG" && wenv env PATH="$STUB2:$STUB:$PATH" APEX_DISPATCH_POLICY="$1" XAI_API_KEY=stub-not-a-key bash "$DOCTOR" --state "$GSD" --repo "$WG" >"$WORK/gdoc.out" 2>&1) || true; }
+nlog() { ls "$SLOG" | wc -l | tr -d ' '; }
+
+# 71. the flagged-off shims and the openai-sdk stub ship; the default policy keeps grok/opencode/aider off with
+#     their auto-approve equivalents forbidden; the stub refuses with 6 and runs nothing
+for f in bin/worker-grok.sh bin/worker-opencode.sh bin/worker-aider.sh bin/worker-openai-sdk.sh; do
+  [ -x "$PLUGIN_ROOT/$f" ] && bash -n "$PLUGIN_ROOT/$f" || fail "$f is missing, not executable or does not parse"
+done
+python3 - "$PLUGIN_ROOT/resources/compiled/policy.json" "$PLUGIN_ROOT/scripts/lib" <<'PY' || fail "the default policy does not keep grok/opencode/aider flagged off with their auto-approve flags forbidden"
+import json, sys
+pol = {p["id"]: p for p in json.load(open(sys.argv[1]))["providers"]}
+sys.path.insert(0, sys.argv[2]); import ledger
+for pid in ("grok", "opencode-ollama", "aider-ollama"):
+    p = pol[pid]
+    assert p["enabled"] is False and p["status"] == "flagged-off" and p["kind"] == "subprocess" and not p.get("verified_versions"), p
+    assert not set(p["forced_flags"]) & set(p["forbidden_flags"]), p
+a, g, o = pol["aider-ollama"], pol["grok"], pol["opencode-ollama"]
+assert {"--yes-always", "--yes", "--auto-commits"} <= set(a["forbidden_flags"]) and not any(f.startswith("--yes") for f in a["forced_flags"])
+assert {"--no-auto-commits", "--no-dirty-commits", "--no-git"} <= set(a["forced_flags"])
+assert {"--yolo", "--dangerously-skip-permissions", "--always-approve", "--auto-approve", "--worktree"} <= set(g["forbidden_flags"]) and "--worktree" not in g["forced_flags"]
+assert g["roles_allowed"] == ["reviewer", "diagnoser"] and ["--sandbox", "strict"] == g["forced_flags"][1:3]
+assert {"--auto", "--yolo"} <= set(o["forbidden_flags"]) and o["model"].startswith("ollama/") and a["model"].startswith("ollama/")
+assert pol["openai-sdk"]["kind"] == "stub" and pol["openai-sdk"]["enabled"] is False
+assert ledger.shim_name("opencode-ollama") == "worker-opencode.sh" and ledger.shim_provider("worker-aider.sh") == "aider-ollama"
+assert ledger.shim_provider("worker-codex.sh") == "codex" and ledger.shim_provider("worker-common.sh") is None
+PY
+N0="$(nlog)"; WRC=0; bash "$SDKW" --route r --role docs --brief "$WORK/wbrief.md" >"$WORK/sdk.out" 2>"$WORK/sdk.err" || WRC=$?
+[ "$WRC" = 6 ] && grep -q 'not-implemented' "$WORK/sdk.err" && [ ! -s "$WORK/sdk.out" ] && [ "$(nlog)" = "$N0" ] || fail "worker-openai-sdk.sh did not refuse with 6 (rc=$WRC)"
+if grep -nE 'import (urllib|http|socket|requests|openai)|curl |wget ' "$SDKW"; then fail "the openai-sdk stub carries network code"; fi
+# Fixture: a [docs] task routed to the local providers (Route: provider=local), with an export-ignore'd file.
+WG="$WORK/wg"; mkdir -p "$WG/plans" "$WG/docs"; git init -q -b main "$WG"
+printf '# G\n\n- [ ] **Phase 1.1** [docs] refresh the local guide\n  - Acceptance: `true`\n  - Route: provider=local\n  - Paths: docs/**\n' >"$WG/plans/p.md"
+printf '.dev-plan-state/\n' >"$WG/.gitignore"; echo guide >"$WG/docs/guide.md"; echo hidden >"$WG/docs/hidden.md"
+printf 'docs/hidden.md export-ignore\n' >"$WG/.gitattributes"; git -C "$WG" add -A; git -C "$WG" commit -qm wg
+(cd "$WG" && wenv bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the 4.2 fixture"
+groute "" claude-session; GWT="$GSD/worktree"; GD="$GSD/dispatch"
+gx "" bash -c 'source "$1"; apex_worker_main openai-sdk --route "$2" --role docs --brief "$3"' _ "$PLUGIN_ROOT/bin/worker-common.sh" "$GRID" "$WORK/wbrief.md"
+[ "$WRC" = 6 ] && grep -q 'not-implemented: provider openai-sdk is a stub seam' "$WORK/w.err" || fail "the engine did not refuse the stub provider with 6 (rc=$WRC: $(cat "$WORK/w.err"))"
+for w in "$OCW --role docs" "$AIW --role docs" "$GKW --role reviewer"; do
+  # shellcheck disable=SC2086
+  gx "" bash ${w% --role *} --route "$GRID" --role "${w##* --role }" --brief "$WORK/wbrief.md"
+  [ "$WRC" = 3 ] && grep -q 'disabled in the policy (status flagged-off)' "$WORK/w.err" || fail "$(basename "${w% --role *}") ran with the default policy (rc=$WRC: $(cat "$WORK/w.err"))"
+done
+[ "$(nlog)" = "$N0" ] || fail "a provider stub ran during the 4.2 refusals"
+pass "4.2 shims ship (grok/opencode/aider flagged off, auto-approve equivalents forbidden, --worktree/--yes dropped); worker-openai-sdk.sh and the engine refuse the stub with 6 and run nothing; the flagged-off shims refuse under the default policy (3)"
+
+# 72. per-version gate: an overlay that only enables a flagged-off provider is refused; enabled with a
+#     verified_versions list that does not hold doctor's installed version is refused; doctor records both facts
+gx "$OVN" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q 'no per-version smoke is recorded' "$WORK/w.err" || fail "an enabled but smoke-less opencode was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
+groute "$OVA" opencode-ollama
+gdoc "$OVM"
+python3 -c 'import json,sys; o=json.load(open(sys.argv[1]))["providers"]["opencode-ollama"]; assert o["available"] and o["version"]=="1.2.3" and o["version_verified"] is False and o["shim_file"]=="bin/worker-opencode.sh" and o["verified_versions"]==["9.9.9"], o' "$GD/doctor.json" \
+  || fail "doctor did not record opencode's installed version as unverified: $(cat "$WORK/gdoc.out")"
+gx "$OVM" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q "verified_versions (9.9.9) does" "$WORK/w.err" || fail "opencode ran at a version the overlay does not list (rc=$WRC: $(cat "$WORK/w.err"))"
+gdoc "$OVA"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["providers"]; assert all(d[p]["version_verified"] is True and d[p]["available"] for p in ("opencode-ollama","aider-ollama","grok")), d' "$GD/doctor.json" \
+  || fail "doctor did not verify the listed versions: $(cat "$WORK/gdoc.out")"
+[ "$(nlog)" = "$N0" ] || fail "a provider stub ran during the per-version refusals"
+pass "flagged-off providers run only with the overlay's enabled + verified_versions matching doctor's installed version (refusals 3 otherwise); doctor records version_verified"
+
+# 73. opencode write worker: exactly the policy's command (forced flags, --dir = the throwaway worktree, the policy
+#     model, the brief last), a generated permission config via OPENCODE_CONFIG (owned Paths only, no ask); apply.sh
+#     commits it; a brief over 120 KiB is refused with 2 and still leaves result.json
+echo edit >"$STUB/mode"; GH0="$(git -C "$GWT" rev-parse HEAD)"
+gx "$OVA" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] && [ "$(printf '%s\n' "$WOUT" | tail -1)" = "DISPATCH-DONE exit=0" ] || fail "the opencode worker failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+GO1="$(val WORKER_OUT "$WOUT")"
+python3 - "$(lastlog)" "$GO1" "$GD" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "the opencode command, config or result is wrong"
+import json, os, sys
+log, out, gd = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+p = next(x for x in json.load(open(sys.argv[4]))["providers"] if x["id"] == "opencode-ollama")
+a = log["argv"]
+assert log["bin"] == "opencode" and a[:len(p["forced_flags"])] == p["forced_flags"], a
+assert os.path.realpath(a[a.index("--dir") + 1]) == os.path.realpath(log["cwd"]) and os.path.realpath(log["cwd"]).startswith(os.path.realpath(gd) + "/worktrees/")
+assert a[a.index("--model") + 1] == p["model"] and a[-1].startswith("Refresh docs/guide.md"), a
+for f in p["forbidden_flags"]:
+    assert not any(x == f or x.startswith(f + "=") for x in a), f
+assert log["config_path"] == os.path.join(out, "opencode.jsonc") and "SMOKE_SECRET" not in log["env"]
+perm = log["config"]["permission"]
+assert perm["edit"] == {"docs/**": "allow", "*": "deny"} and perm["external_directory"] == "deny" and perm["webfetch"] == "deny", perm
+assert perm["bash"]["git push*"] == "deny" and "ask" not in json.dumps(log["config"]), log["config"]
+r = json.load(open(os.path.join(out, "result.json")))
+assert r["provider"] == "opencode-ollama" and r["family"] == "local" and r["ok"] and r["files_changed"] == ["docs/guide.md"], r
+assert r["usage"] == {"input": 100, "output": 20, "cache_read": 5} and r["model"] == p["model"], r
+PY
+wrun "$WG" bash "$APPLY" --worker "$GO1"; [ "$WRC" = 0 ] || fail "apply.sh refused the opencode patch (rc=$WRC: $(cat "$WORK/w.err"))"
+git -C "$GWT" log -1 --format=%B | grep -q 'Dispatch-Provider: opencode-ollama' && grep -q 'opencode edit' "$GWT/docs/guide.md" || fail "the opencode patch was not committed with its trailers"
+python3 -c 'import sys; open(sys.argv[1], "w").write("Refresh docs/guide.md.\n" + "x" * (125 * 1024))' "$WORK/bigbrief.md"
+N1="$(nlog)"; R0="$(shimrows "$GD/ledger.jsonl" worker_run route_id="$GRID")"
+gx "$OVA" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/bigbrief.md"
+GOB="$(val WORKER_OUT "$WOUT")"
+[ "$WRC" = 2 ] && [ "$(printf '%s\n' "$WOUT" | tail -1)" = "DISPATCH-DONE exit=2" ] && grep -q 'capped at 122880 bytes' "$WORK/w.err" || fail "a 125 KiB argv brief was not refused with 2 (rc=$WRC: $WOUT $(cat "$WORK/w.err"))"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["ok"] is False and r["exit_code"]==2 and "122880" in r["refused"] and r["verdict"] is None and not r["sentinel_seen"], r' "$GOB/result.json" || fail "the refused oversized brief left no result.json"
+[ "$(nlog)" = "$N1" ] && [ "$(shimrows "$GD/ledger.jsonl" worker_run route_id="$GRID")" = "$R0" ] || fail "an oversized brief reached the provider or spent a worker_run row"
+pass "opencode write worker: the policy's command only (forced flags, --dir worktree, policy model, brief last, nothing forbidden), OPENCODE_CONFIG permissions (owned Paths, no ask, no push/webfetch/outside dirs), usage parsed, applied with trailers; a >120 KiB argv brief is refused (2) with result.json and the sentinel, nothing run or ledgered"
+
+# 74. aider write worker: --config/--env-file generated in the out dir (the repo's .aider.conf.yml and .env are never
+#     read), --message-file, the policy model, the owned tracked files after --, never --yes/--yes-always, stdin closed
+groute "$OVAI" aider-ollama; gdoc "$OVAI"
+printf 'yes-always: true\n' >"$GWT/.aider.conf.yml"; git -C "$GWT" add .aider.conf.yml; git -C "$GWT" commit -qm 'repo aider config'
+echo edit >"$STUB/mode"
+gx "$OVAI" bash "$AIW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] || fail "the aider worker failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+GA1="$(val WORKER_OUT "$WOUT")"
+python3 - "$(lastlog)" "$GA1" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "the aider command or result is wrong"
+import json, os, sys
+log, out = json.load(open(sys.argv[1])), sys.argv[2]
+p = next(x for x in json.load(open(sys.argv[3]))["providers"] if x["id"] == "aider-ollama")
+a = log["argv"]
+assert log["bin"] == "aider" and a[:len(p["forced_flags"])] == p["forced_flags"], a
+assert a[a.index("--config") + 1] == os.path.join(out, "aider.conf.yml") and a[a.index("--env-file") + 1] == os.path.join(out, "aider.env")
+assert a[a.index("--message-file") + 1] == os.path.join(out, "brief.md") and a[a.index("--model") + 1] == p["model"]
+assert a[a.index("--") + 1:] == ["docs/guide.md", "docs/hidden.md"], a
+for f in p["forbidden_flags"]:
+    assert not any(x == f or x.startswith(f + "=") for x in a), f
+assert "yes-always: false" in log["config"] and log["message"].startswith("Refresh docs/guide.md") and log["stdin"] == ""
+r = json.load(open(os.path.join(out, "result.json")))
+assert r["provider"] == "aider-ollama" and r["ok"] and r["usage"] is None and r["usage_source"] is None and r["files_changed"] == ["docs/guide.md"], r
+PY
+pass "aider write worker: generated --config/--env-file (repo config never read), --message-file, the policy model, owned tracked files after --, no --yes/--yes-always, stdin closed, no usage reported"
+
+# 75. grok: refused for builder roles; a reviewer runs read-only on a checkout-index snapshot that keeps
+#     export-ignore'd files, with the run-only settings (dontAsk) present, never --worktree; shim verdict row
+gx "$OVAI" bash "$GKW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q 'provider grok does not take role docs' "$WORK/w.err" || fail "grok was allowed a builder role (rc=$WRC: $(cat "$WORK/w.err"))"
+wrun "$WG" bash "$APPLY" --worker "$GA1"; [ "$WRC" = 0 ] || fail "apply.sh refused the aider patch (rc=$WRC: $(cat "$WORK/w.err"))"
+(cd "$WG" && wenv bash "$EXS/green-gate.sh" plans/p.md check >/dev/null 2>&1) || fail "green-gate check failed in the 4.2 fixture"
+(cd "$WG" && bash "$EXS/risk-tier.sh" plans/p.md 3 --since "$(jget "$GSD/checkpoint.json" fork_sha)" >/dev/null 2>&1) || fail "risk-tier.sh failed in the 4.2 fixture"
+echo approve >"$STUB/mode"
+gx "$OVAI" bash "$GKW" --route "$GRID" --role reviewer --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] && [ "$(val WORKER_VERDICT "$WOUT")" = APPROVE ] || fail "the grok reviewer failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+GGR="$(val WORKER_OUT "$WOUT")"; GHR="$(git -C "$GWT" rev-parse HEAD)"
+python3 - "$(lastlog)" "$GGR" "$PLUGIN_ROOT/resources/compiled/policy.json" "$GHR" <<'PY' || fail "the grok reviewer command, confinement or result is wrong"
+import json, os, sys
+log, out, head = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[4]
+p = next(x for x in json.load(open(sys.argv[3]))["providers"] if x["id"] == "grok")
+a = log["argv"]
+assert log["bin"] == "grok" and a[:len(p["forced_flags"])] == p["forced_flags"] and "--worktree" not in a, a
+assert a[a.index("--prompt-file") + 1] == os.path.join(out, "brief.md") and log["prompt"].startswith("Refresh docs/guide.md")
+for f in p["forbidden_flags"]:
+    assert not any(x == f or x.startswith(f + "=") for x in a), f
+assert log["settings"]["permissions"]["defaultMode"] == "dontAsk" and log["settings"]["sandbox"]["profile"]["extends"] == "strict", log["settings"]
+assert "XAI_API_KEY" in log["env"] and "SMOKE_SECRET" not in log["env"]
+assert "docs/hidden.md" in log["files"] and "docs/guide.md" in log["files"] and not any(f.startswith(".git/") or f == ".git" for f in log["files"]), log["files"]
+assert not os.path.exists(log["cwd"]), "the snapshot was kept"
+r = json.load(open(os.path.join(out, "result.json")))
+assert r["provider"] == "grok" and r["family"] == "xai" and r["verdict"] == "APPROVE" and r["mode"] == "readonly" and r["head_sha"] == head, r
+assert r["confinement"]["kind"] == "git-checkout-index-snapshot" and r["model"] == "grok-4" and r["max_budget_usd"] is None, r
+PY
+[ "$(shimrows "$GD/ledger.jsonl" verdict route_id="$GRID" provider=grok verdict=APPROVE head_sha="$GHR")" = 1 ] || fail "no shim verdict row for the grok review"
+pass "grok: no builder roles; a reviewer runs read-only on a checkout-index snapshot that keeps export-ignore'd files, with the run-only dontAsk settings and the policy's flags (never --worktree); verdict parsed from stream-json, shim verdict row"
+
+# 76. doctor reports the new providers (shim file, roles, classes, verified versions), rejects the colliding
+#     @vibe-kit/grok-cli; second_families needs a verified provider that may review the route's class
+python3 - "$GD/doctor.json" <<'PY' || fail "doctor.json does not report the 4.2 providers' facts"
+import json, sys
+d = json.load(open(sys.argv[1])); p = d["providers"]
+g, ai, oc, sdk = p["grok"], p["aider-ollama"], p["opencode-ollama"], p["openai-sdk"]
+assert g["shim_file"] == "bin/worker-grok.sh" and g["roles_allowed"] == ["reviewer", "diagnoser"] and g["allowed_classes"] == ["docs", "tests"] and g["version_verified"], g
+assert ai["shim"] and ai["version"] == "0.86.1" and ai["auth"] == "n/a" and ai["auth_ok"], ai
+assert not oc["enabled"] and oc["shim_file"] == "bin/worker-opencode.sh", oc
+assert sdk["shim"] and sdk["kind"] == "stub" and not sdk["available"], sdk
+assert "grok" not in d["second_families"], d["second_families"]          # grok may not review class security
+PY
+VK="$WORK/vk"; mkdir -p "$VK"; printf '#!/bin/sh\necho "grok-cli 1.0.0 (@vibe-kit/grok-cli)"\n' >"$VK/grok"; chmod +x "$VK/grok"
+(cd "$WG" && wenv env PATH="$VK:$STUB2:$STUB:$PATH" APEX_DISPATCH_POLICY="$OVA" bash "$DOCTOR" --state "$WORK/vks" --repo "$WG" >/dev/null 2>&1) || true
+python3 -c 'import json,sys; g=json.load(open(sys.argv[1]))["providers"]["grok"]; assert g.get("colliding") and not g["available"] and "vibe-kit" in g["why"], g' "$WORK/vks/dispatch/doctor.json" \
+  || fail "doctor did not reject the colliding @vibe-kit/grok-cli binary"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$PLUGIN_ROOT" <<'PY' || fail "ledger.second_families does not require a verified provider allowed to review the route's class"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+root = sys.argv[2]
+e = lambda **k: dict({"enabled": True, "available": True, "auth_ok": True, "verified": False, "version_verified": True,
+                      "roles_allowed": ["reviewer"], "allowed_classes": ["docs"]}, **k)
+sf = lambda prov, cls=None: ledger.second_families({"providers": {"grok": prov}}, root, cls=cls)
+assert sf(e(), "docs") == ["grok"] and sf(e()) == ["grok"], sf(e(), "docs")
+assert sf(e(), "security") == [], "class not allowed still counted"
+assert sf(e(allowed_classes=["any"]), "security") == ["grok"], "'any' not honoured"
+assert sf(e(roles_allowed=["diagnoser"]), "docs") == [], "a provider that may not review counted"
+assert sf(e(version_verified=False), "docs") == [], "an unverified version counted"
+assert sf(e(verified=True, version_verified=False), "docs") == ["grok"]
+assert ledger.second_families({"providers": {"grok": {"enabled": True, "available": True, "auth_ok": True, "verified": True}}}, root) == [], "a pre-0.3.0 doctor.json (no roles) counted"
+PY
+grep -q 'second_families(doc, droot, cls=' "$EXS/checkpoint.sh" || fail "checkpoint.sh complete does not pass the route's class to second_families"
+pass "doctor: shim_file/roles/classes/verified_versions/version_verified per provider, the colliding @vibe-kit/grok-cli rejected; second_families requires verification, the reviewer role and the route's class (or any); checkpoint passes the class"
+
+# 77. pre-bash: the shim engine's entry points (python .../scripts/lib/worker.py, source/. of worker-common.sh,
+#     apex-dispatch's scripts/apply.sh) run only from the orchestrator or provider-runner; per-provider forbidden
+#     flags on the new shims are denied through the shim -> provider map (payloads fed from files)
+PJG="$WORK/p42"; mkdir -p "$PJG"; n=0
+gpb() { n=$((n + 1)); pl bash "$GWT" "$@" >"$PJG/$n.json"; (cd "$GWT" && bash "$PLUGIN_ROOT/hooks/pre-bash.sh" <"$PJG/$n.json" 2>/dev/null) | one; }
+for c in "python3 $PLUGIN_ROOT/scripts/lib/worker.py run grok a b c d -- --route r" "python3 -B scripts/lib/worker.py apply a b c d -- --worker x" \
+         "source $PLUGIN_ROOT/bin/worker-common.sh" ". ./bin/worker-common.sh" "bash $APPLY --worker x" \
+         "bash -c 'source $PLUGIN_ROOT/bin/worker-common.sh; apex_worker_main grok --route r'"; do
+  [ "$(gpb "$c" agent_type=apex-dispatch:builder agent_id=b9)" = deny ] || fail "a builder was allowed the shim engine: $c"
+  [ "$(gpb "$c" agent_type=apex-dispatch:tester)" = deny ] || fail "a tester worker session was allowed the shim engine: $c"
+  [ "$(gpb "$c")" = "{}" ] || fail "the orchestrator was denied the shim engine: $c"
+  [ "$(gpb "$c" agent_type=apex-dispatch:provider-runner agent_id=pr2)" = "{}" ] || fail "provider-runner was denied the shim engine: $c"
+done
+[ "$(gpb 'python3 tools/worker.py --help' agent_type=apex-dispatch:builder agent_id=b9)" = "{}" ] || fail "an unrelated worker.py was treated as the shim engine"
+for c in "bash $AIW --route r --role docs --brief b --yes-always" "bash bin/worker-grok.sh --route r --role reviewer --brief b --worktree" "bash $OCW --route r --role docs --brief b --auto"; do
+  [ "$(gpb "$c")" = deny ] || fail "a provider-forbidden flag on a 4.2 shim was allowed: $c"
+done
+pass "pre-bash: python .../scripts/lib/worker.py, source/. worker-common.sh and scripts/apply.sh only from the orchestrator or provider-runner; forbidden flags on worker-aider/grok/opencode.sh denied via the shim map"
+
+# 78. compile --target codex: committed artifacts in sync; a stale or missing one is named; --out writes the four
+#     files; the deny hook denies the policy's patterns and flags and allows ordinary commands (JSON fed from files)
+bash "$COMPILE" --target codex --check >/dev/null 2>"$WORK/cx.err" || fail "compile --target codex --check: $(cat "$WORK/cx.err")"
+bash "$COMPILE" --check >"$WORK/cx2.out" 2>&1 && grep -q '14 artifacts up to date' "$WORK/cx2.out" || fail "the default --check changed with the codex target: $(cat "$WORK/cx2.out")"
+CXO="$WORK/codex-home"; bash "$COMPILE" --target codex --out "$CXO" >/dev/null || fail "compile --target codex --out failed"
+for f in AGENTS.md config.toml hooks.json apex-dispatch-deny.py; do cmp -s "$CXO/$f" "$PLUGIN_ROOT/resources/compiled/codex/$f" || fail "--out $f differs from the committed codex artifact"; done
+printf '\n' >>"$CXO/AGENTS.md"; rm "$CXO/hooks.json"
+if bash "$COMPILE" --target codex --out "$CXO" --check >/dev/null 2>"$WORK/cx3.err"; then fail "a stale codex target passed --check"; fi
+grep -q "stale: $CXO/AGENTS.md" "$WORK/cx3.err" && grep -q "missing: $CXO/hooks.json" "$WORK/cx3.err" || fail "codex --check did not name the stale/missing files: $(cat "$WORK/cx3.err")"
+[ "$(bash "$COMPILE" --out "$CXO" >/dev/null 2>&1; echo $?)" = 2 ] && [ "$(bash "$COMPILE" --target nope >/dev/null 2>&1; echo $?)" = 2 ] || fail "--out without --target codex or an unknown target is not a usage error"
+python3 - "$PLUGIN_ROOT/resources/compiled/codex" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "the codex artifacts do not mirror the policy"
+import json, os, sys
+d, pol = sys.argv[1], json.load(open(sys.argv[2]))
+md, toml, hk = open(os.path.join(d, "AGENTS.md")).read(), open(os.path.join(d, "config.toml")).read(), json.load(open(os.path.join(d, "hooks.json")))
+for r in pol["roles"]:
+    assert ("### %s" % r["id"] in md) == r["enabled"], r["id"]
+for f in next(p for p in pol["providers"] if p["id"] == "codex")["forbidden_flags"]:
+    assert "`%s`" % f in md, f
+assert '[profiles.apex-dispatch-build]\napproval_policy = "never"\nsandbox_mode = "workspace-write"' in toml and 'sandbox_mode = "read-only"' in toml
+h = hk["hooks"]["PreToolUse"][0]
+assert "apex-dispatch-deny.py" in h["hooks"][0]["command"] and h["hooks"][0]["timeout"] == 10 and "Bash" in h["matcher"]
+assert os.access(os.path.join(d, "apex-dispatch-deny.py"), os.X_OK)
+PY
+CXJ="$WORK/cxj"; mkdir -p "$CXJ"; k=0
+cxd() { k=$((k + 1)); python3 -c 'import json,sys; print(json.dumps({"tool_name": "Bash", "tool_input": {"command": sys.argv[1]}}))' "$1" >"$CXJ/$k.json"
+  local rc=0; python3 "$PLUGIN_ROOT/resources/compiled/codex/apex-dispatch-deny.py" <"$CXJ/$k.json" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
+for c in 'codex exec --dangerously-bypass-approvals-and-sandbox x' 'aider --yes-always --message m' 'git push --force origin main' 'claude -p --bare hi' 'ls; grok -p --worktree' 'npm test --yolo'; do
+  [ "$(cxd "$c")" = 2 ] || fail "the codex deny hook allowed: $c"
+done
+for c in 'ls -a' 'git status' 'git clone --bare x y' 'pytest -q' 'echo yes'; do
+  [ "$(cxd "$c")" = 0 ] || fail "the codex deny hook denied: $c"
+done
+printf 'not json' >"$CXJ/bad.json"; python3 "$PLUGIN_ROOT/resources/compiled/codex/apex-dispatch-deny.py" <"$CXJ/bad.json" >/dev/null 2>&1 || fail "the codex deny hook failed closed on garbage stdin"
+pass "compile --target codex: committed AGENTS.md/config.toml/hooks.json/deny hook in sync (--check names stale/missing), --out writes them, default --check unchanged; the hook denies the deny globs, bypass flags and per-CLI forbidden flags and allows ordinary commands"
+
+# 79. report.sh --compare (routed vs baseline: tasks, spawns, USD/solved, tiers, review rounds, approval rates,
+#     insufficient n / no baseline data) and --decision (agreement, or no decision data); text and --json
+RS="$WORK/rstate"; mkdir -p "$RS"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$RS" <<'PY' || fail "could not build the comparison ledger"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+st = sys.argv[2]
+def route(rid, mode, cls, tier, dec=None, tc=None):
+    d = {"route_id": rid, "status": "READY", "origin": "plan", "router": {"class": cls, "tier": tier}, "line": int(rid.split("-L")[1].split("-")[0])}
+    if dec: d["decision"] = dec
+    if tc: d["table_choice"] = tc
+    ledger.append(st, "route", d, "cli", route_id=rid, route_mode=mode)
+def run(rid, usd):
+    ledger.append(st, "worker_run", {"route_id": rid, "provider": "codex", "role": "docs", "exit_code": 0, "usage": {"input": 1, "output": 1}, "usd": usd}, "shim", route_id=rid, route_mode="table")
+def verdict(rid, v, head):
+    ledger.append(st, "verdict", {"route_id": rid, "role": "reviewer", "verdict": v}, "shim", route_id=rid, route_mode="table", head_sha=head)
+ledger.append(st, "baseline", {"label": "baseline@0.3.0"}, "cli", route_mode="baseline")
+A, B, C = "a" * 40, "b" * 40, "c" * 40
+route("r-0123456789ab-L3-1", "table", "docs", "cheap", dec={"backend": "fake", "verdict": "docs", "calibrated": False, "max_p": 0.9, "decision_id": "d1"})
+run("r-0123456789ab-L3-1", 0.10); verdict("r-0123456789ab-L3-1", "APPROVE", A)
+route("r-0123456789ab-L4-1", "table", "docs", "cheap", dec={"backend": "fake", "verdict": "feature", "calibrated": False, "max_p": 0.6, "decision_id": "d2", "fallback": "uncalibrated_cheaper"})
+run("r-0123456789ab-L4-1", 0.30); verdict("r-0123456789ab-L4-1", "REQUEST_CHANGES", A); verdict("r-0123456789ab-L4-1", "APPROVE", B)
+route("r-0123456789ab-L5-1", "baseline", "baseline", "inherit", tc={"class": "docs", "tier": "cheap"})
+run("r-0123456789ab-L5-1", 0.50); run("r-0123456789ab-L5-1", 0.50); verdict("r-0123456789ab-L5-1", "APPROVE", C)
+route("r-0123456789ab-L6-1", "shadow", "baseline", "inherit", tc={"class": "docs", "tier": "cheap"})
+run("r-0123456789ab-L6-1", 0.20); verdict("r-0123456789ab-L6-1", "REQUEST_CHANGES", C)
+PY
+O="$(bash "$REPORT" --state "$RS" --compare baseline 2>&1)" || fail "report.sh --compare failed: $O"
+has '^REPORT_COMPARE: insufficient n (min n 20 per arm; baseline labels: baseline@0.3.0)' "$O" && has '^REPORT_COMPARE_ROUTED: tasks=2 spawns=2 ' "$O" \
+  && has '^REPORT_COMPARE_BASELINE: tasks=2 spawns=3 ' "$O" && has '^REPORT_COMPARE_CLASS: docs routed=2' "$O" && has '^REPORT_COMPARE_SHADOW_ROUTED_CHOICE: docs/cheap=1' "$O" \
+  || fail "report.sh --compare text is wrong: $O"
+bash "$REPORT" --state "$RS" --compare --json | python3 -c '
+import json, sys
+c = json.load(sys.stdin)["compare"]; a, b, d = c["routed"], c["baseline"], c["delta_routed_minus_baseline"]
+assert c["status"] == "insufficient n" and c["min_n"] == 20, c["status"]
+assert a["tasks"] == 2 and a["usd_per_solved_task"] == 0.2 and a["approval_rate"] == 1.0 and a["first_round_approval_rate"] == 0.5 and a["review_rounds_per_task"] == 1.5 and a["tiers"] == {"cheap": 2}, a
+assert b["tasks"] == 2 and b["usd_per_solved_task"] == 1.2 and b["approval_rate"] == 0.5 and b["tiers"] == {"inherit": 2} and b["spawns_per_task"] == 1.5, b
+assert d["approval_rate_pts"] == 50.0 and round(d["usd_per_solved_task_pct"], 1) == -83.3, d
+' || fail "report.sh --compare --json numbers are wrong"
+O="$(bash "$REPORT" --state "$RS" --decision 2>&1)"
+has '^REPORT_DECISION: 2 row(s); agreement 50.0%; moved the route 0; uncertain 0; backends fake=2' "$O" && has 'route=r-0123456789ab-L4-1 said=feature routed=docs .* DISAGREE' "$O" \
+  && has '^REPORT_DECISION_CONFIDENCE: p0.5-0.8 n=1 agreement 0.0%, p>=0.8 n=1 agreement 100.0%' "$O" || fail "report.sh --decision text is wrong: $O"
+bash "$REPORT" --state "$RS" --decision --compare --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+x = d["decision"]
+assert x["status"] == "ok" and x["agreement"]["agreement_rate"] == 0.5 and x["by_calibration"]["uncalibrated"]["n"] == 2 and x["approval_when_agree"] == 1.0 and x["fallbacks"] == {"uncalibrated_cheaper": 1}, x
+assert d["compare"]["status"] == "insufficient n"' || fail "report.sh --decision --json is wrong"
+O="$(bash "$REPORT" --state "$GSD" --compare --decision 2>&1)"
+has '^REPORT_COMPARE: no baseline data' "$O" && has '^REPORT_DECISION: no decision data' "$O" || fail "report.sh on a table-only ledger did not say no baseline/decision data: $O"
+O="$(bash "$REPORT" --state "$RS" --compare --baseline-state "$GSD" 2>&1)"; has '^REPORT_COMPARE: no baseline data' "$O" || fail "--baseline-state was not used as the baseline arm: $O"
+[ "$(bash "$REPORT" --state "$RS" --baseline-state "$GSD" >/dev/null 2>&1; echo $?)" = 2 ] || fail "--baseline-state without --compare is not a usage error"
+has '^REPORT_ROUTES: 4' "$(bash "$REPORT" --state "$RS")" || fail "the plain report changed"
+pass "report.sh --compare: routed vs baseline/shadow arms (tasks, spawns, USD per solved task, tiers, review rounds, approval and first-round rates, deltas, shadow counterfactuals, insufficient n / no baseline data, --baseline-state); --decision: agreement by calibration and confidence, fallbacks, or no decision data; text and --json"
+
+# 80. carried worker hardening: never-touch is case-insensitive and covers .envrc; the reviewer USD floor and the
+#     argv brief cap are constants of the engine; `[blocking] none found` / `(none)` do not block an APPROVE
+python3 - "$PLUGIN_ROOT/scripts/lib" <<'PY' || fail "the carried worker hardening is missing"
+import sys
+sys.path.insert(0, sys.argv[1]); import worker, hooks
+for p in (".ENV", "docs/.Env.local", ".envrc", "sub/.EnvRC", ".Claude/Settings.json", ".CLAUDE/apex-dispatch/x", "Hooks/Hooks.json", ".Dev-Plan-State/x", "keys/ID_RSA"):
+    assert worker.path_problem(p, None) and "never-touch" in worker.path_problem(p, None), p
+for p in ("docs/environment.md", "src/envrc.py", ".claude/commands/x.md", "hooks/useThing.ts"):
+    assert worker.path_problem(p, None) is None, p
+assert worker.ARGV_BRIEF_MAX == 120 * 1024 and worker.REVIEWER_MIN_USD == 2.0 and worker.EXIT_NOT_IMPLEMENTED == 6
+assert set(worker.SHIM_PROVIDERS) == {"claude-p", "codex", "grok", "opencode-ollama", "aider-ollama"}
+src = open(worker.__file__).read()
+assert "dontAsk denies the rest" not in src and "permissions.allow" in src and '"archive", "--format=tar"' not in src
+ok = lambda m: hooks.parse_review(m)[0]
+assert ok("Fine.\n[blocking] none found\nVERDICT: APPROVE") == "APPROVE"
+assert ok("- [blocking] (none)\nVERDICT: APPROVE") == "APPROVE"
+assert ok("[blocking] a.py:3 crashes on empty input\nVERDICT: APPROVE") == "REQUEST_CHANGES"
+PY
+pass "carried hardening: case-insensitive never-touch incl. .envrc (own .claude/commands and hooks/ source stay applicable), reviewer USD floor 2.0, 120 KiB argv brief cap, exit 6 for stubs, corrected dontAsk comment, no git archive; [blocking] none found/(none) do not block"
+
+# 81. docs: ADR-0001 and README document the 4.2 surface and the deviations; commands describe the new modes
+for t in 'Flagged-off providers (Phase 4.2, v0.3.0)' 'openai-sdk stub (v0.3.0)' 'Codex target (v0.3.0' 'Measurement (v0.3.0' 'Pre-registered minimum n: 20' "Deviation: apply's never-touch list is narrower than the spec's" 'verified_versions'; do
+  grep -qF "$t" "$ADR" || fail "ADR-0001 does not document: $t"
+done
+for t in 'bin/worker-grok.sh' 'worker-openai-sdk.sh' '--target codex' '--compare' '--decision' 'verified_versions'; do grep -qF -- "$t" "$R" || fail "README does not document $t"; done
+grep -qF -- '--compare' "$PLUGIN_ROOT/commands/report.md" && grep -qF -- '--decision' "$PLUGIN_ROOT/commands/report.md" && grep -qF -- '--target codex' "$PLUGIN_ROOT/commands/compile.md" \
+  || fail "commands/report.md or compile.md do not describe the new modes"
+pass "docs: ADR-0001 (flagged-off providers, stub, codex target, measurement with min n, never-touch deviation), README and the report/compile commands describe the 4.2 surface"
 
 echo ""
 echo "smoke passed: $N/$N checks"

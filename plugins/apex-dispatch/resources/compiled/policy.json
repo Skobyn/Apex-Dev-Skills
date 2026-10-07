@@ -585,16 +585,23 @@
       "family": "xai",
       "forbidden_flags": [
         "--dangerously-skip-permissions",
-        "--yolo"
+        "--yolo",
+        "--always-approve",
+        "--auto-approve",
+        "--no-sandbox",
+        "--worktree"
       ],
       "forced_flags": [
         "-p",
         "--sandbox",
         "strict",
-        "--worktree",
         "--no-subagents",
         "--output-format",
-        "streaming-messages-json"
+        "streaming-messages-json",
+        "--deny",
+        "Bash(git push*)",
+        "--deny",
+        "Bash(curl*)"
       ],
       "hosts": [
         "api.x.ai"
@@ -606,8 +613,6 @@
       "min_acceptance": 0.7,
       "reports_usage": true,
       "roles_allowed": [
-        "docs",
-        "tester",
         "reviewer",
         "diagnoser"
       ],
@@ -624,7 +629,10 @@
       "enabled": false,
       "family": "local",
       "forbidden_flags": [
-        "--dangerously-skip-permissions"
+        "--dangerously-skip-permissions",
+        "--yolo",
+        "--auto",
+        "--auto-approve"
       ],
       "forced_flags": [
         "run",
@@ -637,6 +645,7 @@
       "kind": "subprocess",
       "max_tier": "cheap",
       "min_acceptance": 0.7,
+      "model": "ollama/qwen2.5-coder:7b",
       "reports_usage": false,
       "roles_allowed": [
         "docs",
@@ -655,11 +664,15 @@
       "enabled": false,
       "family": "local",
       "forbidden_flags": [
+        "--yes-always",
+        "--yes",
         "--auto-commits",
-        "--dirty-commits"
+        "--dirty-commits",
+        "--git",
+        "--auto-lint",
+        "--auto-test"
       ],
       "forced_flags": [
-        "--yes",
         "--no-auto-commits",
         "--no-dirty-commits",
         "--no-git",
@@ -672,6 +685,7 @@
       "kind": "subprocess",
       "max_tier": "cheap",
       "min_acceptance": 0.7,
+      "model": "ollama/qwen2.5-coder:7b",
       "reports_usage": false,
       "roles_allowed": [
         "docs",

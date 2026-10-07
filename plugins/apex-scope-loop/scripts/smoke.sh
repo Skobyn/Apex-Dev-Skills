@@ -1429,8 +1429,9 @@ for l in correctness security consent-pii money performance maintainability; do
   i="n$(printf '%s' "$l" | tr -dc a-z)"; raw "$i" "lens:$l"; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id "$i" >/dev/null) || fail "new-head lens $l refused"
 done
 raw nadv adversarial; (cd "$P3" && "$CP" plans/c-plan.md review 1 "$(p3sha)" APPROVE rv --agent-id nadv >/dev/null) || fail "new-head adversarial refused"
-# Diversity: a second family counts only when doctor shows it available AND its bin/worker-*.sh shim ships.
-printf '{"claude_p_auth": "available", "providers": {"claude-p": {"enabled": true, "available": true}}}' >"$P3S/dispatch/doctor.json"
+# Diversity: a second family counts only when doctor shows it available (and, since apex-dispatch 0.3.0,
+# verified, allowed to review and allowed the route's class) AND its bin/worker-*.sh shim ships.
+printf '{"claude_p_auth": "available", "providers": {"claude-p": {"enabled": true, "available": true, "verified": true, "roles_allowed": ["reviewer"], "allowed_classes": ["security"]}}}' >"$P3S/dispatch/doctor.json"
 mkdir -p "$SMOKE_TMP/fd43/bin"; printf '#!/bin/sh\nexit 0\n' >"$SMOKE_TMP/fd43/bin/worker-claude-p.sh"; chmod +x "$SMOKE_TMP/fd43/bin/worker-claude-p.sh"
 expect_refusal "Tier C without a second family while its shim ships" "family diversity (block)" indir "$P3" APEX_DISPATCH_ROOT="$SMOKE_TMP/fd43" "$CP" plans/c-plan.md complete 1 ok
 rm -f "$SMOKE_TMP/fd43/bin/worker-claude-p.sh"

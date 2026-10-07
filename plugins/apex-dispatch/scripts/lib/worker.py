@@ -13,8 +13,10 @@ and scripts/apply.sh, never directly:
 stage, budget or doctor.json says no; builds the provider command only from the
 overlay-merged policy (forced flags + structured fields; the caller passes no
 flags of its own); confines the run (write mode: a detached `git worktree` off
-the plan worktree HEAD under <D>/worktrees/; read-only mode: a `git archive`
-snapshot there); scrubs the environment to an allowlist; wraps the provider in
+the plan worktree HEAD under <D>/worktrees/; read-only mode: a plain-file
+snapshot of HEAD there, written by `git read-tree` + `git checkout-index` into a
+throwaway index, so export-ignore/export-subst attributes cannot drop or rewrite
+files the reviewer must see); scrubs the environment to an allowlist; wraps the provider in
 `timeout`; writes <out>/result.json, patch.diff (write mode), stdout.log,
 stderr.log; appends `worker_run` (and, for reviewers, `verdict`) ledger rows
 in-process with source `shim`; prints `DISPATCH-DONE exit=N` last.
@@ -27,7 +29,11 @@ Exit codes (run): 0 the provider finished (exit 0, output parsed); 1 it ran and
 failed (non-zero exit, timeout, truncated or unparseable output: result.json
 still written); 2 usage; 3 refused by policy, route, stage or budget; 4 the
 provider is unavailable (doctor.json missing or says the CLI or its auth is
-unavailable, or the binary is gone); 5 confinement could not be set up.
+unavailable, or the binary is gone); 5 confinement could not be set up;
+6 the provider is a stub seam with no runner (openai-sdk: not implemented).
+A brief too large to pass as one argv string to an argv-brief provider (codex,
+opencode: over ARGV_BRIEF_MAX) is a usage refusal (2) that still writes
+result.json (ok false, `refused`) and prints the sentinel.
 Exit codes (apply): 0 applied; 1 refused (the patch is kept under
 <D>/rejected/); 2 usage; 3 refused before inspection (no run, stage, route).
 """
@@ -42,7 +48,6 @@ import os  # noqa: E402
 import re  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
-import tarfile  # noqa: E402
 import time  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -52,14 +57,26 @@ import hooks  # noqa: E402  (Ctx, parse_review, live_agents, set_stage, glob_re,
 import ledger  # noqa: E402  (the single ledger writer)
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_REFUSED, EXIT_UNAVAILABLE, EXIT_CONFINE = 0, 1, 2, 3, 4, 5
+EXIT_NOT_IMPLEMENTED = 6
 
 # Shim roles: builder-side roles write (a throwaway worktree, applied with
 # apply.sh); reviewers and diagnosers are read-only (a snapshot) and never write.
 WRITE_ROLES = {"builder", "tester", "docs"}
 READ_ROLES = {"reviewer", "adversarial-reviewer", "diagnoser"}
 REVIEW_ROLES = {"reviewer", "adversarial-reviewer"}
-SHIM_PROVIDERS = ("claude-p", "codex")                 # the shims this plugin ships
+# The subprocess shims this plugin ships (bin/<ledger.SHIMS[pid]>); openai-sdk's
+# shim is a stub that refuses (exit 6) and never reaches the engine's runner.
+SHIM_PROVIDERS = ("claude-p", "codex", "grok", "opencode-ollama", "aider-ollama")
 MAX_BRIEF_BYTES = 256 * 1024
+# Providers that take the brief as one argv string (codex `-- "<brief>"`, opencode
+# `run [message]`). Linux caps one argument at MAX_ARG_STRLEN (128 KiB); above this
+# the run is refused with exit 2 (result.json still written) rather than relying
+# on an unverified stdin form of the CLI.
+ARGV_BRIEF_PROVIDERS = ("codex", "opencode-ollama")
+ARGV_BRIEF_MAX = 120 * 1024
+# A claude -p reviewer/diagnoser gets at least this --max-budget-usd: a reviewer
+# reads the whole diff, so a docs class's builder budget ($0.50) would truncate it.
+REVIEWER_MIN_USD = 2.0
 FALLBACK_USD = 1.00          # baseline/shadow routes carry no USD budget: cap a claude -p run here
 FALLBACK_MINUTES = 30        # ... and no minutes budget
 KILL_AFTER_SEC = 5
@@ -70,19 +87,24 @@ ENV_ALLOW = {"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TZ
              "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "ALL_PROXY", "all_proxy",
              "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE",
              "APEX_STATE_ROOT", "APEX_SCOPE_LOOP_ROOT", "APEX_HALT"}
-ENV_PROVIDER = {"claude-p": {"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"}, "codex": {"CODEX_HOME"}}
-NEVER_TOUCH = (
-    (re.compile(r"(^|/)\.dev-plan-state(/|$)"), "run state (.dev-plan-state/)"),
-    (re.compile(r"(^|/)\.git(/|$)"), "git internals (.git)"),
-    (re.compile(r"(^|/)\.claude/apex-dispatch(/|$)"), ".claude/apex-dispatch/"),
-    (re.compile(r"(^|/)\.claude/settings[^/]*\.json$"), ".claude/settings*.json"),
-    (re.compile(r"(^|/)\.claude/hooks(/|$)"), ".claude/hooks/"),
-    (re.compile(r"(^|/)hooks/hooks\.json$"), "hooks/hooks.json (hook registrations)"),
-    (re.compile(r"(^|/)\.mcp\.json$"), ".mcp.json"),
-    (re.compile(r"(^|/)\.gitmodules$"), ".gitmodules"),
-    (re.compile(r"(^|/)\.env(\.[^/]*)?$"), "a .env secrets file"),
-    (re.compile(r"(^|/)(id_rsa|id_ecdsa|id_ed25519)[^/]*$|\.pem$"), "a private key file"),
-)
+ENV_PROVIDER = {"claude-p": {"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"}, "codex": {"CODEX_HOME"},
+                "grok": {"GROK_HOME"}, "opencode-ollama": {"OLLAMA_HOST"},
+                "aider-ollama": {"OLLAMA_HOST", "OLLAMA_API_BASE"}}
+# Case-insensitive: on a case-insensitive filesystem (macOS, Windows) .ENV or
+# .Claude/Settings.json is the same file as the protected one.
+NEVER_TOUCH = tuple((re.compile(rx, re.I), what) for rx, what in (
+    (r"(^|/)\.dev-plan-state(/|$)", "run state (.dev-plan-state/)"),
+    (r"(^|/)\.git(/|$)", "git internals (.git)"),
+    (r"(^|/)\.claude/apex-dispatch(/|$)", ".claude/apex-dispatch/"),
+    (r"(^|/)\.claude/settings[^/]*\.json$", ".claude/settings*.json"),
+    (r"(^|/)\.claude/hooks(/|$)", ".claude/hooks/"),
+    (r"(^|/)hooks/hooks\.json$", "hooks/hooks.json (hook registrations)"),
+    (r"(^|/)\.mcp\.json$", ".mcp.json"),
+    (r"(^|/)\.gitmodules$", ".gitmodules"),
+    (r"(^|/)\.env(\.[^/]*)?$", "a .env secrets file"),
+    (r"(^|/)\.envrc$", "a .envrc (direnv runs it on cd)"),
+    (r"(^|/)(id_rsa|id_ecdsa|id_ed25519)[^/]*$|\.pem$", "a private key file"),
+))
 
 
 class Refuse(Exception):
@@ -152,14 +174,25 @@ def provider_policy(ctx, pid, plugin_root):
     p = provs.get(pid)
     if not p:
         raise Refuse(EXIT_REFUSED, "provider %s is not in the policy" % pid)
+    if p.get("kind") == "stub":
+        raise Refuse(EXIT_NOT_IMPLEMENTED, "provider %s is a stub seam (status %s): not implemented; no runner exists "
+                                           "(see bin/%s)" % (pid, p.get("status"), ledger.shim_name(pid)))
     if p.get("kind") != "subprocess":
         raise Refuse(EXIT_REFUSED, "provider %s is %s, not a subprocess worker" % (pid, p.get("kind")))
     if not p.get("enabled"):
         raise Refuse(EXIT_REFUSED, "provider %s is disabled in the policy (status %s)" % (pid, p.get("status")))
-    if p.get("status") != "verified" and not explicitly_enabled(pid):
-        raise Refuse(EXIT_REFUSED, "provider %s has status %s, not verified, and this repository's overlay does not "
-                                   "enable it explicitly (.claude/apex-dispatch/policy.json providers[%s].enabled: true)"
-                     % (pid, p.get("status"), pid))
+    if p.get("status") != "verified":
+        # Flagged-off providers (grok, opencode, aider): the overlay must enable them
+        # explicitly AND attest a passed per-version smoke (verified_versions); the
+        # installed version is matched against that list in doctor_gate.
+        if not explicitly_enabled(pid):
+            raise Refuse(EXIT_REFUSED, "provider %s has status %s, not verified, and this repository's overlay does not "
+                                       "enable it explicitly (.claude/apex-dispatch/policy.json providers[%s].enabled: true)"
+                         % (pid, p.get("status"), pid))
+        if not p.get("verified_versions"):
+            raise Refuse(EXIT_REFUSED, "provider %s has status %s and no per-version smoke is recorded: after the smoke "
+                                       "passes on the installed version, list it under the overlay's "
+                                       "providers[%s].verified_versions" % (pid, p.get("status"), pid))
     if pid not in SHIM_PROVIDERS:
         raise Refuse(EXIT_REFUSED, "no worker shim is shipped for provider %s (shipped: %s)" % (pid, ", ".join(SHIM_PROVIDERS)))
     return p
@@ -197,6 +230,10 @@ def doctor_gate(ctx, pid, p):
     elif not e.get("auth_ok"):
         raise Refuse(EXIT_UNAVAILABLE, "doctor.json shows no auth for %s (%s unset and no credentials file)"
                      % (pid, p.get("key_env")))
+    if p.get("status") != "verified" and e.get("version") not in (p.get("verified_versions") or []):
+        raise Refuse(EXIT_REFUSED, "provider %s %s is installed (doctor.json) but the overlay's verified_versions (%s) does "
+                                   "not list it: run the per-version smoke on this version first"
+                     % (pid, e.get("version") or "(version unknown)", ", ".join(p.get("verified_versions") or []) or "none"))
     name = os.environ.get("APEX_CLAUDE_BIN") or "claude" if p.get("binary") == "claude" else p.get("binary")
     path = shutil.which(name)
     if not path:
@@ -236,7 +273,11 @@ def build_claude_p(ctx, p, binary, role, mode, router, usd, cwd, out):
         variants = (ctx.roles().get("builder") or {}).get("effort_variants") or []
         agent = "builder-%s" % eff if eff in variants else "builder"
     rp = ctx.roles().get(agent) or ctx.roles().get(role) or {}
-    # Pre-approved tools: the role's own tools, never Bash (dontAsk denies the rest).
+    # Pre-approved tools: the role's own tools, never Bash. dontAsk denies whatever is
+    # neither pre-approved here nor allowed by the user's own permissions.allow:
+    # `--setting-sources user` loads ~/.claude/settings.json, so a user-level allow
+    # rule widens what runs without a prompt. The bounds that hold regardless are the
+    # agent's tools/disallowedTools frontmatter, the deny rules and the hooks.
     tools = [t for t in rp.get("tools") or [] if t not in ("Bash", "Agent")]
     if mode == "readonly":
         tools = [t for t in tools if t in ("Read", "Grep", "Glob")]
@@ -258,7 +299,86 @@ def build_codex(ctx, p, binary, role, mode, router, usd, cwd, out):
     return argv, {"model": "provider-default", "tier": None, "agent": None, "stdin": "devnull", "brief_arg": True}
 
 
-BUILDERS = {"claude-p": build_claude_p, "codex": build_codex}
+GROK_SETTINGS = {
+    # Written into the confined directory for the run only (restored before the diff),
+    # because the grok CLI alone cannot set dontAsk (spec §5.4). Shape per the spec's
+    # grok row; unverified until grok's per-version smoke.
+    "permissions": {"defaultMode": "dontAsk", "deny": ["Bash(git push*)", "Bash(curl*)", "Bash(wget*)"]},
+    "sandbox": {"enabled": True, "failIfUnavailable": True, "profile": {"extends": "strict"}},
+}
+
+
+def build_grok(ctx, p, binary, role, mode, router, usd, cwd, out):
+    """grok -p --prompt-file <brief> + the policy's forced flags (--sandbox strict,
+    --no-subagents, stream-json, --deny rules). No --worktree: the shim's throwaway
+    worktree is the confinement, and grok's own worktree would put its edits
+    outside the captured patch (the policy forbids the flag)."""
+    argv = [binary] + list(p.get("forced_flags") or []) + ["--prompt-file", os.path.join(out, "brief.md")]
+    if p.get("model"):
+        argv += ["--model", p["model"]]
+    files = {os.path.join(".claude", "settings.json"): json.dumps(GROK_SETTINGS, indent=2, sort_keys=True) + "\n"}
+    return argv, {"model": p.get("model") or "provider-default", "tier": None, "agent": None, "stdin": "devnull",
+                  "worktree_files": files}
+
+
+def opencode_config(ctx, mode):
+    """opencode permissions: no `ask` anywhere (nothing needs auto-approval), edits
+    only inside the owned Paths, no git push/commit, no network fetch, nothing
+    outside the directory. Passed through OPENCODE_CONFIG from the out dir, so it is
+    never part of the patch."""
+    globs = owned_globs(ctx) if mode == "write" else None
+    if mode != "write":
+        edit = "deny"
+    elif globs:
+        edit = dict([(g, "allow") for g in globs] + [("*", "deny")])
+    else:
+        edit = "allow"
+    return {"$schema": "https://opencode.ai/config.json", "share": "disabled", "autoupdate": False,
+            "permission": {"edit": edit, "webfetch": "deny", "external_directory": "deny",
+                           "bash": {"git push*": "deny", "git commit*": "deny", "git config*": "deny",
+                                    "curl*": "deny", "wget*": "deny", "*": "allow" if mode == "write" else "deny"}}}
+
+
+def build_opencode(ctx, p, binary, role, mode, router, usd, cwd, out):
+    cfg = os.path.join(out, "opencode.jsonc")
+    with open(cfg, "w", encoding="utf-8") as f:
+        json.dump(opencode_config(ctx, mode), f, indent=2, sort_keys=True)
+        f.write("\n")
+    argv = [binary] + list(p.get("forced_flags") or []) + ["--dir", cwd, "--model", p.get("model") or "ollama/unset"]
+    return argv, {"model": p.get("model"), "tier": None, "agent": None, "stdin": "devnull", "brief_arg": True,
+                  "env": {"OPENCODE_CONFIG": cfg}}
+
+
+AIDER_CONFIG = ("# generated by apex-dispatch worker.py: the only config aider reads for this run\n"
+                "auto-commits: false\ndirty-commits: false\ngit: false\nauto-lint: false\nauto-test: false\n"
+                "yes-always: false\ncheck-update: false\n")
+
+
+def build_aider(ctx, p, binary, role, mode, router, usd, cwd, out):
+    """aider --message-file <brief> with a generated --config and an empty
+    --env-file, so the repository's .aider.conf.yml (which can run commands at
+    startup) and .env are never read. Never --yes-always: confirmations meet a
+    closed stdin. The owned Paths' tracked files are passed after `--` so aider can
+    edit them without asking to add them."""
+    conf, envf = os.path.join(out, "aider.conf.yml"), os.path.join(out, "aider.env")
+    with open(conf, "w", encoding="utf-8") as f:
+        f.write(AIDER_CONFIG)
+    open(envf, "w").close()
+    argv = [binary] + list(p.get("forced_flags") or []) + ["--config", conf, "--env-file", envf,
+                                                            "--message-file", os.path.join(out, "brief.md"),
+                                                            "--model", p.get("model") or "ollama/unset"]
+    globs = owned_globs(ctx) or []
+    if mode == "write" and globs:
+        r = git(cwd, "ls-files", "-z")
+        names = [x for x in r.stdout.decode("utf-8", "replace").split("\0") if x] if r.returncode == 0 else []
+        files = [x for x in names if not x.startswith("-") and any(hooks.glob_re(g).match(x) for g in globs)][:50]
+        if files:
+            argv += ["--"] + files
+    return argv, {"model": p.get("model"), "tier": None, "agent": None, "stdin": "devnull"}
+
+
+BUILDERS = {"claude-p": build_claude_p, "codex": build_codex, "grok": build_grok,
+            "opencode-ollama": build_opencode, "aider-ollama": build_aider}
 
 
 def scrub_env(pid, p, extra=None):
@@ -331,6 +451,55 @@ def parse_codex(stdout_text, last_md):
     return {"sentinel": done, "error": failed, "text": text, "usage": usage, "usd": None, "model": model}
 
 
+def parse_opencode(stdout_text, rc):
+    """opencode run --format json: JSON events (shape unverified until the per-version
+    smoke): finished = exit 0 with at least one JSON event and no error event; text =
+    the last `text` string seen; usage = the last `tokens` object, if any."""
+    events, text, usage, failed = 0, None, None, False
+    for ln in stdout_text.splitlines():
+        try:
+            e = json.loads(ln)
+        except ValueError:
+            continue
+        if not isinstance(e, dict):
+            continue
+        events += 1
+        if e.get("type") == "error" or e.get("error"):
+            failed = True
+        stack = [e]
+        while stack:
+            x = stack.pop()
+            if isinstance(x, dict):
+                if isinstance(x.get("text"), str):
+                    text = x["text"]
+                t = x.get("tokens")
+                if isinstance(t, dict):
+                    cache = t.get("cache") if isinstance(t.get("cache"), dict) else {}
+                    usage = hooks.norm_usage({"input_tokens": t.get("input"), "output_tokens": t.get("output"),
+                                              "cache_read_input_tokens": cache.get("read")})
+                stack.extend(v for v in x.values() if isinstance(v, (dict, list)))
+            elif isinstance(x, list):
+                stack.extend(x)
+    return {"sentinel": rc == 0 and events > 0, "error": failed, "text": text, "usage": usage, "usd": None, "model": None}
+
+
+def parse_aider(stdout_text, rc):
+    """aider has no structured output and reports no usage: exit 0 is the finish
+    signal and the run is costed by wall-clock only."""
+    tail = stdout_text[-20000:] if stdout_text else None
+    return {"sentinel": rc == 0, "error": False, "text": tail, "usage": None, "usd": None, "model": None}
+
+
+def parse_output(pid, stdout_text, out, rc):
+    if pid in ("claude-p", "grok"):                     # the same (stream-)json result shape
+        return parse_claude(stdout_text)
+    if pid == "codex":
+        return parse_codex(stdout_text, os.path.join(out, "result.last.md"))
+    if pid == "opencode-ollama":
+        return parse_opencode(stdout_text, rc)
+    return parse_aider(stdout_text, rc)
+
+
 def usd_estimate(ctx, model, usage, reported):
     if reported is not None:
         return reported
@@ -342,21 +511,24 @@ def usd_estimate(ctx, model, usage, reported):
 
 
 def extract_snapshot(repo, sha, dest):
-    """Read-only confinement: the tree at sha as plain files (no .git), via git archive."""
+    """Read-only confinement: the tree at sha as plain files (no .git). `git
+    read-tree` into a throwaway index, then `git checkout-index --all` into dest:
+    unlike `git archive`, export-ignore and export-subst attributes neither drop
+    nor rewrite files, so the reviewer sees exactly the committed tree (gitlinks,
+    i.e. submodules, are not checked out)."""
     os.makedirs(dest)
-    r = subprocess.run(["git", "-C", repo, "archive", "--format=tar", sha], capture_output=True, timeout=300)
-    if r.returncode != 0:
-        raise Refuse(EXIT_CONFINE, "git archive failed: %s" % r.stderr.decode("utf-8", "replace").strip()[:300])
-    import io
-    with tarfile.open(fileobj=io.BytesIO(r.stdout), mode="r:") as tf:
-        for m in tf.getmembers():
-            n = m.name
-            if n.startswith("/") or ".." in n.split("/") or not (m.isfile() or m.isdir() or m.issym()):
-                raise Refuse(EXIT_CONFINE, "unexpected archive member %r" % n)
-        if hasattr(tarfile, "data_filter"):
-            tf.extractall(dest, filter="data")
-        else:
-            tf.extractall(dest)
+    idx = dest.rstrip("/") + ".index"
+    env = dict(os.environ, GIT_INDEX_FILE=idx)
+    for k in ("GIT_DIR", "GIT_WORK_TREE"):
+        env.pop(k, None)
+    try:
+        git(repo, "read-tree", sha, check=True, timeout=300, env=env)
+        git(repo, "checkout-index", "--all", "--force", "--prefix=%s/" % dest.rstrip("/"), check=True, timeout=300, env=env)
+    finally:
+        try:
+            os.remove(idx)
+        except OSError:
+            pass
 
 
 def remove_tree(path):
@@ -364,6 +536,30 @@ def remove_tree(path):
 
 
 # ---------------------------------------------------------------------- run ----
+
+def refuse_recorded(ctx, pid, p, role, mode, rid, head, out, run_id, msg):
+    """A refusal after the out dir exists: result.json (ok false, `refused`) and
+    worker.json say why, the sentinel is printed, no ledger row is written (nothing
+    ran, so no spawn budget is spent) and the exit is 2 (usage)."""
+    ts = now_ts()
+    result = {"schema": 1, "source": "shim", "record_id": None, "run_id": run_id, "provider": pid,
+              "family": p.get("family"), "model": None, "tier": None, "agent": None, "role": role, "worker_role": role,
+              "mode": mode, "route": rid, "route_id": rid, "head_sha": head, "sha": head, "base_sha": head,
+              "verdict": None, "lens": None, "usage": None, "usage_source": None, "usd_estimate": None,
+              "exit_code": EXIT_USAGE, "exit": EXIT_USAGE, "timed_out": False, "sentinel_seen": False, "ok": False,
+              "refused": msg, "files_changed": [], "patch": None, "patch_sha256": None, "wall_ms": 0,
+              "started_at": ts, "ended_at": ts}
+    write_json(os.path.join(out, "result.json"), result, exclusive=True)
+    write_json(os.path.join(out, "worker.json"), {"run_id": run_id, "provider": pid, "role": role, "mode": mode,
+                                                  "route_id": rid, "base_sha": head, "out": out, "started_at": ts,
+                                                  "status": "refused", "refused_reason": msg[:300]})
+    print("DISPATCH-REFUSED: usage: %s" % msg, file=sys.stderr)
+    print("WORKER_RUN: %s" % run_id)
+    print("WORKER_OUT: %s" % out)
+    print("WORKER_RESULT: %s" % os.path.join(out, "result.json"))
+    print("DISPATCH-DONE exit=%d" % EXIT_USAGE)
+    return EXIT_USAGE
+
 
 def cmd_run(pid, plugin_root, state_base, exec_scripts, repo_root, argv):
     a = opts(argv, {"--route", "--role", "--brief", "--mode", "--base", "--out", "--timeout-sec"},
@@ -458,8 +654,10 @@ def cmd_run(pid, plugin_root, state_base, exec_scripts, repo_root, argv):
             usd_cap, minutes = usd_budget or FALLBACK_USD, mins_budget or FALLBACK_MINUTES
     else:
         # Reviewers and diagnosers: bounded by the review shape and the three-round cap,
-        # not the builders' budget; each run gets the route's per-run caps.
-        usd_cap, minutes = usd_budget or FALLBACK_USD, mins_budget or FALLBACK_MINUTES
+        # not the builders' budget; each run gets the route's per-run caps, and a
+        # claude -p reviewer at least REVIEWER_MIN_USD (the class's builder budget
+        # would cut a reading of the whole diff short).
+        usd_cap, minutes = max(usd_budget or FALLBACK_USD, REVIEWER_MIN_USD), mins_budget or FALLBACK_MINUTES
         if role in REVIEW_ROLES and enforcing:
             if ctx.owner.get("kind") == "adhoc":
                 if hooks.worktree_dirty(wt_plan):
@@ -497,6 +695,12 @@ def cmd_run(pid, plugin_root, state_base, exec_scripts, repo_root, argv):
         os.mkdir(out)
     except FileExistsError:
         raise Refuse(EXIT_USAGE, "--out %s already exists (one directory per worker run)" % out)
+    nbytes = len(brief.encode("utf-8"))
+    if pid in ARGV_BRIEF_PROVIDERS and nbytes > ARGV_BRIEF_MAX:
+        return refuse_recorded(ctx, pid, p, role, mode, rid, head, out, run_id,
+                               "the brief is %d bytes; %s takes it as one argument, capped at %d bytes (the kernel's "
+                               "per-argument limit is 128 KiB): shorten it or route to claude-p, which reads it on stdin"
+                               % (nbytes, pid, ARGV_BRIEF_MAX))
     if role in REVIEW_ROLES and enforcing and ctx.stage != "REVIEW":
         hooks.set_stage(ctx, "REVIEW")
 
@@ -517,7 +721,7 @@ def cmd_run(pid, plugin_root, state_base, exec_scripts, repo_root, argv):
         else:
             extract_snapshot(wt_plan, head, confine)
         home = os.environ.get("HOME") or ""
-        confinement = {"kind": "git-worktree" if mode == "write" else "git-archive-snapshot", "path": confine,
+        confinement = {"kind": "git-worktree" if mode == "write" else "git-checkout-index-snapshot", "path": confine,
                        "os_sandbox": "absent" if home and os.access(home, os.W_OK) else "present-or-home-readonly",
                        "env": "scrubbed-allowlist"}
         argv, meta = BUILDERS[pid](ctx, p, binary, role, mode, router, usd_cap, confine, out)
@@ -529,7 +733,19 @@ def cmd_run(pid, plugin_root, state_base, exec_scripts, repo_root, argv):
         with open(os.path.join(out, "brief.md"), "w", encoding="utf-8") as f:
             f.write(brief)
         extra = {"APEX_DISPATCH_WORKER_WT": confine} if (pid == "claude-p" and mode == "write") else {}
+        extra.update(meta.get("env") or {})
         env = scrub_env(pid, p, extra)
+        saved = {}
+        for rel, text in (meta.get("worktree_files") or {}).items():
+            fp = os.path.join(confine, rel)
+            try:
+                with open(fp, "rb") as f:
+                    saved[rel] = f.read()
+            except OSError:
+                saved[rel] = None
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write(text)
         timeout_bin = shutil.which("timeout")
         if not timeout_bin:
             raise Refuse(EXIT_CONFINE, "coreutils `timeout` is required for the wall-clock budget")
@@ -541,11 +757,21 @@ def cmd_run(pid, plugin_root, state_base, exec_scripts, repo_root, argv):
             finally:
                 if stdin is not subprocess.DEVNULL:
                     stdin.close()
+                for rel, old in saved.items():            # the run-only settings never reach the patch
+                    fp = os.path.join(confine, rel)
+                    if old is None:
+                        try:
+                            os.remove(fp)
+                        except OSError:
+                            pass
+                    else:
+                        with open(fp, "wb") as f:
+                            f.write(old)
         wall_ms = int((time.monotonic() - t0) * 1000)
         timed_out = rc in (124, 137)
         with open(os.path.join(out, "stdout.log"), encoding="utf-8", errors="replace") as f:
             stdout_text = f.read()
-        parsed = parse_claude(stdout_text) if pid == "claude-p" else parse_codex(stdout_text, os.path.join(out, "result.last.md"))
+        parsed = parse_output(pid, stdout_text, out, rc)
         ok = rc == 0 and parsed.get("sentinel") and not parsed.get("error")
         files, patch_sha, patch = [], None, None
         if mode == "write":
@@ -594,7 +820,7 @@ def cmd_run(pid, plugin_root, state_base, exec_scripts, repo_root, argv):
                   "max_budget_usd": round(usd_cap, 2) if pid == "claude-p" else None}
         if stale:
             result["stale"] = stale
-        if pid == "claude-p" and parsed.get("text") is not None:
+        if pid != "codex" and parsed.get("text") is not None:
             with open(os.path.join(out, "result.last.md"), "w", encoding="utf-8") as f:
                 f.write(parsed["text"])
             result["text_file"] = "result.last.md"
@@ -787,7 +1013,7 @@ def main(argv):
               file=sys.stderr)
         return EXIT_USAGE
     except Refuse as r:
-        word = "usage" if r.code == EXIT_USAGE else ("unavailable" if r.code == EXIT_UNAVAILABLE else "refused")
+        word = {EXIT_USAGE: "usage", EXIT_UNAVAILABLE: "unavailable", EXIT_NOT_IMPLEMENTED: "not-implemented"}.get(r.code, "refused")
         print("DISPATCH-REFUSED: %s: %s" % (word, r), file=sys.stderr)
         return r.code
     except ledger.LedgerError as e:

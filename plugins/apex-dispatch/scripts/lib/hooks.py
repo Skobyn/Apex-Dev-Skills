@@ -1191,6 +1191,33 @@ def resolve_target(ctx, cwd, prefix, t):
     return os.path.normpath(os.path.join(base, t))
 
 
+def engine_entry(ctx, c, cwd, prefix):
+    """The worker engine entry point this command runs, or None: `python*
+    .../scripts/lib/worker.py`, `source`/`.` of bin/worker-common.sh, or
+    apex-dispatch's scripts/apply.sh (run directly or through a shell). String
+    matching on the command (trust model: non-malicious agents, not a sandbox)."""
+    b, a = c.base, c.args
+    if re.fullmatch(r"python[0-9.]*", b):
+        for x in a:
+            if re.search(r"(^|/)scripts/lib/worker\.py$", x) or (
+                    os.path.basename(x) == "worker.py"
+                    and real(resolve_target(ctx, cwd, prefix, x)) == real(os.path.join(ctx.plugin_root, "scripts", "lib", "worker.py"))):
+                return "scripts/lib/worker.py (the shim engine)"
+    if b in ("source", ".") and a and os.path.basename(a[0]) == "worker-common.sh":
+        return "bin/worker-common.sh (the shim library)"
+    apply_py = real(os.path.join(ctx.plugin_root, "scripts", "apply.sh"))
+    cand = [c.words[0]] if c.words else []
+    if b in SHELLS and a:
+        cand.append(next((x for x in a if not x.startswith("-")), ""))
+    for x in cand:
+        if not x.endswith("apply.sh"):
+            continue
+        if re.search(r"(apex-dispatch|CLAUDE_PLUGIN_ROOT\}?)/scripts/apply\.sh$", x) or (
+                "$" not in x and real(resolve_target(ctx, cwd, prefix, x)) == apply_py):
+            return "scripts/apply.sh"
+    return None
+
+
 def bash_rules(ctx, p, cmd, depth=0, prefix=""):
     """Raise Deny on the first rule a command string breaks. Recurses into nested command strings."""
     if depth > 4:
@@ -1218,13 +1245,18 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
         for w in ([] if c.base in TEXT_TOOLS else c.words):
             if w.startswith(BYPASS_PREFIXES) or any(re.search(r"(^|[=\s])" + re.escape(s) + r"\b", w) for s in BYPASS_SUBSTRINGS):
                 raise Deny("bypass flag %s is forbidden" % w)
-        # 3. Provider CLIs only through bin/worker-*.sh.
+        # 3. Provider CLIs only through bin/worker-*.sh. The shims, the engine behind
+        #    them (python scripts/lib/worker.py, sourcing bin/worker-common.sh) and
+        #    scripts/apply.sh run only from the orchestrator or provider-runner.
         b = c.base
+        engine = engine_entry(ctx, c, cwd, prefix)
+        if engine and role and role != "provider-runner":
+            raise Deny("%s runs only from the orchestrator or provider-runner, not %s" % (engine, role))
         if re.fullmatch(r"worker-[a-z0-9-]+\.sh", b) or (b in SHELLS and c.args and re.search(r"(^|/)bin/worker-[a-z0-9-]+\.sh$", c.args[0])):
             shim = b if b.startswith("worker-") else os.path.basename(c.args[0])
             if role and role != "provider-runner":
                 raise Deny("provider shims run only from the orchestrator or provider-runner, not %s" % role)
-            prov = providers.get(shim[len("worker-"):-3]) or {}
+            prov = providers.get(ledger.shim_provider(shim)) or {}
             for f in prov.get("forbidden_flags") or []:
                 if f in c.args or any(a.startswith(f + "=") for a in c.args):
                     raise Deny("flag %s is forbidden for provider %s" % (f, prov.get("id")))

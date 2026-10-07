@@ -105,16 +105,43 @@ def enforcing(root=None):
     return os.path.isfile(os.path.join(root or plugin_root(), "hooks", "subagent-stop.sh"))
 
 
-def second_families(doc, root=None):
+# Provider id -> the bin/ shim that runs it (spec §5.4). The local-model
+# providers' ids name their backend (opencode-ollama), their shims the CLI.
+SHIMS = {"claude-p": "worker-claude-p.sh", "codex": "worker-codex.sh", "grok": "worker-grok.sh",
+         "opencode-ollama": "worker-opencode.sh", "aider-ollama": "worker-aider.sh",
+         "openai-sdk": "worker-openai-sdk.sh"}
+
+
+def shim_name(pid):
+    """The bin/ file name of provider pid's shim (worker-<pid>.sh when unmapped)."""
+    return SHIMS.get(pid, "worker-%s.sh" % pid)
+
+
+def shim_provider(name):
+    """The provider id a bin/worker-*.sh file name runs, or None."""
+    for pid, n in SHIMS.items():
+        if n == name:
+            return pid
+    m = re.fullmatch(r"worker-([a-z0-9-]+)\.sh", name or "")
+    return m.group(1) if m and m.group(1) != "common" else None
+
+
+def second_families(doc, root=None, cls=None):
     """Providers that give a Tier C review a second reviewer family *now* (spec
     §5.2 step 7): enabled and available in doctor.json with their auth OK
     (claude-p: claude_p_auth "available"; any other: auth_ok true), not refusing
-    their forced flags (flags_ok not false), not the in-session provider, AND
-    shipped as an executable bin/worker-<provider>.sh in this plugin, because
+    their forced flags (flags_ok not false), not the in-session provider,
+    verified (policy status verified, or a flagged-off provider whose installed
+    version the overlay lists under verified_versions: version_verified true),
+    allowed to review (roles_allowed includes reviewer) and, when the route's
+    class `cls` is known, allowed that class (allowed_classes includes it, or
+    "any"), AND shipped as an executable bin/ shim in this plugin, because
     pre-bash.sh lets provider CLIs run only through those shims. doctor.py
-    (tier_c_diversity) and apex-scope-loop's checkpoint.sh complete both use this
-    one rule; an empty list means diversity degrades to a ledgered warning, never
-    a stall."""
+    (tier_c_diversity, class security) and apex-scope-loop's checkpoint.sh
+    complete (the route's class) both use this one rule; an empty list means
+    diversity degrades to a ledgered warning, never a stall. A doctor.json
+    written before 0.3.0 carries no roles_allowed and so names no family until
+    doctor.sh is re-run."""
     root = root or plugin_root()
     doc = doc if isinstance(doc, dict) else {}
     out = []
@@ -123,12 +150,19 @@ def second_families(doc, root=None):
             continue
         if v.get("flags_ok") is False:
             continue
+        if not (v.get("verified") is True or v.get("version_verified") is True):
+            continue
+        if "reviewer" not in (v.get("roles_allowed") or []):
+            continue
+        classes = v.get("allowed_classes") or []
+        if cls and cls not in classes and "any" not in classes:
+            continue
         if pid == "claude-p":
             if doc.get("claude_p_auth") != "available":
                 continue
         elif v.get("auth_ok") is not True:
             continue
-        shim = os.path.join(root, "bin", "worker-%s.sh" % pid)
+        shim = os.path.join(root, "bin", shim_name(pid))
         if os.path.isfile(shim) and os.access(shim, os.X_OK):
             out.append(pid)
     return out
