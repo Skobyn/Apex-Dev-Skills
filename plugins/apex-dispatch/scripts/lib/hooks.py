@@ -1391,7 +1391,13 @@ def subagent_start(ctx, p):
 
 VERDICT_LINE_RE = re.compile(r"^verdict\s*:\s*(.*)$", re.I)
 APPROVE_RE = re.compile(r"approve[.!]?", re.I)                 # exactly APPROVE (any case)
+# APPROVE, then a separator, then a remark: "APPROVE (non-blocking nits only)", "APPROVE — nits".
+APPROVE_REMARK_RE = re.compile(r"approve\s*[(\[—–:,;-]", re.I)
 CHANGES_RE = re.compile(r"request[ _-]?changes\b", re.I)      # trailing text allowed
+REQUEST_TOKEN_RE = re.compile(r"request", re.I)
+APPROVE_TOKEN_RE = re.compile(r"approve", re.I)
+QUOTE_OPENERS = ("`", '"', "'", "\u201c", "\u2018")
+FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
 LENS_RE = re.compile(r"^LENS:\s*(.{1,60})$", re.I)
 # The six canonical lenses (and the adversarial pass); anything else is no lens.
 LENSES = ("correctness", "security", "consent-pii", "money", "performance", "maintainability")
@@ -1409,22 +1415,53 @@ def canonical_lens(raw):
 READ_ONLY_PROBE = "apex-dispatch:reviewer"                # audit identity when the payload names none
 
 
+def quoted_template(raw):
+    """A quoted line offering both outcomes, e.g. `VERDICT: APPROVE | REQUEST_CHANGES`
+    echoed from the brief: an example, not a verdict."""
+    s = raw.strip().strip("*_ ")
+    return s.startswith(QUOTE_OPENERS) and bool(APPROVE_TOKEN_RE.search(s)) and bool(REQUEST_TOKEN_RE.search(s))
+
+
+def verdict_value(v):
+    """Classify one VERDICT value: APPROVE, REQUEST_CHANGES or UNPARSED."""
+    if APPROVE_RE.fullmatch(v):
+        return "APPROVE"
+    if CHANGES_RE.match(v):
+        return "REQUEST_CHANGES"
+    if APPROVE_REMARK_RE.match(v) and not REQUEST_TOKEN_RE.search(v):
+        return "APPROVE"
+    return "UNPARSED"
+
+
 def parse_review(msg):
-    """(verdict, lens) from a reviewer's last message, fail-closed. Every line
-    `verdict: <value>` (any case, markdown emphasis and backticks ignored) is a
-    verdict line: a value that is exactly APPROVE is APPROVE, one starting with
-    REQUEST CHANGES / REQUEST_CHANGES / request-changes is REQUEST_CHANGES,
-    anything else is UNPARSED. The result is APPROVE only when there is at least
-    one verdict line and every verdict line is APPROVE; otherwise the last
-    non-approving value (REQUEST_CHANGES or UNPARSED), or UNPARSED when there is
-    no verdict line at all. The lens is the last `LENS:` line, canonicalised."""
-    values, lens = [], None
+    """(verdict, lens) from a reviewer's last message, fail-closed.
+
+    Only prose lines count: lines inside fenced code blocks (``` or ~~~),
+    blockquotes (`>`), and indented code (4+ spaces or a tab) are skipped, so a
+    quoted example or an echoed template never decides a review. Every other
+    line `verdict: <value>` (any case, markdown emphasis and backticks ignored)
+    is a verdict line: a value that is exactly APPROVE, or APPROVE followed by a
+    separator ( ( [ — – - : , ; ) and a remark with no REQUEST token
+    ("APPROVE (non-blocking nits only)", "APPROVE — nits"), is APPROVE; one
+    starting with REQUEST CHANGES / REQUEST_CHANGES / request-changes is
+    REQUEST_CHANGES; anything else ("APPROVED", "APPROVE with nits", "LGTM", an
+    unquoted "APPROVE | REQUEST_CHANGES") is UNPARSED. A quoted line (opening
+    with a backtick or quote mark) that names both outcomes is a template echo
+    and is ignored. The result is APPROVE only when there is at least one verdict line
+    and every verdict line is APPROVE; otherwise the last non-approving value
+    (REQUEST_CHANGES or UNPARSED), or UNPARSED when there is no verdict line at
+    all. The lens is the last prose `LENS:` line, canonicalised."""
+    values, lens, fenced = [], None, False
     for raw in str(msg or "").splitlines():
+        if FENCE_RE.match(raw):
+            fenced = not fenced
+            continue
+        if fenced or raw.startswith(("    ", "\t")) or raw.lstrip().startswith(">") or quoted_template(raw):
+            continue
         line = re.sub(r"[*`]", "", raw).strip().strip("_#> ").strip()
         m = VERDICT_LINE_RE.match(line)
         if m:
-            v = m.group(1).strip().strip("_*` ")
-            values.append("APPROVE" if APPROVE_RE.fullmatch(v) else "REQUEST_CHANGES" if CHANGES_RE.match(v) else "UNPARSED")
+            values.append(verdict_value(m.group(1).strip().strip("_*` ")))
             continue
         m = LENS_RE.match(line.rstrip("."))
         if m:

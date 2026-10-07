@@ -9,8 +9,11 @@
 #                                       repo's overlay (.claude/apex-dispatch/policy.json
 #                                       under `git rev-parse --show-toplevel`, or
 #                                       $APEX_DISPATCH_POLICY)
-#   ... [--overlay PATH]                use PATH as the overlay; with plain or
-#                                       --check runs it is validated only
+#   compile.sh --write                  same as no flag (explicit)
+#   ... [--overlay PATH]                use PATH as the overlay; it is validated
+#                                       only. `--overlay PATH` alone runs as
+#                                       --check (no rewrite); add --write to
+#                                       also regenerate the artifacts
 #
 # Artifacts are always generated from resources/dispatch.default.json alone;
 # overlays are applied at runtime by the readers.

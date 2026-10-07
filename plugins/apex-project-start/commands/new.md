@@ -45,7 +45,7 @@ Now run the concrete setup interview with `AskUserQuestion`, informed by Phase 0
 4. **Audience** — solo/personal vs team/org. Team adds CODEOWNERS, CONTRIBUTING, branch-protection guidance, stricter review gates.
 5. **Governance level** — confirm Full paved-road (default) or let them drop layers (community-health files, pre-commit + **pre-push** hooks, CI security scans, ADRs, changelog/release tooling, **periodic maintenance** = dead-code sweep + last-run tracking + >3-day reminder, **GitHub hardening** = rulesets/OIDC/merge-queue/SHA-pinned actions, **sin-bin** quarantine dir, optional **SonarQube Cloud** quality gate). Maintenance + GitHub hardening (team) default on; sin-bin and SonarQube default off (offer SonarQube as the recommended governance gate).
 6. **License** — if public: MIT (reach) / Apache-2.0 (patent grant, SDKs) / AGPL-3.0 (copyleft/SaaS) / BSL-1.1 (commercial). If private: proprietary/none.
-7. **Dev-environment provisioning** — confirm whether to install the standard must-haves after scaffolding: the **Apex-Dev-Skills** plugin suite and, optionally, **ruflo** (orchestration/MCP/memory). Default: both (ruflo is optional; nothing in the suite requires it). Options: both / ruflo only / Apex skills only / skip.
+7. **Dev-environment provisioning** — confirm whether to install the standard must-haves after scaffolding: the **Apex-Dev-Skills** plugin suite and, optionally, **ruflo** (orchestration/MCP/memory). Default: Apex skills only (ruflo is optional; nothing in the suite requires it). Options: Apex skills only / both / ruflo only / skip.
 
 Don't ask questions whose answer you can read from the directory or Phase 0, or that have a single sane default — state the default and move on.
 
@@ -72,7 +72,7 @@ Apex Project Start plan for <name> (TypeScript library, team, MIT, full governan
  Docs:             CHANGELOG.md docs/
  Maintenance:      .apex/maintenance.json scripts/dead-code-sweep.sh vulture_whitelist.py
                    (periodic vulture sweep, last-run tracked, >3-day reminder in AGENTS.md)
- Dev environment:  Apex-Dev-Skills suite (7 plugins) · ruflo (optional: init + MCP)
+ Dev environment:  Apex-Dev-Skills suite (8 plugins incl. apex-dispatch + apex-guardrails, settings snippet) · ruflo (optional: init + MCP)
  Finalize:         git init, install deps, run tests, first commit
 ```
 
@@ -89,10 +89,10 @@ Once approved:
 
 If provisioning was enabled in the plan, invoke the **`apex-project-start:dev-environment`** skill. It installs/configures, idempotently, from the project root:
 
+- **Apex-Dev-Skills** (`Skobyn/Apex-Dev-Skills`, marketplace `apex-dev-skills`): `claude plugin marketplace add Skobyn/Apex-Dev-Skills` (or `update apex-dev-skills` if already present), install the 8 plugins (`apex-scope-loop`, `apex-dispatch`, `apex-guardrails`, `apex-agent-team`, `apex-legacy-comprehension`, `apex-contracts-reliability`, `apex-agent-observability`, `apex-rag-memory`), then `/reload-plugins`. Merge apex-dispatch's settings snippet (`resources/settings-snippet.json`: the `permissions.deny` rules, plus the `sandbox` block if wanted) into the project's `.claude/settings.json` and commit it. None of them need ruflo; apex-scope-loop seeds memory only when `APEX_MEMORY_CMD` is set.
 - **ruflo** (`ruvnet/ruflo`, optional — only if the user opted in): two layers — (1) global `ruflo-*` plugins (marketplace `ruvnet/ruflo`, once per machine), and (2) per-project scaffold: preflight Node 20+, `npx @claude-flow/cli@latest init --preset full` (full preset, not minimal), `daemon start`, then **register, approve, and start the MCP server** (`claude mcp add claude-flow -- npx -y @claude-flow/cli@latest`; **approve** by adding `claude-flow` to `enabledMcpjsonServers` in `.claude/settings.json` — the step `init` forgets, which otherwise leaves it "pending approval"; confirm via `claude mcp list`). Then **verify the scaffold**: `doctor --fix` + `ls .claude/agents/core/` **must show 5 files** (the common incomplete-scaffold bug) + sanity counts; **repair** with `rsync --ignore-existing` from a pinned clone if short. It augments `CLAUDE.md` (expected); route `ANTHROPIC_API_KEY` through `.env`/`.env.example` (never a real key); ignore ruflo runtime artifacts. Provisioning isn't done until the MCP is live and core/ = 5.
-- **Apex-Dev-Skills** (`Skobyn/Apex-Dev-Skills`, marketplace `apex-dev-skills`): `claude plugin marketplace add Skobyn/Apex-Dev-Skills` (or `update apex-dev-skills` if already present), install the 7 plugins, then `/reload-plugins`. None of them need ruflo; apex-scope-loop seeds memory through it only when `APEX_MEMORY_CMD` is set.
 
-Respect the provisioning sub-choice (both / ruflo only / Apex only / skip; ruflo is optional). Report what was installed, updated, or skipped, with real errors if any step fails.
+Respect the provisioning sub-choice (Apex only — the default / both / ruflo only / skip; ruflo is optional and, when chosen, installs after the Apex suite). Report what was installed, updated, or skipped, with real errors if any step fails.
 
 ## Phase 6 — Verify, then finalize
 

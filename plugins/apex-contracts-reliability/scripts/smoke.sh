@@ -100,5 +100,79 @@ if [ -n "$non_exec" ]; then
 fi
 pass_check "all .sh scripts are executable"
 
+SMOKE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/apex-cr-smoke.XXXXXX")"
+trap 'rm -rf "$SMOKE_TMP"' EXIT
+printf '{"session_id":"s-1","hook_event_name":"PreToolUse","tool_name":"Read","tool_use_id":"toolu_01ABC","tool_input":{"file_path":"/tmp/x"}}' >"$SMOKE_TMP/pre.json"
+printf '{"session_id":"s-1","hook_event_name":"PostToolUse","tool_name":"Read","tool_use_id":"toolu_01ABC","tool_input":{"file_path":"/tmp/x"},"tool_response":{"content":"hi"}}' >"$SMOKE_TMP/post.json"
+
+# 11. capture-tool-io.sh is observational: exit 0, NOTHING on stdout (no
+#     permissionDecision at all), and each record carries tool_use_id
+CAP="$PLUGIN_ROOT/hooks/capture-tool-io.sh"
+for ph in pre post; do
+  out="$(APEX_CR_LEDGER_DIR="$SMOKE_TMP/ledger" bash "$CAP" <"$SMOKE_TMP/$ph.json")" || fail "capture-tool-io.sh exited non-zero on a $ph event"
+  [ -z "$out" ] || fail "capture-tool-io.sh printed output on a $ph event (observational hooks print nothing): $out"
+done
+out="$(printf 'not json' | APEX_CR_LEDGER_DIR="$SMOKE_TMP/ledger" bash "$CAP")" || fail "capture-tool-io.sh exited non-zero on garbage input"
+[ -z "$out" ] || fail "capture-tool-io.sh printed output on garbage input: $out"
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$SMOKE_TMP/ledger/ledger.jsonl" <<'PY' || fail "ledger records lack tool_use_id or the Pre/Post phases"
+import json, sys
+recs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+recs = [r for r in recs if isinstance(r, dict) and r.get("tool") == "Read"]
+assert [r["phase"] for r in recs] == ["PreToolUse", "PostToolUse"], recs
+assert all(r.get("tool_use_id") == "toolu_01ABC" for r in recs), recs
+PY
+fi
+pass_check "capture-tool-io.sh is observational (exit 0, no stdout, no decision) and records tool_use_id"
+
+# 12. Marketplace-wide: no hook outside apex-guardrails / apex-dispatch emits a
+#     permissionDecision "allow". Observational hooks exit 0 with no JSON; only
+#     the two enforcement plugins decide. (a) static: no such literal in any
+#     non-doc file of another plugin; (b) runtime: every bash hook command those
+#     plugins register prints no allow for Pre/PostToolUse fixtures.
+PLUGINS_DIR="$(cd "$PLUGIN_ROOT/.." && pwd)"
+ALLOW_RE='permissionDecision["'"'"'\\]*[[:space:]]*:[[:space:]]*["'"'"'\\]*allow'
+hits=""
+for d in "$PLUGINS_DIR"/*/; do
+  name="$(basename "$d")"
+  case "$name" in apex-guardrails|apex-dispatch) continue ;; esac
+  h="$(grep -rlE "$ALLOW_RE" "$d" --exclude='*.md' 2>/dev/null || true)"
+  [ -z "$h" ] || hits="$hits $h"
+done
+[ -z "$hits" ] || fail "a hook outside apex-guardrails/apex-dispatch emits permissionDecision allow:$hits"
+if command -v python3 >/dev/null 2>&1; then
+  hook_cmds="$(python3 - "$PLUGINS_DIR" <<'PY'
+import glob, json, os, sys
+for hj in sorted(glob.glob(os.path.join(sys.argv[1], "*", "hooks", "hooks.json"))):
+    root = os.path.dirname(os.path.dirname(hj))
+    if os.path.basename(root) in ("apex-guardrails", "apex-dispatch"):
+        continue
+    seen = set()
+    for groups in (json.load(open(hj)).get("hooks") or {}).values():
+        for g in groups:
+            for h in g.get("hooks", []):
+                c = h.get("command", "")
+                if h.get("type") == "command" and c.startswith("bash ") and c not in seen:
+                    seen.add(c)
+                    print(root + "\t" + c)
+PY
+)"
+  ran=0
+  while IFS="$(printf '\t')" read -r root cmd; do
+    [ -n "$cmd" ] || continue
+    for ph in pre post; do
+      out="$(cd "$SMOKE_TMP" && CLAUDE_PLUGIN_ROOT="$root" CLAUDE_PROJECT_DIR="$SMOKE_TMP/proj" \
+             APEX_TRACE_DIR="$SMOKE_TMP/traces" APEX_CR_LEDGER_DIR="$SMOKE_TMP/ledger2" \
+             bash -c "$cmd" <"$SMOKE_TMP/$ph.json" 2>/dev/null || true)"
+      if printf '%s' "$out" | grep -qE '"permissionDecision"[[:space:]]*:[[:space:]]*"allow"'; then
+        fail "hook '$cmd' ($(basename "$root")) printed an allow decision: $out"
+      fi
+      ran=$((ran + 1))
+    done
+  done <<<"$hook_cmds"
+  [ "$ran" -gt 0 ] || fail "found no bash hook commands to exercise outside apex-guardrails/apex-dispatch"
+fi
+pass_check "no hook outside apex-guardrails/apex-dispatch emits an allow decision (static scan + runtime fixtures)"
+
 echo ""
 echo "smoke passed: $CHECKS/$CHECKS checks"

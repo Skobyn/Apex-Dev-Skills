@@ -17,7 +17,11 @@ within the hard rules but never weaken confinement or change what a hard rule
 refers to (see overlay_checks). agents/ is fully generated: --check flags any
 agents/*.md that is not an expected artifact, and comparisons are byte-exact.
 
-Usage: compile.py <plugin-root> [--check] [--print-merged] [--overlay PATH]
+Usage: compile.py <plugin-root> [--check | --write | --print-merged] [--overlay PATH]
+  no flag        regenerate (write) the artifacts
+  --overlay PATH alone validates the overlay and checks the artifacts like
+                 --check (it never rewrites the plugin); add --write to also
+                 regenerate the artifacts
 Exit: 0 ok, 1 invalid policy/overlay or stale artifacts, 2 usage.
 """
 import copy
@@ -794,10 +798,10 @@ def runtime_policy(plugin_root, overlay_path=None):
 
 def main(argv):
     if not argv:
-        print("usage: compile.py <plugin-root> [--check] [--print-merged] [--overlay PATH]", file=sys.stderr)
+        print("usage: compile.py <plugin-root> [--check | --write | --print-merged] [--overlay PATH]", file=sys.stderr)
         return 2
     root, args = os.path.abspath(argv[0]), argv[1:]
-    check = printing = False
+    check = printing = write = False
     overlay_path = None
     i = 0
     while i < len(args):
@@ -806,6 +810,8 @@ def main(argv):
             check = True
         elif a == "--print-merged":
             printing = True
+        elif a == "--write":
+            write = True
         elif a == "--overlay":
             if i + 1 >= len(args):
                 print("compile: --overlay needs a path", file=sys.stderr)
@@ -819,9 +825,11 @@ def main(argv):
             print("compile: unknown argument %s" % a, file=sys.stderr)
             return 2
         i += 1
-    if check and printing:
-        print("compile: --check and --print-merged are exclusive", file=sys.stderr)
+    if sum((check, printing, write)) > 1:
+        print("compile: --check, --write and --print-merged are exclusive", file=sys.stderr)
         return 2
+    if overlay_path is not None and not (printing or write):
+        check = True          # validating an overlay never rewrites the plugin unless --write says so
     try:
         inputs = load_inputs(root)
         artifacts = build(root, inputs)

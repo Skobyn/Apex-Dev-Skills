@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/capture-tool-io.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/capture-tool-io.sh\""
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/capture-tool-io.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/capture-tool-io.sh\""
           }
         ]
       }

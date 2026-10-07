@@ -555,7 +555,8 @@ def _usage_tokens(row):
 
 def trace_lines(state_dir, rows):
     """apex-agent-observability's trace line shape: ts, event, session,
-    subagent_id, parent_id, tool, token_estimate, edge (exactly these keys)."""
+    subagent_id, parent_id, agent_type, agent_transcript_path, tool,
+    token_estimate, edge (exactly these keys, in this order)."""
     session = "dispatch-" + os.path.basename(os.path.normpath(state_dir))
     out = []
     for r in rows:
@@ -574,8 +575,10 @@ def trace_lines(state_dir, rows):
         else:
             name = "Dispatch:" + str(ev)
         tok = _usage_tokens(r)
+        agent_type = r.get("agent_type") if ev in ("spawn", "spawn_request") else None
         out.append({"ts": r.get("ts"), "event": name, "session": session, "subagent_id": sub,
-                    "parent_id": parent, "tool": tool, "token_estimate": tok, "edge": edge})
+                    "parent_id": parent, "agent_type": agent_type, "agent_transcript_path": None,
+                    "tool": tool, "token_estimate": tok, "edge": edge})
     return out
 
 
@@ -696,6 +699,13 @@ def main(argv):
             if pos or not o.get("state"):
                 return _usage("usage: ledger.sh verify --state DIR")
             ok, rows, msg = verify(o["state"])
+            if ok and not rows:
+                # Nothing to verify is not a pass: a wrong --state (or a run that
+                # never routed) must not read as OK.
+                print("ledger verify: EMPTY — no ledger rows at %s (wrong --state? the state dir is the one "
+                      "holding dispatch/ or dispatch-shadow/, e.g. two levels above ROUTE_FILE)" % ledger_path(o["state"]),
+                      file=sys.stderr)
+                return 3
             if ok:
                 print("ledger verify: OK — %s" % msg)
                 return 0

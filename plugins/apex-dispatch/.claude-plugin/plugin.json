@@ -1,7 +1,7 @@
 {
   "name": "apex-dispatch",
   "description": "Route and govern delegation: a compiled routing policy picks the tier, provider, fan-out and review shape for each task or ad-hoc ask; PreToolUse/SubagentStop hooks enforce it; provider shims run external workers; every route, spawn, worker run and verdict lands in a hash-chained ledger. Drives apex-scope-loop as its execution engine.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Apex Insights",
     "url": "https://getapexinsights.com"

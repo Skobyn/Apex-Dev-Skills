@@ -6,7 +6,7 @@ argument-hint: "<plan.md> | --state <dir> [--json]"
 
 You are reporting on apex-dispatch routing for `$ARGUMENTS`.
 
-1. If `$ARGUMENTS` starts with `--`, run `${CLAUDE_PLUGIN_ROOT}/scripts/report.sh $ARGUMENTS`. Otherwise treat it as a plan path and run `${CLAUDE_PLUGIN_ROOT}/scripts/report.sh --plan $ARGUMENTS`. If `$ARGUMENTS` is empty, use the most recently modified `.claude/plans/*-plan.md` and say which plan you chose. For an ad-hoc ask, pass `--state .dev-plan-state/adhoc/<id>`.
+1. If `$ARGUMENTS` starts with `--`, run `${CLAUDE_PLUGIN_ROOT}/scripts/report.sh $ARGUMENTS`. Otherwise treat it as a plan path and run `${CLAUDE_PLUGIN_ROOT}/scripts/report.sh --plan $ARGUMENTS`. If `$ARGUMENTS` is empty, use the most recently modified `.claude/plans/*-plan.md` and say which plan you chose. For an ad-hoc ask, pass `--state <state>`, where `<state>` is two levels above the route's `ROUTE_FILE` (`<state>/dispatch*/active-route.json`), or `<apex_state_base>/adhoc/<id>` as `/apex-dispatch:done` derives it; never assume a fixed path under the current directory. If the report shows no rows at all, say the state path is probably wrong (`${CLAUDE_PLUGIN_ROOT}/scripts/ledger.sh verify --state <state>` prints `EMPTY` and exits 3 there) rather than reporting an empty but healthy ledger.
 2. Print the `REPORT_*` lines verbatim, then summarise in a few plain sentences:
    - `REPORT_CHAIN` first: if it is not `OK`, the ledger was edited, truncated or torn; say so before any number, because every figure below is then untrustworthy.
    - Cost: `REPORT_USD_ESTIMATED` covers only rows with a resolved model of a known family. `REPORT_UNVERIFIED` rows carry usage without a resolved model; they are listed separately and are **not** in the USD figure. Do not add them in.

@@ -604,7 +604,8 @@ import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 assert len(rows) == 6
 for r in rows:
-    assert list(r) == ["ts", "event", "session", "subagent_id", "parent_id", "tool", "token_estimate", "edge"], list(r)
+    assert list(r) == ["ts", "event", "session", "subagent_id", "parent_id", "agent_type", "agent_transcript_path",
+                       "tool", "token_estimate", "edge"], list(r)
     assert isinstance(r["token_estimate"], int)
 ev = [r["event"] for r in rows]
 assert ev[1] == "PreToolUse" and ev[3] == "SubagentStart" and rows[3]["edge"] == "r-0123456789ab-L5-1->ag-1"
@@ -612,7 +613,7 @@ PY
 lg export --state "$LS" --out "$WORK/summary.jsonl" >/dev/null || fail "export failed"
 python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; assert r[0]["kind"]=="ledger_head" and r[1]["task"]==5 and r[1]["spawns"]==3 and r[1]["verdicts"]==["APPROVE"]' "$WORK/summary.jsonl" || fail "export summary rows wrong"
 if lg export-trace --state "$WORK/lt" >/dev/null 2>&1; then fail "export-trace exported a tampered chain"; fi
-pass "export-trace: AgentTrace line shape (ts,event,session,subagent_id,parent_id,tool,token_estimate,edge); export: per-task summary"
+pass "export-trace: AgentTrace line shape (ts,event,session,subagent_id,parent_id,agent_type,agent_transcript_path,tool,token_estimate,edge); export: per-task summary"
 
 # 37. report.sh summarises the sample: routes, spawns, verdicts, USD from real usage x price, unverified bucket
 O="$(bash "$REPORT" --state "$LS")"
@@ -1092,10 +1093,12 @@ start g1 apex-scope-loop:gibson-reviewer; stopa g1 apex-scope-loop:gibson-review
 [ "$(jget "$UD/reviews-raw/g1.json" role)" = adversarial ] || fail "gibson-reviewer's LENS: adversarial did not give role adversarial"
 start n1 apex-dispatch:reviewer; stopa n1 apex-dispatch:reviewer 'I approve of this.'
 [ "$(jget "$UD/reviews-raw/n1.json" verdict)" = UNPARSED ] && [ "$(rowsin "$UL" verdict agent_id=n1 verdict=UNPARSED)" = 1 ] || fail "a reviewer without a VERDICT line did not get a fail-closed UNPARSED record + verdict row"
+start n2 apex-dispatch:reviewer; stopa n2 apex-dispatch:reviewer "$(printf 'The brief said to end with:\n\n```\nVERDICT: APPROVE\n```\n> VERDICT: APPROVE\n    VERDICT: APPROVE')"
+[ "$(jget "$UD/reviews-raw/n2.json" verdict)" = UNPARSED ] && [ "$(rowsin "$UL" verdict agent_id=n2 verdict=UNPARSED)" = 1 ] || fail "a VERDICT only inside a code fence / blockquote / indented code counted as a verdict"
 python3 -c 'import json, sys; json.dump({"agent_id": "old1", "role": "builder", "started_at": "2000-01-01T00:00:00Z", "stopped_at": None}, open(sys.argv[1], "w"))' "$UD/agents/old1.json"
 [ "$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "a registration older than the route's wall-clock budget still blocked review"
 ustage BUILD
-pass "subagent-start registers agent_id -> role -> route + spawn row; REVIEW refused while a builder is live; subagent-stop: reviews-raw record (record_id, line, HEAD, role/lens, verdict, family) once per agent + verdict row; adversarial/gibson roles; no VERDICT line = an UNPARSED record (fail closed)"
+pass "subagent-start registers agent_id -> role -> route + spawn row; REVIEW refused while a builder is live; subagent-stop: reviews-raw record (record_id, line, HEAD, role/lens, verdict, family) once per agent + verdict row; adversarial/gibson roles; no VERDICT line, or one only in a code fence/blockquote/indented code = an UNPARSED record (fail closed)"
 
 # 54. transcript audit of read-only roles: a write or git mutation refuses the record, writes policy_violation, exits 2 once
 TR="$WORK/transcripts"; mkdir -p "$TR"
@@ -1261,6 +1264,10 @@ assert hooks.parse_review("x\n**LENS:** Consent / PII\n**VERDICT:** APPROVE") ==
 assert hooks.parse_review("LENS: `Security`\nVERDICT: REQUEST_CHANGES.") == ("REQUEST_CHANGES", "security")
 assert hooks.parse_review("LENS: vibes\nVERDICT: APPROVE") == ("APPROVE", None)
 assert hooks.parse_review("_LENS: Maintainability_\nVERDICT: APPROVE") == ("APPROVE", "maintainability")
+# LENS lines in code fences, blockquotes or indented code are examples, not the lens
+assert hooks.parse_review("```\nLENS: security\n```\nLENS: money\nVERDICT: APPROVE") == ("APPROVE", "money")
+assert hooks.parse_review("> LENS: security\nVERDICT: APPROVE") == ("APPROVE", None)
+assert hooks.parse_review("    LENS: security\nLENS: Performance\nVERDICT: APPROVE") == ("APPROVE", "performance")
 PY
 start l1 apex-dispatch:reviewer; stopa l1 apex-dispatch:reviewer "$(printf '**LENS:** Consent / PII\n**VERDICT:** APPROVE')"
 [ "$(jget "$UD/reviews-raw/l1.json" role)" = lens:consent-pii ] || fail "an emphasised Consent / PII lens did not become lens:consent-pii"
@@ -1312,20 +1319,38 @@ python3 - "$PLUGIN_ROOT/scripts/lib" <<'PY' || fail "verdict parsing is not leni
 import sys; sys.path.insert(0, sys.argv[1]); import hooks
 cases = {"VERDICT: REQUEST CHANGES": "REQUEST_CHANGES", "VERDICT: REQUEST_CHANGES (1 blocking finding)": "REQUEST_CHANGES",
          "Verdict: REQUEST_CHANGES": "REQUEST_CHANGES", "no verdict line at all": "UNPARSED",
-         "**VERDICT:** APPROVE": "APPROVE", "verdict: approve": "APPROVE", "VERDICT: APPROVE (with nits)": "UNPARSED",
+         "**VERDICT:** APPROVE": "APPROVE", "verdict: approve": "APPROVE", "VERDICT: APPROVE (with nits)": "APPROVE",
          "VERDICT: LGTM": "UNPARSED", "VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "REQUEST_CHANGES",
-         "VERDICT: APPROVE\nVERDICT: maybe": "UNPARSED", "`VERDICT: APPROVE`.": "APPROVE"}
+         "VERDICT: APPROVE\nVERDICT: maybe": "UNPARSED", "`VERDICT: APPROVE`.": "APPROVE",
+         # Phase 3.3: an APPROVE with a separated remark is APPROVE unless the remark has a REQUEST token
+         "VERDICT: APPROVE (non-blocking nits only)": "APPROVE", "VERDICT: APPROVE \u2014 nits": "APPROVE",
+         "VERDICT: APPROVE - two nits, see above": "APPROVE", "VERDICT: APPROVE: ship it": "APPROVE",
+         "VERDICT: APPROVE (but request changes to the docs)": "UNPARSED", "VERDICT: APPROVED": "UNPARSED",
+         "VERDICT: APPROVE with nits": "UNPARSED", "VERDICT: REQUEST_CHANGES \u2014 then approve": "REQUEST_CHANGES",
+         # code fences, blockquotes and indented code are not verdicts; still fail closed
+         "```\nVERDICT: APPROVE\n```": "UNPARSED", "~~~\nVERDICT: APPROVE\n~~~": "UNPARSED",
+         "> VERDICT: APPROVE": "UNPARSED", "    VERDICT: APPROVE": "UNPARSED", "\tVERDICT: APPROVE": "UNPARSED",
+         "```\nVERDICT: REQUEST_CHANGES\n```\nVERDICT: APPROVE": "APPROVE",
+         "> VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "APPROVE",
+         "```\nVERDICT: APPROVE\n```\nVERDICT: REQUEST_CHANGES": "REQUEST_CHANGES",
+         # a quoted template naming both outcomes is ignored; an unquoted one fails closed
+         "`VERDICT: APPROVE | REQUEST_CHANGES`\nVERDICT: APPROVE": "APPROVE",
+         "\"VERDICT: APPROVE or REQUEST_CHANGES\"\nVERDICT: REQUEST_CHANGES": "REQUEST_CHANGES",
+         "`VERDICT: APPROVE | REQUEST_CHANGES`": "UNPARSED",
+         "VERDICT: APPROVE | REQUEST_CHANGES": "UNPARSED",
+         "VERDICT: APPROVE | REQUEST_CHANGES\nVERDICT: APPROVE": "UNPARSED"}
 for msg, want in cases.items():
     got = hooks.parse_review(msg.replace("\\n", "\n"))[0]
     assert got == want, (msg, got, want)
 PY
 H0="$(git -C "$UX" rev-parse HEAD)"; i=0
-for m in 'VERDICT: REQUEST CHANGES' 'VERDICT: REQUEST_CHANGES (1 blocking finding)' 'Verdict: REQUEST_CHANGES' 'Looks fine to me.'; do
+for m in 'VERDICT: REQUEST CHANGES' 'VERDICT: REQUEST_CHANGES (1 blocking finding)' 'Verdict: REQUEST_CHANGES' 'Looks fine to me.' \
+         $'```\nVERDICT: APPROVE\n```' '> VERDICT: APPROVE' 'VERDICT: APPROVE | REQUEST_CHANGES'; do
   i=$((i + 1)); start "fc$i" apex-dispatch:reviewer; stopa "fc$i" apex-dispatch:reviewer "$(printf 'findings\n%s' "$m")"
   v="$(jget "$UD/reviews-raw/fc$i.json" verdict)"; [ "$v" != APPROVE ] && [ "$(jget "$UD/reviews-raw/fc$i.json" head_sha)" = "$H0" ] \
     && [ "$(rowsin "$UL" verdict agent_id="fc$i" verdict="$v")" = 1 ] || fail "'$m' did not leave a non-approving record + verdict row at HEAD ($v)"
 done
-for m in '**VERDICT:** APPROVE' 'verdict: approve'; do
+for m in '**VERDICT:** APPROVE' 'verdict: approve' 'VERDICT: APPROVE (non-blocking nits only)' $'`VERDICT: APPROVE | REQUEST_CHANGES`\nVERDICT: APPROVE — nits'; do
   i=$((i + 1)); start "fc$i" apex-dispatch:reviewer; stopa "fc$i" apex-dispatch:reviewer "$m"
   [ "$(jget "$UD/reviews-raw/fc$i.json" verdict)" = APPROVE ] || fail "'$m' did not count as APPROVE"
 done
@@ -1337,7 +1362,40 @@ pa y1 PostToolUse tool_response.agentId=f9; start f9 apex-dispatch:builder; pa y
 [ "$(jget "$UD/agents/f9.json" stopped_at)" = None ] || fail "an unknown post-agent status stopped a live agent"
 pa y3 PostToolUse tool_response.agentId=f9 tool_response.status=cancelled
 [ "$(jget "$UD/agents/f9.json" stopped_by)" = post-agent ] || fail "a terminal post-agent status did not stop the agent"
-pass "round 2: lenient verdict parsing, fail-closed (no/unreadable/mixed verdict = UNPARSED or REQUEST_CHANGES record + row at HEAD); records bound to the start HEAD and marked stale if it moved; only terminal post-agent statuses stop an agent"
+pass "round 2 + 3.3: lenient verdict parsing (APPROVE + separated remark; code fences, blockquotes, indented code and quoted templates skipped), fail-closed (no/unreadable/mixed verdict = UNPARSED or REQUEST_CHANGES record + row at HEAD); records bound to the start HEAD and marked stale if it moved; only terminal post-agent statuses stop an agent"
+
+# 61. Phase 3.3 carry-overs: an empty ledger never verifies as OK; --overlay alone never
+#     rewrites the plugin; ad-hoc state dirs are derived, not hardcoded; the route skill
+#     names only routable models and documents REVIEW_SHAPE none
+mkdir -p "$WORK/empty-state"
+set +e; bash "$LEDGER" verify --state "$WORK/empty-state" >"$WORK/ev.out" 2>"$WORK/ev.err"; ERC=$?; set -e
+[ "$ERC" = 3 ] && grep -q '^ledger verify: EMPTY' "$WORK/ev.err" && ! grep -q 'OK' "$WORK/ev.out" \
+  || fail "ledger.sh verify on a state with no rows did not say EMPTY and exit 3 (rc=$ERC: $(cat "$WORK/ev.out" "$WORK/ev.err"))"
+cp -R "$PLUGIN_ROOT" "$WORK/copy61"
+printf '\n' >> "$WORK/copy61/agents/reviewer.md"
+printf '{}\n' >"$WORK/empty-overlay.json"
+if bash "$WORK/copy61/scripts/compile.sh" --overlay "$WORK/empty-overlay.json" >/dev/null 2>"$WORK/ov.err"; then
+  fail "compile.sh --overlay alone passed over a stale artifact (it must run as --check)"
+fi
+grep -q 'stale: agents/reviewer.md' "$WORK/ov.err" || fail "compile.sh --overlay alone did not report the stale artifact like --check"
+[ "$(tail -c 2 "$WORK/copy61/agents/reviewer.md" | od -An -c | tr -d ' ')" = '\n\n' ] || fail "compile.sh --overlay alone rewrote agents/reviewer.md"
+bash "$WORK/copy61/scripts/compile.sh" --overlay "$WORK/empty-overlay.json" --write >/dev/null && bash "$WORK/copy61/scripts/compile.sh" --check >/dev/null \
+  || fail "compile.sh --overlay PATH --write did not regenerate"
+if bash "$COMPILE" --check --write >/dev/null 2>&1; then fail "--check and --write were accepted together"; fi
+for f in done run report; do
+  if grep -q '\.dev-plan-state/adhoc' "$PLUGIN_ROOT/commands/$f.md"; then fail "commands/$f.md still hardcodes .dev-plan-state/adhoc"; fi
+done
+grep -q 'ROUTE_FILE' "$PLUGIN_ROOT/commands/done.md" && grep -q 'EMPTY' "$PLUGIN_ROOT/commands/done.md" \
+  || fail "commands/done.md does not derive the ad-hoc state from ROUTE_FILE or explain EMPTY"
+python3 - "$PLUGIN_ROOT/skills/dispatch-route/SKILL.md" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "dispatch-route SKILL.md: ROUTE_MODEL names a model no tier maps to, or REVIEW_SHAPE none is undocumented"
+import json, re, sys
+t, pol = open(sys.argv[1]).read(), json.load(open(sys.argv[2]))
+row = next(l for l in t.splitlines() if l.startswith("| `ROUTE_MODEL`"))
+named = set(re.findall(r"`(haiku|sonnet|opus|fable)`", row))
+assert named and named <= {x["model"] for x in pol["tiers"]}, (named, row)
+assert "**`none`:**" in t and "every ledger row you write" not in t
+PY
+pass "3.3 carry-overs: empty ledger = EMPTY/exit 3; --overlay alone = --check (no rewrite), --write regenerates; ad-hoc state derived from ROUTE_FILE/apex_state_base; ROUTE_MODEL only tier models; REVIEW_SHAPE none documented"
 
 echo ""
 echo "smoke passed: $N/$N checks"

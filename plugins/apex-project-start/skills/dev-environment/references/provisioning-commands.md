@@ -8,10 +8,10 @@ The optional ruflo layer (two install layers, MCP approval, scaffold verificatio
 
 ## Apex-Dev-Skills (Skobyn/Apex-Dev-Skills)
 
-**What it is:** a Claude Code plugin **marketplace** (marketplace name **`apex-dev-skills`**) shipping 7 plugins from `plugins/`. Note: the marketplace name differs from the repo slug — always use `apex-dev-skills` in commands.
+**What it is:** a Claude Code plugin **marketplace** (marketplace name **`apex-dev-skills`**) shipping its plugins from `plugins/`; the project set below is 8. Note: the marketplace name differs from the repo slug — always use `apex-dev-skills` in commands.
 
-**The 7 plugins:**
-`apex-scope-loop`, `apex-guardrails`, `apex-agent-team`, `apex-legacy-comprehension`, `apex-contracts-reliability`, `apex-agent-observability`, `apex-rag-memory`.
+**The 8 plugins:**
+`apex-scope-loop`, `apex-dispatch`, `apex-guardrails`, `apex-agent-team`, `apex-legacy-comprehension`, `apex-contracts-reliability`, `apex-agent-observability`, `apex-rag-memory`.
 (None of them need ruflo. ruflo is optional; apex-scope-loop seeds memory through it only when `APEX_MEMORY_CMD` is set.)
 
 ### Add (first time)
@@ -25,9 +25,10 @@ claude plugin marketplace add Skobyn/Apex-Dev-Skills # owner/repo shorthand (or 
 claude plugin marketplace update apex-dev-skills
 ```
 
-### Install / refresh all 7
+### Install / refresh all 8
 ```bash
 claude plugin install apex-scope-loop@apex-dev-skills
+claude plugin install apex-dispatch@apex-dev-skills
 claude plugin install apex-guardrails@apex-dev-skills
 claude plugin install apex-agent-team@apex-dev-skills
 claude plugin install apex-legacy-comprehension@apex-dev-skills
@@ -36,6 +37,9 @@ claude plugin install apex-agent-observability@apex-dev-skills
 claude plugin install apex-rag-memory@apex-dev-skills
 ```
 Then `/reload-plugins` in the session (or restart Claude Code) to activate.
+
+### apex-dispatch settings snippet and memory seeding
+After install, apply apex-dispatch's settings snippet: merge the `permissions.deny` rules (and, if the user wants OS sandboxing, the `sandbox` block) from apex-dispatch's `resources/settings-snippet.json` into the project's `.claude/settings.json` — merge, never clobber; back up first — and commit it so cloud sessions get it too. `/apex-dispatch:doctor` reports whether it is applied and prints the snippet's path. Memory seeding is optional: apex-scope-loop seeds a plan record only when `APEX_MEMORY_CMD` is set (e.g. to a ruflo `memory store` command); unset, it skips quietly.
 
 ### Other non-interactive forms
 ```bash

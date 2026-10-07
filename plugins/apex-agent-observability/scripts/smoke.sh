@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# apex-agent-observability structural smoke test (EXTENDED — 12 checks)
+# apex-agent-observability smoke test (EXTENDED — 13 checks)
 # Verifies the plugin contract from ADR-0001. Exits non-zero on first failure.
-# The two extra checks (11, 12) cover the OPTIONAL MCP server.
+# The two extra checks (11, 12) cover the OPTIONAL MCP server; 13 is the
+# trace hook's behaviour on fixture payloads.
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -123,5 +124,36 @@ for S in "$PLUGIN_ROOT"/skills/*/SKILL.md; do
 done
 ok "no SKILL.md allowed-tools contains mcp__*"
 
+# 13. trace-event.sh: the file is keyed on the payload's session_id (not the
+#     never-exported CLAUDE_SESSION_ID), then APEX_TRACE_SESSION, then "local";
+#     the key is filename-safe; records carry agent_type and agent_transcript_path;
+#     the hook is observational (exit 0, nothing on stdout).
+SMOKE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/apex-obs-smoke.XXXXXX")"
+trap 'rm -rf "$SMOKE_TMP"' EXIT
+TE="$PLUGIN_ROOT/hooks/trace-event.sh"
+TD="$SMOKE_TMP/traces"
+printf '{"session_id":"sess-abc","hook_event_name":"SubagentStop","agent_id":"ag-1","agent_type":"apex-dispatch:builder","agent_transcript_path":"/tmp/t/ag-1.jsonl"}' >"$SMOKE_TMP/stop.json"
+printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}' >"$SMOKE_TMP/nosession.json"
+printf '{"session_id":"../../evil/x","hook_event_name":"PreToolUse","tool_name":"Read"}' >"$SMOKE_TMP/badsession.json"
+out="$(CLAUDE_SESSION_ID=wrong APEX_TRACE_DIR="$TD" bash "$TE" SubagentStop <"$SMOKE_TMP/stop.json")" \
+  || fail "trace-event.sh exited non-zero"
+[ -z "$out" ] || fail "trace-event.sh printed to stdout (observational hooks print nothing): $out"
+[ -f "$TD/run-sess-abc.jsonl" ] || fail "trace not keyed on payload session_id (files: $(ls "$TD" 2>/dev/null | tr '\n' ' '))"
+[ ! -e "$TD/run-wrong.jsonl" ] || fail "trace keyed on CLAUDE_SESSION_ID instead of the payload"
+python3 - "$TD/run-sess-abc.jsonl" <<'PY' || fail "SubagentStop record lacks agent_type / agent_transcript_path / session"
+import json, sys
+r = json.loads(open(sys.argv[1]).read().splitlines()[-1])
+assert r["session"] == "sess-abc" and r["subagent_id"] == "ag-1", r
+assert r["agent_type"] == "apex-dispatch:builder" and r["agent_transcript_path"] == "/tmp/t/ag-1.jsonl", r
+PY
+APEX_TRACE_SESSION=fallback-1 APEX_TRACE_DIR="$TD" bash "$TE" PreToolUse <"$SMOKE_TMP/nosession.json" >/dev/null
+[ -f "$TD/run-fallback-1.jsonl" ] || fail "no session_id in the payload did not fall back to APEX_TRACE_SESSION"
+( unset APEX_TRACE_SESSION; APEX_TRACE_DIR="$TD" bash "$TE" PreToolUse <"$SMOKE_TMP/nosession.json" >/dev/null )
+[ -f "$TD/run-local.jsonl" ] || fail "no session_id and no APEX_TRACE_SESSION did not fall back to run-local.jsonl"
+APEX_TRACE_DIR="$TD" bash "$TE" PreToolUse <"$SMOKE_TMP/badsession.json" >/dev/null
+[ -z "$(find "$SMOKE_TMP" -path "$TD" -prune -o -name '*.jsonl' -print)" ] && [ "$(find "$TD" -type f | wc -l | tr -d ' ')" = 4 ] \
+  || fail "a session_id with path characters escaped the trace dir or was not sanitised: $(find "$SMOKE_TMP" -type f)"
+ok "trace file keyed on payload session_id > APEX_TRACE_SESSION > local (filename-safe); agent_type + agent_transcript_path recorded; no stdout"
+
 echo ""
-echo "smoke passed: 12/12 checks"
+echo "smoke passed: 13/13 checks"

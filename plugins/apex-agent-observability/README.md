@@ -28,8 +28,12 @@ Plus a `/apex-agent-observability:trace-report` command that runs replay +
 token-lens and synthesizes a single report.
 
 Traces land at `${CLAUDE_PROJECT_DIR:-$PWD}/.claude/traces/run-<session>.jsonl`
-(override with `APEX_TRACE_DIR`). The hooks are **non-fatal** — a recording
-error never blocks the host run.
+(override with `APEX_TRACE_DIR`). `<session>` is the hook payload's
+`session_id`, then `$APEX_TRACE_SESSION`, then `local` (Claude Code does not
+export a session id to hook processes, so the payload is the key). Subagent
+records also carry `agent_type` and `agent_transcript_path`. The hooks are
+**non-fatal** and observational — a recording error never blocks the host
+run, and they print nothing (no permission decision).
 
 ## MCP (optional)
 
@@ -114,13 +118,14 @@ non-overlapping prefix and reference this plugin's ADR-0001.
 bash plugins/apex-agent-observability/scripts/smoke.sh
 ```
 
-The smoke script runs **12** structural checks (the 10 core checks plus two
-MCP checks): plugin.json keys, no enumerated surface arrays, kebab-case skill
+The smoke script runs **13** checks (the 10 core checks, two MCP checks, and
+one behaviour check of the trace hook on fixture payloads: session keying,
+`agent_type`/`agent_transcript_path`, no stdout): plugin.json keys, no enumerated surface arrays, kebab-case skill
 names, no wildcard or `mcp__*` `allowed-tools`, command frontmatter, valid
 `hooks/hooks.json`, README sections including "MCP (optional)", ADR
 `Status: Proposed`, script executability, and that `.mcp.json` is valid JSON
 whose referenced server script exists. It exits non-zero on the first failing
-check and names what's wrong, printing `smoke passed: 12/12 checks` on
+check and names what's wrong, printing `smoke passed: 13/13 checks` on
 success.
 
 ## Architecture Decisions

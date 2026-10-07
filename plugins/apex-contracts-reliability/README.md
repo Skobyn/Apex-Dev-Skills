@@ -37,8 +37,12 @@ Render either report with `/apex-contracts-reliability:reliability-report`
 (`reliability` by default, `drift`, or `all`), or run the analyzer directly. It
 exits `3` when drift or flakiness is found, so it can gate a loop or CI step.
 
-The capture hook is observational only — it **never blocks a tool call** and
-exits cleanly on any error, so it is safe to leave installed everywhere.
+The capture hook is observational only — it **never decides a tool call**: it
+exits 0 and prints nothing (no `permissionDecision`, never `allow`), even on
+error, so it is safe to leave installed everywhere. Claude Code composes hooks
+from all plugins in parallel and deny-first; only apex-guardrails and
+apex-dispatch vote. Each record carries the call's `tool_use_id`, which joins its
+PreToolUse and PostToolUse records (and other ledgers keyed on the same id).
 
 ## Install
 
@@ -89,8 +93,8 @@ bash plugins/apex-contracts-reliability/scripts/analyze-ledger.sh drift --json
   reports that python3 is required.
 - **No third-party packages, no MCP server.** `allowed-tools` in the skills and
   command are an explicit, wildcard-free list (`Bash`, `Read`, `Grep`, `Glob`).
-- **Non-blocking:** the capture hook never denies a tool call and exits 0 on any
-  error, so it is safe in any project.
+- **Observational:** the capture hook never denies or allows a tool call — it
+  exits 0 with no output, on any input — so it is safe in any project.
 
 ## Namespace coordination
 
@@ -115,8 +119,13 @@ bash plugins/apex-contracts-reliability/scripts/smoke.sh
 
 The smoke script runs structural checks (plugin.json keys, no enumerated surface
 arrays, kebab-case skill names, no wildcard tools, command frontmatter, valid
-`hooks/hooks.json`, README sections, ADR status, script executability). It exits
-non-zero on the first failing check and names what's wrong.
+`hooks/hooks.json`, README sections, ADR status, script executability), then two
+behaviour checks: the capture hook prints nothing and records `tool_use_id`, and a
+**marketplace-wide** check that no hook outside apex-guardrails/apex-dispatch emits
+a `permissionDecision` of `allow` (a static scan of every other plugin's non-doc
+files, plus running every `bash` hook command they register against PreToolUse and
+PostToolUse fixtures). It exits non-zero on the first failing check and names
+what's wrong.
 
 ## Architecture Decisions
 
