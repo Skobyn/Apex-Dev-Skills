@@ -120,3 +120,32 @@ What the calls showed:
 **Cloud sessions with proxy-injected keys.** When a key exists only as a proxy-injected secret, `apex-decide` sees no key and sends nothing (`provider_error`). Setting the key variable to any placeholder makes it send. The README documents this.
 
 **frontier:** not run. There was no `ANTHROPIC_API_KEY` and no proxy secret for Anthropic (see Session 1).
+
+## Phase 3 (shadow pilot and the first `measure` reports)
+
+**Spec:** [§14 Phase 3](../superpowers/specs/2026-10-08-apex-decision-layer-design.md#14-rollout), whose exit is "a `measure` report per rubric and backend with its n, even if it says `insufficient n`". **Plugin:** apex-decision-layer 0.3.0. **Harness:** [`apex-decision-layer-phase3-pilot/pilot.sh`](apex-decision-layer-phase3-pilot/pilot.sh).
+
+**The pilot.** It sends 8 fixture tasks per rubric through `bin/apex-decide` in a throwaway repository (`egress: hosted`, `state_fields: raw`, `store_state: full`, jev primary, no shadow because there is no Anthropic key). It writes each fixture's intended label as an **outcome-proxy** label, never as a human one, and then runs `measure` for each rubric.
+
+**Run 1 (the building session, 2026-10-08).**
+- This session's proxy refuses both jev hosts (`Tunnel connection failed: 403 Forbidden`). All 16 calls were unscored `provider_error`, nothing was sent upstream, and the cost was $0.
+- Both reports (`dispatch/task-class@1` and `risk-tier@1` on `jev`) say **`insufficient n`, n = 0**: 0 answers, 0 labels.
+- This is the honest first report. It shows the pipeline end to end, with nothing to measure.
+
+**Fixture corpus (the fallback the plan allows).** `scripts/test/make_corpus.py … jev degenerate 160` generates 160 rows per rubric with **exactly one-hot** answers that are right 85% of the time, which is the shape Jev gave in Phase 0 (35 of 40 one-hot in run 4, all 4 in the Phase 2 live calls). There are human labels on 70% of rows and outcome-proxy labels on all of them, with 86% agreement, so the proxy labels count. The reports are committed beside the harness:
+
+| Rubric | Status | AUROC (acted-on), 95% CI | Code-only baseline | Brier | ECE |
+|---|---|---|---|---|---|
+| `dispatch/task-class@1` | **degenerate** | 0.934 [0.860, 0.997] | 0.790 | 0.1625 | 0.0813 |
+| `risk-tier@1` | **degenerate** | 0.940 [0.887, 0.992] | 0.785 | 0.175 | 0.0875 |
+
+**What this means for Phase 4.**
+- If Jev keeps answering one-hot, every Jev measurement will be `degenerate`: fewer than 3 distinct scores, so AUROC ranks nothing. The kill criterion then cannot pass, and Jev cannot become calibrated, however accurate it is.
+- The AUROC of about 0.94 above comes only from tie-handling. It is not evidence of ranking quality.
+- The ways forward are a design decision for the operator, and none is taken here:
+  - (a) measure Jev on accuracy against the code-only baseline at a fixed threshold, instead of AUROC;
+  - (b) calibrate `frontier`, whose answers are soft, and keep Jev uncalibrated (tighten-only), which the spec already accepts as the likely long-run state;
+  - (c) ask TypeSafe whether the probabilities can be made less sharp.
+- The live pilot, if run in a session with jev auth, will show whether the real answers are as one-hot as the fixture assumes.
+
+**Run 2 (live, a session with proxy-injected jev keys):** requested; not yet reported.
