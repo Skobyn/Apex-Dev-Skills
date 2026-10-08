@@ -430,7 +430,23 @@ def summarise(root, state_dir, plan=None):
             "human_gates": sum(1 for r in rows if r.get("event") == "human_gate"),
             "hook_errors": sum(1 for r in rows if r.get("event") == "hook_error"),
             "model_mismatches": sum(1 for r in rows if r.get("event") == "model_mismatch"),
-            "policy_violations": sum(1 for r in rows if r.get("event") == "policy_violation")}
+            "policy_violations": sum(1 for r in rows if r.get("event") == "policy_violation"),
+            "acceptance": provider_acceptance(root, state_dir)}
+
+
+def provider_acceptance(root, state_dir):
+    """Rolling acceptance of each external provider seen in the ledgers (spec §10:
+    applied ∧ gate PASS ∧ APPROVE for builders; a parsed verdict for reviewers)."""
+    try:
+        import compile as policy_compiler
+        pol = policy_compiler.runtime_policy(root)
+    except Exception:
+        pol = ledger.read_json(os.path.join(root, "resources", "compiled", "policy.json"), {}) or {}
+    try:
+        acc = ledger.acceptance(state_dir, pol.get("providers", []))
+    except Exception:
+        return {}
+    return {k: v for k, v in acc.items() if v["decided"] or v["pending"]}
 
 
 def fmt_counter(d):
@@ -521,6 +537,10 @@ def main(argv):
     print("REPORT_HOOK_ERRORS: %d" % s["hook_errors"])
     print("REPORT_MODEL_MISMATCHES: %d" % s["model_mismatches"])
     print("REPORT_POLICY_VIOLATIONS: %d" % s["policy_violations"])
+    if not s["acceptance"]:
+        print("REPORT_ACCEPTANCE: none (no external provider dispatches recorded)")
+    for pid, a in sorted(s["acceptance"].items()):
+        print("REPORT_ACCEPTANCE: %s; %d pending" % (ledger.acceptance_line(pid, a), a["pending"]))
     return 0
 
 

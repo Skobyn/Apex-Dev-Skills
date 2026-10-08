@@ -165,7 +165,188 @@ def second_families(doc, root=None, cls=None):
         shim = os.path.join(root, "bin", shim_name(pid))
         if os.path.isfile(shim) and os.access(shim, os.X_OK):
             out.append(pid)
+        if out and out[-1] == pid and v.get("demoted") is True:
+            out.pop()                      # below min_acceptance: its shim refuses, so it is no family now
     return out
+
+
+def provider_binary(p, root=None):
+    """The executable a subprocess provider runs, or None when it is not there.
+    A binary under `harnesses/` (openai-sdk's runner) ships in this plugin and is
+    resolved against its root; `claude` honours APEX_CLAUDE_BIN; anything else is
+    looked up on PATH."""
+    b = (p or {}).get("binary")
+    if not b:
+        return None
+    if b.startswith("harnesses/"):
+        path = os.path.join(root or plugin_root(), b)
+        return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
+    import shutil
+    return shutil.which(os.environ.get("APEX_CLAUDE_BIN") or "claude" if b == "claude" else b)
+
+
+# ------------------------------------------------------------- acceptance ----
+# Rolling provider acceptance (spec §5.2 step 6, §10): a provider whose share of
+# accepted dispatches over its last `acceptance_window` decided dispatches falls
+# below `min_acceptance` demotes itself: its shim refuses (exit 3), route.sh
+# skips it, doctor.json marks it `demoted` and it stops counting as a second
+# reviewer family. Below ACCEPTANCE_MIN_DECIDED decided dispatches (or the whole
+# window, when it is smaller) the rate is `insufficient` and nothing is demoted: a
+# 0.7 floor over five samples would demote a provider for two unlucky runs.
+# Outcomes older than ACCEPTANCE_MAX_AGE_DAYS leave the window: a demoted provider
+# is never dispatched, so without ageing its window could never refresh; after
+# that it is eligible again and earns (or loses) its standing on new dispatches.
+ACCEPTANCE_MIN_DECIDED = 10
+ACCEPTANCE_MAX_AGE_DAYS = 14
+BUILD_ROLES = ("builder", "tester", "docs")
+REVIEW_ROLE_NAMES = ("reviewer", "adversarial-reviewer")
+
+
+def _task_key(route_id):
+    """r-<plan>-L<line>-<n> / a-<id>-<n> -> the task it routes (the id without -<n>)."""
+    return re.sub(r"-[0-9]{1,6}$", "", str(route_id or ""))
+
+
+def dispatch_outcomes(rows, repo=None):
+    """One outcome per shim `worker_run` row in a single ledger, in order:
+    {ts, provider, role, run_id, outcome: accepted|rejected|pending, why}.
+      - builder-side (builder, tester, docs): rejected when the run did not
+        finish cleanly or apply.sh refused its patch (`worker_rejected`);
+        accepted when its applied commit is HEAD of, or an ancestor of, the head
+        of a hook/shim APPROVE verdict (an approval needs a green gate at that
+        head, so applied ∧ gate PASS ∧ APPROVE); rejected when a route for a
+        different task follows without that; else pending (the task is open).
+      - reviewers: accepted when the run finished cleanly with a parsed verdict
+        (APPROVE or REQUEST_CHANGES), rejected otherwise (a failed run or UNPARSED).
+      - diagnosers: accepted when the run finished cleanly.
+    Ancestry is checked in `repo` when given, else a commit counts only for an
+    approval at exactly that head."""
+    applied, rejected, approvals, verdicts = {}, set(), [], {}
+    route_seq = []                                   # (index, task key) of every route row
+    for i, r in enumerate(rows):
+        ev = r.get("event")
+        if ev == "worker_applied" and r.get("run_id"):
+            applied[r["run_id"]] = r.get("commit_sha")
+        elif ev == "worker_rejected" and r.get("run_id"):
+            rejected.add(r["run_id"])
+        elif ev == "verdict" and r.get("source") in ("hook", "shim"):
+            if r.get("verdict") == "APPROVE" and not r.get("stale") and r.get("head_sha"):
+                approvals.append(r["head_sha"])
+            if r.get("run_id"):
+                verdicts[r["run_id"]] = r.get("verdict")
+        elif ev == "route":
+            route_seq.append((i, _task_key(r.get("route_id"))))
+    anc = {}
+
+    def approved(commit):
+        if not commit:
+            return False
+        for h in approvals:
+            if h == commit:
+                return True
+            if repo:
+                k = (commit, h)
+                if k not in anc:
+                    anc[k] = _is_ancestor(repo, commit, h) is True
+                if anc[k]:
+                    return True
+        return False
+
+    out = []
+    for i, r in enumerate(rows):
+        if r.get("event") != "worker_run" or r.get("source") != "shim":
+            continue
+        role, run_id = r.get("role"), r.get("run_id")
+        clean = r.get("exit_code") == 0 and r.get("sentinel_seen") is not False and r.get("ok") is not False
+        moved_on = any(j > i and key != _task_key(r.get("route_id")) for j, key in route_seq)
+        if not clean:
+            outcome, why = "rejected", "the run did not finish cleanly (exit %s)" % r.get("exit_code")
+        elif role in BUILD_ROLES:
+            if run_id in rejected:
+                outcome, why = "rejected", "apply.sh refused the patch"
+            elif run_id in applied and approved(applied[run_id]):
+                outcome, why = "accepted", "applied, gated and approved"
+            elif moved_on:
+                outcome, why = "rejected", ("applied but never approved" if run_id in applied else "never applied")
+            else:
+                outcome, why = "pending", "the task is still open"
+        elif role in REVIEW_ROLE_NAMES:
+            v = verdicts.get(run_id)
+            outcome = "accepted" if v in ("APPROVE", "REQUEST_CHANGES") else "rejected"
+            why = "verdict %s" % (v or "missing")
+        else:
+            outcome, why = "accepted", "finished cleanly"
+        out.append({"ts": r.get("ts") or "", "provider": r.get("provider"), "role": role, "run_id": run_id,
+                    "outcome": outcome, "why": why})
+    return out
+
+
+def state_dirs(state_dir):
+    """Every run-state directory beside state_dir under the same state base (the
+    plans' <base>/<plan-hash>/ and the ad-hoc asks' <base>/adhoc/<id>/), so
+    acceptance rolls across plans, not only this run's ledger."""
+    sd = os.path.abspath(state_dir)
+    parent = os.path.dirname(sd)
+    base = os.path.dirname(parent) if os.path.basename(parent) == "adhoc" else parent
+    out = []
+    for d in [os.path.join(base, n) for n in _listdir(base)] + [os.path.join(base, "adhoc", n)
+                                                                for n in _listdir(os.path.join(base, "adhoc"))]:
+        if any(os.path.isfile(os.path.join(d, sub, LEDGER)) for sub in ("dispatch", "dispatch-shadow")):
+            out.append(d)
+    if sd not in out:
+        out.append(sd)
+    return out
+
+
+def _listdir(d):
+    try:
+        return sorted(os.listdir(d))
+    except OSError:
+        return []
+
+
+def acceptance(state_dir, providers, repo=None, now_dt=None):
+    """{provider id: {decided, accepted, pending, rate, window, min, status}} over
+    every ledger under the state base that verifies (a tampered ledger is skipped
+    and named in `skipped`), counting outcomes younger than ACCEPTANCE_MAX_AGE_DAYS.
+    status: ok | demoted | insufficient (fewer than min(window,
+    ACCEPTANCE_MIN_DECIDED) decided dispatches)."""
+    now_dt = now_dt or datetime.datetime.now(datetime.timezone.utc)
+    cutoff = (now_dt - datetime.timedelta(days=ACCEPTANCE_MAX_AGE_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    outcomes, skipped = [], []
+    for sd in state_dirs(state_dir):
+        ok, rows, _ = verify(sd)
+        if not ok:
+            skipped.append(sd)
+            continue
+        outcomes += [o for o in dispatch_outcomes(rows, repo or state_repo(sd)) if o["ts"] >= cutoff]
+    outcomes.sort(key=lambda o: o["ts"])
+    res = {}
+    for p in providers:
+        pid = p.get("id")
+        if p.get("kind") != "subprocess":
+            continue
+        window = int(p.get("acceptance_window") or 20)
+        mine = [o for o in outcomes if o["provider"] == pid]
+        decided = [o for o in mine if o["outcome"] != "pending"][-window:]
+        acc = sum(1 for o in decided if o["outcome"] == "accepted")
+        rate = round(acc / len(decided), 4) if decided else None
+        need = min(window, ACCEPTANCE_MIN_DECIDED)
+        floor = float(p.get("min_acceptance") or 0)
+        status = "insufficient" if len(decided) < need else ("demoted" if rate < floor else "ok")
+        res[pid] = {"decided": len(decided), "accepted": acc, "pending": sum(1 for o in mine if o["outcome"] == "pending"),
+                    "rate": rate, "window": window, "min": floor, "need": need, "status": status,
+                    "last_rejections": [o["why"] for o in decided if o["outcome"] == "rejected"][-3:]}
+    if skipped:
+        for v in res.values():
+            v["skipped_ledgers"] = skipped
+    return res
+
+
+def acceptance_line(pid, a, named=True):
+    return (("provider %s: " % pid if named else "") + "%d of the last %d decided dispatches accepted (rate %s, min_acceptance %.2f, window %d; %s)"
+            % (a["accepted"], a["decided"], "n/a" if a["rate"] is None else "%.2f" % a["rate"], a["min"],
+               a["window"], a["status"] if a["status"] != "insufficient" else "insufficient: fewer than %d decided" % a["need"]))
 
 
 def dispatch_dir(state_dir, write=False, root=None):

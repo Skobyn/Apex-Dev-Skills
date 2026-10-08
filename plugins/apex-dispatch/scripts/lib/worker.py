@@ -8,6 +8,8 @@ and scripts/apply.sh, never directly:
                   --route ID --role ROLE --brief FILE [--mode build|write|readonly]
                   [--base SHA] [--out DIR] [--timeout-sec N]
   worker.py apply PLUGIN_ROOT STATE_BASE EXEC_SCRIPTS REPO_ROOT -- --worker DIR [--route ID]
+  worker.py smoke PROVIDER PLUGIN_ROOT STATE_BASE REPO_ROOT -- [--record] [--enable] [--timeout-sec N]
+                  [--attempts N] [--keep]
 
 `run` refuses before anything starts when the run, route, provider, role,
 stage, budget or doctor.json says no; builds the provider command only from the
@@ -23,14 +25,21 @@ in-process with source `shim`; prints `DISPATCH-DONE exit=N` last.
 
 `apply` turns a write-mode worker's patch into one commit on the plan worktree
 (owned Paths and the never-touch list checked, never during GATE/REVIEW) and
-writes a `worker_applied` row.
+writes a `worker_applied` row (a refusal writes `worker_rejected`).
+
+`smoke` (scripts/provider-smoke.sh) is the per-version smoke of one provider:
+the real CLI, on the same command builder, run-only files, parser and patch
+capture as `run`, against a throwaway fixture repository; on a pass `--record`
+lists the installed version under the overlay's verified_versions (and
+`--enable` sets enabled: true). It refuses while a run holds the ACTIVE lock.
 
 Exit codes (run): 0 the provider finished (exit 0, output parsed); 1 it ran and
 failed (non-zero exit, timeout, truncated or unparseable output: result.json
 still written); 2 usage; 3 refused by policy, route, stage or budget; 4 the
 provider is unavailable (doctor.json missing or says the CLI or its auth is
 unavailable, or the binary is gone); 5 confinement could not be set up;
-6 the provider is a stub seam with no runner (openai-sdk: not implemented).
+6 the provider is a stub seam with no runner (kind stub; no shipped provider is
+one since openai-sdk's runner landed in 0.4.0).
 A brief too large to pass as one argv string to an argv-brief provider (codex,
 opencode: over ARGV_BRIEF_MAX) is a usage refusal (2) that still writes
 result.json (ok false, `refused`) and prints the sentinel.
@@ -65,8 +74,8 @@ WRITE_ROLES = {"builder", "tester", "docs"}
 READ_ROLES = {"reviewer", "adversarial-reviewer", "diagnoser"}
 REVIEW_ROLES = {"reviewer", "adversarial-reviewer"}
 # The subprocess shims this plugin ships (bin/<ledger.SHIMS[pid]>); openai-sdk's
-# shim is a stub that refuses (exit 6) and never reaches the engine's runner.
-SHIM_PROVIDERS = ("claude-p", "codex", "grok", "opencode-ollama", "aider-ollama")
+# binary is the runner under harnesses/ (ledger.provider_binary).
+SHIM_PROVIDERS = ("claude-p", "codex", "grok", "opencode-ollama", "aider-ollama", "openai-sdk")
 MAX_BRIEF_BYTES = 256 * 1024
 # Providers that take the brief as one argv string (codex `-- "<brief>"`, opencode
 # `run [message]`). Linux caps one argument at MAX_ARG_STRLEN (128 KiB); above this
@@ -89,7 +98,8 @@ ENV_ALLOW = {"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TZ
              "APEX_STATE_ROOT", "APEX_SCOPE_LOOP_ROOT", "APEX_HALT"}
 ENV_PROVIDER = {"claude-p": {"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"}, "codex": {"CODEX_HOME"},
                 "grok": {"GROK_HOME"}, "opencode-ollama": {"OLLAMA_HOST"},
-                "aider-ollama": {"OLLAMA_HOST", "OLLAMA_API_BASE"}}
+                "aider-ollama": {"OLLAMA_HOST", "OLLAMA_API_BASE"},
+                "openai-sdk": {"OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID"}}
 # Case-insensitive: on a case-insensitive filesystem (macOS, Windows) .ENV or
 # .Claude/Settings.json is the same file as the protected one.
 NEVER_TOUCH = tuple((re.compile(rx, re.I), what) for rx, what in (
@@ -234,11 +244,24 @@ def doctor_gate(ctx, pid, p):
         raise Refuse(EXIT_REFUSED, "provider %s %s is installed (doctor.json) but the overlay's verified_versions (%s) does "
                                    "not list it: run the per-version smoke on this version first"
                      % (pid, e.get("version") or "(version unknown)", ", ".join(p.get("verified_versions") or []) or "none"))
-    name = os.environ.get("APEX_CLAUDE_BIN") or "claude" if p.get("binary") == "claude" else p.get("binary")
-    path = shutil.which(name)
+    path = ledger.provider_binary(p, ctx.plugin_root)
     if not path:
-        raise Refuse(EXIT_UNAVAILABLE, "binary %s is not on PATH any more (doctor.json is stale; re-run doctor.sh)" % name)
+        raise Refuse(EXIT_UNAVAILABLE, "binary %s is not available any more (doctor.json is stale; re-run doctor.sh)"
+                     % p.get("binary"))
     return path, doc
+
+
+def acceptance_gate(ctx, pid, p):
+    """Rolling acceptance (spec §5.2 step 6): a provider below min_acceptance over
+    its last acceptance_window decided dispatches is demoted and refused."""
+    a = ledger.acceptance(ctx.state_dir, [p], ctx.worktree).get(pid)
+    if a and a["status"] == "demoted":
+        raise Refuse(EXIT_REFUSED, "provider %s is demoted: %s; recent rejections: %s. Route the work elsewhere "
+                                   "(claude-session); the provider is eligible again once rejections older than %d days "
+                                   "leave its window" % (pid, ledger.acceptance_line(pid, a, named=False),
+                                                         "; ".join(a["last_rejections"]) or "none",
+                                                         ledger.ACCEPTANCE_MAX_AGE_DAYS))
+    return a
 
 
 def tier_of(ctx, tid):
@@ -400,8 +423,47 @@ def build_aider(ctx, p, binary, role, mode, router, usd, cwd, out):
     return argv, {"model": p.get("model"), "tier": None, "agent": None, "stdin": "devnull", "hide": hide}
 
 
+def role_contract(ctx, agent):
+    """The generated agents/<agent>.md body (frontmatter dropped): the role contract
+    a non-Claude runner gets as its instructions."""
+    try:
+        with open(os.path.join(ctx.plugin_root, "agents", agent + ".md"), encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return "You are the %s role of apex-dispatch, dispatched for one routed task." % agent
+    m = re.match(r"^---\n.*?\n---\n", text, re.S)
+    return text[m.end():].strip() if m else text.strip()
+
+
+def build_openai_sdk(ctx, p, binary, role, mode, router, usd, cwd, out):
+    """harnesses/openai_sdk_runner.py run + the policy's forced flags, a run config
+    in the out dir (the confined directory, the mode, the owned Paths as globs and
+    as hooks.glob_re patterns, the policy model, the role's turn limit and its
+    generated contract) and the brief file. The runner's only tools are file
+    tools confined to the directory; no shell, network tool or MCP server."""
+    agent = role
+    if role == "builder":
+        eff = router.get("effort")
+        variants = (ctx.roles().get("builder") or {}).get("effort_variants") or []
+        agent = "builder-%s" % eff if eff in variants else "builder"
+    rp = ctx.roles().get(agent) or ctx.roles().get(role) or {}
+    globs = owned_globs(ctx) if mode == "write" else None
+    cfg = {"root": cwd, "mode": mode, "owned": globs, "owned_rx": [hooks.glob_re(g).pattern for g in globs] if globs else None,
+           "model": p.get("model") or None, "max_turns": int(rp.get("maxTurns") or 30),
+           "instructions": role_contract(ctx, agent)}
+    if globs is not None and not globs:
+        cfg["owned"], cfg["owned_rx"] = [], []
+    path = os.path.join(out, "openai-sdk.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, sort_keys=True)
+        f.write("\n")
+    argv = [binary] + list(p.get("forced_flags") or []) + ["--config", path, "--brief-file", os.path.join(out, "brief.md")]
+    return argv, {"model": p.get("model") or "provider-default", "tier": None, "agent": "openai-agents:%s" % agent,
+                  "stdin": "devnull"}
+
+
 BUILDERS = {"claude-p": build_claude_p, "codex": build_codex, "grok": build_grok,
-            "opencode-ollama": build_opencode, "aider-ollama": build_aider}
+            "opencode-ollama": build_opencode, "aider-ollama": build_aider, "openai-sdk": build_openai_sdk}
 
 
 def scrub_env(pid, p, extra=None):
@@ -514,7 +576,7 @@ def parse_aider(stdout_text, rc):
 
 
 def parse_output(pid, stdout_text, out, rc):
-    if pid in ("claude-p", "grok"):                     # the same (stream-)json result shape
+    if pid in ("claude-p", "grok", "openai-sdk"):       # the same (stream-)json result shape
         return parse_claude(stdout_text)
     if pid == "codex":
         return parse_codex(stdout_text, os.path.join(out, "result.last.md"))
@@ -700,6 +762,7 @@ def cmd_run(pid, plugin_root, state_base, exec_scripts, repo_root, argv):
             if t and cap and t.get("rank", 0) > cap.get("rank", 0):
                 raise Refuse(EXIT_REFUSED, "route tier %s is above provider %s's max_tier %s" % (t["id"], pid, cap["id"]))
     binary, doc = doctor_gate(ctx, pid, p)
+    acceptance_gate(ctx, pid, p)
     wt_plan = ctx.worktree
     head = git_out(wt_plan, "rev-parse", "HEAD")
     if not head or not ledger.SHA_RE.match(head):
@@ -890,7 +953,8 @@ def cmd_run(pid, plugin_root, state_base, exec_scripts, repo_root, argv):
         write_json(os.path.join(out, "result.json"), result, exclusive=True)
         wr = {"provider": pid, "role": role, "exit_code": rc, "mode": mode, "run_id": run_id, "record_id": record_id,
               "resolved_model": model, "usage": usage, "usd": usd, "usd_estimate": usd, "duration_ms": wall_ms,
-              "timed_out": timed_out, "sentinel_seen": bool(parsed.get("sentinel")), "files_changed": len(files),
+              "timed_out": timed_out, "sentinel_seen": bool(parsed.get("sentinel")), "ok": bool(ok),
+              "files_changed": len(files),
               "patch_sha256": patch_sha, "family": p.get("family"), "line": line}
         ledger.append(ctx.state_dir, "worker_run", wr, "shim", route_id=rid, route_mode=rec.get("route_mode"), head_sha=head)
         if verdict is not None:
@@ -998,6 +1062,10 @@ def cmd_apply(plugin_root, state_base, exec_scripts, repo_root, argv):
         if reg:
             reg.update({"status": "rejected", "rejected_reason": msg[:300]})
             write_json(os.path.join(out, "worker.json"), reg)
+        if res.get("provider") and res.get("source") == "shim":   # counts against the provider's acceptance
+            ledger.append(ctx.state_dir, "worker_rejected", {"provider": res["provider"], "run_id": run_id,
+                                                             "reason": msg[:300], "record_id": res.get("record_id")},
+                          "shim", route_id=rid, route_mode=rec.get("route_mode"), head_sha=git_out(ctx.worktree, "rev-parse", "HEAD"))
         raise Refuse(EXIT_FAILED, msg + " (patch kept under %s/)" % rej)
 
     if os.path.exists(os.path.join(out, "applied.json")):
@@ -1067,14 +1135,310 @@ def cmd_apply(plugin_root, state_base, exec_scripts, repo_root, argv):
     return EXIT_OK
 
 
+# -------------------------------------------------------------------- smoke ----
+# The per-version smoke of a provider (ADR-0001 "Flagged-off providers": no run of
+# an unverified provider before its per-version smoke). It runs the real CLI with
+# exactly what `run` would build (the same builder, run-only files, scrubbed
+# environment, parser and patch capture) against a throwaway fixture repository,
+# and asserts what the shims rely on but smoke.sh can only stub:
+#   flags      the forced flags are accepted (`<bin> <forced> --help`, as doctor);
+#   version    the installed version is readable (it is what gets attested);
+#   run        the CLI finishes non-interactively, stdin closed, inside the timeout;
+#   parse      its output parses (the sentinel; no error result);
+#   usage      it reports usage when the policy says it does (reports_usage);
+#   patch      write roles: the asked-for edit to an owned file lands in the
+#              captured patch and nothing else does (the planted project configs
+#              and secrets the builder moves aside are restored and untouched);
+#   readonly   read-only roles: a parseable APPROVE verdict and a snapshot left
+#              byte-identical.
+# A provider model is asked to do one small thing; a run that fails only on
+# content is retried (--attempts, default 2).
+
+SMOKE_FILES = {"README.md": "# Smoke fixture\n\nA throwaway repository for apex-dispatch's provider smoke.\n",
+               "docs/guide.md": "# Guide\n\nThe guide of the smoke fixture.\n",
+               "src/app.py": "def greet(name):\n    return 'hello ' + name\n",
+               # Canaries: a provider's project config and secrets the builders move aside
+               # for the run (opencode, aider) or replace (grok's .claude/settings.json).
+               "opencode.json": '{"permission": {"edit": "allow", "bash": "allow"}}\n',
+               ".opencode/canary.txt": "opencode project dir canary\n",
+               ".aider.conf.yml": "# canary: a repository aider config\nauto-commits: true\n",
+               ".env": "APEX_SMOKE_CANARY=1\n",
+               ".claude/settings.json": '{"permissions": {"defaultMode": "default"}}\n'}
+SMOKE_OWNED = ["docs/**"]
+SMOKE_EDIT = "docs/guide.md"
+
+
+class SmokeCtx:
+    """The slice of hooks.Ctx the command builders read, for a fixture task."""
+
+    def __init__(self, plugin_root, policy, owned):
+        self.plugin_root, self.policy = plugin_root, policy
+        self.route = {"router": {"fanout": "single", "tier": "cheap", "effort": "low"}, "paths_owned": owned}
+        self.owner, self.exec_scripts, self.state_dir = {}, None, None
+
+    def roles(self):
+        return {r["id"]: r for r in self.policy.get("roles", []) if isinstance(r, dict) and "id" in r}
+
+
+def tree_digest(root, skip=()):
+    h = {}
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x != ".git"]
+        for f in files:
+            fp = os.path.join(d, f)
+            rel = os.path.relpath(fp, root).replace(os.sep, "/")
+            if rel in skip or os.path.islink(fp):
+                continue
+            h[rel] = sha256_file(fp)
+    return h
+
+
+def smoke_fixture(base):
+    repo = os.path.join(base, "repo")
+    os.makedirs(repo)
+    for rel, text in SMOKE_FILES.items():
+        fp = os.path.join(repo, rel)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with open(fp, "w", encoding="utf-8") as f:
+            f.write(text)
+    env = dict(os.environ, GIT_AUTHOR_NAME="apex-dispatch smoke", GIT_AUTHOR_EMAIL="smoke@localhost",
+               GIT_COMMITTER_NAME="apex-dispatch smoke", GIT_COMMITTER_EMAIL="smoke@localhost")
+    for args in (["init", "-q"], ["add", "-A", "-f"], ["commit", "-q", "--no-verify", "-m", "smoke fixture"]):
+        git(repo, *args, check=True, env=env)
+    return repo, git_out(repo, "rev-parse", "HEAD")
+
+
+def smoke_once(ctx, pid, p, binary, role, mode, base, attempt, secs):
+    """One run of the provider on a fresh fixture. Returns (checks, result dict)."""
+    nonce = os.urandom(4).hex()
+    root = os.path.join(base, "a%d" % attempt)
+    os.makedirs(root)
+    repo, head = smoke_fixture(root)
+    out = os.path.join(root, "out")
+    os.makedirs(out)
+    confine = os.path.join(root, "confined")
+    checks = []
+
+    def check(cid, ok, detail):
+        checks.append({"id": cid, "ok": bool(ok), "detail": detail})
+        return ok
+    if mode == "write":
+        git(repo, "worktree", "add", "-q", "--detach", confine, head, check=True)
+        brief = ("Append one new line to the end of the file %s. The line must be exactly:\n\napex-dispatch smoke %s\n\n"
+                 "Change no other file and create no file. Do not run git. When you are done, reply with the "
+                 "single line: DONE %s\n" % (SMOKE_EDIT, nonce, nonce))
+    else:
+        extract_snapshot(repo, head, confine)
+        brief = ("Read README.md and src/app.py. Change no file. End your reply with exactly these two lines:\n\n"
+                 "LENS: correctness\nVERDICT: APPROVE\n")
+    before = tree_digest(confine)
+    router = ctx.route["router"]
+    argv, meta = BUILDERS[pid](ctx, p, binary, role, mode, router, FALLBACK_USD, confine, out)
+    check_flags(p, argv)
+    if meta.get("brief_arg"):
+        argv = argv + [brief]
+    with open(os.path.join(out, "brief.md"), "w", encoding="utf-8") as f:
+        f.write(brief)
+    brief_path = os.path.join(out, "brief.md")
+    env = scrub_env(pid, p, meta.get("env"))
+    runfiles = RunFiles(confine, out)
+    runfiles.apply(meta)
+    t0 = time.monotonic()
+    try:
+        with open(os.path.join(out, "stdout.log"), "wb") as so, open(os.path.join(out, "stderr.log"), "wb") as se:
+            stdin = open(brief_path, "rb") if meta.get("stdin") == "brief" else subprocess.DEVNULL
+            try:
+                rc = subprocess.run([shutil.which("timeout"), "--kill-after=%d" % KILL_AFTER_SEC, "%ds" % secs] + argv,
+                                    cwd=confine, env=env, stdin=stdin, stdout=so, stderr=se).returncode
+            finally:
+                if stdin is not subprocess.DEVNULL:
+                    stdin.close()
+    finally:
+        runfiles.restore()
+    wall = int((time.monotonic() - t0) * 1000)
+    with open(os.path.join(out, "stdout.log"), encoding="utf-8", errors="replace") as f:
+        stdout_text = f.read()
+    with open(os.path.join(out, "stderr.log"), encoding="utf-8", errors="replace") as f:
+        stderr_tail = f.read()[-600:].strip()
+    parsed = parse_output(pid, stdout_text, out, rc)
+    check("run", rc == 0, "exit %d after %.1f s%s" % (rc, wall / 1000.0, " (timed out)" if rc in (124, 137) else "")
+          + ("; stderr: " + stderr_tail.replace("\n", " | ")[:300] if rc != 0 and stderr_tail else ""))
+    check("parse", parsed.get("sentinel") and not parsed.get("error"),
+          "sentinel %s, error %s" % (bool(parsed.get("sentinel")), bool(parsed.get("error"))))
+    if p.get("reports_usage"):
+        u = parsed.get("usage") or {}
+        check("usage", u.get("output") or u.get("input"), "usage %s" % (json.dumps(u, sort_keys=True) if u else "missing"))
+    if mode == "write":
+        git(confine, "add", "-A", check=True)
+        names = git(confine, "diff", "--cached", "--name-only", "-z", "--no-renames", head, check=True).stdout
+        files = [x for x in names.decode("utf-8", "replace").split("\0") if x]
+        try:
+            with open(os.path.join(confine, SMOKE_EDIT), encoding="utf-8") as f:
+                edited = "apex-dispatch smoke %s" % nonce in f.read()
+        except OSError:
+            edited = False
+        check("patch", files == [SMOKE_EDIT] and edited,
+              "patch names %s (expected exactly %s with the nonce line: %s)" % (files or "nothing", SMOKE_EDIT,
+                                                                               "present" if edited else "missing"))
+        git(repo, "worktree", "remove", "--force", confine)
+    else:
+        after = tree_digest(confine)
+        changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+        check("readonly", not changed, "snapshot %s" % ("unchanged" if not changed else "changed: " + ", ".join(changed[:6])))
+        if role in REVIEW_ROLES:
+            verdict, _ = hooks.parse_review(parsed.get("text"))
+            check("verdict", verdict == "APPROVE", "parsed verdict %s" % verdict)
+    return checks, {"attempt": attempt, "exit_code": rc, "wall_ms": wall, "model": parsed.get("model") or meta.get("model"),
+                    "usage": parsed.get("usage"), "out": out}
+
+
+def record_attestation(plugin_root, repo_root, pid, version, enable, evidence):
+    """Add version to the overlay's providers[pid].verified_versions (and enabled:
+    true with --enable), validated through the same merge as compile --print-merged
+    before it replaces the file; write the evidence beside it."""
+    import compile as policy_compiler
+    path = os.environ.get("APEX_DISPATCH_POLICY") or os.path.join(repo_root, ".claude", "apex-dispatch", "policy.json")
+    ov = policy_compiler.load_json(path, "overlay") if os.path.isfile(path) else {}
+    provs = ov.setdefault("providers", [])
+    e = next((x for x in provs if isinstance(x, dict) and x.get("id") == pid), None)
+    if e is None:
+        e = {"id": pid}
+        provs.append(e)
+    vv = [v for v in e.get("verified_versions") or [] if v != version] + [version]
+    e["verified_versions"] = vv
+    if enable:
+        e["enabled"] = True
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(ov, f, indent=2)
+        f.write("\n")
+    try:
+        policy_compiler.merged_with_overlay(policy_compiler.load_inputs(plugin_root), tmp)
+    except policy_compiler.PolicyError as err:
+        os.remove(tmp)
+        raise Refuse(EXIT_REFUSED, "the overlay would be invalid, not recorded: %s" % "; ".join(err.errors))
+    os.replace(tmp, path)
+    ev = os.path.join(os.path.dirname(os.path.abspath(path)), "smoke", "%s-%s.json" % (pid, version))
+    os.makedirs(os.path.dirname(ev), exist_ok=True)
+    write_json(ev, evidence)
+    return path, ev
+
+
+def cmd_smoke(pid, plugin_root, state_base, repo_root, argv):
+    flags = {"--record", "--enable", "--keep"}
+    a = opts([x for x in argv if x not in flags], {"--timeout-sec", "--attempts"})
+    for f in flags:
+        a[f[2:]] = f in argv
+    if a["enable"] and not a["record"]:
+        raise Refuse(EXIT_USAGE, "--enable needs --record (a provider is enabled only with its smoke recorded)")
+    if not re.fullmatch(r"[0-9]{1,4}", a.get("timeout_sec") or "600") or not re.fullmatch(r"[0-9]", a.get("attempts") or "2"):
+        raise Refuse(EXIT_USAGE, "--timeout-sec 1..3600, --attempts 1..5")
+    secs, attempts = int(a.get("timeout_sec") or 600), int(a.get("attempts") or 2)
+    if not (0 < secs <= 3600 and 0 < attempts <= 5):
+        raise Refuse(EXIT_USAGE, "--timeout-sec 1..3600, --attempts 1..5")
+    for t in ("git", "timeout"):
+        if not shutil.which(t):
+            raise Refuse(EXIT_UNAVAILABLE, "%s is required" % t)
+    if state_base and os.path.isdir(os.path.join(state_base, "ACTIVE")):
+        ctx = hooks.Ctx("smoke", plugin_root, state_base, None, repo_root)
+        if ctx.owner_ok and not ctx.stale():
+            raise Refuse(EXIT_REFUSED, "a run holds the ACTIVE lock in this repository: the provider smoke runs a real "
+                                       "provider CLI outside the shims, so run it between runs, as a human")
+    import compile as policy_compiler
+    try:
+        policy = policy_compiler.runtime_policy(plugin_root)
+    except policy_compiler.PolicyError as e:
+        raise Refuse(EXIT_REFUSED, "the merged policy is invalid: %s" % "; ".join(e.errors))
+    p = {x.get("id"): x for x in policy.get("providers", []) if isinstance(x, dict)}.get(pid)
+    if not p:
+        raise Refuse(EXIT_USAGE, "provider %s is not in the policy (%s)" % (pid, ", ".join(
+            x.get("id") for x in policy.get("providers", []) if x.get("kind") == "subprocess")))
+    if p.get("kind") != "subprocess" or pid not in BUILDERS:
+        raise Refuse(EXIT_USAGE, "provider %s is %s: there is nothing to smoke" % (pid, p.get("kind")))
+    binary = ledger.provider_binary(p, plugin_root)
+    if not binary:
+        raise Refuse(EXIT_UNAVAILABLE, "provider %s's binary %s is not available" % (pid, p.get("binary")))
+    rc, vout = 0, ""
+    try:
+        r = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=30)
+        rc, vout = r.returncode, (r.stdout or "") + (r.stderr or "")
+    except (OSError, subprocess.SubprocessError) as e:
+        rc, vout = 1, str(e)
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", vout) if rc == 0 else None
+    version = ".".join(m.groups()) if m else None
+    write_roles = [x for x in ("docs", "tester", "builder") if x in (p.get("roles_allowed") or [])]
+    read_roles = [x for x in ("reviewer", "diagnoser") if x in (p.get("roles_allowed") or [])]
+    role = (write_roles or read_roles or [None])[0]
+    if role is None:
+        raise Refuse(EXIT_USAGE, "provider %s takes no role the smoke can exercise" % pid)
+    mode = "write" if role in WRITE_ROLES else "readonly"
+    checks = [{"id": "version", "ok": bool(version), "detail": "%s --version: %s" % (binary, (vout.strip().splitlines() or ["no output"])[0][:120])}]
+    try:
+        fr = subprocess.run([binary] + list(p.get("forced_flags") or []) + ["--help"], capture_output=True, text=True, timeout=30)
+        fout = (fr.stdout or "") + (fr.stderr or "")
+        bad = re.search(r"unexpected argument|unknown option|unrecognized option|unknown flag|invalid option", fout, re.I)
+        checks.append({"id": "flags", "ok": fr.returncode == 0 and not bad,
+                       "detail": "forced flags %s with --help: exit %d%s" % (" ".join(p.get("forced_flags") or []), fr.returncode,
+                                                                             (": " + bad.group(0)) if bad else "")})
+    except (OSError, subprocess.SubprocessError) as e:
+        checks.append({"id": "flags", "ok": False, "detail": "forced-flag probe failed: %s" % e})
+    for c in checks:
+        print("SMOKE_CHECK: %-19s %-4s %s" % (c["id"], "ok" if c["ok"] else "FAIL", c["detail"]))
+    import tempfile
+    base = tempfile.mkdtemp(prefix="apex-provider-smoke-%s-" % pid)
+    runs = []
+    try:
+        if all(c["ok"] for c in checks):
+            ctx = SmokeCtx(plugin_root, policy, SMOKE_OWNED)
+            for n in range(1, attempts + 1):
+                got, info = smoke_once(ctx, pid, p, binary, role, mode, base, n, secs)
+                info["checks"] = got
+                runs.append(info)
+                for c in got:
+                    print("SMOKE_CHECK: attempt %d %-9s %-4s %s" % (n, c["id"], "ok" if c["ok"] else "FAIL", c["detail"]))
+                if all(c["ok"] for c in got):
+                    break
+                if any(c["id"] == "run" and "(timed out)" in c["detail"] for c in got):
+                    break                                   # a timeout will not improve on a retry
+    finally:
+        if not a["keep"]:
+            shutil.rmtree(base, ignore_errors=True)
+    passed = all(c["ok"] for c in checks) and bool(runs) and all(c["ok"] for c in runs[-1]["checks"])
+    evidence = {"schema": 1, "provider": pid, "version": version, "binary": binary, "role": role, "mode": mode,
+                "model": runs[-1]["model"] if runs else None, "passed": passed, "at": now_ts(),
+                "checks": checks, "runs": [{k: v for k, v in r.items() if k != "out"} for r in runs],
+                "forced_flags": p.get("forced_flags"), "plugin_version": (ledger.read_json(os.path.join(
+                    plugin_root, ".claude-plugin", "plugin.json"), {}) or {}).get("version")}
+    print("SMOKE_PROVIDER: %s" % pid)
+    print("SMOKE_VERSION: %s" % (version or "unknown"))
+    print("SMOKE_ROLE: %s (%s)" % (role, mode))
+    if a["keep"]:
+        print("SMOKE_DIR: %s" % base)
+    if not passed:
+        print("SMOKE_STATUS: FAIL")
+        return EXIT_FAILED
+    print("SMOKE_STATUS: PASS")
+    if a["record"]:
+        path, ev = record_attestation(plugin_root, repo_root, pid, version, a["enable"], evidence)
+        print("SMOKE_RECORDED: %s verified_versions += %s%s" % (path, version, "; enabled: true" if a["enable"] else ""))
+        print("SMOKE_EVIDENCE: %s" % ev)
+        print("SMOKE_NEXT: re-run doctor.sh so doctor.json sees the attested version")
+    else:
+        print("SMOKE_NEXT: re-run with --record (and --enable) to attest %s %s in this repository's overlay" % (pid, version))
+    return EXIT_OK
+
+
 def main(argv):
     try:
         if len(argv) >= 7 and argv[1] == "run" and argv[7:8] == ["--"]:
             return cmd_run(argv[2], argv[3], argv[4], argv[5], argv[6], argv[8:])
         if len(argv) >= 6 and argv[1] == "apply" and argv[6:7] == ["--"]:
             return cmd_apply(argv[2], argv[3], argv[4], argv[5], argv[7:])
-        print("usage: worker.py run PROVIDER ROOT STATE_BASE EXEC REPO -- ARGS | worker.py apply ROOT STATE_BASE EXEC REPO -- ARGS",
-              file=sys.stderr)
+        if len(argv) >= 6 and argv[1] == "smoke" and argv[6:7] == ["--"]:
+            return cmd_smoke(argv[2], argv[3], argv[4], argv[5], argv[7:])
+        print("usage: worker.py run PROVIDER ROOT STATE_BASE EXEC REPO -- ARGS | worker.py apply ROOT STATE_BASE EXEC REPO -- ARGS"
+              " | worker.py smoke PROVIDER ROOT STATE_BASE REPO -- ARGS", file=sys.stderr)
         return EXIT_USAGE
     except Refuse as r:
         word = {EXIT_USAGE: "usage", EXIT_UNAVAILABLE: "unavailable", EXIT_NOT_IMPLEMENTED: "not-implemented"}.get(r.code, "refused")
