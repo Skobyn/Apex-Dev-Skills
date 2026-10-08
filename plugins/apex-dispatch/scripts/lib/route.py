@@ -57,6 +57,10 @@ TOOLCHAIN_MARKERS = ["package.json", "pyproject.toml", "setup.py", "setup.cfg", 
                      "build.gradle.kts", "pom.xml", "Gemfile", "mix.exs", "deno.json", "composer.json"]
 
 
+# This plugin's root (main() sets it from argv); the sibling apex-decision-layer is found beside it.
+PLUGIN_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+
+
 class RouteError(Exception):
     pass
 
@@ -197,25 +201,51 @@ def dispatch_mode():
 
 # --------------------------------------------------------------- decision ----
 
+def decide_argv(pol):
+    """The decision CLI (decision-layer spec §11.2 item 1): APEX_DECIDE_CMD overrides; else the
+    sibling apex-decision-layer's bin/apex-decide (APEX_DECISION_LAYER_ROOT overrides the lookup)."""
+    sem = pol.semantic
+    cmd = os.environ.get(sem.get("cmd_env", "APEX_DECIDE_CMD"), "")
+    if cmd:
+        return shlex.split(cmd)
+    root = os.environ.get("APEX_DECISION_LAYER_ROOT") or os.path.join(PLUGIN_ROOT, "..", "apex-decision-layer")
+    exe = os.path.join(root, "bin", sem.get("default_cmd", "apex-decide"))
+    if os.path.isfile(exe) and os.access(exe, os.X_OK):
+        return [os.path.realpath(exe)]
+    return None
+
+
 def semantic_fill(pol, state, default_cls):
     """Step 5. Returns (class_or_None, uncertain, source, info). class is set
     only when the decision may move the route: calibrated with max p >= min_p,
-    or uncalibrated and the move is safer or more expensive."""
+    or uncalibrated and the move is safer or more expensive. `state` is the
+    decision state: the routing features plus the task's own text (the
+    decision layer drops text unless the repo opted in to state_fields: raw)."""
     sem = pol.semantic
-    cmd = os.environ.get(sem.get("cmd_env", "APEX_DECIDE_CMD"), "")
-    if not sem.get("enabled", True) or not cmd:
+    argv = decide_argv(pol) if sem.get("enabled", True) else None
+    if not argv:
         return None, False, "table", {"backend": "none"}
     rubric = sem.get("rubrics", {}).get("task_class", "dispatch/task-class@1")
-    timeout = max(0.1, sem.get("timeout_ms", 2000) / 1000.0)
+    timeout_ms = sem.get("timeout_ms", 2000)
+    timeout = max(0.1, timeout_ms / 1000.0)
     try:
-        argv = shlex.split(cmd) + ["--rubric", rubric, "--state", json.dumps(state, sort_keys=True), "--json"]
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        argv = argv + ["--rubric", rubric, "--state", "-", "--json", "--deadline-ms", str(max(100, int(timeout_ms) - 400))]
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                           input=json.dumps(state, sort_keys=True))
     except subprocess.TimeoutExpired:
         return None, False, "table", {"backend": "none", "fallback": "timeout"}
     except (OSError, ValueError) as e:
         return None, False, "table", {"backend": "none", "fallback": "provider_error", "error": str(e)[:200]}
     if p.returncode != 0:
-        return None, False, "table", {"backend": "none", "fallback": "provider_error", "exit": p.returncode}
+        info = {"backend": "none", "fallback": "provider_error", "exit": p.returncode}
+        if p.returncode == 3:                   # unscored: the envelope says why (backend_none, egress_disabled, ...)
+            try:
+                env = json.loads(p.stdout)
+                info.update({"backend": env.get("backend") or "none", "fallback": str(env.get("reason") or "unscored"),
+                             "decision_id": env.get("decision_id")})
+            except (ValueError, AttributeError):
+                pass
+        return None, False, "table", info
     try:
         d = json.loads(p.stdout)
     except ValueError:
@@ -387,6 +417,22 @@ def review_for(pol, cls, risk, floors_then, directive_review):
     return shape, div
 
 
+TITLE_PREFIX = re.compile(r"^\s*[-*+]\s*\[[ xX]\]\s*")
+
+
+def decision_state(feats, task):
+    """The routing features plus the task's own words (decision-layer spec §11.2 item 5). The
+    words never enter the routing feature object; apex-decide forwards them to a backend only
+    when the repository set state_fields: raw, and always as untrusted text."""
+    st = dict(feats)
+    title = TITLE_PREFIX.sub("", task.get("line") or "").strip()
+    if title:
+        st["task_title"] = title[:500]
+    if task.get("acceptance"):
+        st["acceptance_text"] = str(task["acceptance"])[:1000]
+    return st
+
+
 def compute(pol, feats, task, lanes_ctx, mode, escal):
     """Steps 2-8 for one task. Returns a dict describing the route."""
     r = {"status": "READY", "missing": [], "notes": [], "floors": [], "semantic_source": "table", "decision": None,
@@ -436,7 +482,7 @@ def compute(pol, feats, task, lanes_ctx, mode, escal):
     # 5. Semantic fill, only for a class still `auto`.
     uncertain = False
     if cls_id is None and mode != "baseline":
-        dec_cls, uncertain, sem_src, info = semantic_fill(pol, feats, table_cls)
+        dec_cls, uncertain, sem_src, info = semantic_fill(pol, decision_state(feats, task), table_cls)
         r["semantic_source"], r["decision"] = sem_src, info
         if dec_cls and dec_cls != table_cls:
             dc = pol.classes[dec_cls]
@@ -649,6 +695,16 @@ def finish(args, pol, feats, task, r, kind, ident, state_dir, extra_record):
         row = ledger_append(state_dir, "route", {k: v for k, v in record.items() if k not in ("event", "ts")},
                             route_id=route_id, route_mode=out_mode, head_sha=git_head(args.get("repo")))
         record.update({"head_sha": row["head_sha"], "ledger_seq": row["seq"], "ledger_hash": row["hash"]})
+        dec = r.get("decision") or {}
+        if r.get("semantic_source") == "decision-shadow" and r.get("table_class"):
+            # An answer that did not move the route (uncalibrated and cheaper, or no safe
+            # candidate), logged beside the deterministic choice (decision-layer spec §11.2 item 4).
+            ledger_append(state_dir, "decision_shadow", {
+                "rubric": pol.semantic.get("rubrics", {}).get("task_class", "dispatch/task-class@1"),
+                "deterministic_choice": r["table_class"], "decision_choice": r.get("decision_choice"),
+                "decision_id": dec.get("decision_id"), "backend": dec.get("backend"),
+                "calibrated": dec.get("calibrated"), "max_p": dec.get("max_p"), "fallback": dec.get("fallback")},
+                route_id=route_id, route_mode=out_mode, head_sha=row["head_sha"])
     if not args.get("dry_run") and emit_status == "READY":
         written = os.path.join(dstate, "active-route.json")
         write_json_atomic(written, record)
@@ -925,9 +981,11 @@ def cmd_review_shape(plugin_root, argv):
 
 
 def main(argv):
+    global PLUGIN_ROOT
     if len(argv) < 2:
         die("usage: route.py PLUGIN_ROOT (version|plan|adhoc|escalate|review-shape) ...", 2)
     root, cmd, rest = argv[0], argv[1], argv[2:]
+    PLUGIN_ROOT = os.path.abspath(root)
     if cmd == "version":
         print(json.load(open(os.path.join(root, ".claude-plugin", "plugin.json")))["version"])
         return 0

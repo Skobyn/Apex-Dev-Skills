@@ -89,3 +89,7 @@ False "dirty" reports fail closed and are accepted. Examples: macOS case-insensi
 - Gate and land checks read every tracked file: seconds on large repos (about 3–7 s for 50–60k files in tests).
 - The claim is narrower and stated: per run, under the head's own committed rules. Anything outside it is the operator's or Phase 3's.
 - Review-loop cost is high for Tier C harness work. Feedback for loosening it is in `.claude/apex-scope-loop/REVIEW-LOOP-FEEDBACK.md` of the development repo; [ADR-0004](0004-review-loop-calibration.md) acts on it.
+
+## Amendments
+
+- 2026-10-08 (plugin v0.4.2) — **The decision layer.** `.dev-plan-state/` gains a `decisions/` subdirectory, written only by apex-decision-layer's `apex-decide` (its ADR-0001): one JSON line per decision-layer call, appended under `flock`. It sits beside the run state so apex-dispatch's hooks protect it like the rest of `.dev-plan-state/`. `risk-tier.sh --classify` now finds the CLI as `APEX_DECIDE_CMD`, else `APEX_DECISION_LAYER_ROOT/bin/apex-decide`, else the sibling `apex-decision-layer/bin/apex-decide`. It calls the CLI as an argv list with the state on stdin and `--deadline-ms`. An uncalibrated `C` raises a task only to Tier B, recorded as a reason line; only a calibrated `C` raises it to Tier C (decision-layer spec §11.3, decision Q3).

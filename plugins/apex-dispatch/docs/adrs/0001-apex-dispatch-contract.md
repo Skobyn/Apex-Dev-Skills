@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-10-06
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-dispatch v0.4.0 (contract introduced in v0.1.0; provider workers in v0.2.0; flagged-off grok/opencode/aider shims, the openai-sdk stub, `compile --target codex` and `report --compare`/`--decision` in v0.3.0; reviewer threat model, severity bar and adversary budget from apex-scope-loop ADR-0004 in v0.3.1; the openai-sdk runner, rolling provider acceptance and the per-version provider smoke in v0.4.0)
+- **Plugin:** apex-dispatch v0.5.0 (contract introduced in v0.1.0; provider workers in v0.2.0; flagged-off grok/opencode/aider shims, the openai-sdk stub, `compile --target codex` and `report --compare`/`--decision` in v0.3.0; reviewer threat model, severity bar and adversary budget from apex-scope-loop ADR-0004 in v0.3.1; the openai-sdk runner, rolling provider acceptance and the per-version provider smoke in v0.4.0; the apex-decision-layer consumer in v0.5.0)
 - **Spec:** `docs/superpowers/specs/2026-10-05-apex-dispatch-design.md` (§3, §5)
 
 ## Context
@@ -97,3 +97,15 @@ Ship **apex-dispatch** as a separate plugin that routes and governs delegation, 
 
 - 2026-10-06 — Proposed (v0.1.0); extended in v0.2.0, v0.3.0 and v0.3.1 as recorded in the Plugin line.
 - 2026-10-08 — v0.4.0: the openai-sdk stub replaced by a runner on the OpenAI Agents SDK (flagged off, file tools only); rolling provider acceptance enforced by the shims, `route.sh`, doctor and second-family selection (`worker_rejected` added to the provenance events); `scripts/provider-smoke.sh` runs the per-version smoke and records the attestation that enables a flagged-off provider.
+- 2026-10-08 — v0.5.0: apex-decision-layer as the decision seam (see Amendments).
+
+## Amendments
+
+- 2026-10-08 (v0.5.0) — **apex-decision-layer as the decision seam** (its ADR-0001; decision-layer spec §11.2).
+  - **Resolution.** `route.sh` finds the decision CLI as `APEX_DECIDE_CMD` (an override, split with `shlex`), else `APEX_DECISION_LAYER_ROOT/bin/apex-decide`, else the sibling `../apex-decision-layer/bin/apex-decide`. `semantic.default_cmd` names that binary.
+  - **Invocation.** It calls the CLI as an argv list, never through a shell: `--rubric dispatch/task-class@1 --state - --json --deadline-ms <timeout_ms − 400>`, with the state on stdin. An exit-3 (unscored) envelope's `reason` is recorded as the route's decision `fallback`, for example `backend_none` or `egress_disabled`.
+  - **No change when unconfigured.** An installed but unconfigured decision layer changes no ROUTE block (smoke).
+  - **Decision state.** The decision state is the routing feature object plus `task_title` (the task line without its checkbox, at most 500 characters) and `acceptance_text` (at most 1000 characters). Neither enters the routing features. The decision layer forwards them only under the repository's `state_fields: raw`.
+  - **`decision_shadow` rows.** An answer that did not move the route (`SEMANTIC_SOURCE: decision-shadow`: uncalibrated and cheaper, or no safe candidate) is written as a `decision_shadow` ledger row: `{rubric, deterministic_choice, decision_choice, decision_id, backend, calibrated, max_p, fallback}`.
+  - **Tamper hardening.** `pre-bash` denies setting, exporting or unsetting `APEX_DECIDE_CMD`, `APEX_DECIDE_TIMEOUT`, `APEX_DECIDE_FAKE`, `APEX_DECIDE_JEV_BASE` and `APEX_DECISION_LAYER_ROOT` during a run. Without this, an orchestrator could swap in a CLI that answers `calibrated: true` and route a task to a cheaper class.
+  - **Protected paths.** `pre-bash` and `pre-edit` treat `.claude/apex-decision-layer/` (config, labels, calibration records) and the installed apex-decision-layer plugin as protected paths. `apply.sh` adds `.claude/apex-decision-layer/` to its never-touch list.

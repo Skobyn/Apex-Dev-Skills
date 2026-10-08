@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# apex-decide — the decision-layer CLI. See scripts/lib/decide.py and
+# docs/adrs/0001-apex-decision-layer-contract.md.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+command -v python3 >/dev/null 2>&1 || { echo "apex-decide: python3 is required" >&2; exit 1; }
+exec python3 -I -B "$ROOT/scripts/lib/decide.py" "$@"
