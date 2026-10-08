@@ -449,4 +449,4 @@ From the survey and its follow-up: the wire contract and the validator (jegrep, 
   - `doctor --probe` is opt-in;
   - retries are capped at three attempts.
 
-  §11.2 items 5–7 shipped with Phase 1, in apex-dispatch 0.5.0. Live verification: see `docs/research/apex-decision-layer-phase0.md` § Phase 2.
+  §11.2 item 5 (title and Acceptance text in the decision state) shipped with Phase 1, in apex-dispatch 0.5.0. Items 6 (a `decision_layer` section in `doctor.sh`) and 7 (`report.sh` pricing decision calls from the decision log's `usage`, which now carries `cost`) are still open. Live verification: see `docs/research/apex-decision-layer-phase0.md` § Phase 2.
