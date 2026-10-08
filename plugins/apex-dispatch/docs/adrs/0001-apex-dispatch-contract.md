@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-10-06
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-dispatch v0.3.0 (contract introduced in v0.1.0; provider workers in v0.2.0; flagged-off grok/opencode/aider shims, the openai-sdk stub, `compile --target codex` and `report --compare`/`--decision` in v0.3.0)
+- **Plugin:** apex-dispatch v0.3.1 (contract introduced in v0.1.0; provider workers in v0.2.0; flagged-off grok/opencode/aider shims, the openai-sdk stub, `compile --target codex` and `report --compare`/`--decision` in v0.3.0; reviewer threat model, severity bar and adversary budget from apex-scope-loop ADR-0004 in v0.3.1)
 - **Spec:** `docs/superpowers/specs/2026-10-05-apex-dispatch-design.md` (§3, §5)
 
 ## Context

@@ -1842,17 +1842,17 @@ for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_cla
 done
 pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
 
-# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.3.0 everywhere
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.3.1 everywhere
 for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
   grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
   if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
   if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
 done
 V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
-[ "$V" = 0.3.0 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
-  || fail "the 0.3.0 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+[ "$V" = 0.3.1 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.3.1 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
 grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
-pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.3.0 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.3.1 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
 
 # --- Phase 4.2: flagged-off grok/opencode/aider shims, openai-sdk stub, compile --target codex,
 #     report --compare/--decision, carried hardening. Provider CLIs are stubs on a fixture PATH. ---

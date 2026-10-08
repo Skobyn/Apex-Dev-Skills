@@ -126,7 +126,16 @@ build swarm → commit → green-gate.sh check → risk-tier.sh → gibson-revie
 | Never grade your own homework (Law 5) | The `gibson-reviewer` agent reviews in a fresh context and fails closed. Check-off is refused without an `APPROVE` on the current head |
 | Tier C is sacred (Law 7) | `risk-tier.sh` flags money/auth/PII/security/schema/prod-data diffs. They halt for your approval, asked in plain language (the Ask Contract) |
 | The ratchet (Law 9) | A failure seen twice must be filed in `.claude/apex-scope-loop/LESSONS.md`, and lessons are recalled by tag before each task |
-| Kill switch + error budget | `touch .dev-plan-state/HALT` (or `gibson/HALT`, or `APEX_HALT=1`) stops the loop. Two failures in a row buy a second opinion, and three halt the plan |
+| Kill switch + error budget | `touch .dev-plan-state/HALT` (or `gibson/HALT`, or `APEX_HALT=1`) stops the loop. Two failures in a row buy a second opinion. Three stalled failures halt the plan, and so do six in a row of any kind (a failure that closed findings and moved the head is not a stall) |
+
+### Review-loop calibration (v0.4.0, ADR-0004)
+
+- **Threat model first.** A plan's `## Threat model` section (or a task's `- Threat:` line, else a stated default: trusted agents, accidents and realistic misuse in scope, deliberate tampering and obfuscated inputs out) is printed in the brief and handed to every reviewer verbatim.
+- **A fixed bar.** `[blocking]` means a realistic actor under that model can cause it in an ordinary flow, or Acceptance is unmet, or tests were weakened. At most `APEX_ADVERSARY_BUDGET` (3) blocking findings per pass. Everything else goes to the hardening backlog (`backlog.sh`, `.claude/apex-scope-loop/BACKLOG.md`), which a later docs task consumes.
+- **Verify-only re-reviews.** Round 1 is the full review (and the attempt's one full adversarial pass); later rounds check the prior findings and the fixes since `LAST_REVIEWED`.
+- **Ask the human sooner.** After REQUEST_CHANGES in 2 rounds, `checkpoint.sh review` prints `ASK_HUMAN:`. The human can accept the residual risk at that exact head with `checkpoint.sh waive`; the gate, the tier, G12 and Acceptance still apply, and the completion is recorded as waived, not approved.
+- **Carried findings, frozen heads, shared snapshots.** `findings.sh` keeps each task's findings (a defect counted once; non-blocking ones go to the backlog), `checkpoint.sh freeze` holds the head for a review round, `snapshot.sh` gives reviewers one read-only checkout per commit, and `status.sh --review-metrics` measures rounds and minutes. The review cap counts only rounds that requested changes; a task's `Review:` directive can set it.
+- **Calibrated tiers.** Content signals in tests, fixtures, smoke files, examples and docs no longer raise Tier C (their paths still do), and an explicit `[tier:a reason="…"]`/`[tier:b reason="…"]` override decides over size and content signals (the reason is recorded), never over Tier C paths or `[security]`/`[tier:c]`.
 
 Full mapping, and what was deliberately left out (cross-vendor routing, GitHub claims, CI templates): [skills/apex-execute/docs/GIBSON_HARNESS.md](skills/apex-execute/docs/GIBSON_HARNESS.md). For repo-level setup (CI gates, branch protection, labels), run The Gibson's own `gibson-setup` skill against the target repo.
 
@@ -148,6 +157,8 @@ This plugin claims the AgentDB / memory namespace **`apex-scope-loop`**, followi
 | `apex-scope-loop:outcomes/<slug>/<phase>` | Per-phase verdict + trajectory pattern |
 | `apex-scope-loop:lessons/<tag>` | Ratchet lessons (mirror of the tracked `.claude/apex-scope-loop/LESSONS.md`, per ADR-0002) |
 
+The hardening backlog (ADR-0004) is a tracked file beside the ledger, `.claude/apex-scope-loop/BACKLOG.md`, not a memory key.
+
 Any future plugin that wants to read/write these keys must claim a non-overlapping prefix and reference this plugin's ADR-0001.
 
 ## Verification
@@ -156,13 +167,14 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 42 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, and the clean-worktree inventory). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 61 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, and the review-loop calibration of ADR-0004). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 
 - [ADR-0001 — apex-scope-loop plugin contract](docs/adrs/0001-apex-scope-loop-contract.md) — Status: **Proposed**. Defines surface, namespace, compatibility, and smoke contract.
 - [ADR-0002 — Adopt The Gibson's harness disciplines](docs/adrs/0002-gibson-harness.md) — Status: **Proposed**. Green gate, independent review, Tier C / G12, ratchet, kill switch.
 - [ADR-0003 — Portability, the per-run guarantee, and apex-dispatch as a consumer](docs/adrs/0003-portability-and-dispatch-consumer.md) — Status: **Proposed**. ruflo optional, template profiles, the chain and epochs, landing without merge machinery, the clean-worktree contract and what lies outside it.
+- [ADR-0004 — Review-loop calibration](docs/adrs/0004-review-loop-calibration.md) — Status: **Accepted**. Threat model before review, severity bar, verify-only re-reviews, adversary budget, human waiver, progress-aware halts, hardening backlog, classifier calibration; what it loosens and why that is safe.
 
 ## Migration from `.claude/skills/`
 

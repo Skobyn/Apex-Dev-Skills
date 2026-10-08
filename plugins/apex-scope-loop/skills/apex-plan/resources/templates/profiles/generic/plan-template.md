@@ -19,6 +19,15 @@ drift between code and intent without having to read the full ADR.
 - [ TODO ]
 - [ TODO ]
 
+## Threat model
+
+Trusted, non-malicious agents and operators. Guard against accidents and realistic misuse. Not a sandbox: deliberate tampering with state, config or the harness by the trusted agent, and obfuscated inputs, are out of scope.
+
+> Every reviewer receives this section verbatim (apex-execute brief `THREAT_MODEL:`, ADR-0004 of
+> apex-scope-loop). Edit it before the first review: name the trust model, the in-scope actors and
+> the out-of-scope classes. A finding outside it is non-blocking and goes to the hardening backlog.
+> A task can override it with a one-line `- Threat:` directive.
+
 ---
 
 ## Execution Strategy
@@ -57,7 +66,15 @@ Gates are checkbox tasks, just like phases. The line between Phase N and Phase N
 >   - Acceptance: {runnable check}
 >   - Swarm: {directive}            (optional — defaults to hierarchical 6)
 >   - Blocked-by: phase-X.Y         (optional)
+>   - Threat: {one line}            (optional — overrides the plan's Threat model for this task)
+>   - Threats: 1) {threat}; 2) {threat}   (optional — each needs a failing-first test in the builder handback)
+>   - Review: cap=3 lenses=all adversarial=yes   (optional — Tier C keeps >= 3 lenses, the adversarial pass and G12)
 > ```
+>
+> A task that hand-parses a language (markdown, shell, a config dialect) names a fallback in its
+> Acceptance — "or drop the feature" — so a parser that does not converge is cut, not patched round
+> by round. `[tier:a reason="..."]` / `[tier:b reason="..."]` override the size and content tier
+> signals (never a Tier C path); the reason is required and recorded.
 >
 > **Tags route topology** (see `apex-execute/docs/legacy/SWARM_TOPOLOGIES.md`):
 > `[backend]` `[frontend]` `[security]` `[perf]` `[ml-serving]` `[infra]`
@@ -111,7 +128,7 @@ Translate the ADR's pseudocode section into module stubs, type signatures, and i
   - Blocked-by: phase-2.1
 
 - [ ] **Gate 2→3** [gate:auto] Phase 2 build green
-  - Acceptance: `cd backend && python -m pytest tests/{{slug}}/ --collect-only -q && cd .. && cd ui && npm run typecheck`
+  - Acceptance: `cd backend && python -m pytest tests/{{slug}}/ --collect-only -q && cd .. && {typecheck command}`
   - Blocked-by: phase-2.2, phase-2.3
 
 ---

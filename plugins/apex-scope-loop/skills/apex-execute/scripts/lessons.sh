@@ -22,6 +22,7 @@ set -euo pipefail
 PLAN="${1:?usage: lessons.sh PLAN.md fail|add|recall ...}"
 ACTION="${2:?action: fail|add|recall}"
 shift 2
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 
 APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)

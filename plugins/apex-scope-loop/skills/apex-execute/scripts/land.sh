@@ -27,6 +27,7 @@ set -euo pipefail
 
 PLAN="${1:?usage: land.sh PATH_TO_PLAN.md [--force]}"
 FORCE="${2:-}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 
 APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
@@ -84,7 +85,8 @@ if [[ "$CURRENT" != "$BASE_BRANCH" ]]; then
 fi
 
 # 4. No tracked changes in the base checkout other than the plan file itself
-#    (its checkboxes are flipped there) and the lessons ledger (append-only).
+#    (its checkboxes are flipped there), the lessons ledger (append-only) and the
+#    hardening backlog (ADR-0004).
 #    Unrelated work is never swept in.
 PLAN_REL=""
 REPO_ROOT_P="$(cd "$REPO_ROOT" && pwd -P)"
@@ -94,8 +96,12 @@ LEDGER_REL=""
 # Only a ledger inside the plugin's own directory may ride along (an
 # APEX_LESSONS_FILE pointing at a source file is not exempted).
 [[ "$LEDGER_REL" == .claude/apex-scope-loop/* ]] || LEDGER_REL=""
+# The hardening backlog (ADR-0004) is treated exactly like the lessons ledger.
+BACKLOG_REL=""
+[[ "$BACKLOG_LEDGER" == "$REPO_ROOT_P"/* ]] && BACKLOG_REL="${BACKLOG_LEDGER#"$REPO_ROOT_P"/}"
+[[ "$BACKLOG_REL" == .claude/apex-scope-loop/* ]] || BACKLOG_REL=""
 DIRTY=()
-exempt() { [[ -n "$1" && ( "$1" == "$PLAN_REL" || "$1" == "$LEDGER_REL" ) ]]; }
+exempt() { [[ -n "$1" && ( "$1" == "$PLAN_REL" || "$1" == "$LEDGER_REL" || "$1" == "$BACKLOG_REL" ) ]]; }
 while IFS= read -r -d '' entry; do
   xy="${entry:0:2}"; path="${entry:3}"; src=""
   # A rename/copy (either column) is followed by its source path as its own record.
@@ -175,7 +181,7 @@ fi
 #     - the paths the run changed and the paths the base changed since the
 #       fork point are disjoint (no path, and no file/directory pair, on both).
 #     The landed tree is then the reviewed head with the base's own changes
-#     overlaid; the plan file and the lessons ledger always come from the base
+#     overlaid; the plan file, the lessons ledger and the hardening backlog always come from the base
 #     (whatever the run branch holds there is never landed). The check runs
 #     here and again on the exact base tip step 9 builds on. --force keeps the
 #     old `git merge` (operator override).
@@ -190,7 +196,7 @@ land_check() { # land_check BASE_TIP — prints why landing onto BASE_TIP is ref
   dir="$(mktemp -d "${TMPDIR:-/tmp}/apex-land.XXXXXX")"
   apex_git "$REPO_ROOT" diff-tree -r -z --name-only --no-renames --ignore-submodules=none "$FORK_SHA" "$LAND_SHA" >"$dir/r" 2>/dev/null || echo "?" >"$dir/r"
   apex_git "$REPO_ROOT" diff-tree -r -z --name-only --no-renames --ignore-submodules=none "$FORK_SHA" "$tip" >"$dir/b" 2>/dev/null || echo "?" >"$dir/b"
-  python3 - "$dir/r" "$dir/b" "$PLAN_REL" "$LEDGER_REL" <<'PY'
+  python3 - "$dir/r" "$dir/b" "$PLAN_REL" "$LEDGER_REL" "$BACKLOG_REL" <<'PY'
 import sys
 def paths(f):
     data = open(f, "rb").read()
@@ -237,9 +243,9 @@ if [[ -d "$WT_PATH" ]] && [[ -n "$(git -C "$WT_PATH" status --porcelain)" ]]; th
   echo "[land] committed pending worktree changes."
 fi
 
-# 8. Record the plan's progress on the base branch (plan file and lessons ledger only).
+# 8. Record the plan's progress on the base branch (plan file, lessons ledger and backlog only).
 RECORD=()
-for rel in "$PLAN_REL" "$LEDGER_REL"; do
+for rel in "$PLAN_REL" "$LEDGER_REL" "$BACKLOG_REL"; do
   [[ -n "$rel" ]] && [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no -- "$rel")" ]] && RECORD+=("$rel")
 done
 if [[ ${#RECORD[@]} -gt 0 ]]; then
@@ -284,7 +290,7 @@ while i + 1 < len(data):
         out.append(newmode + b" " + newsha + b"\t" + path)
 sys.stdout.buffer.write(b"".join(o + b"\0" for o in out))' | ix update-index -z --index-info \
     || { echo "ERROR: could not build the landed tree; $BASE_BRANCH holds only the plan record — re-run land.sh." >&2; exit 1; }
-  for rel in "$PLAN_REL" "$LEDGER_REL"; do   # always the base's copy
+  for rel in "$PLAN_REL" "$LEDGER_REL" "$BACKLOG_REL"; do   # always the base's copy
     [[ -n "$rel" ]] || continue
     if apex_git "$REPO_ROOT" cat-file -e "${BASE_TIP}:$rel" 2>/dev/null; then
       apex_git "$REPO_ROOT" ls-tree -z --full-tree "$BASE_TIP" -- ":(top,literal)$rel" | ix update-index -z --index-info
@@ -296,6 +302,9 @@ sys.stdout.buffer.write(b"".join(o + b"\0" for o in out))' | ix update-index -z 
   git -C "$REPO_ROOT" merge --ff-only -q "$NEW" \
     || { echo "ERROR: could not fast-forward $BASE_BRANCH to ${NEW:0:12} (it moved, or files in $REPO_ROOT are in the way — see git's message above); $BASE_BRANCH holds only the plan record — fix that and re-run land.sh." >&2; exit 1; }
 fi
+
+# Review snapshots (ADR-0004) are per head; none survives the landing.
+"$APEX_EXECUTE_SCRIPTS/snapshot.sh" "$PLAN" prune >/dev/null 2>&1 || true
 
 # 10. Tear down the worktree; delete the branch only if it is fully merged.
 if [[ -d "$WT_PATH" ]]; then

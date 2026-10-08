@@ -21,7 +21,17 @@
 #   --no-record  print the classification of the diff without recording it
 #               (checkpoint.sh complete recomputes the tier this way).
 #   --tags   extra tags; the task's own tags are always read from the plan.
-#            [security] or [tier:c] force Tier C.
+#            [security] or [tier:c] force Tier C. [tier:a] / [tier:b] are
+#            authoritative over the Tier B signals and the content signals,
+#            never over Tier C path signals or [security] / [tier:c] (ADR-0004).
+#   --raise A|B|C --reason TEXT  record a higher tier a reviewer asked for (with
+#            its reason; the tier only ratchets up). [tier:a]/[tier:b] take
+#            effect only as [tier:a reason="..."] / [tier:b reason="..."];
+#            the reason is recorded in the tier record.
+#   Size and breadth alone never go above Tier B (one six-lens reviewer, no
+#   fan-out, no G12); only Tier C brings the fan-out, adversarial pass and G12.
+#   Content signals in added lines of test/fixture/smoke/example/docs files
+#   are ignored (noted in a REASON line); their paths are still classified.
 #
 # Tier only ratchets upward: a line already recorded as C stays C.
 #
@@ -31,9 +41,11 @@ set -euo pipefail
 PLAN="${1:?usage: risk-tier.sh PLAN.md LINE_NO [--since SHA] [--tags t1,t2]}"
 LINE_NO="${2:?line_no required}"
 shift 2
-SINCE=""; TAGS=""; CLASSIFY=0; NO_RECORD=0
+SINCE=""; TAGS=""; CLASSIFY=0; NO_RECORD=0; RAISE=""; RAISE_REASON=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --raise) RAISE="${2:?}"; shift 2 ;;
+    --reason) RAISE_REASON="${2-}"; shift 2 ;;
     --since) SINCE="${2:?}"; shift 2 ;;
     --tags)  TAGS="${2-}"; shift 2 ;;
     --classify) CLASSIFY=1; shift ;;
@@ -41,8 +53,13 @@ while [[ $# -gt 0 ]]; do
     *) echo "ERROR: unknown arg $1" >&2; exit 2 ;;
   esac
 done
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 [[ "$LINE_NO" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "ERROR: LINE_NO must be a plan line number, got '$LINE_NO'" >&2; exit 2; }
+if [[ -n "$RAISE" ]]; then
+  [[ "$RAISE" =~ ^[ABC]$ ]] || { echo "ERROR: --raise takes A, B or C" >&2; exit 2; }
+  [[ -n "${RAISE_REASON//[[:space:]]/}" ]] || { echo "ERROR: --raise needs --reason \"<why, e.g. the reviewer's finding>\"" >&2; exit 2; }
+fi
 
 APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
 # shellcheck source=_lib.sh
@@ -58,7 +75,10 @@ WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 BASE_BRANCH="$(read_field base_branch)"
 
 # The task's own tags always count (a caller cannot drop [tier:c]).
-PLAN_TAGS="$(python3 -c 'import json,sys; print(",".join(json.loads(sys.argv[1])["tags"]))' "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO")")"
+TASK_JSON="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO")"
+PLAN_TAGS="$(python3 -c 'import json,sys; print(",".join(json.loads(sys.argv[1])["tags"]))' "$TASK_JSON")"
+# An explicit tier override: [tier:a reason="..."] / [tier:b reason="..."] (the reason is required).
+OVERRIDE="$(python3 -c 'import json,sys; o=json.loads(sys.argv[1]).get("tier_override") or {}; print((o.get("tier") or "").upper() + "\t" + (o.get("reason") or "") if o.get("reason") else "")' "$TASK_JSON")"
 TAGS="${TAGS:+$TAGS,}$PLAN_TAGS"
 # The task's diff base is the chain floor (ADR-0003; apex_floor in _lib.sh).
 # --since may only widen the diff (an ancestor of the floor), never narrow it.
@@ -77,19 +97,19 @@ fi
 # split into delete + add (an auth file moved to a bland name keeps its old
 # path in the list); paths are not octal-quoted.
 # Submodule bumps count even when .gitmodules says ignore = all. Only in a run
-# without a worktree (the plan and the lessons ledger are edited in place in
-# the same checkout) are those two exact files left out: the plan file when it
-# is a regular .md file, the ledger only at .claude/apex-scope-loop/LESSONS.md.
+# without a worktree (the plan and the lessons/backlog ledgers are edited in place in
+# the same checkout) are those exact files left out: the plan file when it
+# is a regular .md file, the ledgers only at .claude/apex-scope-loop/{LESSONS,BACKLOG}.md.
 GIT=(apex_git "$WT")
 DIFF_OPTS=(--no-color --no-renames --ignore-submodules=none --no-ext-diff)
 EXCL=()
 if [[ -z "$(read_field worktree_branch)" ]]; then
-  for p in "$PLAN_ABS" "${LESSONS_LEDGER:-}"; do
+  for p in "$PLAN_ABS" "${LESSONS_LEDGER:-}" "${BACKLOG_LEDGER:-}"; do
     [[ -n "$p" && -f "$p" && ! -L "$p" ]] || continue
     rel="$(python3 -c 'import os,sys; r=os.path.relpath(os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])); print("" if r.startswith("..") else r)' "$p" "$WT")"
     [[ -n "$rel" ]] || continue
     if [[ "$p" == "$PLAN_ABS" ]]; then [[ "$rel" == *.md ]] || continue
-    else [[ "$rel" == ".claude/apex-scope-loop/LESSONS.md" ]] || continue; fi
+    else [[ "$rel" == ".claude/apex-scope-loop/LESSONS.md" || "$rel" == ".claude/apex-scope-loop/BACKLOG.md" ]] || continue; fi
     EXCL+=(":(exclude,top,literal)$rel")
   done
 fi
@@ -112,6 +132,16 @@ raise() { # raise <tier> <reason>
   case "$1$TIER" in C*|BA) TIER="$1" ;; esac
   REASONS+=("$2")
 }
+# An explicit [tier:a] / [tier:b] tag (ADR-0004) is authoritative over the
+# Tier B size/breadth/shared signals and the content signals, never over a
+# Tier C path signal or a [security] / [tier:c] tag (nor the decision layer).
+# The override needs a reason (ADR-0004 addendum E); a bare [tier:a] / [tier:b]
+# tag is noted and has no effect.
+TAG_TIER=""; TAG_REASON=""
+if [[ -n "$OVERRIDE" ]]; then TAG_TIER="${OVERRIDE%%$'\t'*}"; TAG_REASON="${OVERRIDE#*$'\t'}"; fi
+case ",$TAGS," in *,tier:a,*|*,tier-a,*|*,tier:b,*|*,tier-b,*)
+  [[ -n "$TAG_TIER" ]] || REASONS+=("a bare [tier:a]/[tier:b] tag has no effect: write [tier:a reason=\"...\"] or [tier:b reason=\"...\"]") ;;
+esac
 
 # Tier C: path signals (case-insensitive). Fail closed: a false positive only
 # costs review; a miss lands an auth change unreviewed. Every token matches
@@ -144,14 +174,106 @@ while IFS= read -r f; do
   fi
 done <<<"$FILES"
 
-# Tier C: content signals in added lines (catches risk in innocuously named files).
+# Tier C: content signals in added lines (catches risk in innocuously named
+# files). Calibrated (ADR-0004): added lines of test, fixture, smoke, example
+# and docs files are not scanned (test data that names "stripe" is not money
+# code); their paths still are. A file is exempt only when its diff header
+# parses cleanly; anything unparsed is scanned (fail closed).
 C_CONTENT='(stripe|charge\(|amount_cents|price|currency|bcrypt|argon2|jwt\.|verify_?token|set-cookie|httponly|samesite|csrf|consent|date_of_birth|ssn|social_security|DROP (TABLE|COLUMN)|ALTER TABLE|DELETE FROM|TRUNCATE)'
-ADDED="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null | tr -d '\000' | grep -aE '^\+' | grep -avE '^\+\+\+ (b/|/dev/null)' || true)"
-# Here-strings, not pipes: under pipefail, `printf | grep -q` on a large diff
-# fails with SIGPIPE when grep exits at an early match.
-if [[ -n "$ADDED" ]] && grep -aqiE "$C_CONTENT" <<<"$ADDED"; then
-  hit="$(grep -m1 -aoiE "$C_CONTENT" <<<"$ADDED")"
-  raise C "tier-c content signal in diff: '$hit'"
+CONTENT_OUT="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null \
+  | python3 -c '
+import re, sys
+pat = re.compile(sys.argv[1], re.I)
+EXEMPT_DIR = re.compile(r"(^|/)(tests?|__tests__|spec|fixtures?|examples?|docs?)/", re.I)
+def exempt(path):
+    if path is None:
+        return False
+    base = path.rsplit("/", 1)[-1].lower()
+    return bool(EXEMPT_DIR.search(path) or re.search(r"_test\.[^/]*$", base) or re.search(r"\.test\.[^/]*$", base)
+                or re.search(r"(^|/)(scripts|tests?)/(.*/)?[^/]*smoke[^/]*$", path, re.I))
+def unquote(h):
+    """b/<path> from a +++ header; None when it cannot be read exactly."""
+    h = h.rstrip("\n")
+    if h.startswith("\""):
+        if not h.endswith("\"") or len(h) < 2:
+            return None
+        try:
+            h = h[1:-1].encode("latin-1", "backslashreplace").decode("unicode_escape").encode("latin-1").decode("utf-8")
+        except Exception:
+            return None
+    if "\t" in h:
+        h = h.split("\t", 1)[0]
+    return h[2:] if h.startswith("b/") else None
+cur, in_hdr, skipped = None, False, set()
+hits, md_hits = {}, {}     # every distinct term -> first file (code; Markdown outside docs/)
+for raw in sys.stdin.buffer:
+    line = raw.decode("utf-8", "surrogateescape").replace("\0", "")
+    if line.startswith("diff --git "):
+        cur, in_hdr = None, True
+        continue
+    if in_hdr:
+        if line.startswith("+++ "):
+            cur = unquote(line[4:].encode("utf-8", "surrogateescape").decode("utf-8", "replace"))
+        elif line.startswith("@@"):
+            in_hdr = False
+        continue
+    if not line.startswith("+"):
+        continue
+    ms = list(pat.finditer(line[1:]))
+    if not ms:
+        continue
+    if exempt(cur):
+        skipped.add(cur)
+        continue
+    # Markdown is documentation unless it ships as product (the agents,
+    # skills, commands or hooks of a plugin): there Tier C terms keep Tier C.
+    is_md = cur is not None and cur.lower().endswith((".md", ".markdown")) \
+        and not re.search(r"(^|/)(agents|skills|commands|hooks)/", cur)
+    for m in ms:
+        term = m.group(0).lower()
+        (md_hits if is_md else hits).setdefault(term, (m.group(0), cur or "?"))
+for term, (t, f) in hits.items():
+    print("HIT\t%s\t%s" % (t, f))
+for term, (t, f) in md_hits.items():
+    if term not in hits:
+        print("MDHIT\t%s\t%s" % (t, f))
+for p in sorted(skipped)[:5]:
+    print("SKIP\t" + p)
+if len(skipped) > 5:
+    print("SKIP\t... and %d more" % (len(skipped) - 5))
+' "$C_CONTENT" 2>/dev/null || echo "HIT	(could not scan the diff)	?")"
+CONTENT_HITS=(); MD_HITS=()
+while IFS=$'\t' read -r kind a b; do
+  case "$kind" in
+    HIT) CONTENT_HITS+=("tier-c content signal in diff: '$a' ($b)") ;;
+    MDHIT) MD_HITS+=("'$a' ($b)") ;;
+    SKIP) REASONS+=("content signals ignored in test/fixture/smoke/example/docs file: $a (its path is still classified)") ;;
+  esac
+done <<<"$CONTENT_OUT"
+# Every distinct Tier C content term is its own signal (ADR-0004 §8b): each
+# is checked against an override's reason, printed and recorded.
+OVERRIDDEN_C=()
+for CONTENT_HIT in ${CONTENT_HITS[@]+"${CONTENT_HITS[@]}"}; do
+  if [[ -n "$TAG_TIER" ]]; then
+    REASONS+=("$CONTENT_HIT — overridden by the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER") reason=\"$TAG_REASON\"] (reviewers: say so if this is real Tier C)")
+    # Bound to its reason: a signal the reason does not mention was not
+    # anticipated by the plan and is printed prominently.
+    if python3 -c 'import re,sys; t=re.sub(r"[^a-z0-9]+","",sys.argv[1].lower()); sys.exit(0 if t and t in re.sub(r"[^a-z0-9]+","",sys.argv[2].lower()) else 1)' "$(sed -n "s/^tier-c content signal in diff: '\(.*\)' (.*/\1/p" <<<"$CONTENT_HIT")" "$TAG_REASON"; then
+      OVERRIDDEN_C+=("TIER_C_OVERRIDDEN: $CONTENT_HIT — anticipated by the override reason \"$TAG_REASON\"")
+    else
+      OVERRIDDEN_C+=("TIER_C_UNANTICIPATED: $CONTENT_HIT — the override reason \"$TAG_REASON\" does not mention it; reviewers must decide whether this is real Tier C (raise with risk-tier.sh --raise C --reason ...)")
+    fi
+  else
+    raise C "$CONTENT_HIT"
+  fi
+done
+# Tier C content terms found only in Markdown outside docs/ give Tier B.
+if [[ ${#MD_HITS[@]} -gt 0 ]]; then
+  if [[ -n "$TAG_TIER" ]]; then
+    REASONS+=("tier-c content terms only in Markdown: ${MD_HITS[*]} — the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER") reason=\"$TAG_REASON\"] decides")
+  else
+    raise B "tier-c content terms only in Markdown (Tier B, not C): ${MD_HITS[*]}"
+  fi
 fi
 
 # Tier C: explicit tags.
@@ -159,12 +281,38 @@ case ",$TAGS," in
   *,security,*|*,tier:c,*|*,tier-c,*) raise C "task tagged [${TAGS}]" ;;
 esac
 
-# Tier B: size and shared-surface signals.
-[[ "$LINES" -gt 150 ]] && raise B "diff size: $LINES changed lines (>150)"
-[[ "$NFILES" -gt 6 ]] && raise B "diff breadth: $NFILES files (>6)"
+# Tier B: size and shared-surface signals (never above B; a [tier:a] /
+# [tier:b] tag decides instead of them).
+BSIG=()
+[[ "$LINES" -gt 150 ]] && BSIG+=("diff size: $LINES changed lines (>150)")
+[[ "$NFILES" -gt 6 ]] && BSIG+=("diff breadth: $NFILES files (>6)")
 if grep -aqiE '(^|/)(api|routes?|shared|common|core|lib)/' <<<"$FILES"; then
-  raise B "touches a shared module or API route"
+  BSIG+=("touches a shared module or API route")
 fi
+if [[ -n "$TAG_TIER" ]]; then
+  for b in "${BSIG[@]}"; do REASONS+=("$b — the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER") reason=\"$TAG_REASON\"] decides"); done
+  [[ "$TAG_TIER" == B ]] && raise B "task override [tier:b reason=\"$TAG_REASON\"]"
+else
+  for b in "${BSIG[@]}"; do raise B "$b"; done
+fi
+
+# The lens each Tier C signal belongs to (ADR-0004: a Tier C lens narrowing
+# must keep them), from every Tier C reason, an overridden content signal included.
+SIGNAL_LENSES="$(printf '%s\n' ${REASONS[@]+"${REASONS[@]}"} | python3 -c '
+import re, sys
+sig = [l for l in sys.stdin.read().splitlines() if l.startswith(("tier-c ", "task tagged"))]
+txt = "\n".join(sig).lower()
+out = []
+if re.search(r"stripe|paypal|billing|payment|invoice|pricing|price|checkout|subscription|refund|ledger|wallet|charge\(|amount_cents|currency|money", txt):
+    out.append("money")
+if re.search(r"auth|login|logout|session|oauth|password|passwd|credential|permission|secret|crypto|encrypt|security|middleware|jwt|rbac|saml|csp|cors|role|bcrypt|argon2|verify_?token|set-cookie|httponly|samesite|csrf|sso|acl", txt):
+    out.append("security")
+if re.search(r"consent|gdpr|ccpa|privacy|personal|pii|date_of_birth|ssn|social_security", txt):
+    out.append("consent-pii")
+print(",".join(out))' 2>/dev/null || true)"
+
+# A reviewer-raised tier (recorded by the orchestrator with its reason).
+[[ -n "$RAISE" ]] && raise "$RAISE" "raised to Tier $RAISE: $RAISE_REASON"
 
 # Decision layer (optional): max(heuristic, decision). The state holds
 # observed facts only (paths, sizes, tags), never another model's labels.
@@ -208,9 +356,9 @@ fi
 # Persist (tier only ratchets upward — diffs may drift into C, never out).
 # Under checkpoint.sh's state lock, written atomically. --no-record (used by
 # checkpoint.sh complete) prints the heuristic for the diff without recording.
-[[ "$NO_RECORD" == "1" ]] || TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" <<'PY'
+[[ "$NO_RECORD" == "1" ]] || TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" "$TAG_TIER" "$TAG_REASON" "$RAISE" "$RAISE_REASON" "$(printf '%s\037' ${REASONS[@]+"${REASONS[@]}"})" "$SIGNAL_LENSES" "$(printf '%s\037' ${OVERRIDDEN_C[@]+"${OVERRIDDEN_C[@]}"})" <<'PY'
 import fcntl, json, os, sys
-path, line_no, tier, since, lock, head = sys.argv[1:]
+path, line_no, tier, since, lock, head, ov_tier, ov_reason, raise_tier, raise_reason, reasons, sig, overridden = sys.argv[1:]
 fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(fd, fcntl.LOCK_EX)
 s = json.load(open(path))
@@ -221,7 +369,23 @@ final = tier if order[tier] >= order.get(prev, 0) else prev
 # `head` binds the tier to the code it classified: complete refuses a tier
 # recorded for an older head.
 epoch = s.get("epoch", 0)               # the tier still ratchets across a refork
-tiers[line_no] = {"tier": final, "since": since, "head": head, "epoch": epoch}
+prev_rec = tiers.get(line_no) or {}
+rec = {"tier": final, "since": since, "head": head, "epoch": epoch}
+if ov_tier:
+    rec["override"] = {"tier": ov_tier, "reason": ov_reason}      # the plan's explicit override and why
+raised = list(prev_rec.get("raised") or [])
+if raise_tier:
+    raised.append({"tier": raise_tier, "reason": raise_reason})  # a reviewer raised it (never lowers)
+if raised:
+    rec["raised"] = raised
+# What reviewers must see (iterate.sh prints them as TIER_REASONS): every
+# reason, the lenses of the Tier C signals, an overridden Tier C signal.
+rec["reasons"] = [x for x in dict.fromkeys(reasons.split("\x1f")) if x][:30]
+rec["signal_lenses"] = [x for x in sig.split(",") if x]
+ov = [x for x in overridden.split("\x1f") if x]
+if ov:
+    rec["overridden_c"] = ov
+tiers[line_no] = rec
 tmp = path + ".tmp"
 try:
     os.unlink(tmp)
@@ -237,6 +401,8 @@ PY
 echo "TIER: $TIER"
 echo "HEAD: $HEAD_NOW"
 echo "DIFF: $NFILES file(s), $LINES line(s) since ${SINCE:0:12}"
+[[ ${#OVERRIDDEN_C[@]} -gt 0 ]] && printf '%s\n' "${OVERRIDDEN_C[@]}"
+echo "SIGNAL_LENSES: $SIGNAL_LENSES"
 if [[ ${#REASONS[@]} -eq 0 ]]; then
   echo "REASON: no elevated-risk signals"
 else

@@ -7,6 +7,7 @@
 set -euo pipefail
 
 PLAN="${1:?usage: audit.sh PLAN.md}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "STATUS: ERROR plan not found"; exit 1; }
 
 APEX_RESOLVE_MODE=read  # reporting only: a repository mismatch warns
