@@ -117,6 +117,7 @@ RT_STATE='{"changed_paths":["src/a.py"],"changed_lines":12,"changed_files":1,"ta
 # ask RUBRIC STATE [ARGS...] -> stdout envelope; exit code in $RC
 ask() { local r="$1" s="$2"; shift 2; set +e; OUT="$(cd "$R0" && printf '%s' "$s" | "$D" --rubric "$r" --state - --json "$@" 2>"$WORK/err")"; RC=$?; set -e
         printf '%s\n' "$OUT" >>"$WORK/all.out"; cat "$WORK/err" >>"$WORK/all.out"; }
+val() { sed -n "s/^$1: //p" <<<"$2" | head -1; }
 fld() { python3 -c 'import json,sys; d=json.loads(sys.argv[1]); v=d
 for k in sys.argv[2].split("."): v=v.get(k) if isinstance(v, dict) else None
 print(json.dumps(v) if isinstance(v,(dict,list,bool)) or v is None else v)' "$OUT" "$1"; }
@@ -607,6 +608,45 @@ set +e; APEX_DECIDE_FAKE="$FAKE" "$D" replay --repo "$P" --rubric risk-tier@1 --
 set +e; APEX_DECIDE_FAKE="$FAKE" "$D" replay --repo "$P" --rubric risk-tier@1 --backend fake >"$WORK/rp3" 2>&1; c=$?; set -e
 [ "$c" = 4 ] && grep -q 'record invalidated' "$WORK/rp3" && grep -q '"invalidated"' "$REC" && [ "$(cal)" = False ] || fail "replay drift did not invalidate the record: exit $c $(cat "$WORK/rp3")"
 pass "measure: label (bad label, unknown decision and ACTIVE lock refused), corpus joins labels, statuses pass/fail/degenerate/insufficient n, proxy-agreement rule, --lock (refused failing/ACTIVE; digest printed; calibrates only once locked), replay ok vs drift (dry-run keeps, real run invalidates)"
+
+# 30. Phase 4 end to end through the consumers (sibling apex-dispatch + apex-scope-loop): a passing corpus is
+#     locked by measure --lock; until a human adds the digest the route only tightens; once locked, route.sh
+#     takes the calibrated decision and report.sh --decision shows the calibrated row; replay --all finds drift
+DISP="$MARKET_ROOT/plugins/apex-dispatch"; EXS="$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts"
+if [ -f "$DISP/scripts/route.sh" ] && [ -f "$EXS/init.sh" ]; then
+  FD="$WORK/e2e"; mkdir -p "$FD/plans"; git init -q -b main "$FD"
+  printf '# D\n\n- [ ] **Phase 1.1** untagged work\n  - Acceptance: `pytest -q`\n' >"$FD/plans/p.md"; printf '.dev-plan-state/\n' >"$FD/.gitignore"
+  git -C "$FD" add -A; git -C "$FD" -c user.email=smoke@example.com -c user.name=smoke commit -qm fixture
+  (cd "$FD" && bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "apex-scope-loop init.sh failed in the e2e fixture"
+  O="$(python3 -I "$MC" "$FD" "$TC" fake pass 160)"
+  LK="$("$D" measure --repo "$FD" --rubric "$TC" --backend fake --outcomes "$O" --lock --json)"
+  DG="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["status"]=="passes kill criterion", d["reasons"]; print(d["lock"]["digest"])' "$LK")" \
+    || fail "the passing task-class fixture corpus did not lock: $LK"
+  F2="$WORK/e2e-fake.json"
+  printf '{"%s":{"*":{"response":{"model":"fake-1","answers":{"class":{"choice":"docs","confidence":0.94,"probabilities":{"docs":0.95,"tests":0.01,"mechanical":0.01,"feature":0.01,"bugfix":0.01,"migration":0,"security":0,"none":0.01}}}}}}}' "$TC" >"$F2"
+  rte() { (cd "$FD" && APEX_DECIDE_FAKE="$F2" bash "$DISP/scripts/route.sh" plan plans/p.md --line 3 2>&1); }
+  O="$(rte)"
+  [ "$(val ROUTE_CLASS "$O")" = feature ] && [ "$(val SEMANTIC_SOURCE "$O")" = decision-shadow ] || fail "an unlocked record let a cheaper decision move the route: $O"
+  printf '{"calibration_lock":["%s"]}' "$DG" >"$FD/.claude/apex-decision-layer/config.json"
+  O="$(rte)"
+  [ "$(val ROUTE_CLASS "$O")" = docs ] && [ "$(val ROUTE_MODE "$O")" = decision ] || fail "a locked calibration record did not let route.sh take the decision: $O"
+  FSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"
+  O="$(bash "$DISP/scripts/report.sh" --state "$FSD" --decision 2>&1)"
+  grep -q '^REPORT_DECISION_CALIBRATION: calibrated n=1 agreement 100.0%; uncalibrated n=2 ' <<<"$O" \
+    && grep -q '^REPORT_DECISION_ROW: .* said=docs routed=docs calibrated=True ' <<<"$O" || fail "report.sh --decision did not show the calibrated row: $O"
+  grep -q '^REPORT_DECISION_COST: 2 call(s) ' <<<"$(bash "$DISP/scripts/report.sh" --state "$FSD" 2>&1)" || fail "report.sh did not price the two decision calls"
+  set +e; APEX_DECIDE_FAKE="$F2" "$D" replay --repo "$FD" --all >"$WORK/rpa" 2>&1; c=$?; set -e
+  [ "$c" = 5 ] && grep -q 'ACTIVE run lock' "$WORK/rpa" && ! grep -q '"invalidated"' "$FD/.claude/apex-decision-layer/calibration/$TC/fake.json" \
+    || fail "replay invalidated a record while route.sh held the ACTIVE lock: exit $c $(cat "$WORK/rpa")"
+  rm -rf "$FD/.dev-plan-state/ACTIVE"                     # the run is over; a human runs the weekly replay
+  set +e; APEX_DECIDE_FAKE="$F2" "$D" replay --repo "$FD" --all >"$WORK/rpa" 2>&1; c=$?; set -e
+  [ "$c" = 4 ] && grep -q "^REPLAY $TC fake: drift" "$WORK/rpa" && grep -q 'record invalidated' "$WORK/rpa" || fail "replay --all did not find drift: exit $c $(cat "$WORK/rpa")"
+  O="$(rte)"; [ "$(val ROUTE_CLASS "$O")" = feature ] || fail "after drift invalidated the record the route still took the cheaper decision: $O"
+  E2E="route.sh only tightens before the digest is locked, takes the calibrated decision after; report.sh --decision shows the calibrated row and prices both calls; replay --all is refused under the run's ACTIVE lock, then invalidates on drift and the route falls back to tightening"
+else
+  E2E="consumers not beside this plugin: e2e skipped"
+fi
+pass "Phase 4 lock flow: $E2E"
 
 echo
 echo "smoke passed: $N/$N checks"

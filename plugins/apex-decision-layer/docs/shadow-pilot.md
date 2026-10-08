@@ -56,4 +56,23 @@ Brier and ECE are printed beside AUROC. A base-rate predictor has perfect ECE, s
 
 ## 6. Drift (weekly)
 
-`apex-decide replay --rubric <id>@<v> --backend <name>` re-asks the replay sample. It exits 4 and marks the record `invalidated` when any answer moves more than 0.25, or the provider resolves a different model. Calls are then uncalibrated until someone re-measures. Use `--dry-run` to check without invalidating. A weekly `/schedule` beside apex-scope-loop's architecture review runs the replay, and Phase 4 documents it.
+`apex-decide replay --rubric <id>@<v> --backend <name>`, or `--all` for every record, re-asks the replay sample. It exits 4 and marks the record `invalidated` when either of these happens:
+- an answer moves more than `drift.tolerance` (0.25);
+- the provider resolves a different model.
+
+The invalidated record's digest no longer matches `calibration_lock`, and `doctor` reports it, so calls are uncalibrated (tighten-only) until someone re-measures and re-locks. `--dry-run` reports without invalidating. Replay is refused (exit 5) while an `ACTIVE` run lock is held, so schedule it between runs.
+
+Schedule it weekly beside apex-scope-loop's architecture review, with `/schedule` in Claude Code (a Routine on claude.ai). Use a fresh session per run, in the consumer repository, with the hosted keys available:
+
+```
+/schedule weekly Monday 07:52 — In this repository run `plugins/apex-decision-layer/bin/apex-decide replay --all`
+(or the installed plugin's bin/apex-decide). If it exits 4, list each REPLAY_PROBLEM line, commit the invalidated
+calibration records with the message "decision-layer: replay drift invalidates <rubric>/<backend>", and open a PR
+for a human; never re-lock or edit calibration_lock yourself. If it exits 5, say a run was active and stop.
+```
+
+Re-measuring after drift starts again at step 4. A new model id is a new measurement. Old labels still count, because they label the task, not the model.
+
+## 7. When is Phase 4 done?
+
+The spec's Phase 4 exit is: "`report.sh --decision` shows calibrated rows, and `report.sh --compare` shows cost per solved task no worse than table-only". The machinery is built and smoke-tested end to end with fixtures (smoke check 30). The exit itself depends on data: it needs a corpus of at least 100 real labelled rows per rubric that passes the kill criterion, then a locked record, then routed plans. With Jev's near-one-hot answers, a `degenerate` status is likely (research doc § Phase 3), so the first real lock may well be `frontier` on `risk-tier@1`.
