@@ -206,7 +206,7 @@ Copied from system-one-connector, jev-commit and is-malicious. `lint` fails on e
 
 **`dispatch/task-class@1`** (consumer: `route.py` step 5, class still `auto`).
 - One choice question `class` with labels `docs, tests, mechanical, feature, bugfix, migration, security, none`. `gate` is deliberately not a label (a gate is a plan construct, not a class; route.py already treats it as `no_safe_candidate`). The label set is fixed to the **default** policy's class ids; a repo overlay that disables a class makes that answer fail route.py's validator (`invalid_answer`), which is the safe outcome. `lint` warns when the merged policy (`compile.sh --print-merged`) lacks a label.
-- State: route.py's feature object, plus `task_title` and `acceptance_text` as untrusted text (§11 item 5, open question Q1). Without them the rubric still runs on the structured fields alone, and the expected value is low (defect 4 in §0).
+- State: route.py's feature object, plus `task_title` and `acceptance_text` as untrusted text (§11.2 item 5; decided, Q1). Without them the rubric still runs on the structured fields alone, and the expected value is low (defect 4 in §0).
 - Hard rule: `tags_any [security, tier:c, migration]` → answered by code (the consumer's floors already put these at `security`/`migration`; the rubric never pays to re-derive them).
 - `uncertain`: `min_confidence 0.5`. The consumer maps `uncertain` to the middle tier (survey law 3: jev-codex-router's frontier fallback fired on two thirds of turns).
 
@@ -425,11 +425,13 @@ The repository's 10-check structural shape (manifest keys, no enumerated surface
 - **Latency through the proxy** may push `jev` past the routing budget. Then routing stays table-only and `jev` serves `risk-tier@1` and shadow only; Phase 0 decides.
 - **Cost of uncalibrated tightening.** Moving `auto` tasks to more expensive classes on an uncalibrated answer spends money with no evidence. `report.sh --compare` and `--decision` make that spend visible per rubric; the repo can set `primary` to `none` for a rubric at any time.
 
+**Decided (operator, 2026-10-08)**
+- **Q1. Send the task title and Acceptance text to task-class: yes**, behind `state_fields: raw`. Without them the rubric sees only what the tag table already saw. The accepted risk is prompt injection through plan text, which can only push an uncalibrated answer toward a more expensive class.
+- **Q2. Language: python3 stdlib** (§3). No new dependency, a safer validator, and stdlib control over TLS and redirects.
+- **Q3. An uncalibrated decision may raise a task to Tier B, not Tier C** (§11.3 item 2). A Tier C false positive costs a human G12 approval and seven reviewers; an uncalibrated `C` is recorded as a reason line for reviewers and raises only to B.
+
 **Open questions (recommendation first)**
-- **Q1. Send the task title and Acceptance text to task-class?** *Recommend yes, behind `state_fields: raw`.* Without them the rubric sees what the tag table already saw. With them the risk is prompt injection through plan text, which can only move an uncalibrated answer toward a more expensive class.
-- **Q2. bash + jq or python3?** *Recommend python3 stdlib* (§3): no new dependency, a safer validator, and stdlib TLS and redirect control.
-- **Q3. May an uncalibrated decision raise a task to Tier C?** *Recommend no, cap at B* (§11.3 item 2). A Tier C false positive costs a human G12 and seven reviewers. The parent law ("uncalibrated may only tighten") allows the raise; this narrows it on cost grounds and keeps the signal visible to reviewers.
-- **Q4. Frontier on the routing path?** *Recommend no by default.* It does not fit 1.6 s. A repo may set `dispatch/task-class@1: frontier` and raise `semantic.timeout_ms` in its overlay, accepting the latency.
+- **Q4. May the routing step use the `frontier` backend?** *Recommend no by default.* Routing gives the decision layer 2 s per task (`semantic.timeout_ms`, about 1.6 s once the CLI's own start-up is taken off), and a frontier call (Claude through the Anthropic API, writing probabilities into structured output) usually takes longer, so route.py would time out and fall back to the table on most tasks while still paying for each call. The `jev` backend answers in roughly 100 ms and fits. Frontier stays available where time is not tight: `risk-tier@1` (10 s budget), shadow comparisons and `replay`. A repo that wants frontier for routing can set `"dispatch/task-class@1": "frontier"` in its config and raise `semantic.timeout_ms` in its apex-dispatch overlay, accepting slower routing. Phase 0 measures both backends' latency through the proxy before this is final.
 - **Q5. Where do labels live?** *Recommend committed in the consumer repo* (`.claude/apex-decision-layer/labels/`), so calibration is reproducible and reviewable, and protected during runs so an agent cannot write its own ground truth.
 
 ## 16. What this copies (attribution goes in ADR-0001)
