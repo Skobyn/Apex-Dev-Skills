@@ -526,5 +526,19 @@ N0="$(nreq)"; (cd "$R0" && TYPESAFE_API_KEY="$K_TS" "$D" doctor --json >/dev/nul
 rm -rf "$CFG"; unset APEX_DECIDE_JEV_BASE APEX_DECIDE_FRONTIER_BASE
 pass "doctor: key present/absent per backend without values; --probe reports reachable, key rejected and unreachable; no request without --probe"
 
+# 28. doctor reports each calibration record: ok only when locked, passed, not invalidated and on the current hash
+mkdir -p "$CFG/calibration/$TC"; CR="$CFG/calibration/$TC/jev.json"
+printf '{"rubric_version":"%s","question_hash":"%s","backend":"jev","model_resolved":"jev-1.13.0","n":120,"auroc":0.7,"passed":true}' "$TC" "$QH" >"$CR"
+calcheck() { (cd "$R0" && "$D" doctor --json >"$WORK/dcal.json") || true
+  python3 -c 'import json,sys; n={c["name"]:c for c in json.load(open(sys.argv[1]))["checks"]}; c=n["calibration dispatch/task-class@1/jev"]
+assert c["status"]==sys.argv[2] and sys.argv[3] in c["detail"], c' "$WORK/dcal.json" "$1" "$2" || fail "doctor calibration check: want $1 '$2': $(cat "$WORK/dcal.json")"; }
+printf '{}' >"$CFG/config.json"; calcheck warn "not in calibration_lock"
+printf '{"calibration_lock":["sha256:%s"]}' "$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$CR")" >"$CFG/config.json"
+calcheck ok "locked; model jev-1.13.0; n 120"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); r["invalidated"]="drift 0.31 > 0.25"; r["question_hash"]="sha256:"+"0"*64; json.dump(r,open(sys.argv[1],"w"))' "$CR"
+calcheck warn "invalidated (drift)"; calcheck warn "not the rubric's current hash"
+rm -rf "$CFG"
+pass "doctor: calibration records reported per rubric/backend; unlocked, invalidated (drift) and stale-hash records are warn, a locked passing record is ok"
+
 echo
 echo "smoke passed: $N/$N checks"

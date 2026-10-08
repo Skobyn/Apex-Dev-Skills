@@ -2,11 +2,11 @@
 
 **Typed answers for the questions routing leaves to judgment.** Typed, probability-carrying answers for the questions apex-dispatch and apex-scope-loop leave to judgment (task class, risk tier): one CLI, rubric files, a fail-closed validator for every backend, tri-state uncertainty, and calibration that only a measurement job can grant. Off until a repo opts in; absent, slow or unconfigured, routing stays table-only.
 
-> **Status: 0.2.0, Phase 2.** Shipped:
+> **Status: 0.2.1, Phase 2.** Shipped:
 > - the `apex-decide` CLI, the validator, the two v1 rubrics and their linter, calibration lookup, the decision log and detached shadow calls (Phase 1);
 > - the hosted backends: `jev` over TypeSafe or OpenRouter, and `frontier` on the Anthropic Messages API;
 > - one transport policy for both (deadline, retries, circuit breaker, host pin, TLS);
-> - `doctor --probe`.
+> - `doctor --probe`, and (0.2.1) a `calibration <rubric>/<backend>` check per calibration record (locked, passed, not drifted, on the rubric's current hash), which apex-dispatch ≥ 0.5.2 `doctor.sh` summarises.
 >
 > Not yet: the labelling and measurement job that can mark a rubric calibrated (Phase 3). Every answer is uncalibrated until then. Spec: [`2026-10-08-apex-decision-layer-design.md`](../../docs/superpowers/specs/2026-10-08-apex-decision-layer-design.md).
 

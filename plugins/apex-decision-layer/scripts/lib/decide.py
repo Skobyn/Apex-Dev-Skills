@@ -767,6 +767,39 @@ def cmd_lint(argv):
     return 1 if bad else 0
 
 
+def calibration_checks(repo, cfg, hashes):
+    """One (name, status, detail) per record under .claude/apex-decision-layer/calibration/:
+    ok only when it is locked, passed, not invalidated and keyed on the rubric's current hash."""
+    base = os.path.join(repo, CONFIG_REL, "calibration")
+    out = []
+    for dp, _, fs in os.walk(base):
+        for f in sorted(fs):
+            if not f.endswith(".json"):
+                continue
+            path = os.path.join(dp, f)
+            rv, backend = os.path.relpath(dp, base), f[:-5]
+            name = "%s/%s" % (rv, backend)
+            try:
+                with open(path, "rb") as fh:
+                    body = fh.read()
+                rec = json.loads(body)
+            except (OSError, ValueError) as e:
+                out.append((name, "warn", "unreadable record: %s" % e))
+                continue
+            problems = []
+            if sha(body) not in cfg.get("calibration_lock", []):
+                problems.append("not in calibration_lock")
+            if rec.get("passed") is not True:
+                problems.append("did not pass the kill criterion")
+            if rec.get("invalidated"):
+                problems.append("invalidated (drift): %s" % rec.get("invalidated"))
+            if hashes.get(rv) and rec.get("question_hash") != hashes[rv]:
+                problems.append("question_hash is not the rubric's current hash")
+            out.append((name, "warn" if problems else "ok", "; ".join(problems) if problems else
+                        "locked; model %s; n %s; auroc %s" % (rec.get("model_resolved"), rec.get("n"), rec.get("auroc"))))
+    return out
+
+
 def doctor_backends(cfg):
     """(backend, key env names, endpoint or None, header builder or the error) for jev and frontier."""
     from backends import frontier, jev
@@ -826,14 +859,19 @@ def cmd_doctor(argv):
                                                                 ", HTTP %s" % r["status"] if r["status"] else ""))
             else:
                 add("%s_reach" % sec, "ok", "%s (not probed; doctor --probe sends one empty request)" % url)
+    hashes = {}
     for dp, _, fs in os.walk(os.path.join(PLUGIN_ROOT, "rubrics")):
         for f in sorted(fs):
             rid = os.path.relpath(os.path.join(dp, f), os.path.join(PLUGIN_ROOT, "rubrics"))[:-5]
             try:
                 r = load_rubric(rid)
-                add("rubric " + rid, "ok", question_hash(r))
+                hashes[rid] = question_hash(r)
+                add("rubric " + rid, "ok", hashes[rid])
             except Unscored as e:
                 add("rubric " + rid, "fail", e.detail)
+    if cfg:
+        for name, st, detail in calibration_checks(repo, cfg, hashes):
+            add("calibration " + name, st, detail)
     if "--json" in argv:
         print(json.dumps(out, indent=1, sort_keys=True))
     else:
