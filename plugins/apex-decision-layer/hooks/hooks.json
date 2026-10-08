@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/shadow-hook.sh\" done-claim",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/shadow-hook.sh\" tool-risk",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ]
+  }
+}

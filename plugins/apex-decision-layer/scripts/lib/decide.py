@@ -732,7 +732,7 @@ def ask(argv):
         res = answer(rubric, rv, qhash, name, req, cfg, repo)
         p = res["answers"][rubric["primary"]]
         if rubric.get("seeded"):
-            env["seeded"] = True
+            env["seeded"] = row["seeded"] = True
         env.update(scored=True, model_resolved=res["model_resolved"], verdict=p["verdict"], uncertain=p["uncertain"],
                    probabilities=p["probabilities"], confidence=p["confidence"], calibrated=res["calibrated"],
                    calibration=res["calibration"], add_gate=gate_for(rubric, res["answers"]),

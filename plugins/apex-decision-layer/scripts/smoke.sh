@@ -91,8 +91,18 @@ done
 bash -n "$D" || fail "bin/apex-decide does not parse"
 python3 -m py_compile "$PLUGIN_ROOT/scripts/lib/decide.py" "$PLUGIN_ROOT"/scripts/lib/backends/*.py "$PLUGIN_ROOT/scripts/test/stub_http.py" "$PLUGIN_ROOT/scripts/lib/measure.py" "$PLUGIN_ROOT/scripts/test/make_corpus.py" || fail "python sources do not compile"
 find "$PLUGIN_ROOT" -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-[ ! -e "$PLUGIN_ROOT/hooks" ] || fail "apex-decision-layer must not register hooks"
-pass "scripts executable and parse; no hooks"
+python3 -m py_compile "$PLUGIN_ROOT/hooks/shadow_hook.py" && bash -n "$PLUGIN_ROOT/hooks/shadow-hook.sh" && [ -x "$PLUGIN_ROOT/hooks/shadow-hook.sh" ] \
+  || fail "the shadow hooks do not parse or are not executable"
+find "$PLUGIN_ROOT" -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+python3 -c 'import json,sys
+h = json.load(open(sys.argv[1]))["hooks"]
+assert sorted(h) == ["PreToolUse", "Stop"], sorted(h)
+assert [g.get("matcher") for g in h["PreToolUse"]] == ["Bash"] and [g.get("matcher") for g in h["Stop"]] == [None]
+cmds = sorted(x["command"] for gs in h.values() for g in gs for x in g["hooks"])
+assert cmds == ["bash \"${CLAUDE_PLUGIN_ROOT}/hooks/shadow-hook.sh\" done-claim", "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/shadow-hook.sh\" tool-risk"], cmds' \
+  "$PLUGIN_ROOT/hooks/hooks.json" || fail "hooks.json registers more than the two observational shadow hooks"
+! grep -rq permissionDecision "$PLUGIN_ROOT/hooks" || fail "a decision-layer hook mentions permissionDecision (they are observational only)"
+pass "scripts executable and parse; hooks: only the two observational shadow hooks (Stop, PreToolUse Bash), no permissionDecision"
 
 # 9. no platform coupling in engine sources
 HITS="$(grep -rIl 'apex-app\|getapexinsights\|claude-flow' "$PLUGIN_ROOT/bin" "$PLUGIN_ROOT/scripts/lib" 2>/dev/null || true)"
@@ -672,8 +682,47 @@ N5="$(wc -l <"$S5/.dev-plan-state/decisions/decisions.jsonl")"
 grep -q '^commit-hygiene HEAD: vague' "$WORK/sh5" && [ "$(wc -l <"$S5/.dev-plan-state/decisions/decisions.jsonl")" = $((N5 + 1)) ] \
   || fail "the commit-hygiene shadow script did not log one answer: $(cat "$WORK/sh5")"
 (cd "$WORK" && bash "$PLUGIN_ROOT/scripts/shadow-commit-hygiene.sh" nope 2>/dev/null) || fail "the shadow script failed outside a repository"
-[ ! -e "$PLUGIN_ROOT/hooks" ] || fail "Phase 5 must not add hooks"
-pass "seeded rubrics: commit-hygiene, done-claim, code-review, tool-risk, relevance lint and are marked seeded; never calibrated even when locked; --lock refused; the commit-hygiene shadow script logs one answer and always exits 0; no hooks"
+pass "seeded rubrics: commit-hygiene, done-claim, code-review, tool-risk, relevance lint and are marked seeded; never calibrated even when locked; --lock refused; the commit-hygiene shadow script logs one answer and always exits 0"
+
+# 32. the shadow hooks (Stop -> done-claim@1, PreToolUse Bash -> tool-risk@1): off without the rubric in the config
+#     (no python, no row), and when on they print nothing, exit 0 at once and log one seeded answer in the background
+HK="$PLUGIN_ROOT/hooks/shadow-hook.sh"
+H="$(fx hooks)"; HLOG="$H/.dev-plan-state/decisions/decisions.jsonl"
+hook() { local kind="$1" payload="$2"; shift 2
+  T="$(python3 -c 'import time; print(time.monotonic())')"
+  set +e; HOUT="$(cd "$H" && printf '%s' "$payload" | env CLAUDE_PROJECT_DIR="$H" "$@" bash "$HK" "$kind" 2>&1)"; HRC=$?; set -e
+  HEL="$(python3 -c 'import sys,time; print(int((time.monotonic()-float(sys.argv[1]))*1000))' "$T")"; }
+rows() { [ -f "$HLOG" ] && grep -c "\"rubric_version\": \"$1\"" "$HLOG" || echo 0; }
+waitrows() { for _ in $(seq 1 60); do [ "$(rows "$1")" = "$2" ] && return 0; sleep 0.1; done; return 1; }
+PRE='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf build/"}}'
+hook tool-risk "$PRE"; [ "$HRC" = 0 ] && [ -z "$HOUT" ] && [ "$(rows tool-risk@1)" = 0 ] || fail "the tool-risk hook ran without opting in: rc=$HRC out=$HOUT"
+mkdir -p "$H/.claude/apex-decision-layer"
+printf '{"egress":"none","state_fields":"raw","primary":{"default":"none","tool-risk@1":"fake","done-claim@1":"fake"},"decision_log":{"store_state":"full"}}' >"$H/.claude/apex-decision-layer/config.json"
+FH="$WORK/hook-fake.json"
+printf '{"tool-risk@1":{"*":{"sleep_ms":1500,"response":{"model":"fake-1","answers":{"risk":{"choice":"destructive","confidence":0.9,"probabilities":{"read_only":0.02,"local_write":0.04,"network":0.02,"destructive":0.9,"none":0.02}}}}}},"done-claim@1":{"*":{"response":{"model":"fake-1","answers":{"evidenced":{"noul":0.9}}}}}}' >"$FH"
+hook tool-risk "$PRE" APEX_DECIDE_FAKE="$FH"
+[ "$HRC" = 0 ] && [ -z "$HOUT" ] && [ "$HEL" -lt 1000 ] || fail "the tool-risk hook printed, failed or waited for the backend (rc=$HRC, ${HEL} ms): $HOUT"
+TRL="$HEL"
+waitrows tool-risk@1 1 || fail "the tool-risk hook logged no answer in the background"
+grep '"rubric_version": "tool-risk@1"' "$HLOG" | python3 -c 'import json,sys; r=json.loads(sys.stdin.readline()); assert r["seeded"] and r["verdict"]=="destructive" and r["state"]["command"]=="rm -rf build/" and not r["calibrated"], r' \
+  || fail "the tool-risk hook row is not a seeded, uncalibrated answer for the command"
+hook tool-risk '{"tool_name":"Bash","tool_input":{}}' APEX_DECIDE_FAKE="$FH"; sleep 0.3; [ "$(rows tool-risk@1)" = 1 ] || fail "an empty command was asked"
+hook tool-risk 'not json' APEX_DECIDE_FAKE="$FH"; [ "$HRC" = 0 ] && [ -z "$HOUT" ] || fail "a malformed payload made the hook print or fail"
+TR="$WORK/transcript.jsonl"
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"Fix the parser"}}' \
+  '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"pytest -q"}}]}}' \
+  '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","is_error":false,"content":"3 passed"}]}}' \
+  '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done: pytest -q, 3 passed."}]}}' >"$TR"
+hook done-claim "{\"hook_event_name\":\"Stop\",\"transcript_path\":\"$TR\",\"stop_hook_active\":false}" APEX_DECIDE_FAKE="$FH"
+[ "$HRC" = 0 ] && [ -z "$HOUT" ] || fail "the done-claim hook printed or failed: $HOUT"
+waitrows done-claim@1 1 || fail "the done-claim hook logged no answer"
+grep '"rubric_version": "done-claim@1"' "$HLOG" | python3 -c 'import json,sys; r=json.loads(sys.stdin.readline()); s=r["state"]; assert r["seeded"] and s["claim_text"].startswith("Done: pytest") and s["test_output_present"] is True and s["last_command_exit"]==0, r' \
+  || fail "the done-claim state is wrong"
+hook done-claim "{\"transcript_path\":\"$TR\",\"stop_hook_active\":true}" APEX_DECIDE_FAKE="$FH"
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"What does this do?"}}' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"It parses dates."}]}}' >"$WORK/t2.jsonl"
+hook done-claim "{\"transcript_path\":\"$WORK/t2.jsonl\"}" APEX_DECIDE_FAKE="$FH"; sleep 0.5
+[ "$(rows done-claim@1)" = 1 ] || fail "the done-claim hook asked on stop_hook_active or on a message that claims nothing"
+pass "shadow hooks: off without opt-in (no row); on, they print nothing, exit 0 in ${TRL} ms with a 1.5 s backend, and log one seeded, uncalibrated answer in the background; empty/malformed payloads, stop_hook_active and non-claims ask nothing"
 
 echo
 echo "smoke passed: $N/$N checks"
