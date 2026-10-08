@@ -58,7 +58,7 @@ Same day, a new session. The proxy now attaches `TYPESAFE_API_KEY` on `*.typesaf
 | 7 | Claude Haiku 5.5 via OpenRouter, same strict-schema setup, n=16: **p50 1466 ms, p95 1646 ms, min 958, max 1703**; 2 of 16 over 1.6 s. All 16 correct, soft probabilities (top 0.80–0.93 on clear tasks, 0.55–0.63 on `security`, 0.32–0.40 on the vague task). $0.0018 total | Yes. Frontier still cannot serve the 1.6 s routing budget |
 | 8 | Jev, n=80: 0 all-zero, 0 ties, 0 sums outside 1 ± 0.02. Frontier, n=16: 0 invalid JSON, 0 ties, **1 map summed to 1.2, on the `migration` task again** | The bad sum is back on the `migration` task, as in run 2 (the synthetic tasks differ between runs), so it is a repeated failure on one kind of input, not noise. The reject-don't-rescale rule is confirmed |
 
-Run 4 spend: about $0.003 (OpenRouter), plus ~100 TypeSafe calls that report no cost.
+Run 4 spend: about $0.003 (OpenRouter), plus about 55 TypeSafe calls that report no cost.
 
 ## Method
 
