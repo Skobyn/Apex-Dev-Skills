@@ -19,6 +19,15 @@ drift between code and intent without having to read the full ADR.
 - [ TODO ]
 - [ TODO ]
 
+## Threat model
+
+Trusted, non-malicious agents and operators. Guard against accidents and realistic misuse. Not a sandbox: deliberate tampering with state, config or the harness by the trusted agent, and obfuscated inputs, are out of scope.
+
+> Every reviewer receives this section verbatim (apex-execute brief `THREAT_MODEL:`, ADR-0004 of
+> apex-scope-loop). Edit it before the first review: name the trust model, the in-scope actors and
+> the out-of-scope classes. A finding outside it is non-blocking and goes to the hardening backlog.
+> A task can override it with a one-line `- Threat:` directive.
+
 ---
 
 ## Execution Strategy
@@ -30,10 +39,10 @@ drift between code and intent without having to read the full ADR.
 
 | Directive | Meaning |
 |-----------|---------|
-| `Swarm: single [<agent-type>]` | One `Agent` tool invocation; orchestrator picks subagent_type |
-| `Swarm: multi <count> [<t1>, <t2>, ...]` | N parallel `Agent` calls **in one message** |
-| `Swarm: hierarchical <count> [<t1>, <t2>, ...]` | `mcp__claude-flow__swarm_init` + N spawns, queen-led |
-| `Swarm: mesh <count> [<t1>, <t2>, ...]` | Peer-to-peer mesh topology, no queen |
+| `Swarm: single [{agent-type}]` | One `Agent` tool invocation; orchestrator picks subagent_type |
+| `Swarm: multi {count} [{t1}, {t2}, ...]` | N parallel `Agent` calls **in one message** |
+| `Swarm: hierarchical {count} [{t1}, {t2}, ...]` | optional: `mcp__claude-flow__swarm_init` + N spawns, queen-led (advisory without ruflo) |
+| `Swarm: mesh {count} [{t1}, {t2}, ...]` | Peer-to-peer mesh topology, no queen |
 
 If `Swarm:` is omitted, the orchestrator uses **hierarchical 6 [architect, coder, tester, reviewer, researcher, analyst]**.
 
@@ -43,7 +52,7 @@ If `Swarm:` is omitted, the orchestrator uses **hierarchical 6 [architect, coder
 |----------|----------|
 | `[gate:auto]` | Orchestrator runs the Acceptance check; advances on pass, halts on fail |
 | `[gate:human]` | Orchestrator halts; user must type the approval phrase from Acceptance |
-| `[gate:partner:<email>]` | Orchestrator writes inbox item to `<email>`, halts until consumed |
+| `[gate:partner:{email}]` | Orchestrator writes inbox item to `{email}`, halts until consumed |
 
 Gates are checkbox tasks, just like phases. The line between Phase N and Phase N+1 is a Gate task that blocks Phase N+1 via `Blocked-by:`.
 
@@ -54,14 +63,25 @@ Gates are checkbox tasks, just like phases. The line between Phase N and Phase N
 > **Task format** (the apex-execute `iterate.sh` parses these):
 > ```
 > - [ ] **Phase X.Y** [tag1][tag2] Imperative task title
->   - Acceptance: <runnable check>
->   - Swarm: <directive>            (optional — defaults to hierarchical 6)
+>   - Acceptance: {runnable check}
+>   - Swarm: {directive}            (optional — defaults to hierarchical 6)
 >   - Blocked-by: phase-X.Y         (optional)
+>   - Threat: {one line}            (optional — overrides the plan's Threat model for this task)
+>   - Threats: 1) {threat}; 2) {threat}   (optional — each needs a failing-first test in the builder handback)
+>   - Review: cap=3 lenses=all adversarial=yes   (optional — Tier C keeps >= 3 lenses, the adversarial pass and G12)
 > ```
 >
-> **Tags route topology** (see `apex-execute/docs/SWARM_TOPOLOGIES.md`):
+> A task that hand-parses a language (markdown, shell, a config dialect) names a fallback in its
+> Acceptance — "or drop the feature" — so a parser that does not converge is cut, not patched round
+> by round. `[tier:a reason="..."]` / `[tier:b reason="..."]` override the size and content tier
+> signals (never a Tier C path); the reason is required and recorded.
+>
+> **Tags route topology** (see `apex-execute/docs/legacy/SWARM_TOPOLOGIES.md`):
 > `[backend]` `[frontend]` `[security]` `[perf]` `[ml-serving]` `[infra]`
-> `[research]` `[docs]` `[tests]` `[refactor]` `[gate:auto]` `[gate:human]` `[gate:partner:<email>]`
+> `[research]` `[docs]` `[tests]` `[refactor]` `[tier:c]` `[gate:auto]` `[gate:human]` `[gate:partner:{email}]`
+>
+> `[tier:c]` marks money / auth / consent-PII / security / schema / alerting / prod-data work: it gets a
+> six-lens + adversarial review and a human G12 approval before check-off (The Gibson harness).
 
 ---
 
@@ -220,10 +240,10 @@ Run alongside `/loop`:
 
 ```bash
 # Nightly progress audit
-/schedule "0 2 * * *" .claude/skills/apex-execute/scripts/audit.sh .claude/plans/{{SLUG}}-plan.md
+/schedule "0 2 * * *" ${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts/audit.sh .claude/plans/{{SLUG}}-plan.md
 
 # Weekly architecture drift review
-/schedule "0 9 * * 1" .claude/skills/apex-execute/scripts/architecture-review.sh .claude/plans/{{SLUG}}-plan.md
+/schedule "0 9 * * 1" ${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts/architecture-review.sh .claude/plans/{{SLUG}}-plan.md
 ```
 
 ---
@@ -232,8 +252,8 @@ Run alongside `/loop`:
 
 ```bash
 # Current state
-.claude/skills/apex-plan/scripts/status.sh {{SLUG}}
+${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/status.sh {{SLUG}}
 
 # Evaluate a single gate without /loop running
-.claude/skills/apex-plan/scripts/gate.sh .claude/plans/{{SLUG}}-plan.md gate-3-4
+${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/gate.sh .claude/plans/{{SLUG}}-plan.md gate-3-4
 ```

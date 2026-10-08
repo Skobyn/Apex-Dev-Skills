@@ -1,0 +1,2381 @@
+#!/usr/bin/env bash
+# apex-dispatch structural smoke test
+# Verifies the plugin contract from ADR-0001. Exits non-zero on first failure.
+set -euo pipefail
+
+PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MARKET_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
+fail() { echo "smoke FAIL: $1" >&2; exit 1; }
+ok()   { echo "smoke OK:   $1"; }
+N=0; pass() { N=$((N + 1)); ok "$1"; }
+
+# 1. plugin.json exists and has required fields
+PJ="$PLUGIN_ROOT/.claude-plugin/plugin.json"
+[ -f "$PJ" ] || fail "missing $PJ"
+for k in name version description author license keywords; do
+  grep -q "\"$k\"" "$PJ" || fail "plugin.json missing key: $k"
+done
+grep -q '"name": "apex-dispatch"' "$PJ" || fail "plugin.json name is not apex-dispatch"
+pass "plugin.json has name/version/description/author/license/keywords"
+
+# 2. plugin.json does NOT enumerate skills/commands/agents arrays
+for forbidden in '"skills"' '"commands"' '"agents"'; do
+  if grep -qE "$forbidden[[:space:]]*:[[:space:]]*\[" "$PJ"; then
+    fail "plugin.json enumerates $forbidden array (must be auto-discovered)"
+  fi
+done
+pass "plugin.json does not enumerate skills/commands/agents"
+
+# 3. registered in the marketplace with a matching description
+python3 - "$MARKET_ROOT/.claude-plugin/marketplace.json" "$PJ" <<'PY' || fail "apex-dispatch not registered in marketplace.json with the plugin's description"
+import json, sys
+m = json.load(open(sys.argv[1])); p = json.load(open(sys.argv[2]))
+e = [x for x in m["plugins"] if x.get("source") == "./plugins/apex-dispatch"]
+assert len(e) == 1 and e[0]["name"] == "apex-dispatch" and e[0]["description"] == p["description"]
+PY
+pass "registered in marketplace.json (source ./plugins/apex-dispatch, same description)"
+
+# 4. root README lists the plugin
+grep -q '(plugins/apex-dispatch)' "$MARKET_ROOT/README.md" || fail "root README has no apex-dispatch row"
+pass "root README row present"
+
+# 5. README has the required sections
+R="$PLUGIN_ROOT/README.md"
+for h in "## Compatibility" "## Namespace coordination" "## Verification" "## Architecture Decisions"; do
+  grep -q "^$h" "$R" || fail "README missing section: $h"
+done
+pass "README has Compatibility / Namespace coordination / Verification / Architecture Decisions"
+
+# 6. ADR-0001 exists with a Status
+ADR="$PLUGIN_ROOT/docs/adrs/0001-apex-dispatch-contract.md"
+[ -f "$ADR" ] || fail "missing $ADR"
+grep -qE "^- \*\*Status:\*\* (Proposed|Accepted)" "$ADR" || fail "ADR-0001 has no Proposed/Accepted status"
+pass "ADR-0001 exists with a status"
+
+# 7. namespace claimed in README and ADR
+for f in "$R" "$ADR"; do grep -q 'apex-dispatch:routes/' "$f" || fail "$f does not claim the apex-dispatch:* namespace"; done
+pass "namespace apex-dispatch:* claimed"
+
+# 8. every script is executable
+for s in "$PLUGIN_ROOT"/scripts/*.sh "$PLUGIN_ROOT"/bin/*.sh "$PLUGIN_ROOT"/hooks/*.sh; do
+  [ -e "$s" ] || continue
+  [ -x "$s" ] || fail "not executable: $s"
+done
+pass "scripts are executable"
+
+# 9. no platform coupling in engine sources (only directories that exist are
+#    searched, so a missing bin/ or hooks/ cannot mask a hit)
+COUPLING_DIRS=()
+for d in "$PLUGIN_ROOT/scripts" "$PLUGIN_ROOT/bin" "$PLUGIN_ROOT/hooks"; do
+  [ -d "$d" ] && COUPLING_DIRS+=("$d")
+done
+COUPLING_HITS=""
+if [ "${#COUPLING_DIRS[@]}" -gt 0 ]; then
+  COUPLING_HITS="$(grep -rIl 'apex-app\|getapexinsights\|claude-flow' "${COUPLING_DIRS[@]}" 2>/dev/null | grep -v '/scripts/smoke.sh$' || true)"
+fi
+[ -z "$COUPLING_HITS" ] || fail "engine sources reference apex-app/getapexinsights/claude-flow: $(printf '%s' "$COUPLING_HITS" | head -3 | tr '\n' ' ')"
+pass "no apex-app/getapexinsights/claude-flow coupling in engine sources"
+
+# 10. version is semver
+python3 -c "import json,re,sys; v=json.load(open(sys.argv[1]))['version']; assert re.fullmatch(r'\d+\.\d+\.\d+', v)" "$PJ" || fail "version is not semver"
+pass "version is semver"
+
+# --- Phase 2.2: policy, overlay, compile ------------------------------------
+COMPILE="$PLUGIN_ROOT/scripts/compile.sh"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/apex-dispatch-smoke.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+# 11. policy inputs exist and every compiled artifact is current
+for f in resources/dispatch.default.json resources/sections.json resources/schema.json scripts/lib/compile.py; do
+  [ -f "$PLUGIN_ROOT/$f" ] || fail "missing $f"
+done
+[ -x "$COMPILE" ] || fail "scripts/compile.sh is not executable"
+bash "$COMPILE" --check >/dev/null 2>"$WORK/check.err" || fail "compile.sh --check: $(cat "$WORK/check.err")"
+pass "compile.sh --check passes on the committed tree"
+
+# 12. a stale or missing artifact is detected and named (in a copy of the plugin)
+cp -R "$PLUGIN_ROOT" "$WORK/copy"
+printf '\n' >> "$WORK/copy/agents/reviewer.md"
+rm "$WORK/copy/resources/settings-snippet.json"
+if bash "$WORK/copy/scripts/compile.sh" --check >/dev/null 2>"$WORK/stale.err"; then
+  fail "compile.sh --check passed with a stale artifact"
+fi
+grep -q 'stale: agents/reviewer.md' "$WORK/stale.err" || fail "--check did not name the stale agents/reviewer.md"
+grep -q 'missing: resources/settings-snippet.json' "$WORK/stale.err" || fail "--check did not name the missing settings snippet"
+bash "$WORK/copy/scripts/compile.sh" >/dev/null && bash "$WORK/copy/scripts/compile.sh" --check >/dev/null \
+  || fail "compile.sh did not repair the stale copy"
+pass "stale and missing artifacts are detected by name and repaired by compile.sh"
+
+# 13. overlay merge: omit inherits, [] clears, merge by id with the project winning
+merged() { bash "$COMPILE" --print-merged --overlay "$1"; }
+printf '%s' '{"classes":[{"id":"docs","budgets":{"usd":0.25}},{"id":"chore","tier_floor":"cheap","tier_ceiling":"cheap","roster":["docs"],"fanout":{"shape":"single","max_lanes":1},"review_shape":{"A":"solo","B":"six-lens","C":"fanout6+adversarial"},"review_diversity":{"A":"off","B":"warn","C":"block"},"providers_allowed":["claude-session"],"requires_command_acceptance":false,"external_builders":false,"budgets":{"usd":0.1,"spawns":1,"minutes":5}}],"tag_classes":[],"semantic":{"min_p":0.9}}' > "$WORK/ov-merge.json"
+merged "$WORK/ov-merge.json" > "$WORK/merged.json" || fail "a valid overlay was rejected"
+python3 - "$WORK/merged.json" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "overlay merge semantics wrong (omit/[]/by-id/deep)"
+import json, sys
+m = json.load(open(sys.argv[1])); d = json.load(open(sys.argv[2]))
+cls = {c["id"]: c for c in m["classes"]}
+assert m["roles"] == d["roles"] and m["tiers"] == d["tiers"]                 # omitted: inherited
+assert m["tag_classes"] == []                                                 # []: cleared
+assert cls["docs"]["budgets"] == {"usd": 0.25, "spawns": 2, "minutes": 15}    # by id, project wins, rest kept
+assert cls["docs"]["roster"] == [c for c in d["classes"] if c["id"] == "docs"][0]["roster"]
+assert [c["id"] for c in m["classes"]][-1] == "chore" and len(m["classes"]) == len(d["classes"]) + 1
+assert m["semantic"]["min_p"] == 0.9 and m["semantic"]["timeout_ms"] == d["semantic"]["timeout_ms"]  # map deep-merge
+PY
+pass "overlay: omit inherits, [] clears, lists merge by id with the project winning, maps deep-merge"
+
+# 14. overlay: disabled subtracts with a reason; invalid overlays fail clearly
+printf '%s' '{"disabled":[{"section":"roles","id":"researcher","reason":"no web research in this repo"}]}' > "$WORK/ov-dis.json"
+merged "$WORK/ov-dis.json" | python3 -c 'import json,sys; m=json.load(sys.stdin); assert "researcher" not in [r["id"] for r in m["roles"]]; assert all("researcher" not in p["roles_allowed"] for p in m["providers"])' \
+  || fail "disabled with a reason did not subtract the entry"
+expect_reject() {  # $1 label, $2 overlay JSON, $3 expected stderr fragment
+  printf '%s' "$2" > "$WORK/ov-bad.json"
+  if merged "$WORK/ov-bad.json" >/dev/null 2>"$WORK/bad.err"; then fail "overlay accepted: $1"; fi
+  grep -q -- "$3" "$WORK/bad.err" || fail "overlay '$1' rejected without naming '$3': $(cat "$WORK/bad.err")"
+}
+expect_reject "disabled without reason" '{"disabled":[{"id":"researcher"}]}' 'has no reason'
+expect_reject "unknown class reference" '{"tag_classes":[{"id":"x-tags","tags":["x"],"class":"no-such-class"}]}' 'unknown class reference "no-such-class"'
+expect_reject "unknown role in roster" '{"classes":[{"id":"docs","roster":["ghost"]}]}' 'unknown role reference "ghost"'
+expect_reject "bad enum value" '{"classes":[{"id":"docs","brief":"freeform"}]}' 'is not one of'
+expect_reject "clearing hard rules" '{"hard_rules":[]}' 'cannot be cleared'
+expect_reject "unknown section" '{"routes":[]}' "unknown section 'routes'"
+expect_reject "uncalibrated may lower cost" '{"semantic":{"uncalibrated_may_lower_cost":true}}' 'must be false'
+printf '%s' 'not json' > "$WORK/ov-garbage.json"
+if merged "$WORK/ov-garbage.json" >/dev/null 2>&1; then fail "garbage overlay accepted"; fi
+pass "overlay: disabled subtracts (reason required); invalid overlays exit non-zero with a named reason"
+
+# 15. generated agents: reviewers have no Bash, builders have no Agent; no isolation or Bash patterns
+AG="$PLUGIN_ROOT/agents"
+for a in builder builder-high builder-xhigh tester docs researcher reviewer adversarial-reviewer diagnoser provider-runner; do
+  [ -f "$AG/$a.md" ] || fail "missing generated agent agents/$a.md"
+  grep -q "^name: $a\$" "$AG/$a.md" || fail "agents/$a.md frontmatter name is not $a"
+done
+for a in reviewer adversarial-reviewer diagnoser; do
+  grep -q '^tools: Read, Grep, Glob$' "$AG/$a.md" || fail "agents/$a.md tools are not exactly Read, Grep, Glob"
+  grep -q '^disallowedTools: Bash, Edit, Write, MultiEdit, NotebookEdit, Agent, mcp__\*$' "$AG/$a.md" || fail "agents/$a.md disallowedTools incomplete"
+done
+for a in builder builder-high builder-xhigh; do
+  grep -E '^tools:' "$AG/$a.md" | grep -qw Agent && fail "agents/$a.md grants Agent"
+  grep -E '^disallowedTools:' "$AG/$a.md" | grep -qw Agent || fail "agents/$a.md does not disallow Agent"
+done
+grep -q '^effort: high$' "$AG/builder-high.md" && grep -q '^effort: xhigh$' "$AG/builder-xhigh.md" || fail "builder effort variants wrong"
+for f in "$AG"/*.md; do
+  grep -q 'isolation:' "$f" && fail "$(basename "$f") contains isolation:"
+  grep -q 'Bash(' "$f" && fail "$(basename "$f") contains a Bash( pattern"
+  keys="$(awk '/^---$/{n++; next} n==1{print}' "$f" | sed 's/:.*//' | sort | tr '\n' ' ')"
+  for k in $keys; do
+    case "$k" in name|description|tools|disallowedTools|effort|maxTurns|model) ;; *) fail "$(basename "$f") has frontmatter key $k";; esac
+  done
+  case "$(basename "$f" .md)" in gibson-reviewer|plan-author) fail "agent name collides with apex-scope-loop";; esac
+done
+pass "generated agents: reviewers Read/Grep/Glob only, builders without Agent, no isolation or Bash patterns"
+
+# 16. hooks.json wraps "hooks"; settings snippet has the deny rules and no ask
+python3 - "$PLUGIN_ROOT/hooks/hooks.json" "$PLUGIN_ROOT/resources/settings-snippet.json" "$PLUGIN_ROOT/hooks" <<'PY' || fail "hooks.json or settings-snippet.json violates the contract"
+import json, os, sys
+h = json.load(open(sys.argv[1])); s = json.load(open(sys.argv[2]))
+assert list(h) == ["hooks"] and isinstance(h["hooks"], dict)
+scripts = sorted(f for f in os.listdir(sys.argv[3]) if f.endswith(".sh"))
+cmds = [x["command"] for groups in h["hooks"].values() for g in groups for x in g["hooks"]]
+assert all('"${CLAUDE_PLUGIN_ROOT}/hooks/' in c for c in cmds)
+assert all(x.get("timeout") for groups in h["hooks"].values() for g in groups for x in g["hooks"])
+assert sorted({c.split("/hooks/")[1].rstrip('"') for c in cmds}) == scripts  # registered == present
+deny = s["permissions"]["deny"]
+for r in ["Bash(* --dangerously-*)", "Bash(* --yolo*)", "Bash(* --always-approve*)", "Bash(* --full-auto*)", "Bash(git push --force*)"]:
+    assert r in deny, r
+assert "ask" not in s["permissions"] and "ask" not in json.dumps(s).lower().replace("task", "")
+sb = s["sandbox"]
+assert sb["enabled"] is True and sb["failIfUnavailable"] is True and sb["allowUnsandboxedCommands"] is False
+PY
+pass "hooks.json wraps hooks (only present scripts); settings snippet has the deny rules and sandbox, no ask"
+
+# 17. providers: an overlay may only toggle enabled, narrow classes/roles, lower max_tier,
+#     raise min_acceptance and add forbidden flags; nothing else, and no new provider ids
+printf '%s' '{"providers":[{"id":"codex","enabled":false,"forbidden_flags":["--extra-risky"],"allowed_classes":["docs","tests"],"roles_allowed":["tester"],"max_tier":"cheap","min_acceptance":0.9}]}' > "$WORK/ov-prov.json"
+merged "$WORK/ov-prov.json" 2>"$WORK/prov.err" | python3 -c 'import json,sys; m={p["id"]:p for p in json.load(sys.stdin)["providers"]}["codex"]; assert m["forbidden_flags"][-1] == "--extra-risky" and "-a" in m["forbidden_flags"] and "danger-full-access" in m["forbidden_flags"]; assert m["enabled"] is False and m["allowed_classes"] == ["docs","tests"] and m["max_tier"] == "cheap" and m["min_acceptance"] == 0.9' \
+  || fail "allowed provider overlay edits were not accepted/applied: $(cat "$WORK/prov.err")"
+# reviewer probes: appended forced flags that override earlier ones
+expect_reject "claude-p bypassPermissions" '{"providers":[{"id":"claude-p","forced_flags":["-p","--setting-sources","user","--permission-mode","dontAsk","--permission-prompts","none","--output-format","json","--permission-mode","bypassPermissions"]}]}' 'providers\[claude-p\].forced_flags: an overlay may not set this field'
+expect_reject "claude-p setting sources + allowedTools" '{"providers":[{"id":"claude-p","forced_flags":["-p","--setting-sources","user,project,local","--allowedTools","Bash"]}]}' 'providers\[claude-p\].forced_flags: an overlay may not set this field'
+expect_reject "grok sandbox off" '{"providers":[{"id":"grok","forced_flags":["-p","--sandbox","strict","--worktree","--no-subagents","--output-format","streaming-messages-json","--sandbox","off"]}]}' 'providers\[grok\].forced_flags: an overlay may not set this field'
+expect_reject "codex add-dir /" '{"providers":[{"id":"codex","forced_flags":["exec","--add-dir","/"]}]}' 'providers\[codex\].forced_flags: an overlay may not set this field'
+expect_reject "codex network access" '{"providers":[{"id":"codex","forced_flags":["exec","-c","sandbox_workspace_write.network_access=true"]}]}' 'providers\[codex\].forced_flags: an overlay may not set this field'
+# reviewer probes: new provider ids
+expect_reject "new claude-p2 provider" '{"providers":[{"id":"claude-p2","status":"verified","kind":"subprocess","family":"anthropic-separate-session","binary":"claude","key_env":null,"forced_flags":["-p","--permission-mode","bypassPermissions"],"forbidden_flags":[],"allowed_classes":["docs"],"max_tier":"cheap","roles_allowed":["docs"],"reports_usage":true,"sandbox_mode":null,"min_acceptance":0.7,"acceptance_window":20,"hosts":[],"enabled":true}]}' 'providers\[claude-p2\]: an overlay may not add a provider'
+expect_reject "new in-session provider running codex" '{"providers":[{"id":"evil","status":"verified","kind":"in-session","family":"anthropic","binary":"codex","key_env":null,"forced_flags":[],"forbidden_flags":[],"allowed_classes":["docs"],"max_tier":"cheap","roles_allowed":["docs"],"reports_usage":true,"sandbox_mode":null,"min_acceptance":0.7,"acceptance_window":20,"hosts":[],"enabled":true}]}' 'providers\[evil\]: an overlay may not add a provider'
+# any non-allowlisted field on a default provider
+for f in '"binary":"/tmp/codex"' '"kind":"in-session"' '"family":"anthropic"' '"sandbox_mode":"read-only"' '"hosts":["evil.example"]' '"key_env":"OTHER_KEY"' '"reports_usage":false' '"status":"verified"' '"acceptance_window":1'; do
+  k="${f%%\":*}"; k="${k#\"}"
+  expect_reject "setting provider $k" '{"providers":[{"id":"codex",'"$f"'}]}' "providers\\[codex\\].$k: an overlay may not set this field"
+done
+expect_reject "widening allowed_classes" '{"providers":[{"id":"grok","allowed_classes":["docs","tests","feature"]}]}' 'allowed_classes: an overlay may only narrow'
+expect_reject "widening roles_allowed" '{"providers":[{"id":"codex","roles_allowed":["builder","provider-runner"]}]}' 'roles_allowed: an overlay may only narrow'
+expect_reject "raising max_tier" '{"providers":[{"id":"codex","max_tier":"max"}]}' 'max_tier: an overlay may only lower it'
+expect_reject "lowering min_acceptance" '{"providers":[{"id":"codex","min_acceptance":0.1}]}' 'min_acceptance: an overlay may only raise it'
+expect_reject "clearing forbidden_flags" '{"providers":[{"id":"codex","forbidden_flags":[]}]}' 'forbidden_flags: add-only'
+expect_reject "clearing providers" '{"providers":[]}' 'providers cannot be cleared'
+pass "overlay: providers allowlist (enabled, narrow classes/roles, lower max_tier, raise min_acceptance, add forbidden flags); no new providers"
+
+# 18. tiers are not overlayable at all; role restrictions hold
+expect_reject "changing a tier model" '{"tiers":[{"id":"strong","model":"sonnet"}]}' 'tiers cannot be changed, added or cleared'
+expect_reject "changing a tier budget" '{"tiers":[{"id":"cheap","maxTurns":5}]}' 'tiers cannot be changed, added or cleared'
+expect_reject "adding a tier" '{"tiers":[{"id":"ultra","rank":4,"model":"fable","effort":"xhigh","maxTurns":10,"context_budget_tokens":1000,"price_usd_per_mtok":{"input":1,"output":1,"cache_read":0.1,"cache_write":1}}]}' 'tiers cannot be changed, added or cleared'
+expect_reject "disabling a tier" '{"disabled":[{"section":"tiers","id":"max","reason":"cost"}]}' 'tiers cannot be disabled'
+expect_reject "making a read-only role writable" '{"roles":[{"id":"researcher","read_only":false}]}' 'may not make a read-only role writable'
+expect_reject "granting a role a tool" '{"roles":[{"id":"docs","tools":["Read","Grep","Glob","Edit","Write","MultiEdit","Bash"]}]}' 'roles\[docs\].tools: an overlay may not grant Bash'
+expect_reject "dropping a disallowed tool" '{"roles":[{"id":"docs","disallowed_tools":["Agent","NotebookEdit"]}]}' 'roles\[docs\].disallowed_tools: an overlay may not remove Bash'
+python3 -c '
+import json, sys
+t = sorted(json.load(open(sys.argv[1]))["tiers"], key=lambda x: x["rank"])
+S = {"haiku": 0, "sonnet": 1, "opus": 2, "fable": 2}; E = ["low", "medium", "high", "xhigh"]
+assert all(S[a["model"]] <= S[b["model"]] and E.index(a["effort"]) <= E.index(b["effort"]) for a, b in zip(t, t[1:]))
+' "$PLUGIN_ROOT/resources/dispatch.default.json" || fail "default tiers are not monotonic in model strength and effort"
+pass "overlay: tiers cannot be changed, added, cleared or disabled; role restrictions hold; default tiers monotonic"
+
+# 19. appended route_floor rules may only match or tighten (rules combine by max)
+expect_reject "weaker Tier C diversity" '{"hard_rules":[{"id":"my-c","kind":"route_floor","match":"all","description":"x","when":{"risk_tier":"C"},"then":{"review_diversity":"off"}}]}' 'weaker than hard rule tier-c-floor'
+expect_reject "weaker Tier B review shape" '{"hard_rules":[{"id":"my-b","kind":"route_floor","match":"all","description":"x","when":{"risk_tier":"B"},"then":{"review_shape":"solo"}}]}' 'weaker than hard rule tier-b-review'
+expect_reject "lower floor for security tags" '{"hard_rules":[{"id":"my-sec","kind":"route_floor","match":"any","description":"x","when":{"tags_any":["security"]},"then":{"tier_floor":"cheap"}}]}' 'weaker than hard rule tier-c-floor'
+printf '%s' '{"hard_rules":[{"id":"my-b-strict","kind":"route_floor","match":"all","description":"x","when":{"risk_tier":"B"},"then":{"review_diversity":"block"}}]}' > "$WORK/ov-rule.json"
+merged "$WORK/ov-rule.json" >/dev/null 2>&1 || fail "a stricter appended hard rule was rejected"
+grep -q 'combine by max (strictest wins)' "$ADR" || fail "ADR-0001 does not state that matching hard rules combine by max"
+expect_reject "appended tier_ceiling" '{"hard_rules":[{"id":"my-ceil","kind":"route_floor","match":"all","description":"x","when":{"role":"builder"},"then":{"tier_ceiling":"cheap"}}]}' 'may not set a tier ceiling'
+pass "overlay: appended route_floor rules may only match or tighten (no tier_ceiling); ADR states max (strictest wins)"
+
+# 20. escalation: review rounds and the halt rung stay at 3 or below
+expect_reject "raising max_review_rounds" '{"escalation":{"max_review_rounds":4}}' 'max_review_rounds: 4 is above 3'
+expect_reject "moving the halt rung up" '{"escalation":{"rungs":[{"id":"halt","at_failures":5}]}}' 'halt rung at_failures 5 is above 3'
+printf '%s' '{"escalation":{"max_review_rounds":2}}' > "$WORK/ov-esc.json"
+merged "$WORK/ov-esc.json" >/dev/null 2>&1 || fail "a stricter max_review_rounds was rejected"
+pass "overlay: escalation may be made stricter, never looser"
+
+# 21. roles a hard rule's review shape needs cannot be disabled
+expect_reject "disabling adversarial-reviewer" '{"disabled":[{"section":"roles","id":"adversarial-reviewer","reason":"cost"}]}' 'roles\[adversarial-reviewer\]: required by hard rule tier-c-floor'
+expect_reject "switching reviewer off" '{"roles":[{"id":"reviewer","enabled":false}]}' 'roles\[reviewer\]: required by hard rule'
+pass "overlay: reviewer and adversarial-reviewer cannot be disabled"
+
+# 22. agents/ is fully generated; --check is byte-exact
+rm -rf "$WORK/copy2"; cp -R "$PLUGIN_ROOT" "$WORK/copy2"
+printf -- '---\nname: x\ndescription: hand-written\n---\nbody\n' > "$WORK/copy2/agents/x.md"
+if bash "$WORK/copy2/scripts/compile.sh" --check >/dev/null 2>"$WORK/foreign.err"; then fail "--check passed with a hand-written agents/x.md"; fi
+grep -q 'not generated: agents/x.md' "$WORK/foreign.err" || fail "--check did not name the hand-written agents/x.md: $(cat "$WORK/foreign.err")"
+rm "$WORK/copy2/agents/x.md"
+python3 -c 'import sys; p=sys.argv[1]; b=open(p,"rb").read(); open(p,"wb").write(b.replace(b"\n", b"\r\n"))' "$WORK/copy2/agents/builder.md"
+if bash "$WORK/copy2/scripts/compile.sh" --check >/dev/null 2>"$WORK/crlf.err"; then fail "--check passed with a CRLF agents/builder.md"; fi
+grep -q 'stale: agents/builder.md' "$WORK/crlf.err" || fail "--check did not name the CRLF agents/builder.md"
+grep -qF 'Generated agents omit `model:`** deliberately' "$ADR" || fail "ADR-0001 does not record why generated agents omit model:"
+pass "--check flags any non-generated agents/*.md and detects a CRLF artifact"
+
+# --- Phase 2.3: route.sh (table-only) ----------------------------------------
+ROUTE="$PLUGIN_ROOT/scripts/route.sh"
+for v in $(compgen -e | grep '^APEX_' || true); do unset "$v"; done
+# hooks/subagent-stop.sh ships (Phase 3.2), so <state>/dispatch/ (provenance mode)
+# is the default. The Phase 2 and 3.1 checks below exercise the transitional
+# <state>/dispatch-shadow/ through the human opt-out APEX_DISPATCH_ENFORCE=0;
+# check 35 covers the switch and the Phase 3.2 checks run enforced.
+export APEX_DISPATCH_ENFORCE=0
+export GIT_AUTHOR_NAME=smoke GIT_AUTHOR_EMAIL=smoke@example.invalid GIT_COMMITTER_NAME=smoke GIT_COMMITTER_EMAIL=smoke@example.invalid
+has() { grep -q -- "$1" <<<"$2"; }
+val() { sed -n "s/^$1: //p" <<<"$2" | head -1; }
+
+# 23. route.sh is executable and --version equals plugin.json version
+[ -x "$ROUTE" ] && [ -f "$PLUGIN_ROOT/scripts/lib/route.py" ] || fail "scripts/route.sh or scripts/lib/route.py missing"
+[ "$(bash "$ROUTE" --version)" = "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")" ] \
+  || fail "route.sh --version does not equal plugin.json version"
+pass "route.sh --version == plugin.json version"
+
+# Fixture: a plain git repo with one plan (no toolchain markers).
+FX="$WORK/fx"; mkdir -p "$FX/plans"; git init -q -b main "$FX"
+cat >"$FX/plans/p.md" <<'PLAN'
+# Fixture plan
+
+- [ ] **Phase 1.1** [backend] no acceptance line
+
+- [ ] **Phase 1.2** [tier:c] [docs] tier C asks for docs
+  - Acceptance: `pytest -q`
+  - Route: class=docs
+
+- [ ] **Phase 1.3** [mechanical] lane a
+  - Acceptance: `pytest tests/a -q`
+  - Route: fanout=lanes
+  - Paths: src/a/**
+
+- [ ] **Phase 1.4** [mechanical] lane b
+  - Acceptance: `pytest tests/b -q`
+  - Route: fanout=lanes
+  - Paths: src/b/**
+
+- [ ] **Phase 1.5** [mechanical] overlaps lane a
+  - Acceptance: `pytest tests/c -q`
+  - Route: fanout=lanes
+  - Paths: src/**
+
+- [ ] **Gate 1→2** [gate:human] approve
+  - Acceptance: user types approve gate-1-2
+
+- [ ] **Phase 2.1** [backend] prose acceptance
+  - Acceptance: the endpoint feels faster
+PLAN
+git -C "$FX" add -A; git -C "$FX" commit -qm fx
+rt() { (cd "$FX" && bash "$ROUTE" "$@") 2>&1; }
+ln_of() { grep -n -- "$1" "$FX/plans/p.md" | head -1 | cut -d: -f1; }
+L_NOACC="$(ln_of 'Phase 1.1')"; L_C="$(ln_of 'Phase 1.2')"; L_A="$(ln_of 'Phase 1.3')"; L_B="$(ln_of 'Phase 1.4')"
+L_OV="$(ln_of 'Phase 1.5')"; L_G="$(ln_of 'Gate 1')"; L_PROSE="$(ln_of 'Phase 2.1')"
+
+# 24. input gate: NEEDS_SPEC without Acceptance, or without a command where the class needs one; [gate:] is HUMAN_GATE
+O="$(rt plan plans/p.md --line "$L_NOACC" --dry-run)"
+[ "$(val ROUTE_STATUS "$O")" = NEEDS_SPEC ] && has '^ROUTE_MISSING: acceptance' "$O" || fail "no Acceptance did not give NEEDS_SPEC: $O"
+O="$(rt plan plans/p.md --line "$L_PROSE" --dry-run)"
+[ "$(val ROUTE_STATUS "$O")" = NEEDS_SPEC ] && has '^ROUTE_MISSING: acceptance-command' "$O" || fail "prose Acceptance for a feature did not give NEEDS_SPEC: $O"
+[ "$(val ROUTE_STATUS "$(rt plan plans/p.md --line "$L_G" --dry-run)")" = HUMAN_GATE ] || fail "[gate:human] task did not give HUMAN_GATE"
+[ ! -e "$FX/.dev-plan-state" ] || fail "a --dry-run wrote state"
+pass "input gate: NEEDS_SPEC (missing Acceptance / command), HUMAN_GATE for [gate:], dry-run writes nothing"
+
+# 25. hard floor: [tier:c] routes class=security (strong, six lenses + adversarial, block, G12, single) over Route: class=docs
+O="$(rt plan plans/p.md --line "$L_C" --dry-run)"
+for kv in "ROUTE_STATUS=READY" "ROUTE_CLASS=security" "ROUTE_TIER=strong" "ROUTE_MODEL=opus" "ROUTE_RISK_TIER=C" \
+          "ROUTE_REVIEW_SHAPE=fanout6+adversarial" "ROUTE_DIVERSITY=block" "ROUTE_HUMAN_GATE=G12" "ROUTE_FANOUT=single" \
+          "ROUTE_PROVIDER=claude-session" "SEMANTIC_SOURCE=table"; do
+  [ "$(val "${kv%%=*}" "$O")" = "${kv#*=}" ] || fail "[tier:c] route: want ${kv%%=*}=${kv#*=}, got: $(val "${kv%%=*}" "$O")"
+done
+has '^ROUTE_FLOORS: .*tier-c-floor' "$O" || fail "[tier:c] route does not name the tier-c-floor hard rule"
+pass "hard floor: [tier:c] → class security, strong/opus, fanout6+adversarial, diversity block, G12, single (Route: class=docs overridden)"
+
+# 26. fan-out: lanes only with disjoint Paths (and never for an overlapping lane)
+O="$(rt plan plans/p.md --line "$L_A" --lanes "$L_A,$L_B" --dry-run)"
+[ "$(val ROUTE_FANOUT "$O")" = "lanes:2" ] && [ "$(val ROUTE_LANES "$O")" = "$L_A,$L_B" ] || fail "disjoint Paths did not fan out: $(val ROUTE_FANOUT "$O")"
+O="$(rt plan plans/p.md --line "$L_A" --lanes "$L_A,$L_OV" --dry-run)"
+[ "$(val ROUTE_FANOUT "$O")" = single ] && has '^ROUTE_NOTE: fan-out single: .*overlaps' "$O" || fail "overlapping Paths fanned out: $(val ROUTE_FANOUT "$O")"
+[ "$(val ROUTE_FANOUT "$(rt plan plans/p.md --line "$L_A" --dry-run)")" = single ] || fail "fan-out without --lanes"
+[ "$(val ROUTE_FANOUT "$(rt plan plans/p.md --line "$L_C" --lanes "$L_C,$L_A" --dry-run)")" = single ] || fail "a Tier C task fanned out"
+pass "fan-out: lanes only with --lanes and pairwise-disjoint Paths; single otherwise and for Tier C"
+
+# 27. kill switches and the ACTIVE lock: HALTED with APEX_HALT=1 or a HALT file; another plan's lock is BUSY
+[ "$(val ROUTE_STATUS "$(APEX_HALT=1 rt plan plans/p.md --line "$L_A" --dry-run)")" = HALTED ] || fail "APEX_HALT=1 did not give HALTED"
+mkdir -p "$FX/.dev-plan-state"; touch "$FX/.dev-plan-state/HALT"
+[ "$(val ROUTE_STATUS "$(rt plan plans/p.md --line "$L_A" --dry-run)")" = HALTED ] || fail "a HALT file did not give HALTED"
+rm -f "$FX/.dev-plan-state/HALT"
+O="$(rt plan plans/p.md --line "$L_A")"
+RID="$(val ROUTE_ID "$O")"; RFILE="$(val ROUTE_FILE "$O")"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ -f "$RFILE" ] || fail "a READY route wrote no active-route.json: $O"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["route_id"]==sys.argv[2] and d["router"]["class"]=="mechanical" and "state" in d' "$RFILE" "$RID" \
+  || fail "active-route.json does not carry the route_id and fields"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; assert [x["event"] for x in r]==["route"] and r[0]["route_id"]==sys.argv[2] and r[0]["source"]=="cli" and r[0]["seq"]==0' "$(dirname "$RFILE")/ledger.jsonl" "$RID" \
+  || fail "the READY route did not append one route row to ledger.jsonl"
+[ ! -e "$(dirname "$RFILE")/routes.jsonl" ] || fail "route.sh still writes routes.jsonl"
+cp "$FX/plans/p.md" "$FX/plans/q.md"
+O="$(rt plan plans/q.md --line "$L_A")"
+[ "$(val ROUTE_STATUS "$O")" = BUSY ] || fail "a second plan was not BUSY while the first holds ACTIVE: $O"
+pass "kill switches → HALTED; READY writes active-route.json + a ledger route row; another ACTIVE plan → BUSY"
+
+# 28. escalate rungs from policy: 1 effort+1, 2 model+1 + diagnoser, 3 HALT; the next plan route follows the rung
+SD="$(dirname "$(dirname "$RFILE")")"
+setfail() { printf '{"consecutive_failures": %s}\n' "$1" >"$SD/checkpoint.json"; }
+setfail 1; O="$(rt escalate "$RID")"
+has '^RUNG: effort-up' "$O" && [ "$(val NEXT_EFFORT "$O")" = high ] && [ "$(val NEXT_BUILDER "$O")" = builder-high ] || fail "rung 1 is not effort+1: $O"
+O="$(rt plan plans/p.md --line "$L_A")"
+[ "$(val ROUTE_MODE "$O")" = escalated ] && [ "$(val ROUTE_EFFORT "$O")" = high ] && has '^ROUTE_ROSTER: builder-high' "$O" || fail "the route after one failure did not raise effort: $O"
+setfail 2; O="$(rt escalate "$RID")"
+has '^RUNG: model-up' "$O" && [ "$(val NEXT_MODEL "$O")" = opus ] && has '^DIAGNOSER: diagnoser' "$O" || fail "rung 2 is not model+1 with a diagnoser: $O"
+setfail 3; O="$(rt escalate "$RID")"
+has '^RUNG: halt' "$O" && has '^ACTION: HALT' "$O" || fail "rung 3 is not HALT: $O"
+[ "$(val ROUTE_STATUS "$(rt plan plans/p.md --line "$L_A")")" = HALTED ] || fail "a plan route at the HALT rung was not HALTED"
+if rt escalate "not-a-route" >/dev/null; then fail "escalate accepted a malformed route id"; fi
+rm -f "$SD/checkpoint.json"
+pass "escalate: effort+1, then model+1 + diagnoser, then HALT; plan routes follow the rung"
+
+# 29. review-shape from tier: A solo, B six-lens (warn), C six lenses + adversarial (block) + G12
+O="$(rt review-shape A)"; [ "$(val REVIEW_SHAPE "$O")" = solo ] && [ "$(val REVIEW_DIVERSITY "$O")" = off ] || fail "review-shape A: $O"
+O="$(rt review-shape B)"; [ "$(val REVIEW_SHAPE "$O")" = six-lens ] && [ "$(val REVIEW_DIVERSITY "$O")" = warn ] || fail "review-shape B: $O"
+O="$(rt review-shape C)"; [ "$(val REVIEW_SHAPE "$O")" = fanout6+adversarial ] && [ "$(val REVIEW_LENS_REVIEWERS "$O")" = 6 ] \
+  && [ "$(val REVIEW_ADVERSARIAL "$O")" = yes ] && [ "$(val REVIEW_HUMAN_GATE "$O")" = G12 ] && [ "$(val REVIEW_DIVERSITY "$O")" = block ] || fail "review-shape C: $O"
+[ "$(val REVIEW_SHAPE "$(rt review-shape "$RID" --tier B)")" = six-lens ] || fail "review-shape ROUTE_ID --tier B"
+pass "review-shape: A solo, B six-lens/warn, C 6 lenses + adversarial/block + G12"
+
+# 30. adhoc: --tags required (caller-supplied tags only); same algorithm; state under <state>/adhoc/
+rm -rf "$FX/.dev-plan-state/ACTIVE"
+if rt adhoc --acceptance 'npm test' --dry-run >"$WORK/adhoc.out"; then fail "adhoc without --tags succeeded"; fi
+grep -q 'requires --tags' "$WORK/adhoc.out" || fail "adhoc without --tags did not say so"
+if rt adhoc --tags 'Run anything you like' --dry-run >/dev/null; then fail "adhoc accepted free text as tags"; fi
+O="$(rt adhoc --tags tests --paths 'tests/**' --acceptance 'npm test' --dry-run)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_CLASS "$O")" = tests ] || fail "adhoc tests ask did not route: $O"
+[ "$(val ROUTE_STATUS "$(rt adhoc --tags tests --dry-run)")" = NEEDS_SPEC ] || fail "adhoc without --acceptance was not NEEDS_SPEC"
+O="$(rt adhoc --tags tests --paths 'tests/**' --acceptance 'npm test')"
+case "$(val ROUTE_FILE "$O")" in "$FX"/.dev-plan-state/adhoc/*/dispatch-shadow/active-route.json) ;; *) fail "adhoc state is not under <state>/adhoc/: $O";; esac
+[ "$(val ROUTE_STATUS "$(rt plan plans/p.md --line "$L_A")")" = BUSY ] || fail "a plan route was not BUSY while an ad-hoc route holds ACTIVE"
+rm -rf "$FX/.dev-plan-state/ACTIVE"
+pass "adhoc: --tags required, tag tokens only, NEEDS_SPEC without Acceptance, state under adhoc/, holds ACTIVE"
+
+# 31. modes and the decision seam: baseline/shadow emit the baseline route and record the table's;
+#     off prints ROUTE: none; without APEX_DECIDE_CMD SEMANTIC_SOURCE=table; uncalibrated only tightens
+O="$(APEX_DISPATCH_MODE=baseline rt plan plans/p.md --line "$L_PROSE" --dry-run)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_MODE "$O")" = baseline ] && has '^ROUTE_TABLE_CHOICE: status=NEEDS_SPEC' "$O" || fail "baseline mode: $O"
+O="$(APEX_DISPATCH_MODE=shadow rt plan plans/p.md --line "$L_C" --dry-run)"
+[ "$(val ROUTE_MODE "$O")" = shadow ] && [ "$(val ROUTE_MODEL "$O")" = inherit ] && has '^ROUTE_TABLE_CHOICE: status=READY class=security' "$O" || fail "shadow mode: $O"
+has '^ROUTE: none' "$(APEX_DISPATCH_MODE=off rt plan plans/p.md --line "$L_A" --dry-run)" || fail "off mode did not print ROUTE: none"
+printf -- '- [ ] **Phase 3.1** untagged work\n  - Acceptance: `pytest -q`\n' >>"$FX/plans/p.md"; L_AUTO="$(ln_of 'Phase 3.1')"
+printf '#!/bin/sh\nprintf "%%s\\n" "$FAKE_DECISION"\n' >"$WORK/decide"; chmod +x "$WORK/decide"
+dec() { APEX_DECIDE_CMD="$WORK/decide" FAKE_DECISION="$1" rt plan plans/p.md --line "$L_AUTO" --dry-run; }
+O="$(dec '{"verdict":"docs","probabilities":{"docs":0.95,"feature":0.05},"calibrated":false,"uncertain":false}')"
+[ "$(val ROUTE_CLASS "$O")" = feature ] && [ "$(val SEMANTIC_SOURCE "$O")" = decision-shadow ] || fail "an uncalibrated decision lowered cost: $O"
+O="$(dec '{"verdict":"docs","probabilities":{"docs":0.95,"feature":0.05},"calibrated":true,"uncertain":false}')"
+[ "$(val ROUTE_CLASS "$O")" = docs ] && [ "$(val ROUTE_MODE "$O")" = decision ] || fail "a calibrated decision was not applied: $O"
+O="$(dec '{"verdict":"docs","probabilities":{"docs":0,"feature":0},"calibrated":true}')"
+[ "$(val ROUTE_CLASS "$O")" = feature ] && [ "$(val SEMANTIC_SOURCE "$O")" = table ] || fail "an all-zero probability map was accepted: $O"
+O="$(rt plan plans/p.md --line "$L_AUTO" --dry-run)"
+[ "$(val SEMANTIC_SOURCE "$O")" = table ] && [ "$(val ROUTE_CLASS "$O")" = feature ] || fail "route.sh without the decision layer: $O"
+printf '%s' '{"escalation":{"max_review_rounds":4}}' >"$WORK/ov-route.json"
+if APEX_DISPATCH_POLICY="$WORK/ov-route.json" rt plan plans/p.md --line "$L_AUTO" --dry-run >"$WORK/ov-route.out"; then fail "route.sh accepted an overlay that loosens a bound"; fi
+grep -q 'policy is invalid' "$WORK/ov-route.out" || fail "route.sh did not name the invalid overlay"
+pass "modes: baseline/shadow emit baseline and record the table; off; decision seam (absent → table, uncalibrated only tightens, invalid → table); route.sh enforces the overlay bounds"
+
+# --- Phase 2.4: ledger.sh, report.sh, doctor.sh ------------------------------
+LEDGER="$PLUGIN_ROOT/scripts/ledger.sh"; REPORT="$PLUGIN_ROOT/scripts/report.sh"; DOCTOR="$PLUGIN_ROOT/scripts/doctor.sh"
+for f in "$LEDGER" "$REPORT" "$DOCTOR"; do [ -x "$f" ] || fail "$(basename "$f") missing or not executable"; done
+[ -f "$PLUGIN_ROOT/resources/ledger-events.json" ] || fail "missing resources/ledger-events.json"
+lg() { (cd "$FX" && bash "$LEDGER" "$@") 2>&1; }
+# In-process writer (what route.py, the hooks and the shims use): lgpy STATE EVENT JSON SOURCE [ROUTE_ID] [ROUTE_MODE]
+lgpy() { (cd "$FX" && python3 -c 'import json, sys; sys.path.insert(0, sys.argv[1]); import ledger
+a = sys.argv[2:] + ["", ""]
+print(ledger.append(a[0], a[1], json.loads(a[2]), a[3], route_id=a[4] or None, route_mode=a[5] or None)["seq"])' "$PLUGIN_ROOT/scripts/lib" "$@") 2>&1; }
+HEAD_FX="$(git -C "$FX" rev-parse HEAD)"
+
+# 32. append validates against the event schema and stamps the chain fields
+LS="$WORK/ls"; mkdir -p "$LS"
+RX="r-0123456789ab-L5-1"
+lgpy "$LS" route '{"route_id":"'"$RX"'","status":"READY","origin":"plan","router":{"class":"docs","tier":"cheap","provider":"claude-session"},"line":5}' cli "" table >/dev/null || fail "a valid route row was refused"
+lgpy "$LS" spawn_request '{"role":"builder","model":"haiku"}' hook "$RX" >/dev/null || fail "a valid spawn_request row was refused"
+lgpy "$LS" worker_run '{"provider":"codex","role":"builder","exit_code":0,"usage":{"input":1000,"output":100}}' shim "$RX" >/dev/null || fail "a valid worker_run row was refused"
+lgpy "$LS" spawn '{"agent_id":"ag-1","role":"builder","usage":{"input":1000000},"resolved_model":"claude-sonnet-5-5"}' hook "$RX" >/dev/null || fail "a valid spawn row was refused"
+lgpy "$LS" verdict '{"role":"reviewer","verdict":"APPROVE"}' hook "$RX" >/dev/null || fail "a valid verdict row was refused"
+for ev in route spawn_request spawn worker_run verdict; do   # provenance rows never come through the CLI
+  if lg append "$ev" '{"role":"builder","model":"haiku","agent_id":"x","provider":"codex","exit_code":0,"verdict":"APPROVE","status":"READY","origin":"plan","router":{}}' --state "$LS" --source hook --route-id "$RX" >"$WORK/lg.out"; then
+    fail "ledger.sh append accepted provenance event $ev"; fi
+  grep -q "$ev is a provenance event" "$WORK/lg.out" || fail "CLI refusal of $ev does not say why: $(cat "$WORK/lg.out")"
+done
+if lgpy "$LS" verdict '{"role":"reviewer","verdict":"LGTM"}' hook "$RX" >"$WORK/lg.out"; then fail "an out-of-enum verdict was accepted"; fi
+grep -q 'is not one of' "$WORK/lg.out" || fail "out-of-enum verdict: $(cat "$WORK/lg.out")"
+lg append escalate '{"prior_route_id":"'"$RX"'","failures":1,"rung":"effort-up","action":"effort_up"}' --state "$LS" --source cli >/dev/null || fail "a valid escalate row was refused"
+for bad in "bogus|{}|hook|unknown event" "human_gate|{\"gate\":\"G12\",\"decision\":\"maybe\"}|cli|is not one of" \
+           "escalate|{\"prior_route_id\":\"x\",\"rung\":\"r\",\"action\":\"halt\"}|cli|missing required field failures" \
+           "hook_error|{\"hook\":\"x\",\"error\":\"y\"}|model|source must be one of" \
+           "hook_error|{\"hook\":\"x\",\"error\":\"y\",\"hash\":\"00\"}|hook|stamped by the ledger"; do
+  IFS='|' read -r ev js src want <<<"$bad"
+  if lg append "$ev" "$js" --state "$LS" --source "$src" --route-id "$RX" >"$WORK/lg.out"; then fail "ledger accepted an invalid $ev row"; fi
+  grep -q -- "$want" "$WORK/lg.out" || fail "invalid $ev row refused without naming '$want': $(cat "$WORK/lg.out")"
+done
+LJ="$LS/dispatch-shadow/ledger.jsonl"
+python3 - "$LJ" <<'PY' || fail "ledger rows lack the stamped fields or the chain links"
+import hashlib, json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert [r["event"] for r in rows] == ["route", "spawn_request", "worker_run", "spawn", "verdict", "escalate"], rows
+prev = "0" * 64
+for i, r in enumerate(rows):
+    for k in ("seq", "event", "ts", "source", "route_id", "head_sha", "route_mode", "prev_hash", "hash", "doctor_profile"):
+        assert k in r, (i, k)
+    assert r["seq"] == i and r["prev_hash"] == prev
+    body = json.dumps({k: v for k, v in r.items() if k != "hash"}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    assert hashlib.sha256(body.encode()).hexdigest() == r["hash"]
+    prev = r["hash"]
+assert rows[1]["route_id"] == "r-0123456789ab-L5-1" and rows[1]["source"] == "hook" and rows[2]["source"] == "shim"
+assert rows[0]["head_sha"] and len(rows[0]["head_sha"]) == 40
+PY
+lg verify --state "$LS" | grep -q '^ledger verify: OK — 6 rows' || fail "verify did not pass the sample chain"
+pass "ledger append: schema-validated (event, enums, required fields, source, no caller-supplied hash); CLI refuses provenance events; rows stamped and chained"
+
+# 33. verify names the first bad row: tampered, rehashed, deleted, reordered, truncated
+vbad() {  # $1 label, $2 python edit of the rows list, $3 expected stderr fragment
+  rm -rf "$WORK/lt"; cp -R "$LS" "$WORK/lt"
+  python3 -c '
+import hashlib, json, sys
+p = sys.argv[1]; rows = [json.loads(l) for l in open(p)]
+def rehash(r):
+    r["hash"] = hashlib.sha256(json.dumps({k: v for k, v in r.items() if k != "hash"}, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+'"$2"'
+open(p, "w").write("".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows))' "$WORK/lt/dispatch-shadow/ledger.jsonl"
+  if lg verify --state "$WORK/lt" >"$WORK/v.out"; then fail "verify passed a $1 ledger"; fi
+  grep -q -- "$3" "$WORK/v.out" || fail "verify did not name the $1 row: $(cat "$WORK/v.out")"
+}
+vbad "tampered" 'rows[2]["exit_code"] = 1' 'row 3 (seq 2): tampered'
+vbad "rewritten-and-rehashed" 'rows[2]["exit_code"] = 1; rehash(rows[2])' 'row 4 (seq 3): tampered — prev_hash'
+vbad "deleted" 'del rows[2]' 'row 3: deleted'
+vbad "reordered" 'rows[2], rows[3] = rows[3], rows[2]' 'row 3: reordered'
+vbad "truncated" 'rows.pop()' 'truncated: ledger.head records seq 5'
+vbad "rewritten last row" 'rows[5]["rung"] = "x"; rehash(rows[5])' 'does not match ledger.head'
+rm -rf "$WORK/lt"; cp -R "$LS" "$WORK/lt"; printf '{"seq": 6, "torn' >>"$WORK/lt/dispatch-shadow/ledger.jsonl"
+if lg verify --state "$WORK/lt" >"$WORK/v.out"; then fail "verify passed a torn last line"; fi
+grep -q 'row 7: incomplete last line' "$WORK/v.out" || fail "verify did not name the torn row: $(cat "$WORK/v.out")"
+if lg append hook_error '{"hook":"x","error":"y"}' --state "$WORK/lt" --source hook >/dev/null; then fail "append extended a torn ledger"; fi
+# append must not hide a truncation or a rewritten tail that verify catches
+for edit in 'rows.pop()' 'rows[5]["rung"] = "x"; rehash(rows[5])'; do
+  vbad "pre-append" "$edit" 'ledger.head'
+  if lg append hook_error '{"hook":"x","error":"y"}' --state "$WORK/lt" --source hook >"$WORK/a.out"; then fail "append extended a ledger whose head disagrees ($edit)"; fi
+  grep -q 'refusing to append' "$WORK/a.out" || fail "append refusal does not say why: $(cat "$WORK/a.out")"
+  if lg verify --state "$WORK/lt" >/dev/null; then fail "verify passed after a refused append ($edit)"; fi
+done
+rm -rf "$WORK/lt"; cp -R "$LS" "$WORK/lt"; rm "$WORK/lt/dispatch-shadow/ledger.head"
+if lg verify --state "$WORK/lt" >/dev/null; then fail "verify passed with ledger.head removed"; fi
+if lg append hook_error '{"hook":"x","error":"y"}' --state "$WORK/lt" --source hook >/dev/null; then fail "append extended a ledger without its head"; fi
+# the benign crash (row written, head not yet replaced) verifies and the next append repairs the head
+rm -rf "$WORK/lt"; cp -R "$LS" "$WORK/lt"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; json.dump({"seq": r[-2]["seq"], "hash": r[-2]["hash"]}, open(sys.argv[2], "w"))' "$WORK/lt/dispatch-shadow/ledger.jsonl" "$WORK/lt/dispatch-shadow/ledger.head"
+lg verify --state "$WORK/lt" >/dev/null || fail "verify failed the benign head-one-behind crash state"
+lg append hook_error '{"hook":"x","error":"y"}' --state "$WORK/lt" --source hook >/dev/null || fail "append refused the benign crash state"
+python3 -c 'import json,sys; h=json.load(open(sys.argv[1])); assert h["seq"]==6' "$WORK/lt/dispatch-shadow/ledger.head" || fail "append did not repair the head"
+lg verify --state "$WORK/lt" | grep -q 'OK — 7 rows, chain intact$' || fail "verify after repair"
+pass "verify: fails tampered, rehashed, deleted, reordered, truncated, torn and head-less ledgers; append refuses them too; a crash between row and head is repaired"
+
+# 34. route.sh plan (not --dry-run) appended verifiable route rows; evidence semantics (spec §5.3 G)
+lg verify --state "$SD" >/dev/null || fail "the fixture plan's ledger (route + escalate rows from route.sh) does not verify: $(lg verify --state "$SD")"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; ev=[x["event"] for x in r]; assert ev.count("route")>=2 and ev.count("escalate")==3, ev; assert all(x["source"]=="cli" for x in r); assert r[0]["route_mode"]=="table" and r[0]["head_sha"]==sys.argv[2], r[0]' \
+  "$SD/dispatch-shadow/ledger.jsonl" "$HEAD_FX" || fail "route.sh/escalate rows are not stamped as expected"
+if lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" >"$WORK/e.out"; then fail "evidence passed with a route row but no spawn row"; fi
+grep -q 'no spawn_request/spawn/worker_run row' "$WORK/e.out" || fail "evidence without spawns: $(cat "$WORK/e.out")"
+lgpy "$SD" spawn_request '{"role":"builder","model":"sonnet"}' hook "r-000000000000-L${L_A}-1" >/dev/null
+if lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" >/dev/null; then fail "evidence accepted a spawn row for another route"; fi
+lgpy "$SD" spawn_request '{"role":"builder","model":"sonnet"}' cli "$RID" >/dev/null
+if lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" >/dev/null; then fail "evidence accepted a spawn row written with source cli"; fi
+lgpy "$SD" spawn_request '{"role":"builder","model":"sonnet"}' hook "$RID" >/dev/null
+lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" | grep -q '^ledger evidence: OK' || fail "evidence refused route + spawn rows at HEAD: $(lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX")"
+if lg evidence --state "$SD" --line "$L_B" --head "$HEAD_FX" >"$WORK/e.out"; then fail "evidence passed for a line with no route row"; fi
+grep -q "no READY route row for plan line $L_B" "$WORK/e.out" || fail "evidence for an unrouted line: $(cat "$WORK/e.out")"
+PH="$(basename "$SD")"; RT='{"status":"READY","origin":"plan","router":{}'
+lgpy "$SD" route "$RT"',"line":'"$L_B"'}' cli "r-$PH-L$L_OV-1" table >/dev/null; lgpy "$SD" spawn '{"agent_id":"a9","role":"builder"}' hook "r-$PH-L$L_OV-1" >/dev/null
+for ln in "$L_B" "$L_OV"; do
+  if lg evidence --state "$SD" --line "$ln" --head "$HEAD_FX" >/dev/null; then fail "evidence accepted a route whose id and line field disagree (line $ln)"; fi
+done
+lgpy "$SD" route "$RT"'}' cli "r-000000000000-L$L_G-1" table >/dev/null; lgpy "$SD" spawn '{"agent_id":"a8","role":"builder"}' hook "r-000000000000-L$L_G-1" >/dev/null
+if lg evidence --state "$SD" --line "$L_G" --head "$HEAD_FX" >/dev/null; then fail "evidence accepted another plan's route"; fi
+lg evidence --state "$SD" --line "$L_G" --head "$HEAD_FX" --plan-hash 000000000000 >/dev/null || fail "evidence --plan-hash did not select that plan"
+if lg evidence --state "$SD" --line "$L_A" --head "$HEAD_FX" --plan-hash 000000000000 >/dev/null; then fail "evidence --plan-hash for another plan accepted this plan's route"; fi
+git -C "$FX" commit -q --allow-empty -m next; HEAD2="$(git -C "$FX" rev-parse HEAD)"
+lg evidence --state "$SD" --line "$L_A" --head "$HEAD2" >/dev/null || fail "evidence refused a HEAD that descends from the route's head"
+git -C "$FX" checkout -q --orphan side; git -C "$FX" commit -q --allow-empty -m side; HSIDE="$(git -C "$FX" rev-parse HEAD)"; git -C "$FX" checkout -q main
+if lg evidence --state "$SD" --line "$L_A" --head "$HSIDE" >"$WORK/e.out"; then fail "evidence passed for a HEAD whose history lacks the route's head"; fi
+grep -q "on HEAD's history" "$WORK/e.out" || fail "evidence off-history: $(cat "$WORK/e.out")"
+rm -rf "$WORK/lt"; cp -R "$SD" "$WORK/lt"; sed -i.bak '1s/"table"/"decision"/' "$WORK/lt/dispatch-shadow/ledger.jsonl"
+if lg evidence --state "$WORK/lt" --plan-hash "$PH" --line "$L_A" --head "$HEAD_FX" >"$WORK/e.out"; then fail "evidence passed on a tampered chain"; fi
+grep -q 'chain does not verify' "$WORK/e.out" || fail "evidence on a tampered chain: $(cat "$WORK/e.out")"
+[ "$(lg evidence --state "$SD" --line x --head "$HEAD_FX" >/dev/null; echo $?)" = 2 ] || fail "evidence --line x was not a usage error"
+grep -qiF 'at least one `spawn_request`, `spawn` or `worker_run` row written with source `hook` or `shim` carries' "$PLUGIN_ROOT/README.md" || fail "README does not define ledger evidence"
+for f in "$PLUGIN_ROOT/README.md" "$ADR"; do grep -q 'not proof against a determined orchestrator' "$f" || fail "$(basename "$f") does not state the evidence limit"; done
+pass "route.sh appends verifiable route/escalate rows; evidence = chain + this plan's READY route for the line (id and line agree) on HEAD's history + a hook/shim spawn row for it"
+
+# 35. enforcement switch: <state>/dispatch/ with APEX_DISPATCH_ENFORCE=1 or hooks/subagent-stop.sh (shipped: the default); =0 opts out;
+#     escalate --state; iterate.sh fails closed on BUSY; tier-c-floor tags
+[ ! -e "$SD/dispatch" ] && [ -d "$SD/dispatch-shadow" ] || fail "route.sh created <state>/dispatch/ without enforcement"
+rm -rf "$FX/.dev-plan-state/ACTIVE"
+O="$(APEX_DISPATCH_ENFORCE=1 rt adhoc --tags docs --acceptance 'npm test')"
+case "$(val ROUTE_FILE "$O")" in "$FX"/.dev-plan-state/adhoc/*/dispatch/active-route.json) ;; *) fail "APEX_DISPATCH_ENFORCE=1 did not write <state>/dispatch/: $O";; esac
+[ "$(val ROUTE_ENFORCED "$O")" = yes ] || fail "ROUTE_ENFORCED is not yes under APEX_DISPATCH_ENFORCE=1"
+lg verify --state "$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")" >/dev/null || fail "the enforced ad-hoc ledger does not verify"
+rm -rf "$FX/.dev-plan-state/ACTIVE"
+mkdir -p "$WORK/enf"; printf '{"worktree_path": "%s"}\n' "$FX" >"$WORK/enf/checkpoint.json"
+APEX_DISPATCH_ENFORCE=1 lg append hook_advisory '{"hook":"x","advisory":"y"}' --state "$WORK/enf" --source hook >/dev/null || fail "enforced append failed"
+[ -d "$WORK/enf/dispatch" ] && python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["dispatch_enforced"] is True' "$WORK/enf/checkpoint.json" \
+  || fail "creating <state>/dispatch/ did not record dispatch_enforced in checkpoint.json"
+mkdir -p "$WORK/enf2"; printf '{"worktree_path": "%s"}\n' "$FX" >"$WORK/enf2/checkpoint.json"
+APEX_DISPATCH_ENFORCE=1 "$PLUGIN_ROOT/scripts/doctor.sh" --state "$WORK/enf2" >/dev/null 2>&1 || true
+[ -d "$WORK/enf2/dispatch" ] && python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["dispatch_enforced"] is True' "$WORK/enf2/checkpoint.json" \
+  || fail "doctor.sh created <state>/dispatch/ without recording dispatch_enforced"
+for f in checkpoint.sh land.sh; do grep -q 'dispatch_enforced' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/$f" || fail "$f does not refuse a dispatch-enforced run whose dispatch/ is gone"; done
+rm -rf "$WORK/copy3"; mkdir -p "$WORK/copy3/hooks"; touch "$WORK/copy3/hooks/subagent-stop.sh"
+APEX_DISPATCH_ENFORCE= python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger; assert ledger.enforcing(sys.argv[2]) and not ledger.enforcing(sys.argv[3])' \
+  "$PLUGIN_ROOT/scripts/lib" "$WORK/copy3" "$WORK" || fail "enforcing() does not follow hooks/subagent-stop.sh"
+APEX_DISPATCH_ENFORCE= python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger; assert ledger.enforcing()' "$PLUGIN_ROOT/scripts/lib" \
+  || fail "this plugin ships hooks/subagent-stop.sh but enforcing() is off by default"
+APEX_DISPATCH_ENFORCE=0 python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger; assert not ledger.enforcing(sys.argv[2])' "$PLUGIN_ROOT/scripts/lib" "$WORK/copy3" \
+  || fail "APEX_DISPATCH_ENFORCE=0 did not keep the shadow directory"
+O="$(cd / && bash "$ROUTE" escalate "$RID" --state "$SD" 2>&1)"
+has '^RUNG: ' "$O" && has "^PRIOR_ROUTE: $RID" "$O" || fail "route.sh escalate --state did not use the given state dir: $O"
+grep -q 'escalate "$RID" --state "$STATE_DIR"' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/checkpoint.sh" || fail "checkpoint.sh fail does not pass --state to route.sh escalate"
+grep -q 'BUSY) *echo "STATUS: BUSY"; exit 0' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/iterate.sh" || fail "iterate.sh has no BUSY arm for ROUTE_STATUS"
+printf -- '- [ ] **Phase 4.1** [auth] login flow\n  - Acceptance: `pytest -q`\n  - Route: fanout=lanes\n  - Paths: src/auth/**\n' >>"$FX/plans/p.md"; L_AUTH="$(ln_of 'Phase 4.1')"
+O="$(rt plan plans/p.md --line "$L_AUTH" --dry-run)"
+[ "$(val ROUTE_CLASS "$O")" = security ] && [ "$(val ROUTE_HUMAN_GATE "$O")" = G12 ] || fail "[auth] did not hit the tier-c-floor: $O"
+[ "$(val ROUTE_FANOUT "$(rt plan plans/p.md --line "$L_A" --lanes "$L_A,$L_AUTH" --dry-run)")" = single ] || fail "an [auth] task was accepted as a lane"
+python3 -c 'import json,sys; r=[x for x in json.load(open(sys.argv[1]))["hard_rules"] if x["id"]=="tier-c-floor"][0]; assert {"auth","pii","money","billing"} <= set(r["when"]["tags_any"])' "$PLUGIN_ROOT/resources/compiled/policy.json" || fail "tier-c-floor lacks auth/pii/money/billing"
+grep -q 'APEX_DISPATCH_ENFORCE' "$PLUGIN_ROOT/README.md" && grep -q 'APEX_DISPATCH_ENFORCE' "$ADR" || fail "README/ADR do not document the enforcement switch"
+pass "enforcement switch: on by default (hooks/subagent-stop.sh ships) or with APEX_DISPATCH_ENFORCE=1; =0 keeps dispatch-shadow/; escalate --state; iterate BUSY arm; [auth] → tier-c-floor"
+
+# 36. export-trace writes apex-agent-observability's exact line shape; export writes task summaries
+lg export-trace --state "$LS" --out "$WORK/trace.jsonl" >/dev/null || fail "export-trace failed"
+python3 - "$WORK/trace.jsonl" <<'PY' || fail "export-trace lines do not match the AgentTrace shape"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 6
+for r in rows:
+    assert list(r) == ["ts", "event", "session", "subagent_id", "parent_id", "agent_type", "agent_transcript_path",
+                       "tool", "token_estimate", "edge"], list(r)
+    assert isinstance(r["token_estimate"], int)
+ev = [r["event"] for r in rows]
+assert ev[1] == "PreToolUse" and ev[3] == "SubagentStart" and rows[3]["edge"] == "r-0123456789ab-L5-1->ag-1"
+PY
+lg export --state "$LS" --out "$WORK/summary.jsonl" >/dev/null || fail "export failed"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; assert r[0]["kind"]=="ledger_head" and r[1]["task"]==5 and r[1]["spawns"]==3 and r[1]["verdicts"]==["APPROVE"]' "$WORK/summary.jsonl" || fail "export summary rows wrong"
+if lg export-trace --state "$WORK/lt" >/dev/null 2>&1; then fail "export-trace exported a tampered chain"; fi
+pass "export-trace: AgentTrace line shape (ts,event,session,subagent_id,parent_id,agent_type,agent_transcript_path,tool,token_estimate,edge); export: per-task summary"
+
+# 37. report.sh summarises the sample: routes, spawns, verdicts, USD from real usage x price, unverified bucket
+O="$(bash "$REPORT" --state "$LS")"
+has '^REPORT_CHAIN: OK' "$O" && has '^REPORT_ROUTES_BY_CLASS: docs=1' "$O" && has '^REPORT_SPAWNS: spawn=1, spawn_request=1, worker_run=1' "$O" \
+  && has '^REPORT_VERDICTS: APPROVE=1' "$O" && has '^REPORT_ESCALATIONS: effort-up=1' "$O" || fail "report.sh summary: $O"
+has '^REPORT_USD_ESTIMATED: 3.0000 (1 priced rows' "$O" || fail "report.sh USD is not real usage x the sonnet price: $O"
+has '^REPORT_UNVERIFIED: 1 row' "$O" || fail "report.sh did not bucket the usage row without a resolved model: $O"
+bash "$REPORT" --state "$LS" --json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["unverified"]["count"]==1 and d["routes"]["by_mode"]=={"table":1}' || fail "report.sh --json"
+has '^REPORT_ROUTES: ' "$(cd "$FX" && bash "$REPORT" --plan plans/p.md)" || fail "report.sh --plan did not resolve the plan's state"
+has '^REPORT_CHAIN: BROKEN' "$(bash "$REPORT" --state "$WORK/lt")" || fail "report.sh did not flag a broken chain"
+[ "$(bash "$REPORT" >/dev/null 2>&1; echo $?)" = 2 ] || fail "report.sh without --state/--plan is not a usage error"
+pass "report.sh: routes by class/tier/provider/mode, spawns, verdicts, escalations, USD from usage x price, unverified bucket, --json, --plan"
+
+# 38. doctor.sh writes doctor.json with a status per check; claude absent/old → fail (JSON still written)
+mkdir -p "$WORK/fakebin"; printf '#!/bin/sh\n[ "$1" = --version ] && echo "2.1.300 (Claude Code)"; exit 0\n' >"$WORK/fakebin/claude"; chmod +x "$WORK/fakebin/claude"
+printf '#!/bin/sh\necho "2.1.100 (Claude Code)"\n' >"$WORK/fakebin/claude-old"; chmod +x "$WORK/fakebin/claude-old"
+# A stub codex shadows any real one (doctor runs --version and the forced flags with --help);
+# no provider key and empty config dirs keep the auth facts independent of this machine.
+printf '#!/bin/sh\ncase "$*" in *--version*) echo "codex-cli 0.160.0" ;; *--help*) echo "Usage: codex exec [OPTIONS]" ;; *) exit 1 ;; esac\n' >"$WORK/fakebin/codex"; chmod +x "$WORK/fakebin/codex"
+mkdir -p "$WORK/nocfg"
+doc() { (cd "$FX" && env -u CLAUDE_CODE_SUBAGENT_MODEL -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
+  PATH="$WORK/fakebin:$PATH" CLAUDE_CONFIG_DIR="$WORK/nocfg" CODEX_HOME="$WORK/nocfg" "$@" bash "$DOCTOR" --state "$WORK/ds" --repo "$FX") >"$WORK/doc.out" 2>&1; }
+dj() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); c={x["id"]:x["status"] for x in d["checks"]}; exec(sys.argv[2])' "$WORK/ds/dispatch-shadow/doctor.json" "$1"; }
+RC=0; doc APEX_CLAUDE_BIN="$WORK/fakebin/claude" || RC=$?
+[ "$RC" = 0 ] || fail "doctor.sh with claude 2.1.300 exited $RC: $(cat "$WORK/doc.out")"
+dj '
+assert d["status"] in ("ok", "warn") and c["claude-binary"] == "ok" and d["claude_version"] == "2.1.300", d
+assert all(x["status"] in ("ok", "warn", "fail", "unverified", "skipped") and x["detail"] for x in d["checks"])
+for k in ("scope-loop-sibling", "compile-check", "subagent-model-env", "settings-snippet", "provider-forced-flags-probe",
+          "probe:agent-id-in-tool-stdin", "probe:updatedinput-model", "installed-version", "compiled-version"):
+    assert k in c, k
+assert c["scope-loop-sibling"] == "ok" and c["compile-check"] == "ok" and c["subagent-model-env"] == "ok"
+assert c["settings-snippet"] == "warn" and c["probe:agent-id-in-tool-stdin"] == "unverified" and c["provider-forced-flags-probe"] == "ok"
+cx = d["providers"]["codex"]
+assert cx["available"] and cx["shim"] and cx["verified"] and cx["version"] == "0.160.0" and cx["auth"] == "none" and cx["auth_ok"] is False and cx["flags_ok"], cx
+assert d["claude_p_auth"] == "unavailable" and d["second_families"] == [] and d["tier_c_diversity"].startswith("warn"), d
+assert d["profile"] and d["providers"]["claude-session"]["available"] is True
+' || fail "doctor.json (claude present) wrong: $(cat "$WORK/doc.out")"
+has '^DOCTOR_FILE: .*/dispatch-shadow/doctor.json' "$(cat "$WORK/doc.out")" || fail "doctor did not print DOCTOR_FILE"
+[ ! -e "$WORK/ds/dispatch" ] || fail "doctor.sh created <state>/dispatch/ without enforcement"
+RC=0; doc APEX_CLAUDE_BIN="$WORK/no-such-claude" || RC=$?
+[ "$RC" = 1 ] && dj 'assert d["status"] == "fail" and c["claude-binary"] == "fail" and d["claude_version"] is None' || fail "doctor.sh without claude: rc=$RC $(cat "$WORK/doc.out")"
+RC=0; doc APEX_CLAUDE_BIN="$WORK/fakebin/claude-old" || RC=$?
+[ "$RC" = 1 ] && dj 'assert c["claude-binary"] == "fail" and d["claude_version"] == "2.1.100"' || fail "doctor.sh accepted claude 2.1.100"
+RC=0; doc APEX_CLAUDE_BIN="$WORK/fakebin/claude" CLAUDE_CODE_SUBAGENT_MODEL=haiku || RC=$?
+[ "$RC" = 1 ] && dj 'assert c["subagent-model-env"] == "fail"' || fail "doctor.sh did not fail on CLAUDE_CODE_SUBAGENT_MODEL"
+mkdir -p "$FX/.claude"; python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); json.dump({"permissions": s["permissions"]}, open(sys.argv[2], "w"))' "$PLUGIN_ROOT/resources/settings-snippet.json" "$FX/.claude/settings.json"
+doc APEX_CLAUDE_BIN="$WORK/fakebin/claude" || true
+dj 'assert c["settings-snippet"] == "ok"' || fail "doctor.sh did not see the applied settings snippet"
+[ "$(bash "$DOCTOR" --bogus >/dev/null 2>&1; echo $?)" = 2 ] || fail "doctor.sh --bogus is not a usage error"
+pass "doctor.sh: doctor.json with per-check status; claude absent/old and CLAUDE_CODE_SUBAGENT_MODEL fail; snippet warn/ok; live probes unverified"
+
+# --- Phase 2.5: skills and commands ------------------------------------------
+
+# 39. both skills exist: name is unquoted kebab-case matching the directory; allowed-tools is an explicit list
+for skill in dispatch-route dispatch-worker; do
+  SK="$PLUGIN_ROOT/skills/$skill/SKILL.md"
+  [ -f "$SK" ] || fail "missing skill: $SK"
+  [ "$(head -1 "$SK")" = "---" ] || fail "$skill SKILL.md has no frontmatter"
+  fm="$(awk '/^---$/{c++; next} c==1' "$SK")"
+  name_line="$(grep -m1 '^name:' <<<"$fm" || true)"
+  [[ "$name_line" =~ ^name:[[:space:]]+$skill[[:space:]]*$ ]] || fail "$skill SKILL.md name: must be unquoted kebab-case '$skill' (got: $name_line)"
+  grep -q '^description:[[:space:]]*[^[:space:]]' <<<"$fm" || fail "$skill SKILL.md missing description:"
+  tools_line="$(grep -m1 '^allowed-tools:' <<<"$fm" || true)"
+  [ -n "$tools_line" ] || fail "$skill SKILL.md missing allowed-tools:"
+  if grep -qE '\*|mcp__' <<<"$tools_line"; then fail "$skill SKILL.md allowed-tools has a wildcard: $tools_line"; fi
+  [[ "$tools_line" =~ ^allowed-tools:[[:space:]]+[A-Za-z][A-Za-z,[:space:]]*$ ]] || fail "$skill SKILL.md allowed-tools is not an explicit tool list: $tools_line"
+done
+for s in "$PLUGIN_ROOT"/skills/*/SKILL.md; do
+  if grep -qE '^allowed-tools:.*(\*|mcp__)' "$s"; then fail "$s has a wildcard in allowed-tools"; fi
+done
+pass "skills dispatch-route and dispatch-worker: kebab-case name matching dir, description, explicit allowed-tools without wildcards"
+
+# 40. all six commands exist with name: matching the filename and a description:
+for cmd in route run done report doctor compile; do
+  C="$PLUGIN_ROOT/commands/$cmd.md"
+  [ -f "$C" ] || fail "missing command: $C"
+  [ "$(head -1 "$C")" = "---" ] || fail "$cmd command has no frontmatter"
+  fm="$(awk '/^---$/{c++; next} c==1' "$C")"
+  grep -qE "^name:[[:space:]]+$cmd[[:space:]]*$" <<<"$fm" || fail "$cmd command frontmatter name: missing or not '$cmd'"
+  grep -q '^description:[[:space:]]*[^[:space:]]' <<<"$fm" || fail "$cmd command missing description:"
+  grep -q '\$ARGUMENTS' "$C" || fail "$cmd command never uses \$ARGUMENTS"
+done
+pass "commands route/run/done/report/doctor/compile: name matches filename, description, \$ARGUMENTS"
+
+# 41. every script path a command or skill references exists: ${CLAUDE_PLUGIN_ROOT}/<path> and $D/<x>.sh
+#     in this plugin, $S/<x>.sh in the sibling apex-scope-loop's apex-execute scripts
+SL_SCRIPTS="$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts"
+python3 - "$PLUGIN_ROOT" "$SL_SCRIPTS" "$PLUGIN_ROOT"/commands/*.md "$PLUGIN_ROOT"/skills/*/SKILL.md <<'PY' || fail "a command or skill references a script path that does not exist"
+import os, re, sys
+root, sl, files = sys.argv[1], sys.argv[2], sys.argv[3:]
+bad, seen = [], 0
+for f in files:
+    t = open(f).read()
+    refs = [(os.path.join(root, p), p) for p in
+            re.findall(r'\$\{CLAUDE_PLUGIN_ROOT\}/((?:scripts|resources|bin|hooks|agents)/[A-Za-z0-9_./-]*[A-Za-z0-9_])', t)]
+    refs += [(os.path.join(root, "scripts", p), "$D/" + p) for p in re.findall(r'\$D/([A-Za-z0-9_.-]+\.sh)', t)]
+    refs += [(os.path.join(sl, p), "$S/" + p) for p in re.findall(r'\$S/([A-Za-z0-9_.-]+\.sh)', t)]
+    for path, ref in refs:
+        seen += 1
+        if not os.path.exists(path):
+            bad.append("%s: %s" % (os.path.relpath(f, root), ref))
+for b in bad:
+    print("smoke: missing referenced path " + b, file=sys.stderr)
+if seen == 0:
+    print("smoke: no script references found in commands/skills", file=sys.stderr)
+sys.exit(1 if bad or seen == 0 else 0)
+PY
+for cmd in route report doctor compile; do
+  grep -qF "\${CLAUDE_PLUGIN_ROOT}/scripts/$cmd.sh" "$PLUGIN_ROOT/commands/$cmd.md" || fail "commands/$cmd.md does not call \${CLAUDE_PLUGIN_ROOT}/scripts/$cmd.sh"
+done
+pass "every referenced script path exists (plugin \${CLAUDE_PLUGIN_ROOT}/\$D paths, sibling apex-scope-loop \$S paths); route/report/doctor/compile call their scripts"
+
+# --- Phase 3.1: PreToolUse hooks (pre-agent, pre-bash, pre-edit, pre-mcp) ---
+HOOKS=(pre-agent pre-bash pre-edit pre-mcp)
+HOOKS32=(post-agent post-bash-prune subagent-start subagent-stop stop-gate)
+# Fixture with two disjoint lanes; route.sh takes the ACTIVE lock (stage BUILD) and writes active-route.json.
+HX="$WORK/hx"; mkdir -p "$HX/plans"; git init -q -b main "$HX"
+cat >"$HX/plans/p.md" <<'PLAN'
+# Hook fixture
+
+- [ ] **Phase 1.1** [mechanical] lane a
+  - Acceptance: `pytest tests/a -q`
+  - Route: fanout=lanes
+  - Paths: src/a/**
+
+- [ ] **Phase 1.2** [mechanical] lane b
+  - Acceptance: `pytest tests/b -q`
+  - Route: fanout=lanes
+  - Paths: src/b/**
+PLAN
+git -C "$HX" add -A; git -C "$HX" commit -qm hx
+HL_A="$(grep -n 'Phase 1.1' "$HX/plans/p.md" | cut -d: -f1)"; HL_B="$(grep -n 'Phase 1.2' "$HX/plans/p.md" | cut -d: -f1)"
+# hk HOOK JSON -> the hook's stdout (stderr dropped); one JSON object or the check fails
+hk() { (cd "$HX" && printf '%s' "$2" | bash "$PLUGIN_ROOT/hooks/$1.sh" 2>/dev/null); }
+pl() { python3 -c 'import json, sys
+k, cwd, a = sys.argv[1], sys.argv[2], sys.argv[3:]
+if k == "bash": d = {"tool_name": "Bash", "tool_input": {"command": a[0]}}
+elif k == "edit": d = {"tool_name": "Write", "tool_input": {"file_path": a[0], "content": "x"}}
+elif k == "mcp": d = {"tool_name": a[0], "tool_input": {}}
+else:
+    ti = {"subagent_type": a[0], "prompt": "p"}
+    if a[1]: ti["model"] = a[1]
+    d = {"tool_name": "Agent", "tool_input": ti}
+for kv in a[2 if k == "agent" else 1:]:
+    key, _, v = kv.partition("=")
+    d[key] = v
+d.update({"session_id": "smoke", "tool_use_id": "t1", "hook_event_name": "PreToolUse", "cwd": cwd})
+print(json.dumps(d))' "$@"; }
+one() { python3 -c 'import json, sys
+s = sys.stdin.read()
+assert s.endswith("\n") and s.count("\n") == 1, repr(s)
+o = json.loads(s)
+assert isinstance(o, dict)
+h = o.get("hookSpecificOutput")
+print("{}" if not o else ("context" if "permissionDecision" not in h else h["permissionDecision"] + (" updated" if "updatedInput" in h else "")))'; }
+dec() { hk "$1" "$2" | one; }
+is_deny() { [ "$(dec "$1" "$2")" = deny ] || fail "$3"; }
+is_allow() { [ "$(dec "$1" "$2")" = "{}" ] || fail "$3"; }
+
+# 42. all nine hooks exist, executable, `bash -n` clean; hooks.json == compile output (events, matchers,
+#     ${CLAUDE_PLUGIN_ROOT} paths, timeout 10)
+for h in "${HOOKS[@]}" "${HOOKS32[@]}"; do
+  f="$PLUGIN_ROOT/hooks/$h.sh"
+  [ -x "$f" ] || fail "hooks/$h.sh missing or not executable"
+  bash -n "$f" || fail "hooks/$h.sh does not parse"
+done
+bash -n "$PLUGIN_ROOT/scripts/lib/hook-common.bash" || fail "scripts/lib/hook-common.bash does not parse"
+python3 - "$PLUGIN_ROOT" <<'PY' || fail "hooks.json does not register the hooks exactly as compile.py renders them"
+import json, os, sys
+root = sys.argv[1]
+sys.path.insert(0, os.path.join(root, "scripts", "lib"))
+import compile as c
+want, _ = c.render_hooks(root)
+have = json.load(open(os.path.join(root, "hooks", "hooks.json")))
+assert have == want, "hooks.json differs from compile.py's rendering"
+cmd = lambda s: {"type": "command", "command": 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/%s.sh"' % s, "timeout": 10}
+pre = {g["matcher"]: g["hooks"][0] for g in have["hooks"]["PreToolUse"]}
+assert pre == {m: cmd(s) for m, s in [("Agent|Task", "pre-agent"), ("Bash", "pre-bash"),
+               ("Edit|Write|MultiEdit|NotebookEdit", "pre-edit"), ("^mcp__", "pre-mcp")]}, pre
+post = {g["matcher"]: g["hooks"][0] for g in have["hooks"]["PostToolUse"]}
+assert post == {"Agent|Task": cmd("post-agent"), "Bash": cmd("post-bash-prune")}, post
+assert have["hooks"]["PostToolUseFailure"] == [{"matcher": "Agent|Task", "hooks": [cmd("post-agent")]}]
+for ev, s in (("SubagentStart", "subagent-start"), ("SubagentStop", "subagent-stop")):
+    assert have["hooks"][ev] == [{"matcher": "^(apex-dispatch|apex-scope-loop):", "hooks": [cmd(s)]}], ev
+assert have["hooks"]["Stop"] == [{"hooks": [cmd("stop-gate")]}]
+assert sorted(have["hooks"]) == ["PostToolUse", "PostToolUseFailure", "PreToolUse", "Stop", "SubagentStart", "SubagentStop"]
+PY
+pass "nine hooks: executable, bash -n clean, registered (events, matchers, \${CLAUDE_PLUGIN_ROOT}, timeout 10) == compile output"
+
+# 43. without an ACTIVE lock every hook is a no-op: exactly one JSON object, {} (deny-worthy input and garbage included)
+[ ! -e "$HX/.dev-plan-state" ] || fail "hook fixture already has state"
+for h in "${HOOKS[@]}"; do
+  [ "$(dec "$h" 'not json{')" = "{}" ] || fail "$h without a lock: garbage stdin did not give {}"
+  [ "$(dec "$h" '')" = "{}" ] || fail "$h without a lock: empty stdin did not give {}"
+done
+is_allow pre-bash "$(pl bash "$HX" 'APEX_GIBSON=0 bash x')" "pre-bash acted without an ACTIVE lock"
+is_allow pre-agent "$(pl agent "$HX" Explore opus)" "pre-agent acted without an ACTIVE lock"
+is_allow pre-edit "$(pl edit "$HX" .dev-plan-state/x)" "pre-edit acted without an ACTIVE lock"
+[ ! -e "$HX/.dev-plan-state" ] || fail "a hook wrote state without an ACTIVE lock"
+pass "no ACTIVE lock: every hook prints exactly one JSON object, {} (garbage, empty and deny-worthy input alike)"
+
+# Take the lock: a READY lanes route for 1.1 + 1.2.
+O="$(cd "$HX" && bash "$ROUTE" plan plans/p.md --line "$HL_A" --lanes "$HL_A,$HL_B" 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_FANOUT "$O")" = "lanes:2" ] || fail "hook fixture route is not a READY lanes route: $O"
+HRID="$(val ROUTE_ID "$O")"; HSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"
+OWNER="$HX/.dev-plan-state/ACTIVE/owner.json"
+[ -f "$OWNER" ] || fail "route.sh took no ACTIVE lock"
+stage() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); print(o["stage"]) if len(sys.argv) == 2 else (o.update(stage=sys.argv[2]), json.dump(o, open(sys.argv[1], "w")))' "$OWNER" "$@"; }
+rows() { python3 -c 'import json, sys
+r = [json.loads(l) for l in open(sys.argv[1])]
+print(sum(1 for x in r if x["event"] == sys.argv[2] and x.get("source") == "hook" and all(str(x.get(k)) == v for k, v in (a.split("=", 1) for a in sys.argv[3:]))))' "$HSD/dispatch-shadow/ledger.jsonl" "$@"; }
+
+# 44. under the lock: garbage stdin fails open ({} + stderr advisory + hook_error row); one JSON object for every hook
+for h in "${HOOKS[@]}"; do
+  [ "$(dec "$h" 'not json{')" = "{}" ] || fail "$h under a lock: garbage stdin did not fail open with {}"
+  ERR="$(cd "$HX" && printf 'not json{' | bash "$PLUGIN_ROOT/hooks/$h.sh" 2>&1 >/dev/null)"
+  grep -q 'failing open' <<<"$ERR" || fail "$h: no stderr advisory on unparseable stdin"
+done
+[ "$(rows hook_error)" -ge 4 ] || fail "unparseable stdin wrote no hook_error ledger rows"
+for h in "${HOOKS[@]}"; do
+  for k in agent bash edit mcp; do
+    case "$k" in agent) J="$(pl agent "$HX" Explore sonnet)" ;; bash) J="$(pl bash "$HX" 'git status')" ;;
+                 edit) J="$(pl edit "$HX" src/a/x.py)" ;; mcp) J="$(pl mcp "$HX" mcp__srv__tool)" ;; esac
+    hk "$h" "$J" | one >/dev/null || fail "$h printed other than exactly one JSON object for a $k payload"
+  done
+done
+pass "ACTIVE lock: unparseable stdin fails open ({} + advisory + hook_error row); every hook prints exactly one JSON object"
+
+# 45. pre-agent: roster, model pin, depth 1, HALT, reviewer gate binding -> stage REVIEW, stage lock, spawn budget
+is_deny pre-agent "$(pl agent "$HX" Explore sonnet)" "a subagent_type outside the roster was allowed"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:tester sonnet)" "apex-dispatch:tester (not on the mechanical roster) was allowed"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:builder opus)" "model opus on a sonnet route was allowed (deny-on-mismatch)"
+hk pre-agent "$(pl agent "$HX" apex-dispatch:builder opus)" | grep -q 'ROUTE_MODEL sonnet' || fail "the model denial does not name ROUTE_MODEL"
+U="$(hk pre-agent "$(pl agent "$HX" apex-dispatch:builder '')")"
+python3 -c 'import json, sys; h = json.loads(sys.argv[1])["hookSpecificOutput"]; assert h["permissionDecision"] == "allow" and h["updatedInput"] == {"subagent_type": "apex-dispatch:builder", "prompt": "p", "model": "sonnet"}' "$U" \
+  || fail "a spawn without model was not pinned to the route's model with a full updatedInput: $U"
+is_allow pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet)" "a roster builder at the route's model was denied"
+[ "$(rows spawn_request route_id="$HRID" role=builder)" = 2 ] || fail "allowed spawns did not write hook-sourced spawn_request rows"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet agent_id=a1 agent_type=apex-dispatch:builder)" "a nested spawn from a builder was allowed"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet agent_type=apex-dispatch:builder)" "a spawn from a builder worker session was allowed"
+(cd "$HX" && APEX_HALT=1 bash "$PLUGIN_ROOT/hooks/pre-agent.sh" <<<"$(pl agent "$HX" apex-dispatch:builder sonnet)" 2>/dev/null) | grep -q '"deny"' || fail "a spawn under APEX_HALT=1 was allowed"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:reviewer '')" "a reviewer spawn without a gate result was allowed"
+mkdir -p "$HSD/gate"
+printf '{"result":"PASS","head_sha":"%s"}\n' 0000000000000000000000000000000000000000 >"$HSD/gate/last.json"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:reviewer '')" "a reviewer spawn on a gate bound to another head was allowed"
+printf '{"result":"PASS","head_sha":"%s"}\n' "$(git -C "$HX" rev-parse HEAD)" >"$HSD/gate/last.json"
+[ "$(stage)" = BUILD ] || fail "stage is not BUILD before review"
+is_allow pre-agent "$(pl agent "$HX" apex-dispatch:reviewer '')" "a reviewer spawn on a gate bound to HEAD was denied"
+[ "$(stage)" = REVIEW ] || fail "allowing a reviewer spawn did not set stage REVIEW"
+is_deny pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet)" "a builder spawn during REVIEW was allowed"
+stage BUILD
+is_allow pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet)" "the third builder spawn (budget 4) was denied"
+is_allow pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet)" "the fourth builder spawn (budget 4) was denied"
+hk pre-agent "$(pl agent "$HX" apex-dispatch:builder sonnet)" | grep -q 'spawn budget' || fail "a fifth builder spawn over ROUTE_BUDGET_SPAWNS=4 was not denied"
+pass "pre-agent: roster, model deny-on-mismatch then updatedInput, depth 1, HALT, reviewer only on a gate at HEAD (-> stage REVIEW), no builders in REVIEW, spawn budget; spawn_request rows"
+
+# 46. pre-bash: tamper hardening, provider CLIs, git configuration/internals, protected state, the GATE stage lock
+for c in 'APEX_GIBSON=0 bash x' 'export APEX_GIBSON=0' 'env APEX_DISPATCH_MODE=baseline bash iterate.sh' 'APEX_HALT=0 bash x' 'unset APEX_HALT' \
+         'export APEX_DISPATCH_ENFORCE=1' 'APEX_STATE_ROOT=/tmp/x bash iterate.sh' \
+         'codex exec "do it"' 'claude -p hi' 'npx @openai/codex exec x' 'aider --yes x' 'make run --dangerously-skip-permissions' \
+         'git config core.autocrlf true' 'git config --global core.hooksPath /tmp/h' 'git config --unset core.filemode' \
+         'git config filter.x.clean cat' 'git config merge.ours.driver true' 'git update-index --assume-unchanged a.py' \
+         'git update-index --skip-worktree a.py' 'git -c core.hooksPath=/dev/null commit -m x' 'git -c filter.lfs.clean=cat add .' \
+         'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf GIT_CONFIG_VALUE_0=true git checkout .' 'git sparse-checkout set src' \
+         'echo "*.py" >> .git/info/exclude' 'cp hook.sh .git/hooks/pre-commit' 'rm -rf .dev-plan-state/ACTIVE' 'rm -f .dev-plan-state/HALT' 'cd .dev-plan-state && rm x' \
+         "sed -i s/BUILD/GATE/ .dev-plan-state/ACTIVE/owner.json" 'mv .claude/apex-dispatch/policy.json /tmp/' 'echo {} > .mcp.json' \
+         'bash -c "git config core.autocrlf false"' 'echo $(rm -f .dev-plan-state/x)' "python3 $PLUGIN_ROOT/scripts/lib/ledger.py append" \
+         'echo x > ~/.gitconfig' \
+         "for f in \$(git ls-files '*.lock'); do git update-index --assume-unchanged \"\$f\"; done" \
+         'git ls-files -m | while read f; do git update-index --skip-worktree "$f"; done' \
+         'if [ -d .dev-plan-state/ACTIVE ]; then rm -rf .dev-plan-state/ACTIVE; fi' \
+         'if true; then git config core.autocrlf true; fi' '! git config core.autocrlf true' \
+         'echo "x `git config core.autocrlf true`"' 'case x in x) git config core.filemode false;; esac' \
+         'python3 -c "import ledger; ledger.append()"' \
+         "python3 -c \"import sys; sys.path.insert(0, '$PLUGIN_ROOT/scripts/lib'); from ledger import append; append({'kind': 'x'})\"" \
+         "python3 -c 'import ledger as L; L.append({})'" "python3 -c 'import os, ledger'"; do
+  is_deny pre-bash "$(pl bash "$HX" "$c")" "pre-bash allowed: $c"
+done
+for c in 'git config --get user.name' 'git config user.name' 'git config --list --show-origin' 'git config get user.email' \
+         'git status && git diff HEAD~1' 'git -c core.quotepath=false log --oneline' 'APEX_HALT=1 bash x' 'claude --version' \
+         'grep -rn "APEX_HALT=" .' 'ls -la 2>/dev/null | head' 'cat .dev-plan-state/ACTIVE/owner.json' 'git update-index --no-skip-worktree a.py' \
+         'git commit -m wip' 'echo hi > notes.txt' 'touch .dev-plan-state/HALT' \
+         'grep -rn -- --dangerously-skip-permissions docs' 'git commit -m "docs: never pass --yolo"' \
+         "python3 -c \"print('ledger ok')\"" 'git -c core.editor=true commit --amend --no-edit' \
+         'for f in a b; do echo "$f"; done' 'if git diff --quiet; then echo clean; fi' \
+         'pytest tests/test_ledger.py' 'python3 -m pytest -q tests/test_ledger.py' 'python3 -m pytest -k ledger' 'python3 -m pytest tests -m ledger' \
+         'python3 -c "import app.ledger"' 'python3 scripts/lib/ledger.py --help' "printf 'x' > /tmp/apex-smoke-scratch"; do
+  is_allow pre-bash "$(pl bash "$HX" "$c")" "pre-bash denied: $c"
+done
+stage GATE
+for c in 'git commit -m x' 'for x in a; do git commit -m x; done' 'git add -A' 'git stash' 'git checkout -- a.py' 'echo x > src/a/x.py' 'sed -i s/a/b/ src/a/x.py' 'git branch topic'; do
+  is_deny pre-bash "$(pl bash "$HX" "$c")" "pre-bash allowed during GATE: $c"
+done
+for c in 'git status' 'git log -1' 'git branch --show-current' 'echo x >/dev/null' 'git stash list'; do
+  is_allow pre-bash "$(pl bash "$HX" "$c")" "pre-bash denied during GATE: $c"
+done
+stage BUILD
+bash "$LEDGER" verify --state "$HSD" >/dev/null 2>&1 || fail "the ledger does not verify after hook rows"
+pass "pre-bash: tamper env, provider CLIs only via shims, bypass flags, git config writes/index flags/-c overrides/.git writes, run state; reads allowed; GATE denies git mutation and writes"
+
+# 47. pre-edit: protected paths for any role, GATE/REVIEW, read-only roles, outside the worktree, lanes' Paths
+for f in .dev-plan-state/x .dev-plan-state/ACTIVE/owner.json .claude/apex-dispatch/policy.json .claude/settings.json \
+         .claude/settings.local.json .mcp.json .git/config .git/info/attributes "$PLUGIN_ROOT/hooks/pre-bash.sh" \
+         /usr/local/apex-smoke-outside.py; do
+  is_deny pre-edit "$(pl edit "$HX" "$f")" "pre-edit allowed a write to $f"
+done
+is_allow pre-edit "$(pl edit "$HX" src/a/x.py)" "pre-edit denied a write inside lane a's Paths"
+is_allow pre-edit "$(pl edit "$HX" "$HX/src/b/y.py")" "pre-edit denied a write inside lane b's Paths"
+is_deny pre-edit "$(pl edit "$HX" src/c/z.py)" "pre-edit allowed a write outside every lane's Paths"
+is_deny pre-edit "$(pl edit "$HX" src/a/x.py agent_id=r1 agent_type=apex-dispatch:reviewer)" "pre-edit allowed a write from a read-only reviewer"
+stage REVIEW
+is_deny pre-edit "$(pl edit "$HX" src/a/x.py)" "pre-edit allowed a write during REVIEW"
+stage BUILD
+pass "pre-edit: .dev-plan-state, .claude/apex-dispatch, settings, .mcp.json, .git, plugin files, outside the worktree denied; lanes' Paths; read-only roles; REVIEW"
+
+# 48. pre-mcp: a no-op unless the merged policy sets mcp.default_deny; then only allowlisted servers
+is_allow pre-mcp "$(pl mcp "$HX" mcp__other__tool)" "pre-mcp denied with mcp.default_deny false"
+mkdir -p "$HX/.claude/apex-dispatch"
+printf '{"mcp": {"default_deny": true, "servers_allow": ["docs"]}}\n' >"$HX/.claude/apex-dispatch/policy.json"
+is_deny pre-mcp "$(pl mcp "$HX" mcp__other__tool)" "pre-mcp allowed a server outside servers_allow under default_deny"
+is_allow pre-mcp "$(pl mcp "$HX" mcp__docs__search)" "pre-mcp denied an allowlisted server"
+is_allow pre-mcp "$(pl bash "$HX" 'true')" "pre-mcp acted on a non-MCP tool"
+rm -rf "$HX/.claude"
+pass "pre-mcp: no-op by default; under mcp.default_deny only servers_allow (+ the role's mcp_allow) pass"
+
+# 49. hot path: a governed invocation stays well under the 10 s hook timeout; the no-lock path starts no python
+T0="$(date +%s%N)"; hk pre-bash "$(pl bash "$HX" 'git status')" >/dev/null; T1="$(date +%s%N)"
+MS=$(( (T1 - T0) / 1000000 ))
+[ "$MS" -lt 2000 ] || fail "pre-bash took ${MS} ms under a lock (budget 2000 ms, timeout 10 s)"
+grep -q 'python3' "$PLUGIN_ROOT/scripts/lib/hook-common.bash" && \
+  awk '/STATE_BASE\/ACTIVE/{lock=NR} /python3 -B/{py=NR} END{exit !(lock && py && lock < py)}' "$PLUGIN_ROOT/scripts/lib/hook-common.bash" \
+  || fail "hook-common.bash does not check the ACTIVE lock before starting python3"
+pass "a governed pre-bash call took ${MS} ms (< 2000 ms; timeout 10 s); python3 starts only after the ACTIVE lock check"
+
+# 50. apex-scope-loop's real layout: the plan worktree lives at <state>/worktree inside .dev-plan-state/.
+#     Work inside it is allowed; the run state around it (checkpoint.json, gate/, ACTIVE, the worktree dir itself) is not.
+WX="$WORK/wx"; mkdir -p "$WX/plans"; git init -q -b main "$WX"
+printf '# W\n\n- [ ] **Phase 1.1** [mechanical] work in the worktree\n  - Acceptance: `pytest -q`\n  - Paths: src/a/**, tests/**\n' >"$WX/plans/p.md"
+printf '.dev-plan-state/\n' >"$WX/.gitignore"
+git -C "$WX" add -A; git -C "$WX" commit -qm wx
+(cd "$WX" && bash "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/init.sh" plans/p.md >/dev/null 2>&1) || fail "apex-scope-loop init.sh failed in the worktree fixture"
+O="$(cd "$WX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] || fail "worktree fixture route is not READY: $O"
+WSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; WWT="$WSD/worktree"
+[ -d "$WWT" ] && [ -f "$WSD/checkpoint.json" ] && [ -d "$WX/.dev-plan-state/ACTIVE" ] || fail "init.sh did not put the worktree at <state>/worktree"
+wk() { (cd "$WWT" && printf '%s' "$2" | bash "$PLUGIN_ROOT/hooks/$1.sh" 2>/dev/null) | one; }
+for f in src/a/x.py "$WWT/src/a/x.py" tests/test_a.py "$WWT/tests/test_a.py"; do
+  [ "$(wk pre-edit "$(pl edit "$WWT" "$f")")" = "{}" ] || fail "pre-edit denied $f inside the <state>/worktree plan worktree"
+done
+for c in 'echo y > src/a/x.py' 'mkdir -p src/a/new && touch src/a/new/f.py' 'rm src/a/x.py' 'cp src/a/x.py src/a/y.py' \
+         'mkdir -p tests' 'git add -A && git commit -m wip' 'cp templates/conf.py .' 'cp src/a/x.py ./' 'cd src && cp a/x.py ..' \
+         'mv build/out.py .' "find . -name '*.pyc' -delete" 'patch -p1 < fix.diff' 'rsync -a vendor/ .' 'chmod -R u+w .' 'touch .' 'find src -name "*.tmp" -delete' 'rsync -a --delete --exclude=.git vendor/ .' \
+         'mv -t src/a src/b/x.py' 'git worktree list' "find ../worktree -name '*.pyc' -delete" "find $WWT -name '*.pyc' -delete" \
+         "cd src && find .. -name '*.pyc' -delete" 'find . -type d -empty -delete' 'rsync -a --delete --exclude .git vendor/ .' \
+         "rsync -a --delete -f '- .git' vendor/ ." 'rsync -a --delete vendor/ build/' "find . -name '*.pyc' -delete" \
+         'find . -name __pycache__ -exec rm -rf {} +' 'find src ! -name x -delete' "find \"\$TMPDIR\" -name '*.log' -delete" \
+         "find \"\$OUT\" -name '*.o' -delete"; do
+  [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = "{}" ] || fail "pre-bash denied in the <state>/worktree plan worktree: $c"
+done
+for f in "$WSD/checkpoint.json" ../checkpoint.json ../gate/last.json "$WX/.dev-plan-state/ACTIVE/owner.json" .dev-plan-state/x .git; do
+  [ "$(wk pre-edit "$(pl edit "$WWT" "$f")")" = deny ] || fail "pre-edit allowed $f from the <state>/worktree plan worktree"
+done
+for c in 'rm -rf .' 'mv . ../x' 'rmdir .' 'find ../worktree -delete' "find $WWT -delete" 'find -L ../worktree -exec rm -rf {} +' \
+         'find . -name .git -delete' "find . -name '.g*' -delete" "find . -path './.git' -delete" "find $WWT -name worktree -exec rm -rf {} +" \
+         'git -C .. worktree remove worktree --force' 'git -C src worktree remove ..' "git -C $WWT/.. worktree remove worktree" \
+         "git -C $WX worktree remove ${WWT#"$WX"/}" 'rsync -a --del vendor/ .' 'rsync -a --delete --exclude=.github vendor/ .' \
+         'rsync -a --delete --exclude=.git --delete-excluded vendor/ .' 'rsync -a --delete --exclude=.gitignore vendor/ .' \
+         'rsync -a --delete vendor/ "$PWD"' \
+         "find . ! -name '*.py' -delete" "find . -type f ! -name '*.keep' -delete" "find . -not -name '*.py' -type f -delete" \
+         "find . -name '*.pyc' -o -type f -delete" 'find . -path ./node_modules -prune -o -type f -delete' \
+         'find "$OUT" -delete' 'find "$OUT" -type f -delete' \
+         'mv -vt /tmp ../worktree' 'mv -t/tmp ../worktree' 'mv --target=/tmp ../worktree' 'mv --target-directory /tmp ../worktree' \
+         'mv -t ../ src' 'git worktree remove --force .' "git worktree remove $WWT" 'git worktree move . /tmp/elsewhere' \
+         'find . -delete' 'find . -type f -delete' 'rsync -a --delete vendor/ .' 'echo x > ../checkpoint.json' 'rm -rf ../gate' "rm -rf $WX/.dev-plan-state/ACTIVE" 'rm -rf ../worktree' 'touch ../dispatch-shadow/x' \
+         'mkdir -p .dev-plan-state && echo x > .dev-plan-state/y'; do
+  [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = deny ] || fail "pre-bash allowed from the <state>/worktree plan worktree: $c"
+done
+pass "init.sh layout (<state>/worktree): edits, writes, rm/cp/mkdir, commits and the worktree root as a cp/mv/patch/chmod/find target pass; removing or moving the root, checkpoint, gate, ACTIVE and nested state stay denied"
+
+# --- Phase 3.2: post-agent, subagent-start/stop, stop-gate, post-bash-prune ---
+# pj key=value... -> one JSON object (values parsed as JSON when they parse; dotted keys nest)
+pj() { python3 -c 'import json, sys
+d = {}
+for kv in sys.argv[1:]:
+    k, _, v = kv.partition("=")
+    try:
+        v = json.loads(v)
+    except ValueError:
+        pass
+    cur = d
+    *path, last = k.split(".")
+    for x in path:
+        cur = cur.setdefault(x, {})
+    cur[last] = v
+print(json.dumps(d))' "$@"; }
+# hr HOOK DIR JSON -> stdout of the hook run in DIR; rc in $HRC, stderr in $WORK/hr.err
+hr() { HRC=0; HOUT="$( (cd "$2" && printf '%s' "$3" | bash "$PLUGIN_ROOT/hooks/$1.sh" 2>"$WORK/hr.err") )" || HRC=$?; printf '%s\n' "$HOUT" | one >/dev/null || fail "$1 printed other than exactly one JSON object: [$HOUT] $(cat "$WORK/hr.err")"; }
+# rowsin LEDGER EVENT [k=v...] -> number of hook-sourced rows matching
+rowsin() { python3 -c 'import json, sys
+r = [json.loads(l) for l in open(sys.argv[1])]
+print(sum(1 for x in r if x["event"] == sys.argv[2] and x.get("source") == "hook" and all(str(x.get(k)) == v for k, v in (a.split("=", 1) for a in sys.argv[3:]))))' "$@"; }
+jget() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."): d = d[k]
+print(d)' "$1" "$2"; }
+
+# 51. the five Phase 3.2 hooks: without a lock {} for garbage, empty and real payloads; under a lock garbage fails open
+NX="$WORK/nx"; mkdir -p "$NX"; git init -q -b main "$NX"; git -C "$NX" commit -q --allow-empty -m nx
+for h in "${HOOKS32[@]}"; do
+  for j in 'not json{' '' "$(pj tool_name=Agent hook_event_name=PostToolUse tool_input.subagent_type=apex-dispatch:builder "cwd=$NX")" \
+           "$(pj agent_id=x1 agent_type=apex-dispatch:reviewer last_assistant_message='VERDICT: APPROVE' "cwd=$NX")" "$(pj hook_event_name=Stop "cwd=$NX")"; do
+    hr "$h" "$NX" "$j"; [ "$HRC" = 0 ] && [ "$HOUT" = "{}" ] || fail "$h without a lock did not give {} exit 0 (rc=$HRC, $HOUT)"
+  done
+  hr "$h" "$HX" 'not json{'; [ "$HRC" = 0 ] && [ "$HOUT" = "{}" ] && grep -q 'failing open' "$WORK/hr.err" || fail "$h under a lock: garbage stdin did not fail open"
+done
+[ ! -e "$NX/.dev-plan-state" ] || fail "a Phase 3.2 hook wrote state without an ACTIVE lock"
+pass "post-agent, post-bash-prune, subagent-start, subagent-stop, stop-gate: {} and exit 0 without a lock (garbage, empty, real payloads); fail open under a lock"
+
+# 52. carried hardening: quoted/escaped parens are find arguments; ancestors of the run state and the worktree
+#     are not removed; a `$` find start is checked against every root's basename; mark_enforced skips the lock
+for c in "find . '(' -type f ')' -delete" 'find . \( -type f \) -delete' 'find . "(" -type f ")" -delete' 'rm -rf ../../..' \
+         "find $WX -delete" "find $WX -name .dev-plan-state -exec rm -rf {} +" "find $WX -name '.dev*' -delete" 'rm -rf /' \
+         "mv $WX /tmp/elsewhere" 'find "$OUT" -name worktree -delete' 'find "$OUT" -name .dev-plan-state -delete' \
+         'find "$OUT" -name wx -exec rm -rf {} +' "find ../../.. -path '*/.dev-plan-state' -exec rm -rf {} +"; do
+  [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = deny ] || fail "pre-bash allowed from the plan worktree: $c"
+done
+for c in "find . '(' -name '*.pyc' ')' -delete" "echo '(' x ')'" "find $WX -name '*.pyc' -delete" 'find "$OUT" -name "*.o" -delete' \
+         'rm -rf src/a'; do
+  [ "$(wk pre-bash "$(pl bash "$WWT" "$c")")" = "{}" ] || fail "pre-bash denied from the plan worktree: $c"
+done
+bx() { (cd "$WX" && printf '%s' "$2" | bash "$PLUGIN_ROOT/hooks/$1.sh" 2>/dev/null) | one; }
+for c in 'rm -rf .' "rm -rf $WX" 'find . -delete' 'find . -type f -delete' "find . -name .dev-plan-state -prune -o -delete"; do
+  [ "$(bx pre-bash "$(pl bash "$WX" "$c")")" = deny ] || fail "pre-bash allowed in the base checkout: $c"
+done
+[ "$(bx pre-bash "$(pl bash "$WX" "find . -name '*.pyc' -delete")")" = "{}" ] || fail "a filtered find in the base checkout was denied"
+ME="$WORK/me"; mkdir -p "$ME/dispatch"; printf '{"dispatch_enforced": true, "worktree_path": "%s"}\n' "$NX" >"$ME/checkpoint.json"
+python3 -c 'import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR); fcntl.flock(fd, fcntl.LOCK_EX); time.sleep(6)' "$ME/.checkpoint.lock" &
+LKPID=$!; sleep 0.3
+T0="$(date +%s%N)"; lg append hook_advisory '{"hook":"x","advisory":"y"}' --state "$ME" --source cli >/dev/null || fail "append to an enforced state failed"
+MS=$(( ($(date +%s%N) - T0) / 1000000 )); kill "$LKPID" 2>/dev/null || true; wait "$LKPID" 2>/dev/null || true
+[ "$MS" -lt 1500 ] || fail "an append to a state already marked dispatch_enforced waited ${MS} ms for the checkpoint lock"
+pass "quoted/escaped ( ) stay find arguments; ancestors of the run (rm -rf ../../.., rm -rf . in the base, find <base> -delete) denied; \$ starts checked against every root name; mark_enforced skips the lock when already set (${MS} ms)"
+
+# A fresh single-builder route for the agent-lifecycle checks (dispatch-shadow, route mode table).
+UX="$WORK/ux"; mkdir -p "$UX/plans" "$UX/src"; git init -q -b main "$UX"
+printf '# U\n\n- [ ] **Phase 1.1** [mechanical] one builder\n  - Acceptance: `pytest -q`\n  - Paths: src/**\n' >"$UX/plans/p.md"
+printf '.dev-plan-state/\n' >"$UX/.gitignore"; echo a >"$UX/src/a.py"; git -C "$UX" add -A; git -C "$UX" commit -qm ux
+O="$(cd "$UX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"; [ "$(val ROUTE_STATUS "$O")" = READY ] || fail "lifecycle fixture route is not READY: $O"
+URID="$(val ROUTE_ID "$O")"; USD_="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; UD="$USD_/dispatch-shadow"; UL="$UD/ledger.jsonl"
+UOWN="$UX/.dev-plan-state/ACTIVE/owner.json"
+ustage() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); print(o["stage"]) if len(sys.argv) == 2 else (o.update(stage=sys.argv[2]), json.dump(o, open(sys.argv[1], "w")))' "$UOWN" "$@"; }
+uh() { hr "$1" "$UX" "$2"; }
+ua() { (cd "$UX" && printf '%s' "$1" | bash "$PLUGIN_ROOT/hooks/pre-agent.sh" 2>/dev/null); }
+start() { uh subagent-start "$(pj agent_id="$1" agent_type="$2" session_id=s "cwd=$UX")"; }
+stopa() { uh subagent-stop "$(pj agent_id="$1" agent_type="$2" "last_assistant_message=$3" stop_hook_active="${4:-false}" agent_transcript_path="${5:-}" session_id=s "cwd=$UX")"; }
+
+# 53. subagent-start registers agent_id -> role -> route; the live set gates REVIEW; subagent-stop writes raw review records
+start b1 apex-dispatch:builder
+[ "$(jget "$UD/agents/b1.json" role)" = builder ] && [ "$(jget "$UD/agents/b1.json" route_id)" = "$URID" ] || fail "subagent-start did not register b1 -> builder -> $URID"
+[ "$(rowsin "$UL" spawn agent_id=b1 role=builder route_id="$URID")" = 1 ] || fail "subagent-start wrote no hook-sourced spawn row"
+start e1 Explore; start ../x apex-dispatch:builder
+[ ! -e "$UD/agents/e1.json" ] && [ -z "$(ls "$UD/agents" | grep -v '^b1.json$' || true)" ] || fail "a foreign agent type or a path-like agent_id was registered"
+mkdir -p "$USD_/gate"; printf '{"result":"PASS","head_sha":"%s"}\n' "$(git -C "$UX" rev-parse HEAD)" >"$USD_/gate/last.json"
+O="$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')")"
+grep -q 'still registered as running' <<<"$O" || fail "a reviewer spawn was allowed while builder b1 is live: $O"
+stopa b1 apex-dispatch:builder 'done'
+[ -n "$(jget "$UD/agents/b1.json" stopped_at)" ] && [ "$(jget "$UD/agents/b1.json" stopped_at)" != None ] || fail "subagent-stop did not record b1's stop"
+[ "$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "the reviewer spawn was denied after the builder stopped"
+[ "$(ustage)" = REVIEW ] || fail "the reviewer spawn did not move the stage to REVIEW"; ustage BUILD
+start r1 apex-dispatch:reviewer; stopa r1 apex-dispatch:reviewer "$(printf 'Findings: none\nLENS: security\n**VERDICT: APPROVE**')"
+R1="$UD/reviews-raw/r1.json"; [ -f "$R1" ] || fail "subagent-stop wrote no reviews-raw record for reviewer r1"
+python3 - "$R1" "$(git -C "$UX" rev-parse HEAD)" "$URID" <<'PY' || fail "the r1 raw record does not carry record_id/line/head/role/lens/verdict/family"
+import json, re, sys
+r, head, rid = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+assert re.fullmatch(r"[A-Za-z0-9_-]{8,128}", r["record_id"]) and r["record_id"].startswith("r1-"), r
+assert r["line"] == 3 and r["head_sha"] == head and r["role"] == "lens:security" and r["lens"] == "security", r
+assert r["verdict"] == "APPROVE" and r["provider"] == "claude-session" and r["family"] == "anthropic" and r["route"] == rid, r
+PY
+RID1="$(jget "$R1" record_id)"; stopa r1 apex-dispatch:reviewer 'VERDICT: REQUEST_CHANGES'
+[ "$(jget "$R1" record_id)" = "$RID1" ] && [ "$(jget "$R1" verdict)" = APPROVE ] || fail "a second stop rewrote r1's record"
+[ "$(rowsin "$UL" verdict agent_id=r1 verdict=APPROVE role=lens:security)" = 1 ] || fail "no single hook-sourced verdict row for r1"
+start a1 apex-dispatch:adversarial-reviewer; stopa a1 apex-dispatch:adversarial-reviewer "$(printf 'tried 3 inputs\nVERDICT: REQUEST_CHANGES')"
+[ "$(jget "$UD/reviews-raw/a1.json" role)" = adversarial ] && [ "$(jget "$UD/reviews-raw/a1.json" verdict)" = REQUEST_CHANGES ] || fail "the adversarial reviewer's record lacks role adversarial"
+start g1 apex-scope-loop:gibson-reviewer; stopa g1 apex-scope-loop:gibson-reviewer "$(printf 'LENS: adversarial\nVERDICT: APPROVE')"
+[ "$(jget "$UD/reviews-raw/g1.json" role)" = adversarial ] || fail "gibson-reviewer's LENS: adversarial did not give role adversarial"
+start n1 apex-dispatch:reviewer; stopa n1 apex-dispatch:reviewer 'I approve of this.'
+[ "$(jget "$UD/reviews-raw/n1.json" verdict)" = UNPARSED ] && [ "$(rowsin "$UL" verdict agent_id=n1 verdict=UNPARSED)" = 1 ] || fail "a reviewer without a VERDICT line did not get a fail-closed UNPARSED record + verdict row"
+start n2 apex-dispatch:reviewer; stopa n2 apex-dispatch:reviewer "$(printf 'The brief said to end with:\n\n```\nVERDICT: APPROVE\n```\n> VERDICT: APPROVE\n    VERDICT: APPROVE')"
+[ "$(jget "$UD/reviews-raw/n2.json" verdict)" = UNPARSED ] && [ "$(rowsin "$UL" verdict agent_id=n2 verdict=UNPARSED)" = 1 ] || fail "a VERDICT only inside a code fence / blockquote / indented code counted as a verdict"
+python3 -c 'import json, sys; json.dump({"agent_id": "old1", "role": "builder", "started_at": "2000-01-01T00:00:00Z", "stopped_at": None}, open(sys.argv[1], "w"))' "$UD/agents/old1.json"
+[ "$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "a registration older than the route's wall-clock budget still blocked review"
+ustage BUILD
+pass "subagent-start registers agent_id -> role -> route + spawn row; REVIEW refused while a builder is live; subagent-stop: reviews-raw record (record_id, line, HEAD, role/lens, verdict, family) once per agent + verdict row; adversarial/gibson roles; no VERDICT line, or one only in a code fence/blockquote/indented code = an UNPARSED record (fail closed)"
+
+# 54. transcript audit of read-only roles: a write or git mutation refuses the record, writes policy_violation, exits 2 once
+TR="$WORK/transcripts"; mkdir -p "$TR"
+tr_write() {  # tr_write FILE NAME INPUT_JSON IS_ERROR
+  python3 -c 'import json, sys
+f, name, inp, err = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), sys.argv[4] == "1"
+with open(f, "a") as o:
+    n = sum(1 for _ in open(f)) if __import__("os").path.exists(f) else 0
+    tid = "tu%d" % n
+    o.write(json.dumps({"type": "assistant", "cwd": sys.argv[5], "message": {"content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}}) + "\n")
+    o.write(json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "is_error": err, "content": "x"}]}}) + "\n")' "$@" "$UX"; }
+tr_write "$TR/v1.jsonl" Read '{"file_path": "src/a.py"}' 0
+tr_write "$TR/v1.jsonl" Bash '{"command": "git commit -am sneaky"}' 0
+start v1 apex-dispatch:reviewer; stopa v1 apex-dispatch:reviewer 'VERDICT: APPROVE' false "$TR/v1.jsonl"
+[ "$HRC" = 2 ] && [ "$HOUT" = "{}" ] && grep -q 'read-only role reviewer' "$WORK/hr.err" || fail "a reviewer that committed was not refused with exit 2 (rc=$HRC)"
+[ -n "$(jget "$UD/reviews-raw/v1.json" refused)" ] && [ "$(rowsin "$UL" policy_violation agent_id=v1)" = 1 ] || fail "no refused record / policy_violation row for v1"
+stopa v1 apex-dispatch:reviewer 'VERDICT: APPROVE' true "$TR/v1.jsonl"
+[ "$HRC" = 0 ] && [ "$HOUT" = "{}" ] || fail "the audit blocked again with stop_hook_active (rc=$HRC)"
+python3 -c 'import json,sys; assert "verdict" not in json.load(open(sys.argv[1]))' "$UD/reviews-raw/v1.json" || fail "a refused record was replaced by a verdict on the re-fired stop"
+tr_write "$TR/v2.jsonl" Bash '{"command": "git commit -am denied"}' 1
+tr_write "$TR/v2.jsonl" Bash '{"command": "git log --oneline -3"}' 0
+tr_write "$TR/v2.jsonl" Grep '{"pattern": "x"}' 0
+start v2 apex-scope-loop:gibson-reviewer; stopa v2 apex-scope-loop:gibson-reviewer 'VERDICT: APPROVE' false "$TR/v2.jsonl"
+[ "$HRC" = 0 ] && [ "$(jget "$UD/reviews-raw/v2.json" verdict)" = APPROVE ] || fail "a denied attempt or read-only git was treated as a violation (rc=$HRC)"
+tr_write "$TR/v3.jsonl" Write '{"file_path": "src/a.py", "content": "y"}' 0
+start v3 apex-dispatch:reviewer
+T0="$(date +%s%N)"; stopa v3 apex-dispatch:reviewer 'VERDICT: APPROVE' false "$TR/v3.jsonl"; MS=$(( ($(date +%s%N) - T0) / 1000000 ))
+[ "$HRC" = 2 ] || fail "a reviewer's Write was not refused"
+[ "$MS" -lt 2000 ] || fail "subagent-stop with a transcript audit took ${MS} ms (budget 2000 ms, timeout 10 s)"
+tr_write "$TR/b2.jsonl" Bash '{"command": "git commit -am work"}' 0
+start b2 apex-dispatch:builder; stopa b2 apex-dispatch:builder 'done' false "$TR/b2.jsonl"; [ "$HRC" = 0 ] || fail "a builder's commit was audited as a violation"
+pass "subagent-stop audit: a read-only role's successful write or git mutation -> refused record + policy_violation + exit 2, once (stop_hook_active passes); denied attempts and read-only git pass; builders are not audited; ${MS} ms"
+
+# 55. post-agent: worker_run with resolvedModel/usage/duration/tools (once per tool use), model_mismatch, failures;
+#     the USD estimate feeds pre-agent's ROUTE_BUDGET_USD
+pa() { uh post-agent "$(pj tool_name=Agent hook_event_name="${2:-PostToolUse}" tool_use_id="$1" tool_input.subagent_type=apex-dispatch:builder tool_input.model=sonnet "cwd=$UX" "${@:3}")"; }
+pa u1 PostToolUse tool_response.agentId=b3 tool_response.status=completed tool_response.resolvedModel=claude-sonnet-5-5 tool_response.totalDurationMs=5400 \
+  tool_response.totalToolUseCount=14 tool_response.usage.input_tokens=41000 tool_response.usage.output_tokens=6000 tool_response.usage.cache_read_input_tokens=100000
+[ "$HOUT" = "{}" ] || fail "post-agent answered a matching run with $HOUT"
+python3 - "$UL" <<'PY' || fail "post-agent did not write a worker_run row with resolved_model, normalised usage, duration, tool count and a USD estimate"
+import json, sys
+r = [json.loads(l) for l in open(sys.argv[1]) if '"worker_run"' in l]
+w = [x for x in r if x.get("tool_use_id") == "u1"]
+assert len(w) == 1, w
+w = w[0]
+assert w["source"] == "hook" and w["provider"] == "claude-session" and w["role"] == "builder" and w["exit_code"] == 0, w
+assert w["resolved_model"] == "claude-sonnet-5-5" and w["usage"] == {"input": 41000, "output": 6000, "cache_read": 100000}, w
+assert w["duration_ms"] == 5400 and w["tool_count"] == 14 and abs(w["usd_estimate"] - (41000 * 3 + 6000 * 15 + 100000 * 0.3) / 1e6) < 1e-9, w
+PY
+pa u1 PostToolUse tool_response.resolvedModel=claude-sonnet-5-5 tool_response.usage.input_tokens=1
+[ "$(rowsin "$UL" worker_run tool_use_id=u1)" = 1 ] || fail "a repeated tool_use_id wrote a second worker_run row"
+pa u2 PostToolUse tool_response.resolvedModel=claude-opus-4-1 tool_response.status=completed tool_response.usage.output_tokens=10
+grep -q 'model_mismatch' <<<"$HOUT" && [ "$(rowsin "$UL" model_mismatch tool_use_id=u2 route_model=sonnet)" = 1 ] || fail "an opus run on a sonnet route was not recorded as model_mismatch: $HOUT"
+pa u3 PostToolUse tool_response.status=async_launched tool_response.agentId=b4
+[ "$(rowsin "$UL" worker_run tool_use_id=u3)" = 0 ] && [ "$(rowsin "$UL" hook_advisory tool_use_id=u3)" = 1 ] || fail "a background launch without usage was priced or not noted"
+pa u4 PostToolUseFailure error=boom
+[ "$(rowsin "$UL" worker_run tool_use_id=u4 exit_code=1)" = 1 ] || fail "PostToolUseFailure did not write a failed worker_run row"
+[ "$(ua "$(pl agent "$UX" apex-dispatch:builder sonnet)" | one)" = "{}" ] || fail "a builder spawn under the USD budget was denied"
+pa u5 PostToolUse tool_response.resolvedModel=claude-sonnet-5-5 tool_response.status=completed tool_response.usage.input_tokens=600000
+grep -q 'ROUTE_BUDGET_USD' <<<"$HOUT" || fail "post-agent did not say the USD budget is reached: $HOUT"
+O="$(ua "$(pl agent "$UX" apex-dispatch:builder sonnet)")"
+grep -q 'USD budget is spent' <<<"$O" || fail "pre-agent allowed a builder spawn over ROUTE_BUDGET_USD: $O"
+bash "$LEDGER" verify --state "$USD_" >/dev/null 2>&1 || fail "the lifecycle ledger does not verify"
+O="$(bash "$REPORT" --state "$USD_")"
+has '^REPORT_MODEL_MISMATCHES: 1' "$O" && has '^REPORT_POLICY_VIOLATIONS: 2' "$O" || fail "report.sh does not count model_mismatch/policy_violation rows: $O"
+pass "post-agent: one worker_run per tool use (resolvedModel, usage, duration, tools, USD estimate), model_mismatch + additionalContext, background launches unpriced, failures exit_code 1; pre-agent denies builder spawns once ROUTE_BUDGET_USD is reached"
+
+# 56. stop-gate: escapes (stop_hook_active, HALT, not BUILD), then blocks once per route on uncommitted work and on inline work
+sg() { uh stop-gate "$(pj hook_event_name=Stop session_id=s stop_hook_active="${1:-false}" "cwd=$UX")"; }
+echo dirty >"$UX/src/b.py"
+sg true; [ "$HRC" = 0 ] || fail "stop-gate blocked with stop_hook_active"
+(cd "$UX" && printf '%s' "$(pj hook_event_name=Stop "cwd=$UX")" | APEX_HALT=1 bash "$PLUGIN_ROOT/hooks/stop-gate.sh" >/dev/null 2>&1) || fail "stop-gate blocked under APEX_HALT=1"
+ustage GATE; sg; [ "$HRC" = 0 ] || fail "stop-gate blocked outside BUILD"; ustage BUILD
+sg; [ "$HRC" = 2 ] && [ "$HOUT" = "{}" ] && grep -q 'uncommitted changes' "$WORK/hr.err" || fail "stop-gate did not block once on an uncommitted worktree (rc=$HRC)"
+sg; [ "$HRC" = 0 ] || fail "stop-gate blocked twice for one route"
+git -C "$UX" add -A; git -C "$UX" commit -qm wip
+O="$(cd "$UX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"; URID2="$(val ROUTE_ID "$O")"; [ "$URID2" != "$URID" ] || fail "re-route gave the same id"
+git -C "$UX" commit -q --allow-empty -m inline
+sg; [ "$HRC" = 2 ] && grep -q 'done inline' "$WORK/hr.err" || fail "stop-gate did not block a route whose HEAD moved with no spawn (rc=$HRC)"
+[ "$(rowsin "$UL" hook_advisory blocked=True)" = 2 ] || fail "stop-gate blocks were not ledgered"
+pass "stop-gate: never with stop_hook_active, HALT or outside BUILD; blocks once per route (exit 2, reason on stderr) on uncommitted work or HEAD moved without a spawn"
+
+# 57. post-bash-prune is record-only: a long runner output is kept under logs/ with an advisory row; output is never replaced
+LONG="$(python3 -c 'print("\n".join(["test_%d PASSED" % i for i in range(300)] + ["FAILED tests/test_x.py::t - assert 1 == 2"]))')"
+pb() { uh post-bash-prune "$(pj tool_name=Bash hook_event_name=PostToolUse tool_use_id="$1" "tool_input.command=$2" "tool_response.stdout=$3" tool_response.stderr= "cwd=$UX")"; }
+pb pb1 'uv run pytest -q' "$LONG"; [ "$HOUT" = "{}" ] || fail "post-bash-prune answered with $HOUT (it may not replace output)"
+[ "$(wc -l <"$UD/logs/pb1.log")" -ge 300 ] && [ "$(rowsin "$UL" hook_advisory tool_use_id=pb1 runner=pytest failure_lines=1)" = 1 ] || fail "a long pytest run was not kept under logs/ with an advisory row"
+pb pb2 'pytest -q' 'ok'; pb pb3 'cat big.txt' "$LONG"
+[ ! -e "$UD/logs/pb2.log" ] && [ ! -e "$UD/logs/pb3.log" ] || fail "post-bash-prune logged a short run or a non-runner command"
+pass "post-bash-prune: record-only (Phase 0 spike 9): long runner output kept at logs/<tool_use_id>.log + hook_advisory; short or non-runner output untouched"
+
+# 58. end to end, enforced by default: route -> spawn (pre-agent, subagent-start/stop, post-agent) -> gate (stage GATE)
+#     -> reviewer (stage REVIEW) -> raw record -> checkpoint.sh review --agent-id -> complete (ledger evidence) -> DONE
+EX="$WORK/ex"; mkdir -p "$EX/plans"; git init -q -b main "$EX"
+printf '# E\n\n- [ ] **Phase 1.1** [mechanical] rename a helper\n  - Acceptance: `true`\n  - Paths: src/**\n' >"$EX/plans/p.md"
+printf '.dev-plan-state/\n' >"$EX/.gitignore"; git -C "$EX" add -A; git -C "$EX" commit -qm ex
+EXS="$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts"
+(cd "$EX" && env -u APEX_DISPATCH_ENFORCE bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the end-to-end fixture"
+O="$(cd "$EX" && env -u APEX_DISPATCH_ENFORCE bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_ENFORCED "$O")" = yes ] || fail "the default route is not enforced (ROUTE_ENFORCED yes): $O"
+ERID="$(val ROUTE_ID "$O")"; ESD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; EWT="$ESD/worktree"
+[ -d "$ESD/dispatch" ] && [ ! -e "$ESD/dispatch-shadow" ] && [ "$(jget "$ESD/checkpoint.json" dispatch_enforced)" = True ] || fail "enforcement did not create <state>/dispatch/ and record dispatch_enforced"
+eh() { HRC=0; HOUT="$( (cd "$EWT" && printf '%s' "$2" | env -u APEX_DISPATCH_ENFORCE bash "$PLUGIN_ROOT/hooks/$1.sh" 2>"$WORK/hr.err") )" || HRC=$?; }
+eh pre-agent "$(pl agent "$EWT" apex-dispatch:builder sonnet)"; [ "$HOUT" = "{}" ] || fail "e2e: the builder spawn was denied: $HOUT"
+eh subagent-start "$(pj agent_id=eb1 agent_type=apex-dispatch:builder "cwd=$EWT")"
+mkdir -p "$EWT/src"; echo 'def helper(): pass' >"$EWT/src/h.py"; git -C "$EWT" add -A; git -C "$EWT" commit -qm "rename helper"
+eh subagent-stop "$(pj agent_id=eb1 agent_type=apex-dispatch:builder last_assistant_message=done "cwd=$EWT")"
+eh post-agent "$(pj tool_name=Agent hook_event_name=PostToolUse tool_use_id=eu1 tool_input.subagent_type=apex-dispatch:builder tool_input.model=sonnet \
+  tool_response.agentId=eb1 tool_response.status=completed tool_response.resolvedModel=claude-sonnet-5-5 tool_response.usage.input_tokens=1000 "cwd=$EWT")"
+(cd "$EX" && APEX_GATE_TEST=true bash "$EXS/green-gate.sh" plans/p.md check >/dev/null 2>&1) || fail "e2e: green-gate check did not pass"
+[ "$(jget "$EX/.dev-plan-state/ACTIVE/owner.json" stage)" = GATE ] || fail "a passing green-gate check did not move the stage to GATE"
+eh pre-bash "$(pl bash "$EWT" 'git commit --allow-empty -m late')"; [ "$(printf '%s\n' "$HOUT" | one)" = deny ] || fail "e2e: a commit during GATE was allowed"
+FORK="$(jget "$ESD/checkpoint.json" fork_sha)"
+(cd "$EX" && bash "$EXS/risk-tier.sh" plans/p.md 3 --since "$FORK" >/dev/null 2>&1) || fail "e2e: risk-tier.sh failed"
+eh pre-agent "$(pl agent "$EWT" apex-dispatch:reviewer '')"; [ "$HOUT" = "{}" ] || fail "e2e: the reviewer spawn was denied: $HOUT"
+[ "$(jget "$EX/.dev-plan-state/ACTIVE/owner.json" stage)" = REVIEW ] || fail "e2e: the reviewer spawn did not move the stage to REVIEW"
+eh subagent-start "$(pj agent_id=er1 agent_type=apex-dispatch:reviewer "cwd=$EWT")"
+eh subagent-stop "$(pj agent_id=er1 agent_type=apex-dispatch:reviewer "last_assistant_message=$(printf 'Acceptance met.\nVERDICT: APPROVE')" "cwd=$EWT")"
+ECK="$EXS/checkpoint.sh"; EHEAD="$(git -C "$EWT" rev-parse HEAD)"
+[ "$(jget "$ESD/dispatch/reviews-raw/er1.json" head_sha)" = "$EHEAD" ] || fail "e2e: the raw record is not bound to HEAD"
+O="$(cd "$EX" && bash "$ECK" plans/p.md review 3 "$EHEAD" APPROVE reviewer 2>&1)" && fail "e2e: a typed verdict was accepted in provenance mode"
+(cd "$EX" && bash "$ECK" plans/p.md review 3 "$EHEAD" APPROVE apex-dispatch:reviewer --agent-id er1 >/dev/null 2>&1) || fail "e2e: checkpoint.sh review refused the hook-written record"
+O="$(cd "$EX" && bash "$ECK" plans/p.md review 3 "$EHEAD" APPROVE apex-dispatch:reviewer --agent-id er1 2>&1)" && fail "e2e: a raw record was used twice"
+grep -q 'already recorded' <<<"$O" || fail "e2e: the second use was refused for the wrong reason: $O"
+O="$(cd "$EX" && bash "$ECK" plans/p.md complete 3 "reviewed" 2>&1)" || fail "e2e: checkpoint.sh complete refused: $O"
+[ "$(jget "$EX/.dev-plan-state/ACTIVE/owner.json" stage)" = DONE ] && grep -q '^- \[x\] \*\*Phase 1.1' "$EX/plans/p.md" || fail "e2e: complete did not tick the task and move the stage to DONE"
+bash "$LEDGER" evidence --state "$ESD" --line 3 --head "$EHEAD" >/dev/null 2>&1 && bash "$LEDGER" verify --state "$ESD" >/dev/null 2>&1 || fail "e2e: ledger evidence/verify failed after complete"
+python3 - "$ESD/dispatch/ledger.jsonl" "$ERID" <<'PY' || fail "e2e: the ledger lacks the hook rows of the flow"
+import json, sys
+r = [json.loads(l) for l in open(sys.argv[1])]
+ev = [(x["event"], x["source"]) for x in r if x.get("route_id") == sys.argv[2]]
+for want in [("route", "cli"), ("spawn_request", "hook"), ("spawn", "hook"), ("worker_run", "hook"), ("verdict", "hook")]:
+    assert want in ev, (want, ev)
+PY
+pass "end to end, enforced by default: route (dispatch/) -> pre-agent/subagent-start/stop/post-agent rows -> green-gate PASS = GATE -> reviewer = REVIEW -> raw record -> review --agent-id (once) -> complete with ledger evidence -> DONE"
+
+# 59. review round 1: one second-family rule (available AND a shipped bin/worker-*.sh shim) in doctor and checkpoint;
+#     foreground stops recorded by post-agent; audits judge the agent's own identity; canonical lenses;
+#     live background builders never spend a stop-gate block; GATE denials say how to return to BUILD;
+#     ad-hoc reviewers need a committed, clean HEAD
+python3 - "$PLUGIN_ROOT/scripts/lib" "$WORK/sf" <<'PY' || fail "ledger.second_families does not require an available provider with a shipped shim"
+import os, sys
+sys.path.insert(0, sys.argv[1]); import ledger
+root = sys.argv[2]; os.makedirs(os.path.join(root, "bin"), exist_ok=True)
+RV = {"verified": True, "roles_allowed": ["reviewer"], "allowed_classes": ["security"]}
+doc = {"claude_p_auth": "available", "providers": {"codex": dict(RV, enabled=True, available=True, auth_ok=True),
+       "claude-p": dict(RV, enabled=True, available=True), "claude-session": {"enabled": True, "available": True}}}
+assert ledger.second_families(doc, root) == [], "counted a provider without a shim"
+assert ledger.second_families(doc) == [] or os.path.isdir(os.path.join(ledger.plugin_root(), "bin")), "this plugin ships no shims yet"
+for p in ("codex", "claude-p"):
+    f = os.path.join(root, "bin", "worker-%s.sh" % p); open(f, "w").write("#!/bin/sh\n"); os.chmod(f, 0o755)
+assert ledger.second_families(doc, root) == ["claude-p", "codex"], ledger.second_families(doc, root)
+doc["providers"]["codex"]["auth_ok"] = False
+assert ledger.second_families(doc, root) == ["claude-p"], "codex without auth still counted"
+doc["providers"]["codex"].update(auth_ok=True, flags_ok=False)
+assert ledger.second_families(doc, root) == ["claude-p"], "codex rejecting its forced flags still counted"
+doc["providers"]["codex"]["flags_ok"] = True
+doc["claude_p_auth"] = "unavailable"; doc["providers"]["codex"]["available"] = False
+assert ledger.second_families(doc, root) == [], "claude-p without auth or codex unavailable still counted"
+PY
+grep -q 'second_families' "$PLUGIN_ROOT/scripts/lib/doctor.py" && grep -q 'second_families' "$MARKET_ROOT/plugins/apex-scope-loop/skills/apex-execute/scripts/checkpoint.sh" \
+  || fail "doctor.py and checkpoint.sh do not share ledger.second_families"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["tier_c_diversity"].startswith("warn") and d["second_families"] == []' "$WORK/ds/dispatch-shadow/doctor.json" \
+  || fail "doctor.json claims a Tier C second family although no worker shim ships"
+# Canonical lenses and emphasis
+python3 - "$PLUGIN_ROOT/scripts/lib" <<'PY' || fail "LENS/VERDICT parsing is not normalised"
+import sys; sys.path.insert(0, sys.argv[1]); import hooks
+assert hooks.parse_review("x\n**LENS:** Consent / PII\n**VERDICT:** APPROVE") == ("APPROVE", "consent-pii")
+assert hooks.parse_review("LENS: `Security`\nVERDICT: REQUEST_CHANGES.") == ("REQUEST_CHANGES", "security")
+assert hooks.parse_review("LENS: vibes\nVERDICT: APPROVE") == ("APPROVE", None)
+assert hooks.parse_review("_LENS: Maintainability_\nVERDICT: APPROVE") == ("APPROVE", "maintainability")
+# LENS lines in code fences, blockquotes or indented code are examples, not the lens
+assert hooks.parse_review("```\nLENS: security\n```\nLENS: money\nVERDICT: APPROVE") == ("APPROVE", "money")
+assert hooks.parse_review("> LENS: security\nVERDICT: APPROVE") == ("APPROVE", None)
+assert hooks.parse_review("    LENS: security\nLENS: Performance\nVERDICT: APPROVE") == ("APPROVE", "performance")
+PY
+start l1 apex-dispatch:reviewer; stopa l1 apex-dispatch:reviewer "$(printf '**LENS:** Consent / PII\n**VERDICT:** APPROVE')"
+[ "$(jget "$UD/reviews-raw/l1.json" role)" = lens:consent-pii ] || fail "an emphasised Consent / PII lens did not become lens:consent-pii"
+start l2 apex-dispatch:reviewer; stopa l2 apex-dispatch:reviewer "$(printf 'LENS: vibes\nVERDICT: APPROVE')"
+[ "$(jget "$UD/reviews-raw/l2.json" role)" = reviewer ] || fail "an unknown lens counted as a lens"
+# Audits judge the agent as live pre-bash did
+tr_write "$TR/g3.jsonl" Bash '{"command": "git commit -am gibson-at-build"}' 0
+start g3 apex-scope-loop:gibson-reviewer; stopa g3 apex-scope-loop:gibson-reviewer 'VERDICT: APPROVE' false "$TR/g3.jsonl"
+[ "$HRC" = 0 ] && [ "$(jget "$UD/reviews-raw/g3.json" verdict)" = APPROVE ] || fail "gibson-reviewer's record was refused for a command pre-bash allowed it (rc=$HRC)"
+tr_write "$TR/p1.jsonl" Bash "{\"command\": \"bash $PLUGIN_ROOT/bin/worker-codex.sh --route r --role reviewer --mode readonly\"}" 0
+start p1 apex-dispatch:provider-runner; stopa p1 apex-dispatch:provider-runner 'done' false "$TR/p1.jsonl"
+[ "$HRC" = 0 ] && [ "$(rowsin "$UL" policy_violation agent_id=p1)" = 0 ] || fail "provider-runner running a worker shim was audited as a violation (rc=$HRC)"
+# Foreground stops from post-agent; the live-agent denial says how to clear it
+O="$(cd "$UX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"; URID3="$(val ROUTE_ID "$O")"; git -C "$UX" commit -q --allow-empty -m r3
+printf '{"result":"PASS","head_sha":"%s"}\n' "$(git -C "$UX" rev-parse HEAD)" >"$USD_/gate/last.json"
+start f1 apex-dispatch:builder; start f2 apex-dispatch:builder
+O="$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')")"; grep -q 're-route' <<<"$O" || fail "the live-agent denial does not say how to clear a stuck registration: $O"
+pa x1 PostToolUseFailure tool_response.agentId=f1 error=interrupted
+pa x2 PostToolUse tool_response.agentId=f2 tool_response.status=interrupted
+[ "$(jget "$UD/agents/f1.json" stopped_by)" = post-agent-failure ] && [ "$(jget "$UD/agents/f2.json" stopped_by)" = post-agent ] || fail "post-agent did not record foreground stops"
+[ "$(ua "$(pl agent "$UX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "review stayed blocked after the foreground builders ended"; ustage BUILD
+# Live background builders never spend a block; a dirty worktree with no live builder does
+start bg1 apex-dispatch:builder; echo wip >"$UX/src/wip.py"; NB="$(rowsin "$UL" hook_advisory blocked=True)"
+sg; [ "$HRC" = 0 ] && [ "$(rowsin "$UL" hook_advisory blocked=True)" = "$NB" ] || fail "stop-gate spent a block on a live background builder (rc=$HRC)"
+stopa bg1 apex-dispatch:builder done; sg; [ "$HRC" = 2 ] && grep -q 'uncommitted' "$WORK/hr.err" || fail "stop-gate did not block on a dirty worktree once the builder stopped (rc=$HRC)"
+rm -f "$UX/src/wip.py"
+# GATE/REVIEW denials name the way back to BUILD
+ustage GATE
+for c in 'git commit -m fix' 'echo x > src/a.py'; do
+  hk2o="$(cd "$UX" && printf '%s' "$(pl bash "$UX" "$c")" | bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null)"
+  grep -q 'route.sh plan / iterate.sh' <<<"$hk2o" || fail "the GATE denial of '$c' does not say how to return to BUILD: $hk2o"
+done
+grep -q 'route.sh plan / iterate.sh' <<<"$(cd "$UX" && printf '%s' "$(pl edit "$UX" src/a.py)" | bash "$PLUGIN_ROOT/hooks/pre-edit.sh" 2>/dev/null)" \
+  || fail "the GATE edit denial does not say how to return to BUILD"
+ustage BUILD
+# Ad-hoc reviewers: a committed, clean HEAD instead of a gate result
+AX="$WORK/ax"; mkdir -p "$AX"; git init -q -b main "$AX"; printf '.dev-plan-state/\n' >"$AX/.gitignore"; echo a >"$AX/a.md"; git -C "$AX" add -A; git -C "$AX" commit -qm ax
+O="$(cd "$AX" && bash "$ROUTE" adhoc --tags docs --acceptance 'true' 2>&1)"; [ "$(val ROUTE_STATUS "$O")" = READY ] || fail "ad-hoc fixture route is not READY: $O"
+ax() { (cd "$AX" && printf '%s' "$1" | bash "$PLUGIN_ROOT/hooks/pre-agent.sh" 2>/dev/null); }
+echo b >>"$AX/a.md"
+grep -q 'committed, clean HEAD' <<<"$(ax "$(pl agent "$AX" apex-dispatch:reviewer '')")" || fail "an ad-hoc reviewer spawn on a dirty worktree was allowed"
+git -C "$AX" commit -qam b
+[ "$(ax "$(pl agent "$AX" apex-dispatch:reviewer '')" | one)" = "{}" ] || fail "an ad-hoc reviewer spawn on a committed, clean HEAD was denied (no gate result exists for ad-hoc routes)"
+pass "round 1: second family = available + shipped shim (doctor and checkpoint share it); canonical lenses and emphasised VERDICT; audits judge the agent's own identity; post-agent records foreground stops; stuck registrations explained; live background builders spend no stop-gate block; GATE denials name re-route; ad-hoc reviewers need a clean committed HEAD"
+
+# 60. review round 2: verdicts fail closed; a reviewer's record is bound to the HEAD it started on;
+#     post-agent stops an agent only on an explicit terminal status
+python3 - "$PLUGIN_ROOT/scripts/lib" <<'PY' || fail "verdict parsing is not lenient and fail-closed"
+import sys; sys.path.insert(0, sys.argv[1]); import hooks
+cases = {"VERDICT: REQUEST CHANGES": "REQUEST_CHANGES", "VERDICT: REQUEST_CHANGES (1 blocking finding)": "REQUEST_CHANGES",
+         "Verdict: REQUEST_CHANGES": "REQUEST_CHANGES", "no verdict line at all": "UNPARSED",
+         "**VERDICT:** APPROVE": "APPROVE", "verdict: approve": "APPROVE", "VERDICT: APPROVE (with nits)": "APPROVE",
+         "VERDICT: LGTM": "UNPARSED", "VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "VERDICT: APPROVE\nVERDICT: maybe": "UNPARSED", "`VERDICT: APPROVE`.": "APPROVE",
+         # Phase 3.3: an APPROVE with a separated remark is APPROVE unless the remark has a REQUEST token
+         "VERDICT: APPROVE (non-blocking nits only)": "APPROVE", "VERDICT: APPROVE \u2014 nits": "APPROVE",
+         "VERDICT: APPROVE - a few nits": "APPROVE", "VERDICT: APPROVE: ship it": "UNPARSED",
+         "VERDICT: APPROVE (but request changes to the docs)": "UNPARSED", "VERDICT: APPROVED": "UNPARSED",
+         "VERDICT: APPROVE with nits": "UNPARSED", "VERDICT: REQUEST_CHANGES \u2014 then approve": "REQUEST_CHANGES",
+         # round 1 review: a remark with a condition word is not an approval; "non-blocking" is fine
+         "VERDICT: APPROVE \u2014 once the blocking finding is fixed": "UNPARSED",
+         "VERDICT: APPROVE (conditional on fixing the blocking issue)": "UNPARSED",
+         "VERDICT: APPROVE - not yet, blocking finding above": "UNPARSED", "VERDICT: APPROVE, pending fixes": "UNPARSED",
+         "VERDICT: APPROVE-ish": "UNPARSED", "VERDICT: APPROVE \u2014 nits only": "APPROVE",
+         "VERDICT: APPROVE if the docs land": "UNPARSED", "VERDICT: APPROVE: after the rebase": "UNPARSED",
+         # a [blocking] finding forces REQUEST_CHANGES whatever the verdict line says
+         "- [blocking] src/a.py:3 drops the tenant check\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "[BLOCKING] races on retry\nVERDICT: APPROVE (non-blocking nits only)": "REQUEST_CHANGES",
+         "- [non-blocking] naming\nVERDICT: APPROVE": "APPROVE",
+         "1. [blocking] races on retry\nVERDICT: APPROVE": "REQUEST_CHANGES", "2) [blocking] x\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "(blocking) no tenant check\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "```\n- [blocking] <file:line> <scenario>\n```\nVERDICT: APPROVE": "APPROVE",
+         "```\n[blocking] src/a.py:3 drops tenant check\n```\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "[blocking] none found\nVERDICT: APPROVE": "APPROVE", "[blocking] (none)\nVERDICT: APPROVE": "APPROVE",
+         "- [blocking] none identified\nVERDICT: APPROVE": "APPROVE",
+         "VERDICT: APPROVE \u2014 looks good": "APPROVE", "VERDICT: APPROVE (no blockers)": "APPROVE",
+         "VERDICT: APPROVE (all lenses clear)": "APPROVE", "VERDICT: APPROVE (nits noted)": "APPROVE",
+         "VERDICT: APPROVE (no blocking findings)": "APPROVE",
+         "VERDICT: APPROVE, no": "UNPARSED", "VERDICT: APPROVE - blockers noted": "UNPARSED", "VERDICT: APPROVE \u2014 no, findings above": "UNPARSED",
+         "VERDICT: APPROVE (nits noted above)": "UNPARSED",
+         "- [blocking] <path:line> \u2014 <lens> \u2014 <failure scenario>\nVERDICT: APPROVE": "APPROVE",
+         "- [blocking] <a.py:1> <the parser drops it>\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "VERDICT: APPROVE \u2014 no, needs rework": "UNPARSED",
+         "[blocking]: none\nVERDICT: APPROVE": "APPROVE", "- [blocking] n/a\nVERDICT: APPROVE": "APPROVE",
+         # round 2 review: the remark is an allowlist; any other word means no approval
+         "VERDICT: APPROVE \u2014 don't merge yet": "UNPARSED", "VERDICT: APPROVE, provided the migration is reverted": "UNPARSED",
+         "VERDICT: APPROVE (assuming CI goes green)": "UNPARSED", "VERDICT: APPROVE, except for the auth bug": "UNPARSED",
+         "VERDICT: APPROVE \u2014 needs rework": "UNPARSED", "VERDICT: APPROVE \u2014 should address the race first": "UNPARSED",
+         "VERDICT: APPROVE \u2014 missing tests are a must-have": "UNPARSED",
+         "VERDICT: APPROVE \u2014 LGTM": "APPROVE", "VERDICT: APPROVE (minor suggestions)": "APPROVE",
+         # fences, blockquotes and indented code discount APPROVE lines only
+         "```\nVERDICT: APPROVE\n```": "UNPARSED", "~~~\nVERDICT: APPROVE\n~~~": "UNPARSED",
+         "> VERDICT: APPROVE": "UNPARSED", "    VERDICT: APPROVE": "UNPARSED", "\tVERDICT: APPROVE": "UNPARSED",
+         "```\nVERDICT: REQUEST_CHANGES\n```\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "> VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "    VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "REQUEST_CHANGES",
+         "```\nVERDICT: maybe\n```\nVERDICT: APPROVE": "UNPARSED",
+         "```\nVERDICT: APPROVE\n```\nVERDICT: REQUEST_CHANGES": "REQUEST_CHANGES",
+         "VERDICT: APPROVE\n```\nsome code": "UNPARSED",
+         # a template placeholder naming both outcomes is no verdict, quoted or not, wherever it is
+         "`VERDICT: APPROVE | REQUEST_CHANGES`\nVERDICT: APPROVE": "APPROVE",
+         "VERDICT: APPROVE or VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "APPROVE",
+         "```\nVERDICT: <APPROVE|REQUEST_CHANGES>\n```\nVERDICT: APPROVE": "APPROVE",
+         "\"VERDICT: APPROVE or REQUEST_CHANGES\"\nVERDICT: REQUEST_CHANGES": "REQUEST_CHANGES",
+         "`VERDICT: APPROVE | REQUEST_CHANGES`": "UNPARSED",
+         "VERDICT: APPROVE | REQUEST_CHANGES": "UNPARSED"}
+for msg, want in cases.items():
+    got = hooks.parse_review(msg.replace("\\n", "\n"))[0]
+    assert got == want, (msg, got, want)
+PY
+H0="$(git -C "$UX" rev-parse HEAD)"; i=0
+for m in 'VERDICT: REQUEST CHANGES' 'VERDICT: REQUEST_CHANGES (1 blocking finding)' 'Verdict: REQUEST_CHANGES' 'Looks fine to me.' \
+         $'```\nVERDICT: APPROVE\n```' '> VERDICT: APPROVE' 'VERDICT: APPROVE | REQUEST_CHANGES' \
+         'VERDICT: APPROVE — once the blocking finding is fixed' $'- [blocking] x.py:1 breaks\nVERDICT: APPROVE' \
+         'VERDICT: APPROVE, provided the migration is reverted' $'1. [blocking] x.py:1 breaks\nVERDICT: APPROVE' \
+         $'```\nVERDICT: REQUEST_CHANGES\n```\nVERDICT: APPROVE' $'VERDICT: APPROVE\n```'; do
+  i=$((i + 1)); start "fc$i" apex-dispatch:reviewer; stopa "fc$i" apex-dispatch:reviewer "$(printf 'findings\n%s' "$m")"
+  v="$(jget "$UD/reviews-raw/fc$i.json" verdict)"; [ "$v" != APPROVE ] && [ "$(jget "$UD/reviews-raw/fc$i.json" head_sha)" = "$H0" ] \
+    && [ "$(rowsin "$UL" verdict agent_id="fc$i" verdict="$v")" = 1 ] || fail "'$m' did not leave a non-approving record + verdict row at HEAD ($v)"
+done
+for m in '**VERDICT:** APPROVE' 'verdict: approve' 'VERDICT: APPROVE (non-blocking nits only)' 'VERDICT: APPROVE (minor suggestions)' $'`VERDICT: APPROVE | REQUEST_CHANGES`\nVERDICT: APPROVE — nits'; do
+  i=$((i + 1)); start "fc$i" apex-dispatch:reviewer; stopa "fc$i" apex-dispatch:reviewer "$m"
+  [ "$(jget "$UD/reviews-raw/fc$i.json" verdict)" = APPROVE ] || fail "'$m' did not count as APPROVE"
+done
+start sl1 apex-dispatch:reviewer; [ "$(jget "$UD/agents/sl1.json" head_at_start)" = "$H0" ] || fail "subagent-start did not stamp the HEAD"
+git -C "$UX" commit -q --allow-empty -m moved
+stopa sl1 apex-dispatch:reviewer 'VERDICT: APPROVE'
+[ "$(jget "$UD/reviews-raw/sl1.json" head_sha)" = "$H0" ] && grep -q 'HEAD moved' "$UD/reviews-raw/sl1.json" || fail "a reviewer whose HEAD moved was credited to the new HEAD or not marked stale"
+pa y1 PostToolUse tool_response.agentId=f9; start f9 apex-dispatch:builder; pa y2 PostToolUse tool_response.agentId=f9 tool_response.status=weird
+[ "$(jget "$UD/agents/f9.json" stopped_at)" = None ] || fail "an unknown post-agent status stopped a live agent"
+pa y3 PostToolUse tool_response.agentId=f9 tool_response.status=cancelled
+[ "$(jget "$UD/agents/f9.json" stopped_by)" = post-agent ] || fail "a terminal post-agent status did not stop the agent"
+pass "round 2 + 3.3: lenient verdict parsing (APPROVE + a remark of allowlisted words only; APPROVE lines in fences/blockquotes/indented code and template placeholders skipped), fail-closed ([blocking] findings, conditional remarks, non-approving lines anywhere, unclosed fences; (no/unreadable/mixed verdict = UNPARSED or REQUEST_CHANGES record + row at HEAD); records bound to the start HEAD and marked stale if it moved; only terminal post-agent statuses stop an agent"
+
+# 61. Phase 3.3 carry-overs: an empty ledger never verifies as OK; --overlay alone never
+#     rewrites the plugin; ad-hoc state dirs are derived, not hardcoded; the route skill
+#     names only routable models and documents REVIEW_SHAPE none
+mkdir -p "$WORK/empty-state"
+set +e; bash "$LEDGER" verify --state "$WORK/empty-state" >"$WORK/ev.out" 2>"$WORK/ev.err"; ERC=$?; set -e
+[ "$ERC" = 3 ] && grep -q '^ledger verify: EMPTY' "$WORK/ev.err" && ! grep -q 'OK' "$WORK/ev.out" \
+  || fail "ledger.sh verify on a state with no rows did not say EMPTY and exit 3 (rc=$ERC: $(cat "$WORK/ev.out" "$WORK/ev.err"))"
+cp -R "$PLUGIN_ROOT" "$WORK/copy61"
+printf '\n' >> "$WORK/copy61/agents/reviewer.md"
+printf '{}\n' >"$WORK/empty-overlay.json"
+if bash "$WORK/copy61/scripts/compile.sh" --overlay "$WORK/empty-overlay.json" >/dev/null 2>"$WORK/ov.err"; then
+  fail "compile.sh --overlay alone passed over a stale artifact (it must run as --check)"
+fi
+grep -q 'stale: agents/reviewer.md' "$WORK/ov.err" || fail "compile.sh --overlay alone did not report the stale artifact like --check"
+[ "$(tail -c 2 "$WORK/copy61/agents/reviewer.md" | od -An -c | tr -d ' ')" = '\n\n' ] || fail "compile.sh --overlay alone rewrote agents/reviewer.md"
+bash "$WORK/copy61/scripts/compile.sh" --overlay "$WORK/empty-overlay.json" --write >/dev/null && bash "$WORK/copy61/scripts/compile.sh" --check >/dev/null \
+  || fail "compile.sh --overlay PATH --write did not regenerate"
+if bash "$COMPILE" --check --write >/dev/null 2>&1; then fail "--check and --write were accepted together"; fi
+for f in done run report; do
+  if grep -q '\.dev-plan-state/adhoc' "$PLUGIN_ROOT/commands/$f.md"; then fail "commands/$f.md still hardcodes .dev-plan-state/adhoc"; fi
+done
+grep -q 'ROUTE_FILE' "$PLUGIN_ROOT/commands/done.md" && grep -q 'EMPTY' "$PLUGIN_ROOT/commands/done.md" \
+  || fail "commands/done.md does not derive the ad-hoc state from ROUTE_FILE or explain EMPTY"
+python3 - "$PLUGIN_ROOT/skills/dispatch-route/SKILL.md" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "dispatch-route SKILL.md: ROUTE_MODEL names a model no tier maps to, or REVIEW_SHAPE none is undocumented"
+import json, re, sys
+t, pol = open(sys.argv[1]).read(), json.load(open(sys.argv[2]))
+row = next(l for l in t.splitlines() if l.startswith("| `ROUTE_MODEL`"))
+named = set(re.findall(r"`(haiku|sonnet|opus|fable)`", row))
+assert named and named <= {x["model"] for x in pol["tiers"]}, (named, row)
+assert "**`none`:**" in t and "every ledger row you write" not in t
+PY
+pass "3.3 carry-overs: empty ledger = EMPTY/exit 3; --overlay alone = --check (no rewrite), --write regenerates; ad-hoc state derived from ROUTE_FILE/apex_state_base; ROUTE_MODEL only tier models; REVIEW_SHAPE none documented"
+
+# --- Phase 4.1: provider shims (bin/worker-*.sh), apply.sh, real Tier C diversity ---
+# Every provider CLI below is a stub on a fixture PATH (no network, no account): it logs
+# its argv, cwd, stdin and environment names as JSON and prints canned output.
+STUB="$WORK/stub"; SLOG="$WORK/stub-log"; mkdir -p "$STUB" "$SLOG"; echo approve >"$STUB/mode"
+cat >"$STUB/claude" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, sys, time
+LOG, MODEFILE = "$SLOG", "$STUB/mode"
+a = sys.argv[1:]
+if a[:1] in (["--version"], ["-v"]):
+    print("2.1.300 (Claude Code)"); sys.exit(0)
+if "--help" in a:
+    print("Usage: claude [options] [command] [prompt]"); sys.exit(0)
+if a[:2] == ["plugin", "validate"]:
+    print("Validation passed"); sys.exit(0)
+mode = open(MODEFILE).read().strip()
+stdin = sys.stdin.read()
+n = len(os.listdir(LOG))
+json.dump({"bin": "claude", "argv": a, "cwd": os.getcwd(), "stdin": stdin, "env": sorted(os.environ)},
+          open(os.path.join(LOG, "%03d-claude.json" % n), "w"))
+if mode == "sleep":
+    time.sleep(30)
+if mode == "edit":
+    os.makedirs("docs", exist_ok=True); open("docs/guide.md", "a").write("claude edit\n")
+text = {"approve": "Checked the diff.\nVERDICT: APPROVE", "changes": "[blocking] a.py:1 breaks\nVERDICT: REQUEST_CHANGES"}.get(mode, "done")
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text, "total_cost_usd": 0.0123,
+                  "usage": {"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 500, "cache_creation_input_tokens": 0},
+                  "modelUsage": {"claude-sonnet-5-5": {}}}))
+PYSTUB
+cat >"$STUB/codex" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, sys, time
+LOG, MODEFILE = "$SLOG", "$STUB/mode"
+a = sys.argv[1:]
+if "--version" in a:
+    print("codex-cli 0.160.0"); sys.exit(0)
+if "--help" in a:
+    print("Usage: codex exec [OPTIONS] [PROMPT]"); sys.exit(0)
+if a[:1] != ["exec"] or "-C" not in a or "-o" not in a or "--" not in a:
+    print("error: unexpected invocation", file=sys.stderr); sys.exit(2)
+cdir, out, prompt = a[a.index("-C") + 1], a[a.index("-o") + 1], a[a.index("--") + 1]
+mode = open(MODEFILE).read().strip()
+n = len(os.listdir(LOG))
+json.dump({"bin": "codex", "argv": a, "cwd": os.getcwd(), "prompt": prompt, "env": sorted(os.environ)},
+          open(os.path.join(LOG, "%03d-codex.json" % n), "w"))
+if mode == "sleep":
+    time.sleep(30)
+if mode == "fail":
+    print(json.dumps({"type": "turn.failed", "error": {"message": "boom"}})); sys.exit(1)
+if mode == "edit":
+    os.makedirs(os.path.join(cdir, "docs"), exist_ok=True); open(os.path.join(cdir, "docs", "guide.md"), "a").write("codex edit\n")
+if mode == "edit-outside":
+    os.makedirs(os.path.join(cdir, "src"), exist_ok=True); open(os.path.join(cdir, "src", "x.py"), "w").write("x = 1\n")
+if mode == "edit-protected":
+    os.makedirs(os.path.join(cdir, ".claude"), exist_ok=True); open(os.path.join(cdir, ".claude", "settings.json"), "w").write("{}\n")
+text = {"approve": "LENS: security\nNo findings.\nVERDICT: APPROVE", "changes": "[blocking] a.py:1 breaks\nVERDICT: REQUEST_CHANGES"}.get(mode, "done")
+for e in ({"type": "thread.started", "thread_id": "t1"}, {"type": "item.completed", "item": {"type": "agent_message", "text": text}},
+          {"type": "turn.completed", "usage": {"input_tokens": 1200, "cached_input_tokens": 300, "output_tokens": 150}}):
+    print(json.dumps(e))
+open(out, "w").write(text)
+PYSTUB
+chmod +x "$STUB/claude" "$STUB/codex"
+mkdir -p "$WORK/wcfg/claude" "$WORK/wcfg/codex" "$WORK/wcfg/none"
+echo '{"stub": true}' >"$WORK/wcfg/claude/.credentials.json"; echo '{"stub": true}' >"$WORK/wcfg/codex/auth.json"
+# wenv CMD... -> run with the stub PATH and stub credentials (auth OK); wenv_noauth -> no credentials anywhere
+wenv() { env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN -u APEX_DISPATCH_ENFORCE -u CLAUDE_CODE_SUBAGENT_MODEL \
+  PATH="$STUB:$PATH" APEX_CLAUDE_BIN="$STUB/claude" CLAUDE_CONFIG_DIR="$WORK/wcfg/claude" CODEX_HOME="$WORK/wcfg/codex" \
+  SMOKE_SECRET=do-not-leak "$@"; }
+wenv_noauth() { env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN -u APEX_DISPATCH_ENFORCE -u CLAUDE_CODE_SUBAGENT_MODEL \
+  PATH="$STUB:$PATH" APEX_CLAUDE_BIN="$STUB/claude" CLAUDE_CONFIG_DIR="$WORK/wcfg/none" CODEX_HOME="$WORK/wcfg/none" "$@"; }
+[ "$(wenv sh -c 'command -v codex')" = "$STUB/codex" ] && [ "$(wenv sh -c 'command -v claude')" = "$STUB/claude" ] || fail "the stub provider CLIs do not shadow PATH"
+CODEXW="$PLUGIN_ROOT/bin/worker-codex.sh"; CLAUDEW="$PLUGIN_ROOT/bin/worker-claude-p.sh"; APPLY="$PLUGIN_ROOT/scripts/apply.sh"
+# wrun DIR CMD... -> stdout in $WOUT, stderr in $WORK/w.err, exit code in $WRC
+wrun() { local d="$1"; shift; WRC=0; WOUT="$( (cd "$d" && wenv "$@") 2>"$WORK/w.err")" || WRC=$?; }
+lastlog() { ls "$SLOG" | tail -1 | sed "s|^|$SLOG/|"; }
+shimrows() { python3 -c 'import json, sys
+r = [json.loads(l) for l in open(sys.argv[1])]
+print(sum(1 for x in r if x["event"] == sys.argv[2] and x.get("source") == "shim" and all(str(x.get(k)) == v for k, v in (a.split("=", 1) for a in sys.argv[3:]))))' "$@"; }
+
+# 62. shims ship: worker-common.sh + worker-claude-p.sh + worker-codex.sh + apply.sh, executable, bash -n clean;
+#     no forbidden or bypass flag literal anywhere in bin/; usage errors and no-run refusals have their exit codes
+for f in bin/worker-common.sh bin/worker-claude-p.sh bin/worker-codex.sh scripts/apply.sh scripts/lib/worker.py; do
+  [ -f "$PLUGIN_ROOT/$f" ] || fail "missing $f"
+done
+for f in bin/worker-common.sh bin/worker-claude-p.sh bin/worker-codex.sh scripts/apply.sh; do
+  [ -x "$PLUGIN_ROOT/$f" ] && bash -n "$PLUGIN_ROOT/$f" || fail "$f is not executable or does not parse"
+done
+python3 - "$PLUGIN_ROOT" <<'PY' || fail "a forbidden or bypass flag literal appears in bin/"
+import glob, json, os, re, sys
+root = sys.argv[1]
+pol = json.load(open(os.path.join(root, "resources", "compiled", "policy.json")))
+flags = {f for p in pol["providers"] for f in p["forbidden_flags"]} | {"--dangerously-", "--yolo", "--always-approve", "--full-auto"}
+hits = []
+for f in glob.glob(os.path.join(root, "bin", "*")):
+    t = open(f).read()
+    for x in flags:
+        if re.search(r"(^|[\s`'\"])" + re.escape(x) + r"(?=$|[\s`'\"=]|(?<=-)\w)", t, re.M):
+            hits.append("%s: %s" % (os.path.basename(f), x))
+assert not hits, hits
+PY
+WRC=0; bash "$PLUGIN_ROOT/bin/worker-common.sh" >/dev/null 2>&1 || WRC=$?; [ "$WRC" = 2 ] || fail "worker-common.sh ran as a program (rc=$WRC)"
+NOX="$WORK/nolock"; mkdir -p "$NOX"; git init -q -b main "$NOX"; git -C "$NOX" commit -q --allow-empty -m n; echo brief >"$WORK/brief.md"
+wrun "$NOX" bash "$CODEXW" --route r-x --role reviewer --brief "$WORK/brief.md"; [ "$WRC" = 3 ] && grep -q 'no ACTIVE run' "$WORK/w.err" || fail "a shim ran without an ACTIVE run (rc=$WRC: $(cat "$WORK/w.err"))"
+wrun "$NOX" bash "$APPLY" --worker "$NOX"; [ "$WRC" = 3 ] || fail "apply.sh without an ACTIVE run did not refuse with 3 (rc=$WRC)"
+[ "$(bash "$APPLY" >/dev/null 2>&1; echo $?)" = 2 ] || fail "apply.sh without arguments is not a usage error"
+[ -z "$(ls "$SLOG")" ] || fail "a provider stub ran during the refusals"
+pass "shims: worker-common/claude-p/codex + apply.sh ship executable and parse; no forbidden/bypass flag literal in bin/; no ACTIVE run = refused (3); usage = 2"
+
+# Fixture: a [docs] task routed to codex (Route: provider=codex), state + plan worktree by init.sh.
+WX="$WORK/wx"; mkdir -p "$WX/plans" "$WX/docs"; git init -q -b main "$WX"
+printf '# W\n\n- [ ] **Phase 1.1** [docs] refresh the guide\n  - Acceptance: `true`\n  - Route: provider=codex\n  - Paths: docs/**\n' >"$WX/plans/p.md"
+printf '.dev-plan-state/\n' >"$WX/.gitignore"; echo guide >"$WX/docs/guide.md"; git -C "$WX" add -A; git -C "$WX" commit -qm wx
+(cd "$WX" && wenv bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the worker fixture"
+O="$(cd "$WX" && wenv bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_PROVIDER "$O")" = codex ] && [ "$(val ROUTE_ENFORCED "$O")" = yes ] || fail "the worker fixture route is not an enforced codex route: $O"
+WRID="$(val ROUTE_ID "$O")"; WSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; WWT="$WSD/worktree"; WD="$WSD/dispatch"
+WOWN="$WX/.dev-plan-state/ACTIVE/owner.json"
+printf 'Refresh docs/guide.md. Change nothing outside docs/**.\n' >"$WORK/wbrief.md"
+
+# 63. doctor reports per-provider shim, version, auth (env | credentials file | none) and the forced-flag
+#     probe; a shim refuses without doctor.json, with the provider unavailable or its auth missing (4),
+#     and refuses unverified/unshipped providers (3)
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 4 ] && grep -q 'doctor.sh' "$WORK/w.err" || fail "a shim ran without doctor.json (rc=$WRC: $(cat "$WORK/w.err"))"
+(cd "$WX" && wenv_noauth bash "$DOCTOR" --state "$WSD" --repo "$WX" >/dev/null 2>&1) || true
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); c=d["providers"]["codex"]; assert c["shim"] and c["available"] and c["auth"]=="none" and not c["auth_ok"] and d["claude_p_auth"]=="unavailable" and d["second_families"]==[] and d["tier_c_diversity"].startswith("warn"), d' "$WD/doctor.json" \
+  || fail "doctor.json without auth: codex/claude-p auth or the diversity degrade is wrong"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 4 ] && grep -q 'no auth for codex' "$WORK/w.err" || fail "a shim ran with doctor.json showing no auth (rc=$WRC: $(cat "$WORK/w.err"))"
+(cd "$WX" && wenv bash "$DOCTOR" --state "$WSD" --repo "$WX" >"$WORK/wdoc.out" 2>&1) || true
+python3 - "$WD/doctor.json" "$STUB" <<'PY' || fail "doctor.json with stub CLIs and credentials: per-provider facts wrong: $(cat "$WORK/wdoc.out")"
+import json, sys
+d = json.load(open(sys.argv[1]))
+c, p = d["providers"]["codex"], d["providers"]["claude-p"]
+assert c["shim"] and c["available"] and c["verified"] and c["version"] == "0.160.0" and c["auth"] == "credentials-file" and c["auth_ok"] and c["flags_ok"], c
+assert p["shim"] and p["available"] and p["version"] == "2.1.300" and p["auth"] == "credentials-file" and p["path"] == sys.argv[2] + "/claude", p
+g = d["providers"]["grok"]
+assert g["status"] == "flagged-off" and not g["verified"] and not g["available"] and g["shim"] and g["shim_file"] == "bin/worker-grok.sh", g
+assert d["claude_p_auth"] == "available" and d["second_families"] == ["claude-p", "codex"] and d["tier_c_diversity"] == "block", d
+chk = {x["id"]: x for x in d["checks"]}
+assert chk["provider-forced-flags-probe"]["status"] == "ok" and chk["sandbox-confinement"]["status"] in ("ok", "warn"), chk
+PY
+# A provider whose forced flags the CLI rejects is unavailable (doctor's --help probe).
+mkdir -p "$WORK/badflags"; printf '#!/bin/sh\ncase "$*" in *--version*) echo "codex-cli 0.147.0" ;; *) echo "error: unexpected argument --ignore-user-config" >&2; exit 2 ;; esac\n' >"$WORK/badflags/codex"; chmod +x "$WORK/badflags/codex"
+(cd "$WX" && wenv env PATH="$WORK/badflags:$STUB:$PATH" bash "$DOCTOR" --state "$WORK/bfs" --repo "$WX" >/dev/null 2>&1) || true
+python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["providers"]["codex"]; assert c["flags_ok"] is False and c["available"] is False and "unexpected argument" in c["flags_detail"], c' "$WORK/bfs/dispatch/doctor.json" \
+  || fail "doctor did not mark a provider that rejects its forced flags unavailable"
+# Unverified (flagged-off) and unshipped providers are refused by the shared engine.
+wrun "$WX" bash -c 'source "$1"; apex_worker_main grok --route "$2" --role docs --brief "$3"' _ "$PLUGIN_ROOT/bin/worker-common.sh" "$WRID" "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q 'disabled in the policy (status flagged-off)' "$WORK/w.err" || fail "an unverified, disabled provider was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
+printf '{"providers":[{"id":"grok","enabled":true}]}\n' >"$WORK/grok-on.json"
+wrun "$WX" env APEX_DISPATCH_POLICY="$WORK/grok-on.json" bash -c 'source "$1"; apex_worker_main grok --route "$2" --role docs --brief "$3"' _ "$PLUGIN_ROOT/bin/worker-common.sh" "$WRID" "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q 'no per-version smoke is recorded' "$WORK/w.err" || fail "an explicitly enabled flagged-off provider without verified_versions was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md" --model gpt-9; [ "$WRC" = 2 ] && grep -q 'takes no provider flags' "$WORK/w.err" || fail "a caller-supplied flag was not a usage error (rc=$WRC)"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role reviewer --mode build --brief "$WORK/wbrief.md"; [ "$WRC" = 2 ] || fail "a reviewer in build mode was not a usage error (rc=$WRC)"
+wrun "$WX" bash "$CODEXW" --route r-000000000000-L3-9 --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'not the ACTIVE task' "$WORK/w.err" || fail "a shim ran for another route (rc=$WRC)"
+wrun "$WX" bash "$CLAUDEW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'routes its builders to codex' "$WORK/w.err" || fail "claude-p built on a route that pins codex (rc=$WRC: $(cat "$WORK/w.err"))"
+[ -z "$(ls "$SLOG")" ] || fail "a provider stub ran during the refusals"
+pass "doctor: per-provider shim/version/auth/forced-flag probe, unverified providers flagged, second families only with auth; shims refuse without doctor.json, without auth (4), for flagged-off, unshipped, other-route and unpinned providers and caller flags (2/3)"
+
+# 64. write-mode codex worker: a detached worktree off HEAD under <D>/worktrees, the policy's forced flags only
+#     (workspace-write; no forbidden flag), a scrubbed environment, result.json + patch.diff, shim worker_run row;
+#     apply.sh commits it with Dispatch-* trailers, writes worker_applied and removes the worktree
+WH0="$(git -C "$WWT" rev-parse HEAD)"
+echo edit >"$STUB/mode"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md" --base "$WH0"
+[ "$WRC" = 0 ] && [ "$(printf '%s\n' "$WOUT" | tail -1)" = "DISPATCH-DONE exit=0" ] || fail "the codex build worker failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+WO1="$(val WORKER_OUT "$WOUT")"; [ "$(dirname "$WO1")" = "$(cd "$WD/workers" && pwd -P)" ] || fail "the worker out dir is not one level inside <D>/workers: $WO1"
+python3 - "$(lastlog)" "$WO1/result.json" "$WD" "$PLUGIN_ROOT/resources/compiled/policy.json" "$WH0" <<'PY' || fail "the codex build command or its result is wrong"
+import json, os, sys
+log, res, wd, pol, head = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3], json.load(open(sys.argv[4])), sys.argv[5]
+a = log["argv"]
+codex = next(p for p in pol["providers"] if p["id"] == "codex")
+assert a[:len(codex["forced_flags"])] == codex["forced_flags"], a          # exactly the policy's forced flags first
+assert a[a.index("--sandbox") + 1] == "workspace-write" and "approval_policy=never" in a
+for f in codex["forbidden_flags"] + ["--dangerously-bypass-approvals-and-sandbox", "danger-full-access"]:
+    assert not any(x == f or x.startswith(f + "=") for x in a), f
+wt = a[a.index("-C") + 1]
+assert os.path.realpath(wt) == os.path.realpath(log["cwd"]) and os.path.realpath(wt).startswith(os.path.realpath(wd) + "/worktrees/"), (wt, log["cwd"])
+assert "SMOKE_SECRET" not in log["env"] and "PATH" in log["env"] and "CODEX_HOME" in log["env"], log["env"]
+assert res["provider"] == "codex" and res["mode"] == "write" and res["worker_role"] == "docs" and res["exit_code"] == 0 and res["sentinel_seen"]
+assert res["files_changed"] == ["docs/guide.md"] and res["patch_sha256"] and res["head_sha"] == head and res["verdict"] is None
+assert res["usage"] == {"input": 1200, "output": 150, "cache_read": 300} and res["timeout_sec"] > 0 and res["confinement"]["kind"] == "git-worktree"
+for k in ("provider", "model", "role", "route", "head_sha", "verdict", "usage", "usd_estimate", "exit_code", "started_at", "ended_at"):
+    assert k in res, k
+assert os.path.isdir(wt), "the write worktree was removed before apply"
+PY
+[ "$(shimrows "$WD/ledger.jsonl" worker_run route_id="$WRID" provider=codex role=docs exit_code=0)" = 1 ] || fail "no shim worker_run row for the build worker"
+[ "$(jget "$WO1/worker.json" status)" = ready-to-apply ] && [ "$(jget "$WD/agents/$(basename "$WO1").json" stopped_by)" = shim ] || fail "the worker registry/agent registration was not closed"
+WT1="$(jget "$WO1/worker.json" worktree)"
+wrun "$WX" bash "$APPLY" --worker "$WO1" --route "$WRID"; [ "$WRC" = 0 ] || fail "apply.sh refused a clean in-Paths patch (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+WH1="$(git -C "$WWT" rev-parse HEAD)"; [ "$(val APPLIED "$WOUT")" = "$WH1" ] && [ "$(git -C "$WWT" rev-parse HEAD~1)" = "$WH0" ] || fail "apply.sh did not make one commit on the plan worktree"
+MSG="$(git -C "$WWT" log -1 --format=%B)"
+for t in "Dispatch-Route: $WRID" "Dispatch-Provider: codex" "Dispatch-Model: " "Dispatch-Result: $(jget "$WO1/result.json" record_id)"; do
+  grep -qF "$t" <<<"$MSG" || fail "the applied commit lacks the trailer '$t': $MSG"
+done
+grep -q 'codex edit' "$WWT/docs/guide.md" && [ -z "$(git -C "$WWT" status --porcelain)" ] || fail "the applied change is not committed cleanly"
+[ ! -e "$WT1" ] && ! git -C "$WWT" worktree list | grep -qF "$WT1" || fail "apply.sh did not remove the throwaway worktree"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; a=[x for x in r if x["event"]=="worker_applied"]; assert len(a)==1 and a[0]["source"]=="shim" and a[0]["head_sha"]==sys.argv[2]==a[0]["commit_sha"] and a[0]["files"]==["docs/guide.md"], a' "$WD/ledger.jsonl" "$WH1" \
+  || fail "no worker_applied row bound to the new HEAD"
+wrun "$WX" bash "$APPLY" --worker "$WO1"; [ "$WRC" = 3 ] && grep -q 'already applied' "$WORK/w.err" || fail "a worker patch was applied twice (rc=$WRC)"
+bash "$LEDGER" append worker_applied '{"route_id":"x","provider":"codex","run_id":"r","commit_sha":"c"}' --state "$WSD" --source cli >/dev/null 2>&1 && fail "the CLI appended a worker_applied provenance row"
+bash "$LEDGER" verify --state "$WSD" >/dev/null || fail "the ledger does not verify after the worker and apply rows"
+pass "write-mode codex worker: worktree off HEAD under <D>/worktrees, exactly the policy's forced flags (workspace-write, nothing forbidden), scrubbed env, result.json/patch.diff, shim worker_run; apply.sh: one commit with Dispatch-* trailers, worker_applied at the new HEAD, worktree removed, never twice"
+
+# 65. pre-bash: shims only from the orchestrator or provider-runner (relative bin/ paths too); direct codex /
+#     claude -p stay denied; APEX_DISPATCH_WORKER_WT is tamper-protected. pre-edit: a claude -p write worker's
+#     registered worktree is its workspace, an unregistered one is not (payloads fed from files)
+PJS="$WORK/p41"; mkdir -p "$PJS"; n=0
+wpb() { n=$((n + 1)); pl bash "$WWT" "$@" >"$PJS/$n.json"; (cd "$WWT" && bash "$PLUGIN_ROOT/hooks/pre-bash.sh" <"$PJS/$n.json" 2>/dev/null) | one; }
+wpe() { n=$((n + 1)); pl edit "$WWT" "$@" >"$PJS/$n.json"; }
+for c in "bash $CODEXW --route r --role reviewer --brief b" "bash bin/worker-codex.sh --route r --role reviewer --brief b"; do
+  [ "$(wpb "$c")" = "{}" ] || fail "the orchestrator was denied a shim call: $c"
+  [ "$(wpb "$c" agent_type=apex-dispatch:provider-runner agent_id=pr1)" = "{}" ] || fail "provider-runner was denied a shim call: $c"
+  [ "$(wpb "$c" agent_type=apex-dispatch:builder agent_id=b1)" = deny ] || fail "a builder was allowed a shim call: $c"
+  [ "$(wpb "$c" agent_type=apex-dispatch:builder)" = deny ] || fail "a builder worker session was allowed a shim call: $c"
+done
+for c in 'codex exec "do it"' 'claude -p hi' 'claude --print hi' 'npx @openai/codex exec x' 'APEX_DISPATCH_WORKER_WT=/tmp/x bash y' 'export APEX_DISPATCH_WORKER_WT=/tmp/x'; do
+  [ "$(wpb "$c")" = deny ] || fail "pre-bash allowed: $c"
+done
+[ "$(wpb 'codex --version')" = "{}" ] && [ "$(wpb "bash $APPLY --worker x")" = "{}" ] || fail "pre-bash denied codex --version or apply.sh"
+FWT="$WD/worktrees/w-claude-p-fake01"; mkdir -p "$FWT/docs" "$WD/workers/w-claude-p-fake01"
+printf '{"run_id":"w-claude-p-fake01","mode":"write","status":"running","worktree":"%s","route_id":"x"}\n' "$FWT" >"$WD/workers/w-claude-p-fake01/worker.json"
+wpe "$FWT/docs/a.md" agent_type=apex-dispatch:builder
+ped() { (cd "$FWT" && env "$@" bash "$PLUGIN_ROOT/hooks/pre-edit.sh" <"$PJS/$n.json" 2>/dev/null) | one; }
+[ "$(ped APEX_DISPATCH_WORKER_WT="$FWT")" = "{}" ] || fail "pre-edit denied a claude -p write worker inside its registered worktree"
+[ "$(ped APEX_DISPATCH_WORKER_WT=)" = deny ] || fail "pre-edit allowed a write into run state without a worker registration"
+[ "$(ped APEX_DISPATCH_WORKER_WT="$WORK")" = deny ] || fail "pre-edit honoured an unregistered APEX_DISPATCH_WORKER_WT"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["status"]="finished"; json.dump(d, open(p,"w"))' "$WD/workers/w-claude-p-fake01/worker.json"
+[ "$(ped APEX_DISPATCH_WORKER_WT="$FWT")" = deny ] || fail "pre-edit honoured a finished worker's worktree"
+wpe "$FWT/.dev-plan-state/x" agent_type=apex-dispatch:builder
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["status"]="running"; json.dump(d, open(p,"w"))' "$WD/workers/w-claude-p-fake01/worker.json"
+[ "$(ped APEX_DISPATCH_WORKER_WT="$FWT")" = deny ] || fail "pre-edit allowed run state nested in a worker worktree"
+rm -rf "$FWT" "$WD/workers/w-claude-p-fake01"
+pass "pre-bash: shims only from the orchestrator or provider-runner (absolute and relative bin/ paths), direct codex/claude -p denied, APEX_DISPATCH_WORKER_WT tamper-protected; pre-edit: a running claude -p write worker's registered worktree is writable, unregistered/finished ones and nested run state are not"
+
+# 66. apply.sh refuses out-of-Paths and never-touch paths (patch kept under <D>/rejected/), a moved base and
+#     GATE/REVIEW; a failed or timed-out worker run is exit 1 with result.json, no verdict, the worktree removed.
+#     Builder-side worker runs count against the route's spawn budget (docs: 2), so the fixture re-routes.
+reroute() { local o; o="$(cd "$WX" && wenv bash "$ROUTE" plan plans/p.md --line 3 2>&1)"; WRID="$(val ROUTE_ID "$o")"; [ "$(val ROUTE_STATUS "$o")" = READY ] || fail "re-route failed: $o"; }
+reroute
+for m in edit-outside edit-protected; do
+  echo "$m" >"$STUB/mode"
+  wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 0 ] || fail "the $m worker failed (rc=$WRC)"
+  WOX="$(val WORKER_OUT "$WOUT")"
+  wrun "$WX" bash "$APPLY" "$WOX"; [ "$WRC" = 1 ] || fail "apply.sh accepted a $m patch (rc=$WRC)"
+  [ -f "$WD/rejected/$(basename "$WOX").diff" ] || fail "the refused $m patch was not kept under rejected/"
+  [ "$(git -C "$WWT" rev-parse HEAD)" = "$WH1" ] && [ -z "$(git -C "$WWT" status --porcelain)" ] || fail "a refused $m patch touched the plan worktree"
+done
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'spawn budget is spent (2 of 2' "$WORK/w.err" || fail "a third builder-side worker run on a 2-spawn route was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
+python3 - "$WD/rejected" <<'PY' || fail "apply.sh refusals do not name the out-of-Paths and never-touch reasons"
+import glob, json, sys
+why = " | ".join(json.load(open(f))["reason"] for f in glob.glob(sys.argv[1] + "/*.json"))
+assert "src/x.py (outside the route's owned Paths (docs/**))" in why and ".claude/settings.json (never-touch path: .claude/settings*.json)" in why, why
+PY
+echo edit >"$STUB/mode"; reroute
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; WOM="$(val WORKER_OUT "$WOUT")"
+git -C "$WWT" commit -q --allow-empty -m moved; WH2="$(git -C "$WWT" rev-parse HEAD)"
+wrun "$WX" bash "$APPLY" "$WOM"; [ "$WRC" = 1 ] && grep -q 'moved since the worker forked' "$WORK/w.err" || fail "apply.sh applied onto a moved base (rc=$WRC)"
+echo sleep >"$STUB/mode"; reroute; T0=$SECONDS
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md" --timeout-sec 2
+[ "$WRC" = 1 ] && [ $((SECONDS - T0)) -lt 15 ] || fail "the timeout was not honoured (rc=$WRC, $((SECONDS - T0)) s)"
+WOT="$(val WORKER_OUT "$WOUT")"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["timed_out"] and r["exit_code"] in (124, 137) and r["timeout_sec"] == 2 and not r["ok"] and r["verdict"] is None, r' "$WOT/result.json" || fail "a timed-out run's result.json is wrong"
+grep -q '^DISPATCH-DONE exit=12[4]$\|^DISPATCH-DONE exit=137$' <<<"$WOUT" || fail "a timed-out run did not print its sentinel with the exit"
+[ ! -e "$(jget "$WOT/worker.json" worktree)" ] || fail "a failed worker's worktree was kept"
+echo fail >"$STUB/mode"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 1 ] || fail "a failing provider run was not exit 1"
+wrun "$WX" bash "$APPLY" "$(val WORKER_OUT "$WOUT")"; [ "$WRC" = 1 ] && grep -q 'did not finish cleanly' "$WORK/w.err" || fail "apply.sh applied a failed run (rc=$WRC)"
+[ "$(shimrows "$WD/ledger.jsonl" worker_run route_id="$WRID" exit_code=1)" -ge 1 ] || fail "a failed worker run wrote no worker_run row"
+pass "apply.sh refuses out-of-Paths and never-touch paths (kept under rejected/), a moved base and failed runs; timeouts honoured (exit 1, 124/137, no verdict, worktree removed)"
+
+# 67. reviewers: read-only on a git-archive snapshot (codex --sandbox read-only; claude -p --agent reviewer with
+#     Read/Grep/Glob, --max-budget-usd, the plugin dirs, the brief on stdin, never --bare); only after a gate at
+#     HEAD (-> stage REVIEW); result.json + shim verdict row; checkpoint.sh review --worker takes it once, at HEAD only
+echo approve >"$STUB/mode"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role reviewer --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'green gate bound to HEAD' "$WORK/w.err" || fail "a reviewer worker ran before the gate (rc=$WRC: $(cat "$WORK/w.err"))"
+(cd "$WX" && wenv bash "$EXS/green-gate.sh" plans/p.md check >/dev/null 2>&1) || fail "green-gate check failed in the worker fixture"
+[ "$(jget "$WOWN" stage)" = GATE ] || fail "the worker fixture did not reach GATE"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 3 ] && grep -q 'during stage GATE' "$WORK/w.err" || fail "a build worker ran during GATE (rc=$WRC)"
+wrun "$WX" bash "$APPLY" "$WOM"; [ "$WRC" = 3 ] && grep -q 'during stage GATE' "$WORK/w.err" || fail "apply.sh ran during GATE (rc=$WRC)"
+(cd "$WX" && bash "$EXS/risk-tier.sh" plans/p.md 3 --since "$(jget "$WSD/checkpoint.json" fork_sha)" >/dev/null 2>&1) || fail "risk-tier.sh failed in the worker fixture"
+wrun "$WX" bash "$CODEXW" --route "$WRID" --role reviewer --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] && [ "$(val WORKER_VERDICT "$WOUT")" = APPROVE ] || fail "the codex reviewer failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+[ "$(jget "$WOWN" stage)" = REVIEW ] || fail "a reviewer worker did not move the stage to REVIEW"
+WOR="$(val WORKER_OUT "$WOUT")"; WHR="$(git -C "$WWT" rev-parse HEAD)"
+python3 - "$(lastlog)" "$WOR/result.json" "$WHR" <<'PY' || fail "the codex reviewer command or result is wrong"
+import json, os, sys
+log, res, head = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3]
+a = log["argv"]
+assert a[a.index("--sandbox") + 1] == "read-only" and "workspace-write" not in a, a
+assert not os.path.exists(os.path.join(log["cwd"], ".git")) and not os.path.exists(log["cwd"]), "the snapshot is a checkout or was kept"
+assert res["role"] == "lens:security" and res["worker_role"] == "reviewer" and res["verdict"] == "APPROVE" and res["head_sha"] == head == res["sha"]
+assert res["provider"] == "codex" and res["family"] == "openai" and res["mode"] == "readonly" and res["record_id"] and res["confinement"]["kind"] == "git-checkout-index-snapshot"
+PY
+[ "$(shimrows "$WD/ledger.jsonl" verdict route_id="$WRID" provider=codex verdict=APPROVE head_sha="$WHR")" = 1 ] || fail "no shim verdict row for the codex review"
+WCK="$EXS/checkpoint.sh"
+O="$(cd "$WX" && bash "$WCK" plans/p.md review 3 "$WH1" APPROVE codex-reviewer --worker "$WOR" 2>&1)" && fail "review --worker accepted a record at another SHA"
+grep -q "reviewed ${WHR:0:12}" <<<"$O" || fail "review --worker at another SHA refused for the wrong reason: $O"
+(cd "$WX" && bash "$WCK" plans/p.md review 3 "$WHR" APPROVE codex-reviewer --worker "$WOR" >"$WORK/rv.out" 2>&1) || fail "checkpoint.sh review --worker refused the shim record: $(cat "$WORK/rv.out")"
+python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); r=s["reviews"]["3"]["records"][-1]; assert r["provider"]=="codex" and r["provenance"]=="worker" and r["role"]=="lens:security" and r["sha"]==sys.argv[2], r' "$WSD/checkpoint.json" "$WHR" \
+  || fail "the recorded review does not carry the provider and role from result.json"
+O="$(cd "$WX" && bash "$WCK" plans/p.md review 3 "$WHR" APPROVE codex-reviewer --worker "$WOR" 2>&1)" && fail "a worker record was used twice"
+grep -q 'already recorded' <<<"$O" || fail "the second use was refused for the wrong reason: $O"
+# A copied result with a fresh record_id has no shim verdict row: refused.
+FAKE="$WD/workers/w-forged-000000"; mkdir -p "$FAKE"; python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); r["record_id"]="w-forged-000000-0123456789abcdef"; json.dump(r, open(sys.argv[2], "w"))' "$WOR/result.json" "$FAKE/result.json"
+O="$(cd "$WX" && bash "$WCK" plans/p.md review 3 "$WHR" APPROVE codex-reviewer --worker "$FAKE" 2>&1)" && fail "a forged worker result was accepted"
+grep -q 'no shim verdict row' <<<"$O" || fail "a forged worker result was refused for the wrong reason: $O"
+# claude -p reviewer: the same contract on the separate-session family.
+wrun "$WX" bash "$CLAUDEW" --route "$WRID" --role reviewer --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] && [ "$(val WORKER_VERDICT "$WOUT")" = APPROVE ] || fail "the claude-p reviewer failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+python3 - "$(lastlog)" "$(val WORKER_OUT "$WOUT")/result.json" "$PLUGIN_ROOT" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "the claude -p reviewer command or result is wrong"
+import json, os, sys
+log, res, root, pol = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3], json.load(open(sys.argv[4]))
+a = log["argv"]
+cp = next(p for p in pol["providers"] if p["id"] == "claude-p")
+assert a[:len(cp["forced_flags"])] == cp["forced_flags"], a
+for f in cp["forbidden_flags"]:
+    assert f not in a, f
+assert a[a.index("--agent") + 1] == "apex-dispatch:reviewer" and a[a.index("--model") + 1] == "haiku", a
+assert a[a.index("--plugin-dir") + 1] == root and a[a.index("--max-budget-usd") + 1] == "2.00", a          # the reviewer floor
+assert a[a.index("--allowedTools") + 1:] == ["Read", "Grep", "Glob"], a
+assert log["stdin"].startswith("Refresh docs/guide.md") and "SMOKE_SECRET" not in log["env"] and "CLAUDE_CONFIG_DIR" in log["env"]
+assert res["provider"] == "claude-p" and res["family"] == "anthropic-separate-session" and res["verdict"] == "APPROVE" and res["role"] == "reviewer"
+assert res["model"] == "claude-sonnet-5-5" and res["usd_reported"] == 0.0123 and res["usage"]["cache_read"] == 500 and res["max_budget_usd"] == 2.0
+PY
+(cd "$WX" && bash "$WCK" plans/p.md complete 3 "reviewed by codex" >"$WORK/wc.out" 2>&1) || fail "complete refused a task built and reviewed by shims: $(cat "$WORK/wc.out")"
+bash "$LEDGER" evidence --state "$WSD" --line 3 --head "$WHR" >/dev/null && bash "$LEDGER" verify --state "$WSD" >/dev/null || fail "ledger evidence/verify after the shim flow"
+pass "reviewers: codex read-only snapshot and claude -p --agent reviewer (Read/Grep/Glob, --max-budget-usd, plugin dirs, brief on stdin) only after a gate at HEAD (-> REVIEW); shim verdict rows; review --worker once, at its SHA, provider from the record, forged copies refused; complete passes on shim evidence"
+
+# 68. Tier C: with a second family available (doctor: shim + auth), diversity blocks complete until a codex review
+#     is recorded; with the shim present but the provider unavailable, or without shims, it degrades to warn
+TC="$WORK/tc"; mkdir -p "$TC/plans" "$TC/src"; git init -q -b main "$TC"
+printf '# T\n\n- [ ] **Phase 1.1** [security] harden the token check\n  - Acceptance: `true`\n  - Paths: src/**\n' >"$TC/plans/p.md"
+printf '.dev-plan-state/\n' >"$TC/.gitignore"; echo 'def check(t): return bool(t)' >"$TC/src/auth.py"; git -C "$TC" add -A; git -C "$TC" commit -qm tc
+(cd "$TC" && wenv bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the Tier C fixture"
+O="$(cd "$TC" && wenv bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_CLASS "$O")" = security ] && [ "$(val ROUTE_DIVERSITY "$O")" = block ] || fail "the Tier C fixture is not class security with diversity block: $O"
+TRID="$(val ROUTE_ID "$O")"; TSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; TWT="$TSD/worktree"
+th() { HRC=0; HOUT="$( (cd "$TWT" && printf '%s' "$2" | wenv bash "$PLUGIN_ROOT/hooks/$1.sh" 2>"$WORK/hr.err") )" || HRC=$?; }
+th pre-agent "$(pl agent "$TWT" apex-dispatch:builder-high opus)"; [ "$HOUT" = "{}" ] || fail "Tier C: the builder spawn was denied: $HOUT"
+th subagent-start "$(pj agent_id=tb1 agent_type=apex-dispatch:builder-high "cwd=$TWT")"
+echo 'def check(t): return isinstance(t, str) and len(t) > 8' >"$TWT/src/auth.py"; git -C "$TWT" commit -qam harden
+th subagent-stop "$(pj agent_id=tb1 agent_type=apex-dispatch:builder-high last_assistant_message=done "cwd=$TWT")"
+(cd "$TC" && wenv bash "$EXS/green-gate.sh" plans/p.md check >/dev/null 2>&1) || fail "Tier C: green-gate check failed"
+(cd "$TC" && bash "$EXS/risk-tier.sh" plans/p.md 3 --since "$(jget "$TSD/checkpoint.json" fork_sha)" >/dev/null 2>&1) || fail "Tier C: risk-tier.sh failed"
+THEAD="$(git -C "$TWT" rev-parse HEAD)"
+i=0
+for lens in correctness security consent-pii money performance maintainability adversarial; do
+  i=$((i + 1)); at=apex-dispatch:reviewer; [ "$lens" = adversarial ] && at=apex-dispatch:adversarial-reviewer
+  th pre-agent "$(pl agent "$TWT" "$at" '')"; [ "$HOUT" = "{}" ] || fail "Tier C: reviewer $lens spawn denied: $HOUT"
+  th subagent-start "$(pj agent_id="tr$i" agent_type="$at" "cwd=$TWT")"
+  th subagent-stop "$(pj agent_id="tr$i" agent_type="$at" "last_assistant_message=$(printf 'LENS: %s\nVERDICT: APPROVE' "$lens")" "cwd=$TWT")"
+  (cd "$TC" && bash "$WCK" plans/p.md review 3 "$THEAD" APPROVE "$at" --agent-id "tr$i" >/dev/null 2>&1) || fail "Tier C: review --agent-id tr$i refused"
+done
+tcomplete() { TCRC=0; (cd "$TC" && wenv env "$@" bash "$WCK" plans/p.md complete 3 "tier c" >"$WORK/tc.out" 2>&1) || TCRC=$?; }
+(cd "$TC" && wenv bash "$DOCTOR" --state "$TSD" --repo "$TC" >/dev/null 2>&1) || true
+[ "$(jget "$TSD/dispatch/doctor.json" tier_c_diversity)" = block ] || fail "Tier C: doctor with codex/claude-p shims and auth did not make diversity block"
+tcomplete; [ "$TCRC" = 1 ] && grep -q 'reviewer family diversity (block)' "$WORK/tc.out" && grep -q 'claude-p, codex' "$WORK/tc.out" \
+  || fail "Tier C: complete did not block on diversity with a second family available (rc=$TCRC): $(cat "$WORK/tc.out")"
+# Shim present but the provider unavailable (no auth): degrade to warn (only G12 is missing then).
+(cd "$TC" && wenv_noauth bash "$DOCTOR" --state "$TSD" --repo "$TC" >/dev/null 2>&1) || true
+tcomplete; [ "$TCRC" = 1 ] && ! grep -q 'reviewer family diversity' "$WORK/tc.out" && grep -q 'human approval (G12)' "$WORK/tc.out" \
+  || fail "Tier C: diversity did not degrade with the shims present but the providers unavailable: $(cat "$WORK/tc.out")"
+# No shims at all (a copy of the plugin without bin/worker-*.sh), auth available: degrade to warn as well.
+(cd "$TC" && wenv bash "$DOCTOR" --state "$TSD" --repo "$TC" >/dev/null 2>&1) || true
+cp -R "$PLUGIN_ROOT" "$WORK/noshims"; rm -f "$WORK/noshims"/bin/worker-*.sh
+tcomplete APEX_DISPATCH_ROOT="$WORK/noshims"; [ "$TCRC" = 1 ] && ! grep -q 'reviewer family diversity' "$WORK/tc.out" \
+  || fail "Tier C: diversity did not degrade without shims: $(cat "$WORK/tc.out")"
+# A codex review at HEAD satisfies diversity; with G12 recorded, complete passes.
+# The brief is a prompt, not flags: text naming a bypass flag does not trip the built-command check.
+printf 'Review src/auth.py at HEAD. Workers never get danger-full-access or --yolo.\n' >"$WORK/tcbrief.md"
+wrun "$TC" bash "$CODEXW" --route "$TRID" --role reviewer --brief "$WORK/tcbrief.md"; [ "$WRC" = 0 ] || fail "Tier C: the codex reviewer failed (rc=$WRC): $(cat "$WORK/w.err")"
+(cd "$TC" && bash "$WCK" plans/p.md review 3 "$THEAD" APPROVE codex-reviewer --worker "$(val WORKER_OUT "$WOUT")" >/dev/null 2>&1) || fail "Tier C: the codex review was not recorded"
+tcomplete; [ "$TCRC" = 1 ] && ! grep -q 'reviewer family diversity' "$WORK/tc.out" || fail "Tier C: the codex review did not satisfy diversity: $(cat "$WORK/tc.out")"
+(cd "$TC" && bash "$WCK" plans/p.md approve 3 "$THEAD" "approved: ship it" >/dev/null 2>&1) || fail "Tier C: G12 approve failed"
+tcomplete; [ "$TCRC" = 0 ] || fail "Tier C: complete refused with six lenses, adversarial, a codex review and G12: $(cat "$WORK/tc.out")"
+pass "Tier C: diversity blocks complete when doctor shows a shim-backed second family with auth; a codex shim review satisfies it; shim present but provider unavailable, or no shims, degrade to warn"
+
+# 69. carry-overs: compile.py refuses non-finite numbers and wrong-typed overlay values with a named error
+for j in '{"providers":[{"id":"codex","min_acceptance":NaN}]}' '{"providers":[{"id":"codex","min_acceptance":Infinity}]}' '{"escalation":{"max_review_rounds":-Infinity}}'; do
+  printf '%s\n' "$j" >"$WORK/ov-nf.json"
+  if bash "$COMPILE" --print-merged --overlay "$WORK/ov-nf.json" >/dev/null 2>"$WORK/nf.err"; then fail "overlay with a non-finite number accepted: $j"; fi
+  grep -q 'non-finite number' "$WORK/nf.err" && ! grep -q Traceback "$WORK/nf.err" || fail "non-finite overlay not refused by name: $j: $(cat "$WORK/nf.err")"
+done
+for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_classes: must be a list of strings' \
+         '{"providers":[{"id":"codex","max_tier":[]}]}|max_tier: must be a tier id string' \
+         '{"disabled":[{"id":"x","section":[],"reason":"r"}]}|section must be a string' \
+         '{"providers":[{"id":"codex","roles_allowed":[["reviewer"]]}]}|roles_allowed: must be a list of strings'; do
+  printf '%s\n' "${j%%|*}" >"$WORK/ov-uh.json"
+  if bash "$COMPILE" --print-merged --overlay "$WORK/ov-uh.json" >/dev/null 2>"$WORK/uh.err"; then fail "overlay with an unhashable value accepted: ${j%%|*}"; fi
+  grep -qF "${j#*|}" "$WORK/uh.err" && ! grep -q Traceback "$WORK/uh.err" || fail "unhashable overlay value not refused by name: ${j%%|*}: $(cat "$WORK/uh.err")"
+done
+pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
+
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.3.1 everywhere
+for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
+  grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
+  if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
+  if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
+done
+V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
+[ "$V" = 0.3.1 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.3.1 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.3.1 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+
+# --- Phase 4.2: flagged-off grok/opencode/aider shims, openai-sdk stub, compile --target codex,
+#     report --compare/--decision, carried hardening. Provider CLIs are stubs on a fixture PATH. ---
+STUB2="$WORK/stub2"; mkdir -p "$STUB2"
+cat >"$STUB2/grok" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, sys
+LOG, MODEFILE = "$SLOG", "$STUB/mode"
+a = sys.argv[1:]
+if "--version" in a:
+    print("grok 0.9.2"); sys.exit(0)
+if "--help" in a:
+    print("Usage: grok [options]"); sys.exit(0)
+mode = open(MODEFILE).read().strip()
+pf = a[a.index("--prompt-file") + 1] if "--prompt-file" in a else None
+try:
+    settings = json.load(open(os.path.join(".claude", "settings.json")))
+except Exception:
+    settings = None
+files = sorted(os.path.relpath(os.path.join(d, f), ".") for d, _, fs in os.walk(".") for f in fs)
+n = len(os.listdir(LOG))
+json.dump({"bin": "grok", "argv": a, "cwd": os.getcwd(), "prompt": open(pf).read() if pf else None, "settings": settings,
+           "files": files, "env": sorted(os.environ), "stdin": sys.stdin.read()}, open(os.path.join(LOG, "%03d-grok.json" % n), "w"))
+text = {"approve": "Checked the diff.\nVERDICT: APPROVE", "changes": "[blocking] a.py:1 breaks\nVERDICT: REQUEST_CHANGES"}.get(mode, "done")
+print(json.dumps({"type": "system", "subtype": "init"}))
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text,
+                  "usage": {"input_tokens": 50, "output_tokens": 5}, "modelUsage": {"grok-4": {}}}))
+PYSTUB
+cat >"$STUB2/opencode" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, sys
+LOG, MODEFILE = "$SLOG", "$STUB/mode"
+a = sys.argv[1:]
+if "--version" in a:
+    print("1.2.3"); sys.exit(0)
+if "--help" in a:
+    print("Usage: opencode run [message..]"); sys.exit(0)
+mode = open(MODEFILE).read().strip()
+cfgp = os.environ.get("OPENCODE_CONFIG")
+d = a[a.index("--dir") + 1]
+n = len(os.listdir(LOG))
+json.dump({"bin": "opencode", "argv": a, "cwd": os.getcwd(), "config_path": cfgp, "config": json.load(open(cfgp)) if cfgp else None,
+           "config_content": json.loads(os.environ["OPENCODE_CONFIG_CONTENT"]) if os.environ.get("OPENCODE_CONFIG_CONTENT") else None,
+           "project_config": sorted(x for x in ("opencode.json", "opencode.jsonc", ".opencode") if os.path.lexists(os.path.join(d, x))),
+           "env": sorted(os.environ)}, open(os.path.join(LOG, "%03d-opencode.json" % n), "w"))
+if mode == "edit":
+    open(os.path.join(d, "docs", "guide.md"), "a").write("opencode edit\n")
+print(json.dumps({"type": "text", "part": {"text": "Updated the guide."}}))
+print(json.dumps({"type": "step_finish", "part": {"tokens": {"input": 100, "output": 20, "cache": {"read": 5}}}}))
+PYSTUB
+cat >"$STUB2/aider" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, sys
+LOG, MODEFILE = "$SLOG", "$STUB/mode"
+a = sys.argv[1:]
+if "--version" in a:
+    print("aider 0.86.1"); sys.exit(0)
+if "--help" in a:
+    print("usage: aider [options] [FILE ...]"); sys.exit(0)
+mode = open(MODEFILE).read().strip()
+mf, conf = a[a.index("--message-file") + 1], a[a.index("--config") + 1]
+n = len(os.listdir(LOG))
+json.dump({"bin": "aider", "argv": a, "cwd": os.getcwd(), "message": open(mf).read(), "config": open(conf).read(),
+           "project_config": sorted(x for x in os.listdir(".") if x == ".env" or x.startswith(".aider")),
+           "stdin": sys.stdin.read(), "env": sorted(os.environ)}, open(os.path.join(LOG, "%03d-aider.json" % n), "w"))
+if mode == "edit":
+    open(os.path.join("docs", "guide.md"), "a").write("aider edit\n")
+print("Applied edit to docs/guide.md")
+PYSTUB
+chmod +x "$STUB2/grok" "$STUB2/opencode" "$STUB2/aider"
+GKW="$PLUGIN_ROOT/bin/worker-grok.sh"; OCW="$PLUGIN_ROOT/bin/worker-opencode.sh"; AIW="$PLUGIN_ROOT/bin/worker-aider.sh"; SDKW="$PLUGIN_ROOT/bin/worker-openai-sdk.sh"
+OVA="$WORK/ov-all.json"; OVN="$WORK/ov-noverify.json"; OVM="$WORK/ov-mismatch.json"; OVAI="$WORK/ov-aider.json"
+printf '{"providers":[{"id":"opencode-ollama","enabled":true,"verified_versions":["1.2.3"]},{"id":"aider-ollama","enabled":true,"verified_versions":["0.86.1"]},{"id":"grok","enabled":true,"verified_versions":["0.9.2"]}]}\n' >"$OVA"
+printf '{"providers":[{"id":"opencode-ollama","enabled":true}]}\n' >"$OVN"
+printf '{"providers":[{"id":"opencode-ollama","enabled":true,"verified_versions":["9.9.9"]}]}\n' >"$OVM"
+printf '{"providers":[{"id":"opencode-ollama","enabled":false},{"id":"aider-ollama","enabled":true,"verified_versions":["0.86.1"]},{"id":"grok","enabled":true,"verified_versions":["0.9.2"]}]}\n' >"$OVAI"
+# gx OVERLAY CMD... -> wrun in the 4.2 fixture with the second stub dir first on PATH and OVERLAY as the policy overlay
+# (XAI_API_KEY is a dummy: the grok stub never sends it anywhere)
+gx() { local ov="$1"; shift; wrun "$WG" env PATH="$STUB2:$STUB:$PATH" APEX_DISPATCH_POLICY="$ov" XAI_API_KEY=stub-not-a-key "$@"; }
+groute() { local o; o="$(cd "$WG" && wenv env PATH="$STUB2:$STUB:$PATH" APEX_DISPATCH_POLICY="$1" bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+  [ "$(val ROUTE_STATUS "$o")" = READY ] && [ "$(val ROUTE_PROVIDER "$o")" = "$2" ] || fail "the 4.2 fixture did not route to $2: $o"; GRID="$(val ROUTE_ID "$o")"; GSD="$(dirname "$(dirname "$(val ROUTE_FILE "$o")")")"; }
+gdoc() { (cd "$WG" && wenv env PATH="$STUB2:$STUB:$PATH" APEX_DISPATCH_POLICY="$1" XAI_API_KEY=stub-not-a-key bash "$DOCTOR" --state "$GSD" --repo "$WG" >"$WORK/gdoc.out" 2>&1) || true; }
+nlog() { ls "$SLOG" | wc -l | tr -d ' '; }
+
+# 71. the flagged-off shims and the openai-sdk stub ship; the default policy keeps grok/opencode/aider off with
+#     their auto-approve equivalents forbidden; the stub refuses with 6 and runs nothing
+for f in bin/worker-grok.sh bin/worker-opencode.sh bin/worker-aider.sh bin/worker-openai-sdk.sh; do
+  [ -x "$PLUGIN_ROOT/$f" ] && bash -n "$PLUGIN_ROOT/$f" || fail "$f is missing, not executable or does not parse"
+done
+python3 - "$PLUGIN_ROOT/resources/compiled/policy.json" "$PLUGIN_ROOT/scripts/lib" <<'PY' || fail "the default policy does not keep grok/opencode/aider flagged off with their auto-approve flags forbidden"
+import json, sys
+pol = {p["id"]: p for p in json.load(open(sys.argv[1]))["providers"]}
+sys.path.insert(0, sys.argv[2]); import ledger
+for pid in ("grok", "opencode-ollama", "aider-ollama"):
+    p = pol[pid]
+    assert p["enabled"] is False and p["status"] == "flagged-off" and p["kind"] == "subprocess" and not p.get("verified_versions"), p
+    assert not set(p["forced_flags"]) & set(p["forbidden_flags"]), p
+a, g, o = pol["aider-ollama"], pol["grok"], pol["opencode-ollama"]
+assert {"--yes-always", "--yes", "--auto-commits"} <= set(a["forbidden_flags"]) and not any(f.startswith("--yes") for f in a["forced_flags"])
+assert {"--no-auto-commits", "--no-dirty-commits", "--no-git"} <= set(a["forced_flags"])
+assert {"--yolo", "--dangerously-skip-permissions", "--always-approve", "--auto-approve", "--worktree"} <= set(g["forbidden_flags"]) and "--worktree" not in g["forced_flags"]
+assert g["roles_allowed"] == ["reviewer", "diagnoser"] and ["--sandbox", "strict"] == g["forced_flags"][1:3]
+assert {"--auto", "--yolo"} <= set(o["forbidden_flags"]) and o["model"].startswith("ollama/") and a["model"].startswith("ollama/")
+assert pol["openai-sdk"]["kind"] == "stub" and pol["openai-sdk"]["enabled"] is False
+assert ledger.shim_name("opencode-ollama") == "worker-opencode.sh" and ledger.shim_provider("worker-aider.sh") == "aider-ollama"
+assert ledger.shim_provider("worker-codex.sh") == "codex" and ledger.shim_provider("worker-common.sh") is None
+PY
+N0="$(nlog)"; WRC=0; bash "$SDKW" --route r --role docs --brief "$WORK/wbrief.md" >"$WORK/sdk.out" 2>"$WORK/sdk.err" || WRC=$?
+[ "$WRC" = 6 ] && grep -q 'not-implemented' "$WORK/sdk.err" && [ ! -s "$WORK/sdk.out" ] && [ "$(nlog)" = "$N0" ] || fail "worker-openai-sdk.sh did not refuse with 6 (rc=$WRC)"
+if grep -nE 'import (urllib|http|socket|requests|openai)|curl |wget ' "$SDKW"; then fail "the openai-sdk stub carries network code"; fi
+# Fixture: a [docs] task routed to the local providers (Route: provider=local), with an export-ignore'd file.
+WG="$WORK/wg"; mkdir -p "$WG/plans" "$WG/docs"; git init -q -b main "$WG"
+printf '# G\n\n- [ ] **Phase 1.1** [docs] refresh the local guide\n  - Acceptance: `true`\n  - Route: provider=local\n  - Paths: docs/**\n' >"$WG/plans/p.md"
+printf '.dev-plan-state/\n' >"$WG/.gitignore"; echo guide >"$WG/docs/guide.md"; echo hidden >"$WG/docs/hidden.md"
+printf 'docs/hidden.md export-ignore\n' >"$WG/.gitattributes"; git -C "$WG" add -A; git -C "$WG" commit -qm wg
+(cd "$WG" && wenv bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the 4.2 fixture"
+groute "" claude-session; GWT="$GSD/worktree"; GD="$GSD/dispatch"
+gx "" bash -c 'source "$1"; apex_worker_main openai-sdk --route "$2" --role docs --brief "$3"' _ "$PLUGIN_ROOT/bin/worker-common.sh" "$GRID" "$WORK/wbrief.md"
+[ "$WRC" = 6 ] && grep -q 'not-implemented: provider openai-sdk is a stub seam' "$WORK/w.err" || fail "the engine did not refuse the stub provider with 6 (rc=$WRC: $(cat "$WORK/w.err"))"
+for w in "$OCW --role docs" "$AIW --role docs" "$GKW --role reviewer"; do
+  # shellcheck disable=SC2086
+  gx "" bash ${w% --role *} --route "$GRID" --role "${w##* --role }" --brief "$WORK/wbrief.md"
+  [ "$WRC" = 3 ] && grep -q 'disabled in the policy (status flagged-off)' "$WORK/w.err" || fail "$(basename "${w% --role *}") ran with the default policy (rc=$WRC: $(cat "$WORK/w.err"))"
+done
+[ "$(nlog)" = "$N0" ] || fail "a provider stub ran during the 4.2 refusals"
+pass "4.2 shims ship (grok/opencode/aider flagged off, auto-approve equivalents forbidden, --worktree/--yes dropped); worker-openai-sdk.sh and the engine refuse the stub with 6 and run nothing; the flagged-off shims refuse under the default policy (3)"
+
+# 72. per-version gate: an overlay that only enables a flagged-off provider is refused; enabled with a
+#     verified_versions list that does not hold doctor's installed version is refused; doctor records both facts
+gx "$OVN" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q 'no per-version smoke is recorded' "$WORK/w.err" || fail "an enabled but smoke-less opencode was not refused (rc=$WRC: $(cat "$WORK/w.err"))"
+groute "$OVA" opencode-ollama
+gdoc "$OVM"
+python3 -c 'import json,sys; o=json.load(open(sys.argv[1]))["providers"]["opencode-ollama"]; assert o["available"] and o["version"]=="1.2.3" and o["version_verified"] is False and o["shim_file"]=="bin/worker-opencode.sh" and o["verified_versions"]==["9.9.9"], o' "$GD/doctor.json" \
+  || fail "doctor did not record opencode's installed version as unverified: $(cat "$WORK/gdoc.out")"
+gx "$OVM" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q "verified_versions (9.9.9) does" "$WORK/w.err" || fail "opencode ran at a version the overlay does not list (rc=$WRC: $(cat "$WORK/w.err"))"
+gdoc "$OVA"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["providers"]; assert all(d[p]["version_verified"] is True and d[p]["available"] for p in ("opencode-ollama","aider-ollama","grok")), d' "$GD/doctor.json" \
+  || fail "doctor did not verify the listed versions: $(cat "$WORK/gdoc.out")"
+[ "$(nlog)" = "$N0" ] || fail "a provider stub ran during the per-version refusals"
+pass "flagged-off providers run only with the overlay's enabled + verified_versions matching doctor's installed version (refusals 3 otherwise); doctor records version_verified"
+
+# 73. opencode write worker: exactly the policy's command (forced flags, --dir = the throwaway worktree, the policy
+#     model, the brief last), a generated permission config via OPENCODE_CONFIG (owned Paths only, no ask); apply.sh
+#     commits it; a brief over 120 KiB is refused with 2 and still leaves result.json
+echo '{"permission":{"edit":"allow","bash":"allow"}}' >"$GWT/opencode.json"; mkdir -p "$GWT/.opencode"; echo x >"$GWT/.opencode/agent.md"
+git -C "$GWT" add -A; git -C "$GWT" commit -qm 'project opencode config'
+echo edit >"$STUB/mode"; GH0="$(git -C "$GWT" rev-parse HEAD)"
+gx "$OVA" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] && [ "$(printf '%s\n' "$WOUT" | tail -1)" = "DISPATCH-DONE exit=0" ] || fail "the opencode worker failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+GO1="$(val WORKER_OUT "$WOUT")"
+python3 - "$(lastlog)" "$GO1" "$GD" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "the opencode command, config or result is wrong"
+import json, os, sys
+log, out, gd = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+p = next(x for x in json.load(open(sys.argv[4]))["providers"] if x["id"] == "opencode-ollama")
+a = log["argv"]
+assert log["bin"] == "opencode" and a[:len(p["forced_flags"])] == p["forced_flags"], a
+assert os.path.realpath(a[a.index("--dir") + 1]) == os.path.realpath(log["cwd"]) and os.path.realpath(log["cwd"]).startswith(os.path.realpath(gd) + "/worktrees/")
+assert a[a.index("--model") + 1] == p["model"] and a[-1].startswith("Refresh docs/guide.md"), a
+for f in p["forbidden_flags"]:
+    assert not any(x == f or x.startswith(f + "=") for x in a), f
+assert log["config_path"] == os.path.join(out, "opencode.jsonc") and "SMOKE_SECRET" not in log["env"]
+perm = log["config"]["permission"]
+assert perm["edit"] == {"docs/**": "allow", "*": "deny"} and perm["external_directory"] == "deny" and perm["webfetch"] == "deny", perm
+assert perm["bash"]["git push*"] == "deny" and "ask" not in json.dumps(log["config"]), log["config"]
+assert log["config_content"] == log["config"] and log["project_config"] == [], (log["project_config"], log["config_content"])
+r = json.load(open(os.path.join(out, "result.json")))
+assert r["provider"] == "opencode-ollama" and r["family"] == "local" and r["ok"] and r["files_changed"] == ["docs/guide.md"], r
+assert r["usage"] == {"input": 100, "output": 20, "cache_read": 5} and r["model"] == p["model"], r
+PY
+GOW="$(jget "$GO1/worker.json" worktree)"
+[ -f "$GOW/opencode.json" ] && [ -f "$GOW/.opencode/agent.md" ] && [ ! -e "$GO1/hidden/opencode.json" ] || fail "the moved-aside opencode project config was not restored"
+wrun "$WG" bash "$APPLY" --worker "$GO1"; [ "$WRC" = 0 ] || fail "apply.sh refused the opencode patch (rc=$WRC: $(cat "$WORK/w.err"))"
+git -C "$GWT" log -1 --format=%B | grep -q 'Dispatch-Provider: opencode-ollama' && grep -q 'opencode edit' "$GWT/docs/guide.md" || fail "the opencode patch was not committed with its trailers"
+python3 -c 'import sys; open(sys.argv[1], "w").write("Refresh docs/guide.md.\n" + "x" * (125 * 1024))' "$WORK/bigbrief.md"
+N1="$(nlog)"; R0="$(shimrows "$GD/ledger.jsonl" worker_run route_id="$GRID")"
+gx "$OVA" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/bigbrief.md"
+GOB="$(val WORKER_OUT "$WOUT")"
+[ "$WRC" = 2 ] && [ "$(printf '%s\n' "$WOUT" | tail -1)" = "DISPATCH-DONE exit=2" ] && grep -q 'capped at 122880 bytes' "$WORK/w.err" || fail "a 125 KiB argv brief was not refused with 2 (rc=$WRC: $WOUT $(cat "$WORK/w.err"))"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["ok"] is False and r["exit_code"]==2 and "122880" in r["refused"] and r["verdict"] is None and not r["sentinel_seen"], r' "$GOB/result.json" || fail "the refused oversized brief left no result.json"
+[ "$(nlog)" = "$N1" ] && [ "$(shimrows "$GD/ledger.jsonl" worker_run route_id="$GRID")" = "$R0" ] || fail "an oversized brief reached the provider or spent a worker_run row"
+printf -- '--yolo is not a flag here: refresh docs/guide.md\n' >"$WORK/dashbrief.md"; echo noop >"$STUB/mode"
+gx "$OVA" bash "$OCW" --route "$GRID" --role docs --brief "$WORK/dashbrief.md"
+[ "$WRC" = 0 ] && python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["argv"]; assert a[-1].startswith("Brief:\n--yolo is not a flag"), a[-1]' "$(lastlog)" \
+  || fail "a brief starting with - reached opencode as an option (rc=$WRC: $(cat "$WORK/w.err"))"
+pass "opencode write worker: the policy's command only (forced flags, --dir worktree, policy model, brief last, nothing forbidden), OPENCODE_CONFIG permissions (owned Paths, no ask, no push/webfetch/outside dirs), usage parsed, applied with trailers; a >120 KiB argv brief is refused (2) with result.json and the sentinel, nothing run or ledgered"
+
+# 74. aider write worker: --config/--env-file generated in the out dir (the repo's .aider.conf.yml and .env are never
+#     read), --message-file, the policy model, the owned tracked files after --, never --yes/--yes-always, stdin closed
+groute "$OVAI" aider-ollama; gdoc "$OVAI"
+printf 'yes-always: true\n' >"$GWT/.aider.conf.yml"; printf 'yes-always: true\n' >"$GWT/.aider.model.settings.yml"; printf 'AIDER_YES_ALWAYS=true\n' >"$GWT/.env"
+git -C "$GWT" add -f .aider.conf.yml .aider.model.settings.yml .env; git -C "$GWT" commit -qm 'repo aider config'
+echo edit >"$STUB/mode"
+gx "$OVAI" bash "$AIW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] || fail "the aider worker failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+GA1="$(val WORKER_OUT "$WOUT")"
+python3 - "$(lastlog)" "$GA1" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "the aider command or result is wrong"
+import json, os, sys
+log, out = json.load(open(sys.argv[1])), sys.argv[2]
+p = next(x for x in json.load(open(sys.argv[3]))["providers"] if x["id"] == "aider-ollama")
+a = log["argv"]
+assert log["bin"] == "aider" and a[:len(p["forced_flags"])] == p["forced_flags"], a
+assert a[a.index("--config") + 1] == os.path.join(out, "aider.conf.yml") and a[a.index("--env-file") + 1] == os.path.join(out, "aider.env")
+assert a[a.index("--message-file") + 1] == os.path.join(out, "brief.md") and a[a.index("--model") + 1] == p["model"]
+assert a[a.index("--") + 1:] == ["docs/guide.md", "docs/hidden.md"], a
+for f in p["forbidden_flags"]:
+    assert not any(x == f or x.startswith(f + "=") for x in a), f
+assert "yes-always: false" in log["config"] and log["message"].startswith("Refresh docs/guide.md") and log["stdin"] == ""
+assert log["project_config"] == [], log["project_config"]                  # .env and .aider* moved aside for the run
+r = json.load(open(os.path.join(out, "result.json")))
+assert r["provider"] == "aider-ollama" and r["ok"] and r["usage"] is None and r["usage_source"] is None and r["files_changed"] == ["docs/guide.md"], r
+PY
+GAW="$(jget "$GA1/worker.json" worktree)"
+[ -f "$GAW/.env" ] && [ -f "$GAW/.aider.conf.yml" ] && [ -f "$GAW/.aider.model.settings.yml" ] || fail "aider's moved-aside project config was not restored"
+pass "aider write worker: generated --config/--env-file, the repo's .env/.aider* moved aside for the run and restored (repo config never read), --message-file, the policy model, owned tracked files after --, no --yes/--yes-always, stdin closed, no usage reported"
+
+# 75. grok: refused for builder roles; a reviewer runs read-only on a checkout-index snapshot that keeps
+#     export-ignore'd files, with the run-only settings (dontAsk) present, never --worktree; shim verdict row
+gx "$OVAI" bash "$GKW" --route "$GRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q 'provider grok does not take role docs' "$WORK/w.err" || fail "grok was allowed a builder role (rc=$WRC: $(cat "$WORK/w.err"))"
+wrun "$WG" bash "$APPLY" --worker "$GA1"; [ "$WRC" = 0 ] || fail "apply.sh refused the aider patch (rc=$WRC: $(cat "$WORK/w.err"))"
+(cd "$WG" && wenv bash "$EXS/green-gate.sh" plans/p.md check >/dev/null 2>&1) || fail "green-gate check failed in the 4.2 fixture"
+(cd "$WG" && bash "$EXS/risk-tier.sh" plans/p.md 3 --since "$(jget "$GSD/checkpoint.json" fork_sha)" >/dev/null 2>&1) || fail "risk-tier.sh failed in the 4.2 fixture"
+echo approve >"$STUB/mode"
+gx "$OVAI" bash "$GKW" --route "$GRID" --role reviewer --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] && [ "$(val WORKER_VERDICT "$WOUT")" = APPROVE ] || fail "the grok reviewer failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+GGR="$(val WORKER_OUT "$WOUT")"; GHR="$(git -C "$GWT" rev-parse HEAD)"
+python3 - "$(lastlog)" "$GGR" "$PLUGIN_ROOT/resources/compiled/policy.json" "$GHR" <<'PY' || fail "the grok reviewer command, confinement or result is wrong"
+import json, os, sys
+log, out, head = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[4]
+p = next(x for x in json.load(open(sys.argv[3]))["providers"] if x["id"] == "grok")
+a = log["argv"]
+assert log["bin"] == "grok" and a[:len(p["forced_flags"])] == p["forced_flags"] and "--worktree" not in a, a
+assert a[a.index("--prompt-file") + 1] == os.path.join(out, "brief.md") and log["prompt"].startswith("Refresh docs/guide.md")
+for f in p["forbidden_flags"]:
+    assert not any(x == f or x.startswith(f + "=") for x in a), f
+assert log["settings"]["permissions"]["defaultMode"] == "dontAsk" and log["settings"]["sandbox"]["profile"]["extends"] == "strict", log["settings"]
+assert "XAI_API_KEY" in log["env"] and "SMOKE_SECRET" not in log["env"]
+assert "docs/hidden.md" in log["files"] and "docs/guide.md" in log["files"] and not any(f.startswith(".git/") or f == ".git" for f in log["files"]), log["files"]
+assert not os.path.exists(log["cwd"]), "the snapshot was kept"
+r = json.load(open(os.path.join(out, "result.json")))
+assert r["provider"] == "grok" and r["family"] == "xai" and r["verdict"] == "APPROVE" and r["mode"] == "readonly" and r["head_sha"] == head, r
+assert r["confinement"]["kind"] == "git-checkout-index-snapshot" and r["model"] == "grok-4" and r["max_budget_usd"] is None, r
+PY
+[ "$(shimrows "$GD/ledger.jsonl" verdict route_id="$GRID" provider=grok verdict=APPROVE head_sha="$GHR")" = 1 ] || fail "no shim verdict row for the grok review"
+pass "grok: no builder roles; a reviewer runs read-only on a checkout-index snapshot that keeps export-ignore'd files, with the run-only dontAsk settings and the policy's flags (never --worktree); verdict parsed from stream-json, shim verdict row"
+
+# 76. doctor reports the new providers (shim file, roles, classes, verified versions), rejects the colliding
+#     @vibe-kit/grok-cli; second_families needs a verified provider that may review the route's class
+python3 - "$GD/doctor.json" <<'PY' || fail "doctor.json does not report the 4.2 providers' facts"
+import json, sys
+d = json.load(open(sys.argv[1])); p = d["providers"]
+g, ai, oc, sdk = p["grok"], p["aider-ollama"], p["opencode-ollama"], p["openai-sdk"]
+assert g["shim_file"] == "bin/worker-grok.sh" and g["roles_allowed"] == ["reviewer", "diagnoser"] and g["allowed_classes"] == ["docs", "tests"] and g["version_verified"], g
+assert ai["shim"] and ai["version"] == "0.86.1" and ai["auth"] == "n/a" and ai["auth_ok"], ai
+assert not oc["enabled"] and oc["shim_file"] == "bin/worker-opencode.sh", oc
+assert sdk["shim"] and sdk["kind"] == "stub" and not sdk["available"], sdk
+assert "grok" not in d["second_families"], d["second_families"]          # grok may not review class security
+PY
+VK="$WORK/vk"; mkdir -p "$VK"; printf '#!/bin/sh\necho "grok-cli 1.0.0 (@vibe-kit/grok-cli)"\n' >"$VK/grok"; chmod +x "$VK/grok"
+(cd "$WG" && wenv env PATH="$VK:$STUB2:$STUB:$PATH" APEX_DISPATCH_POLICY="$OVA" bash "$DOCTOR" --state "$WORK/vks" --repo "$WG" >/dev/null 2>&1) || true
+python3 -c 'import json,sys; g=json.load(open(sys.argv[1]))["providers"]["grok"]; assert g.get("colliding") and not g["available"] and "vibe-kit" in g["why"], g' "$WORK/vks/dispatch/doctor.json" \
+  || fail "doctor did not reject the colliding @vibe-kit/grok-cli binary"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$PLUGIN_ROOT" <<'PY' || fail "ledger.second_families does not require a verified provider allowed to review the route's class"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+root = sys.argv[2]
+e = lambda **k: dict({"enabled": True, "available": True, "auth_ok": True, "verified": False, "version_verified": True,
+                      "roles_allowed": ["reviewer"], "allowed_classes": ["docs"]}, **k)
+sf = lambda prov, cls=None: ledger.second_families({"providers": {"grok": prov}}, root, cls=cls)
+assert sf(e(), "docs") == ["grok"] and sf(e()) == ["grok"], sf(e(), "docs")
+assert sf(e(), "security") == [], "class not allowed still counted"
+assert sf(e(allowed_classes=["any"]), "security") == ["grok"], "'any' not honoured"
+assert sf(e(roles_allowed=["diagnoser"]), "docs") == [], "a provider that may not review counted"
+assert sf(e(version_verified=False), "docs") == [], "an unverified version counted"
+assert sf(e(verified=True, version_verified=False), "docs") == ["grok"]
+assert ledger.second_families({"providers": {"grok": {"enabled": True, "available": True, "auth_ok": True, "verified": True}}}, root) == [], "a pre-0.3.0 doctor.json (no roles) counted"
+PY
+grep -q 'second_families(doc, droot, cls=' "$EXS/checkpoint.sh" || fail "checkpoint.sh complete does not pass the route's class to second_families"
+pass "doctor: shim_file/roles/classes/verified_versions/version_verified per provider, the colliding @vibe-kit/grok-cli rejected; second_families requires verification, the reviewer role and the route's class (or any); checkpoint passes the class"
+
+# 77. pre-bash: the shim engine's entry points (python .../scripts/lib/worker.py, source/. of worker-common.sh,
+#     apex-dispatch's scripts/apply.sh) run only from the orchestrator or provider-runner; per-provider forbidden
+#     flags on the new shims are denied through the shim -> provider map (payloads fed from files)
+PJG="$WORK/p42"; mkdir -p "$PJG"; n=0
+gpb() { n=$((n + 1)); pl bash "$GWT" "$@" >"$PJG/$n.json"; (cd "$GWT" && bash "$PLUGIN_ROOT/hooks/pre-bash.sh" <"$PJG/$n.json" 2>/dev/null) | one; }
+for c in "python3 $PLUGIN_ROOT/scripts/lib/worker.py run grok a b c d -- --route r" 'python3 -B ${CLAUDE_PLUGIN_ROOT}/scripts/lib/worker.py apply a b c d -- --worker x' \
+         "source $PLUGIN_ROOT/bin/worker-common.sh" '. "${CLAUDE_PLUGIN_ROOT}/bin/worker-common.sh"' "bash $APPLY --worker x" \
+         "bash -c 'source $PLUGIN_ROOT/bin/worker-common.sh; apex_worker_main grok --route r'"; do
+  [ "$(gpb "$c" agent_type=apex-dispatch:builder agent_id=b9)" = deny ] || fail "a builder was allowed the shim engine: $c"
+  [ "$(gpb "$c" agent_type=apex-dispatch:tester)" = deny ] || fail "a tester worker session was allowed the shim engine: $c"
+  [ "$(gpb "$c")" = "{}" ] || fail "the orchestrator was denied the shim engine: $c"
+  [ "$(gpb "$c" agent_type=apex-dispatch:provider-runner agent_id=pr2)" = "{}" ] || fail "provider-runner was denied the shim engine: $c"
+done
+for c in 'python3 tools/worker.py --help' 'python3 scripts/lib/worker.py --help' '. ./bin/worker-common.sh' 'bash scripts/apply.sh'; do
+  [ "$(gpb "$c" agent_type=apex-dispatch:builder agent_id=b9)" = "{}" ] || fail "a repository's own script was treated as the shim engine: $c"
+done
+for c in "bash $AIW --route r --role docs --brief b --yes-always" "bash bin/worker-grok.sh --route r --role reviewer --brief b --worktree" "bash $OCW --route r --role docs --brief b --auto"; do
+  [ "$(gpb "$c")" = deny ] || fail "a provider-forbidden flag on a 4.2 shim was allowed: $c"
+done
+pass "pre-bash: python .../scripts/lib/worker.py, source/. worker-common.sh and scripts/apply.sh only from the orchestrator or provider-runner; forbidden flags on worker-aider/grok/opencode.sh denied via the shim map"
+
+# 78. compile --target codex: committed artifacts in sync; a stale or missing one is named; --out writes the four
+#     files; the deny hook denies the policy's patterns and flags and allows ordinary commands (JSON fed from files)
+bash "$COMPILE" --target codex --check >/dev/null 2>"$WORK/cx.err" || fail "compile --target codex --check: $(cat "$WORK/cx.err")"
+bash "$COMPILE" --check >"$WORK/cx2.out" 2>&1 && grep -q '14 artifacts up to date' "$WORK/cx2.out" || fail "the default --check changed with the codex target: $(cat "$WORK/cx2.out")"
+CXO="$WORK/codex-home"; bash "$COMPILE" --target codex --out "$CXO" >/dev/null || fail "compile --target codex --out failed"
+for f in AGENTS.md config.toml hooks.json apex-dispatch-deny.py; do cmp -s "$CXO/$f" "$PLUGIN_ROOT/resources/compiled/codex/$f" || fail "--out $f differs from the committed codex artifact"; done
+printf '\n' >>"$CXO/AGENTS.md"; rm "$CXO/hooks.json"
+if bash "$COMPILE" --target codex --out "$CXO" --check >/dev/null 2>"$WORK/cx3.err"; then fail "a stale codex target passed --check"; fi
+grep -q "stale: $CXO/AGENTS.md" "$WORK/cx3.err" && grep -q "missing: $CXO/hooks.json" "$WORK/cx3.err" || fail "codex --check did not name the stale/missing files: $(cat "$WORK/cx3.err")"
+[ "$(bash "$COMPILE" --out "$CXO" >/dev/null 2>&1; echo $?)" = 2 ] && [ "$(bash "$COMPILE" --target nope >/dev/null 2>&1; echo $?)" = 2 ] || fail "--out without --target codex or an unknown target is not a usage error"
+python3 - "$PLUGIN_ROOT/resources/compiled/codex" "$PLUGIN_ROOT/resources/compiled/policy.json" <<'PY' || fail "the codex artifacts do not mirror the policy"
+import json, os, sys
+d, pol = sys.argv[1], json.load(open(sys.argv[2]))
+md, toml, hk = open(os.path.join(d, "AGENTS.md")).read(), open(os.path.join(d, "config.toml")).read(), json.load(open(os.path.join(d, "hooks.json")))
+for r in pol["roles"]:
+    assert ("### %s" % r["id"] in md) == r["enabled"], r["id"]
+for f in next(p for p in pol["providers"] if p["id"] == "codex")["forbidden_flags"]:
+    assert "`%s`" % f in md, f
+assert '[profiles.apex-dispatch-build]\napproval_policy = "never"\nsandbox_mode = "workspace-write"' in toml and 'sandbox_mode = "read-only"' in toml
+h = hk["hooks"]["PreToolUse"][0]
+assert "apex-dispatch-deny.py" in h["hooks"][0]["command"] and h["hooks"][0]["timeout"] == 10 and "Bash" in h["matcher"]
+assert os.access(os.path.join(d, "apex-dispatch-deny.py"), os.X_OK)
+PY
+CXJ="$WORK/cxj"; mkdir -p "$CXJ"; k=0
+cxd() { k=$((k + 1)); python3 -c 'import json,sys; print(json.dumps({"tool_name": "Bash", "tool_input": {"command": sys.argv[1]}}))' "$1" >"$CXJ/$k.json"
+  local rc=0; python3 "$PLUGIN_ROOT/resources/compiled/codex/apex-dispatch-deny.py" <"$CXJ/$k.json" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
+for c in 'codex exec --dangerously-bypass-approvals-and-sandbox x' 'aider --yes-always --message m' 'git push --force origin main' 'claude -p --bare hi' 'ls; grok -p --worktree' 'npm test --yolo'; do
+  [ "$(cxd "$c")" = 2 ] || fail "the codex deny hook allowed: $c"
+done
+for c in 'timeout 600 aider --yes-always' 'env OLLAMA_HOST=x aider --yes-always' 'sudo grok -p hi --auto-approve' 'npx opencode-ai run --auto hi' \
+         'cd repo && git push --force origin main' 'pnpm dlx opencode-ai@1.2.3 run --auto x' 'pipx run aider-chat --yes-always' \
+         "bash -c 'sh -c \"aider --yes-always\"'" 'nice -n 5 nohup stdbuf -oL timeout -s KILL 60 aider --yes-always' "$(printf 'ls\naider --yes')"; do
+  [ "$(cxd "$c")" = 2 ] || fail "the codex deny hook allowed a wrapped or chained command: $c"
+done
+cxl() { k=$((k + 1)); python3 -c 'import json,sys; print(json.dumps({"tool_name": "Bash", "tool_input": {"command": sys.argv[1:]}}))' "$@" >"$CXJ/$k.json"
+  local rc=0; python3 "$PLUGIN_ROOT/resources/compiled/codex/apex-dispatch-deny.py" <"$CXJ/$k.json" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
+[ "$(cxl bash -lc 'aider --yes-always')" = 2 ] && [ "$(cxl bash -lc 'git push --force origin main')" = 2 ] && [ "$(cxl timeout 5 codex exec --approve-for-me x)" = 2 ] \
+  || fail "the codex deny hook allowed an argv-list command"
+[ "$(cxl bash -lc 'git push origin main')" = 0 ] && [ "$(cxl echo aider --yes-always)" = 0 ] || fail "the codex deny hook denied an ordinary argv-list command"
+for c in 'ls -a' 'git status' 'git clone --bare x y' 'pytest -q' 'echo yes' 'timeout 60 pytest' 'env FOO=1 npm test' "bash -lc 'make test'" 'npx prettier --check .' 'echo aider --yes-always'; do
+  [ "$(cxd "$c")" = 0 ] || fail "the codex deny hook denied: $c"
+done
+printf 'not json' >"$CXJ/bad.json"; python3 "$PLUGIN_ROOT/resources/compiled/codex/apex-dispatch-deny.py" <"$CXJ/bad.json" >/dev/null 2>&1 || fail "the codex deny hook failed closed on garbage stdin"
+pass "compile --target codex: committed AGENTS.md/config.toml/hooks.json/deny hook in sync (--check names stale/missing), --out writes them, default --check unchanged; the hook denies the deny globs, bypass flags and per-CLI forbidden flags and allows ordinary commands"
+
+# 79. report.sh --compare (routed vs baseline: tasks, spawns, USD/solved, tiers, review rounds, approval rates,
+#     insufficient n / no baseline data) and --decision (agreement, or no decision data); text and --json
+RS="$WORK/rstate"; mkdir -p "$RS"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$RS" <<'PY' || fail "could not build the comparison ledger"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+st = sys.argv[2]
+def route(rid, mode, cls, tier, dec=None, tc=None):
+    d = {"route_id": rid, "status": "READY", "origin": "plan", "router": {"class": cls, "tier": tier}, "line": int(rid.split("-L")[1].split("-")[0])}
+    if dec: d["decision"] = dec
+    if tc: d["table_choice"] = tc
+    ledger.append(st, "route", d, "cli", route_id=rid, route_mode=mode)
+def run(rid, usd):
+    ledger.append(st, "worker_run", {"route_id": rid, "provider": "codex", "role": "docs", "exit_code": 0, "usage": {"input": 1, "output": 1}, "usd": usd}, "shim", route_id=rid, route_mode="table")
+def verdict(rid, v, head):
+    ledger.append(st, "verdict", {"route_id": rid, "role": "reviewer", "verdict": v}, "shim", route_id=rid, route_mode="table", head_sha=head)
+ledger.append(st, "baseline", {"label": "baseline@0.3.0"}, "cli", route_mode="baseline")
+A, B, C = "a" * 40, "b" * 40, "c" * 40
+route("r-0123456789ab-L3-1", "table", "docs", "cheap", dec={"backend": "fake", "verdict": "docs", "calibrated": False, "max_p": 0.9, "decision_id": "d1"})
+run("r-0123456789ab-L3-1", 0.10); verdict("r-0123456789ab-L3-1", "APPROVE", A)
+route("r-0123456789ab-L4-1", "table", "docs", "cheap", dec={"backend": "fake", "verdict": "feature", "calibrated": False, "max_p": 0.6, "decision_id": "d2", "fallback": "uncalibrated_cheaper"},
+      tc={"class": "docs", "source": "table-before-decision"})
+run("r-0123456789ab-L4-1", 0.30); verdict("r-0123456789ab-L4-1", "REQUEST_CHANGES", A); verdict("r-0123456789ab-L4-1", "APPROVE", B)
+route("r-0123456789ab-L5-1", "baseline", "baseline", "inherit", tc={"class": "docs", "tier": "cheap"})
+run("r-0123456789ab-L5-1", 0.50); run("r-0123456789ab-L5-1", 0.50); verdict("r-0123456789ab-L5-1", "APPROVE", C)
+route("r-0123456789ab-L6-1", "shadow", "baseline", "inherit", tc={"class": "docs", "tier": "cheap"})
+run("r-0123456789ab-L6-1", 0.20); verdict("r-0123456789ab-L6-1", "REQUEST_CHANGES", C)
+route("r-0123456789ab-L3-2", "baseline", "baseline", "inherit", tc={"class": "docs", "tier": "cheap"})   # same line, other arm
+PY
+O="$(bash "$REPORT" --state "$RS" --compare baseline 2>&1)" || fail "report.sh --compare failed: $O"
+has '^REPORT_CHAIN: OK' "$O" && has '^REPORT_COMPARE_WARNING: plan line(s) 3 have both baseline and routed routes' "$O" && has '^REPORT_COMPARE_USD: ok' "$O" \
+  && has '^REPORT_COMPARE: insufficient n (min n 20 per arm; baseline labels: baseline@0.3.0)' "$O" && has '^REPORT_COMPARE_ROUTED: tasks=2 spawns=2 ' "$O" \
+  && has '^REPORT_COMPARE_BASELINE: tasks=2 spawns=3 ' "$O" && has '^REPORT_COMPARE_CLASS: docs routed=2' "$O" && has '^REPORT_COMPARE_SHADOW_ROUTED_CHOICE: docs/cheap=1' "$O" \
+  || fail "report.sh --compare text is wrong: $O"
+bash "$REPORT" --state "$RS" --compare --json | python3 -c '
+import json, sys
+c = json.load(sys.stdin)["compare"]; a, b, d = c["routed"], c["baseline"], c["delta_routed_minus_baseline"]
+assert c["status"] == "insufficient n" and c["min_n"] == 20, c["status"]
+assert a["tasks"] == 2 and a["usd_per_solved_task"] == 0.2 and a["approval_rate"] == 1.0 and a["first_round_approval_rate"] == 0.5 and a["review_rounds_per_task"] == 1.5 and a["tiers"] == {"cheap": 2}, a
+assert b["tasks"] == 2 and b["usd_per_solved_task"] == 1.2 and b["approval_rate"] == 0.5 and b["tiers"] == {"inherit": 2} and b["spawns_per_task"] == 1.5, b
+assert d["approval_rate_pts"] == 50.0 and round(d["usd_per_solved_task_pct"], 1) == -83.3, d
+w = {str(t["task"]): t["wall_min"] for t in c["tasks"]}
+assert w["6"] is None and w["5"] is not None, w                                 # an unfinished task has no wall-clock
+' || fail "report.sh --compare --json numbers are wrong"
+O="$(bash "$REPORT" --state "$RS" --decision 2>&1)"
+has '^REPORT_DECISION: 2 row(s); agreement 50.0%; moved the route 0; uncertain 0; backends fake=2' "$O" && has 'route=r-0123456789ab-L4-1 said=feature routed=docs .* DISAGREE' "$O" \
+  && has '^REPORT_DECISION_CONFIDENCE: p0.5-0.8 n=1 agreement 0.0%, p>=0.8 n=1 agreement 100.0%' "$O" && has '^REPORT_CHAIN: OK' "$O" \
+  && has "^REPORT_DECISION_TABLE: agreement with the table's own class 0.0% (n=1" "$O" || fail "report.sh --decision text is wrong: $O"
+bash "$REPORT" --state "$RS" --decision --compare --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+x = d["decision"]
+assert x["status"] == "ok" and x["agreement"]["agreement_rate"] == 0.5 and x["by_calibration"]["uncalibrated"]["n"] == 2 and x["approval_when_agree"] == 1.0 and x["fallbacks"] == {"uncalibrated_cheaper": 1}, x
+assert d["compare"]["status"] == "insufficient n"' || fail "report.sh --decision --json is wrong"
+O="$(bash "$REPORT" --state "$GSD" --compare --decision 2>&1)"
+has '^REPORT_COMPARE: no baseline data' "$O" && has '^REPORT_DECISION: no decision data' "$O" || fail "report.sh on a table-only ledger did not say no baseline/decision data: $O"
+O="$(bash "$REPORT" --state "$RS" --compare --baseline-state "$GSD" 2>&1)"; has '^REPORT_COMPARE: no baseline data' "$O" || fail "--baseline-state was not used as the baseline arm: $O"
+[ "$(bash "$REPORT" --state "$RS" --baseline-state "$GSD" >/dev/null 2>&1; echo $?)" = 2 ] || fail "--baseline-state without --compare is not a usage error"
+has '^REPORT_ROUTES: 5' "$(bash "$REPORT" --state "$RS")" || fail "the plain report changed"
+pass "report.sh --compare: routed vs baseline/shadow arms (tasks, spawns, USD per solved task, tiers, review rounds, approval and first-round rates, deltas, shadow counterfactuals, insufficient n / no baseline data, --baseline-state); --decision: agreement by calibration and confidence, fallbacks, or no decision data; text and --json"
+
+# 80. carried worker hardening: never-touch is case-insensitive and covers .envrc; the reviewer USD floor and the
+#     argv brief cap are constants of the engine; `[blocking] none found` / `(none)` do not block an APPROVE
+python3 - "$PLUGIN_ROOT/scripts/lib" <<'PY' || fail "the carried worker hardening is missing"
+import sys
+sys.path.insert(0, sys.argv[1]); import worker, hooks
+for p in (".ENV", "docs/.Env.local", ".envrc", "sub/.EnvRC", ".Claude/Settings.json", ".CLAUDE/apex-dispatch/x", "Hooks/Hooks.json", ".Dev-Plan-State/x", "keys/ID_RSA"):
+    assert worker.path_problem(p, None) and "never-touch" in worker.path_problem(p, None), p
+for p in ("docs/environment.md", "src/envrc.py", ".claude/commands/x.md", "hooks/useThing.ts"):
+    assert worker.path_problem(p, None) is None, p
+assert worker.ARGV_BRIEF_MAX == 120 * 1024 and worker.REVIEWER_MIN_USD == 2.0 and worker.EXIT_NOT_IMPLEMENTED == 6
+assert set(worker.SHIM_PROVIDERS) == {"claude-p", "codex", "grok", "opencode-ollama", "aider-ollama"}
+src = open(worker.__file__).read()
+assert "dontAsk denies the rest" not in src and "permissions.allow" in src and '"archive", "--format=tar"' not in src
+ok = lambda m: hooks.parse_review(m)[0]
+assert ok("Fine.\n[blocking] none found\nVERDICT: APPROVE") == "APPROVE"
+assert ok("- [blocking] (none)\nVERDICT: APPROVE") == "APPROVE"
+assert ok("[blocking] a.py:3 crashes on empty input\nVERDICT: APPROVE") == "REQUEST_CHANGES"
+PY
+pass "carried hardening: case-insensitive never-touch incl. .envrc (own .claude/commands and hooks/ source stay applicable), reviewer USD floor 2.0, 120 KiB argv brief cap, exit 6 for stubs, corrected dontAsk comment, no git archive; [blocking] none found/(none) do not block"
+
+# 81. docs: ADR-0001 and README document the 4.2 surface and the deviations; commands describe the new modes
+for t in 'Flagged-off providers (Phase 4.2, v0.3.0)' 'openai-sdk stub (v0.3.0)' 'Codex target (v0.3.0' 'Measurement (v0.3.0' 'Pre-registered minimum n: 20' "Deviation: apply's never-touch list is narrower than the spec's" 'verified_versions'; do
+  grep -qF "$t" "$ADR" || fail "ADR-0001 does not document: $t"
+done
+for t in 'bin/worker-grok.sh' 'worker-openai-sdk.sh' '--target codex' '--compare' '--decision' 'verified_versions'; do grep -qF -- "$t" "$R" || fail "README does not document $t"; done
+grep -qF -- '--compare' "$PLUGIN_ROOT/commands/report.md" && grep -qF -- '--decision' "$PLUGIN_ROOT/commands/report.md" && grep -qF -- '--target codex' "$PLUGIN_ROOT/commands/compile.md" \
+  || fail "commands/report.md or compile.md do not describe the new modes"
+pass "docs: ADR-0001 (flagged-off providers, stub, codex target, measurement with min n, never-touch deviation), README and the report/compile commands describe the 4.2 surface"
+
+# 82. report --compare does not invent savings: 20 routed tasks (a codex builder with provider-default usage and no
+#     USD, plus an in-session reviewer) vs 20 baseline tasks (in-session builder + reviewer, identical tokens): USD is
+#     "not comparable" (never $0), spawns are one per agent (spawn_request+spawn+worker_run = 1), equal per task;
+#     a decision-mode route row records the table's choice and --decision reports agreement with it
+RS2="$WORK/rstate2"; mkdir -p "$RS2"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$RS2" <<'PY' || fail "could not build the reviewer-shape comparison ledger"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+st = sys.argv[2]
+U = {"input": 10000, "output": 2000}
+def ins(rid, aid, mode):
+    ledger.append(st, "spawn_request", {"route_id": rid, "role": "reviewer", "model": "sonnet"}, "hook", route_id=rid, route_mode=mode)
+    ledger.append(st, "spawn", {"route_id": rid, "agent_id": aid, "role": "reviewer"}, "hook", route_id=rid, route_mode=mode)
+    ledger.append(st, "worker_run", {"route_id": rid, "provider": "claude-session", "role": "reviewer", "exit_code": 0, "agent_id": aid,
+                                     "usage": U, "resolved_model": "claude-sonnet-5-5"}, "hook", route_id=rid, route_mode=mode)
+for i in range(20):
+    for arm, mode, line in (("r", "table", 10 + i), ("b", "baseline", 40 + i)):
+        rid = "r-0123456789ab-L%d-1" % line
+        ledger.append(st, "route", {"route_id": rid, "status": "READY", "origin": "plan", "line": line,
+                                    "router": {"class": "docs", "tier": "cheap" if arm == "r" else "inherit"}}, "cli", route_id=rid, route_mode=mode)
+        if arm == "r":
+            ledger.append(st, "worker_run", {"route_id": rid, "provider": "codex", "role": "docs", "exit_code": 0, "run_id": "w-codex-%d" % i,
+                                             "usage": U, "resolved_model": "provider-default", "usd": None}, "shim", route_id=rid, route_mode=mode)
+        else:
+            ins(rid, "b%d" % i, mode)
+        ins(rid, "%sr%d" % (arm, i), mode)
+        ledger.append(st, "verdict", {"route_id": rid, "role": "reviewer", "verdict": "APPROVE"}, "hook", route_id=rid, route_mode=mode, head_sha="a" * 40)
+PY
+bash "$REPORT" --state "$RS2" --compare --json | python3 -c '
+import json, sys
+c = json.load(sys.stdin)["compare"]; a, b, d = c["routed"], c["baseline"], c["delta_routed_minus_baseline"]
+assert c["status"] == "ok" and c["usd_status"].startswith("not comparable") and "routed 20" in c["usd_status"], c["usd_status"]
+assert a["usd_comparable"] is False and a["unpriced_rows"] == 20 and a["usd_per_solved_task"] is None and a["usd_estimated"] is None, a
+assert b["usd_comparable"] is True and b["usd_per_solved_task"] > 0, b
+assert d["usd_per_solved_task_pct"] is None and d["usd_per_task_pct"] is None, d
+assert a["spawns_per_task"] == b["spawns_per_task"] == 2.0 and a["spawns"] == b["spawns"] == 40, (a["spawns"], b["spawns"])
+' || fail "report --compare reported a USD saving from unpriced rows or double-counted spawns"
+O="$(bash "$REPORT" --state "$RS2" --compare 2>&1)"
+has '^REPORT_COMPARE_USD: not comparable (unpriced or unverified usage rows: routed 20, baseline 0)' "$O" && has '^REPORT_COMPARE_ROUTED: tasks=20 spawns=40 spawns/task=2.0 usd=not comparable (20 unpriced' "$O" \
+  && has 'usd_per_solved_task_pct=not comparable' "$O" && has '^REPORT_CHAIN: OK' "$O" || fail "report --compare text does not say USD is not comparable: $O"
+# A decision-mode route records the table's own class; --decision reports agreement with it.
+FD="$WORK/fd"; mkdir -p "$FD/plans"; git init -q -b main "$FD"
+printf '# D\n\n- [ ] **Phase 1.1** untagged work\n  - Acceptance: `pytest -q`\n' >"$FD/plans/p.md"; printf '.dev-plan-state/\n' >"$FD/.gitignore"
+git -C "$FD" add -A; git -C "$FD" commit -qm fd; (cd "$FD" && wenv bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the decision fixture"
+O="$(cd "$FD" && wenv env APEX_DECIDE_CMD="$WORK/decide" FAKE_DECISION='{"verdict":"docs","probabilities":{"docs":0.95,"feature":0.05},"calibrated":true,"uncertain":false,"backend":"fake","decision_id":"d9"}' bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_MODE "$O")" = decision ] && [ "$(val ROUTE_CLASS "$O")" = docs ] || fail "the decision fixture did not route by decision: $O"
+FSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; x=[y for y in r if y["event"]=="route"][-1]; assert x["table_choice"]["class"]=="feature" and x["router"]["class"]=="docs", x.get("table_choice")' "$FSD/dispatch/ledger.jsonl" \
+  || fail "a decision-mode route row does not record the table's choice"
+O="$(bash "$REPORT" --state "$FSD" --decision 2>&1)"
+has "^REPORT_DECISION_TABLE: agreement with the table's own class 0.0% (n=1" "$O" && has '^REPORT_DECISION: 1 row(s); agreement 100.0%; moved the route 1' "$O" || fail "--decision did not report agreement with the table: $O"
+pass "report --compare: unpriced/unverified usage makes USD not comparable (never \$0, no USD delta), one spawn per agent (equal per task), chain printed, mixed arms warned, unfinished tasks out of wall-clock; decision-mode routes record table_choice and --decision reports agreement with the table"
+
+# 83. run-only files: a provider's project config is moved aside and restored, worktree_files are undone, and both
+#     are restored on an error path too (the engine's outer finally); generated opencode permissions also travel
+#     in OPENCODE_CONFIG_CONTENT
+python3 - "$PLUGIN_ROOT/scripts/lib" "$WORK/rf" <<'PY' || fail "RunFiles does not move aside and restore run-only files"
+import os, sys
+sys.path.insert(0, sys.argv[1]); import worker
+base = sys.argv[2]; conf, out = os.path.join(base, "wt"), os.path.join(base, "out")
+os.makedirs(os.path.join(conf, ".opencode")); os.makedirs(out)
+open(os.path.join(conf, "opencode.json"), "w").write("orig")
+open(os.path.join(conf, ".opencode", "a.md"), "w").write("a")
+open(os.path.join(conf, ".env"), "w").write("E=1")
+os.makedirs(os.path.join(conf, ".claude")); open(os.path.join(conf, ".claude", "settings.json"), "w").write("user")
+assert worker.aider_project_config(conf) == [".env"], worker.aider_project_config(conf)
+rf = worker.RunFiles(conf, out)
+try:
+    rf.apply({"hide": ["opencode.json", ".opencode"], "worktree_files": {".claude/settings.json": "run-only"}})
+    assert not os.path.exists(os.path.join(conf, "opencode.json")) and not os.path.exists(os.path.join(conf, ".opencode"))
+    assert open(os.path.join(conf, ".claude", "settings.json")).read() == "run-only"
+    open(os.path.join(conf, "opencode.json"), "w").write("written by the provider")
+    raise RuntimeError("timeout missing")          # an error between apply() and the run
+except RuntimeError:
+    pass
+finally:
+    rf.restore()
+rf.restore()                                        # idempotent
+assert open(os.path.join(conf, "opencode.json")).read() == "orig" and open(os.path.join(conf, ".opencode", "a.md")).read() == "a"
+assert open(os.path.join(conf, ".claude", "settings.json")).read() == "user"
+src = open(worker.__file__).read()
+i = src.index("def cmd_run(")
+assert "runfiles.restore()                                 # also on a refusal" in src[i:], "the outer finally does not restore"
+PY
+pass "run-only files: provider project config (opencode.json/.opencode, .env/.aider*) moved aside and restored, grok-style worktree_files undone, restore idempotent and also in cmd_run's outer finally"
+
+echo ""
+echo "smoke passed: $N/$N checks"

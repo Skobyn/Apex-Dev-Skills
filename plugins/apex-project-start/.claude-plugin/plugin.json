@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "apex-project-start",
   "displayName": "Apex Project Start",
-  "version": "0.1.0",
-  "description": "Interview-first greenfield project initializer. Opens with 'what are you trying to build?', researches the context, then scaffolds a fully-governed repo (paved-road defaults), provisions ruflo + the Apex-Dev-Skills suite, and verifies it before the first commit. Generated projects are steered to build features via apex-plan/apex-loop. Supports TypeScript/JavaScript, Python, Go, and Rust.",
+  "version": "0.1.1",
+  "description": "Interview-first greenfield project initializer: opens with 'what are you trying to build?', researches the context, then scaffolds a fully-governed repo (paved-road defaults), provisions the Apex-Dev-Skills suite (plus optional ruflo), and verifies it before the first commit. Generated projects are steered to build features via apex-plan/apex-loop. Supports TypeScript/JavaScript, Python, Go, and Rust.",
   "author": {
     "name": "Apex Insights",
     "url": "https://getapexinsights.com"

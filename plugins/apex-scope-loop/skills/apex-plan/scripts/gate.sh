@@ -11,15 +11,17 @@
 #   [gate:auto]            Runs the Acceptance shell command. Exits 0 on pass, 1 on fail.
 #   [gate:human]           Prints the required approval phrase; exits 2 (awaiting).
 #                          Does NOT modify checkpoint — the orchestrator owns halting.
-#   [gate:partner:<email>] Writes an inbox item via the agent-coordination API; exits 2.
-#                          Requires .claude/agent-coord-config.json with authKey.
+#   [gate:partner:{who}]   Notifies the partner and exits 2 (awaiting):
+#                          $APEX_PARTNER_NOTIFY_CMD gets the gate JSON on stdin;
+#                          else the Apex inbox API when .claude/agent-coord-config.json
+#                          exists (apex profile); else it degrades to [gate:human].
 #
 # Exit codes:
 #   0  — Gate passed
 #   1  — Gate failed (auto-gate command returned non-zero)
 #   2  — Gate awaiting (human or partner)
 #   3  — Bad args / gate not found
-#   4  — Inbox API call failed (partner-gate only)
+#   4  — Partner notification failed (notify command or inbox API)
 
 set -euo pipefail
 
@@ -34,24 +36,25 @@ GATE_ID_RAW="$2"
 
 [[ -f "$PLAN" ]] || { echo "Plan not found: $PLAN" >&2; exit 3; }
 
-# Normalize gate-id: "gate-2-3" or "Gate 2→3" or "Gate 2-3" → "2-3" / "2→3"
-# Look for both "Gate 2→3" and "gate-2-3" forms in the plan.
-NORM="${GATE_ID_RAW#gate-}"
-NORM="${NORM#Gate }"
-# Try to find the gate line; match either "Gate 2→3" or "gate-2-3" anywhere
-GATE_LINE=""
-GATE_LINE_NO=""
-while IFS= read -r match; do
-  LN="${match%%:*}"
-  CONTENT="${match#*:}"
-  if echo "$CONTENT" | grep -qE "Gate ${NORM//-/[→-]}|gate-${NORM//→/-}"; then
-    GATE_LINE="$CONTENT"
-    GATE_LINE_NO="$LN"
-    break
-  fi
-done < <(grep -nE '^- \[[ x]\] \*\*Gate' "$PLAN")
+# Find the gate with planlib's id normalisation ("gate-2-3", "Gate 2→3",
+# "Gate 2-3" are one id), the same rule Blocked-by references use.
+PL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../apex-execute/scripts" && pwd)/planlib.py"
+FOUND="$(python3 - "$PL" "$PLAN" "$GATE_ID_RAW" <<'PY' || true
+import sys
+sys.dont_write_bytecode = True
+pl, plan, raw = sys.argv[1:]
+sys.path.insert(0, pl.rsplit("/", 1)[0]); import planlib
+want = planlib.norm_ref(raw)
+for t in planlib.parse(plan):
+    if t["ref"] and t["ref"] == want and want[0] == "gate":
+        print(f"{t['line_no']}\t{t['line']}")
+        break
+PY
+)"
+GATE_LINE_NO="${FOUND%%$'\t'*}"
+GATE_LINE="${FOUND#*$'\t'}"
 
-if [[ -z "$GATE_LINE" ]]; then
+if [[ -z "$FOUND" ]]; then
   echo "Gate not found in plan: $GATE_ID_RAW" >&2
   exit 3
 fi
@@ -118,16 +121,12 @@ case "$KIND" in
     ;;
 
   partner)
-    CONFIG="$(git rev-parse --show-toplevel)/.claude/agent-coord-config.json"
-    if [[ ! -f "$CONFIG" ]]; then
-      echo "Partner-gate requires $CONFIG (copy from .claude/agent-coord-config.example.json)" >&2
-      exit 4
-    fi
-    AUTH_KEY="$(python3 -c "import json,sys; print(json.load(open('$CONFIG'))['authKey'])")"
-    AUTH_USER="$(python3 -c "import json,sys; print(json.load(open('$CONFIG'))['user'])")"
-    API_BASE="$(python3 -c "import json,sys; d=json.load(open('$CONFIG')); print(d.get('apiBase','https://api.getapexinsights.com'))")"
-
-    GATE_TITLE="$(echo "$GATE_LINE" | grep -oE 'Gate [0-9→-]+' | head -1)"
+    # Partner gates are generic (ADR-0003): $APEX_PARTNER_NOTIFY_CMD receives
+    # the gate as JSON on stdin (gh issue create, a webhook, Slack); the Apex
+    # inbox POST is the apex profile's default, used only when
+    # .claude/agent-coord-config.json exists. With neither, the gate degrades
+    # to a human gate instead of failing.
+    GATE_TITLE="$(echo "$GATE_LINE" | grep -oE 'Gate [0-9A-Za-z→.-]+' | head -1 || true)"
     BODY="$(python3 - "$PARTNER_EMAIL" "$GATE_TITLE" "$ACCEPTANCE" "$PLAN" <<'PY'
 import json, sys
 forUser, title, acceptance, plan_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -141,8 +140,28 @@ print(json.dumps({
 }))
 PY
     )"
+    if [[ -n "${APEX_PARTNER_NOTIFY_CMD:-}" ]]; then
+      if printf '%s' "$BODY" | bash -c "$APEX_PARTNER_NOTIFY_CMD"; then
+        echo "AWAITING PARTNER — notified $PARTNER_EMAIL via APEX_PARTNER_NOTIFY_CMD"
+        exit 2
+      fi
+      echo "Partner notification failed (APEX_PARTNER_NOTIFY_CMD returned non-zero)" >&2
+      exit 4
+    fi
+    CONFIG="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/agent-coord-config.json"
+    if [[ ! -f "$CONFIG" ]]; then
+      echo "AWAITING HUMAN — no partner channel configured (set APEX_PARTNER_NOTIFY_CMD); treating as [gate:human]."
+      echo "Ask $PARTNER_EMAIL (or the user) for the approval phrase:"
+      echo "    $ACCEPTANCE"
+      exit 2
+    fi
+    AUTH_KEY="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['authKey'])" "$CONFIG")"
+    AUTH_USER="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['user'])" "$CONFIG")"
+    API_BASE="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('apiBase','https://api.getapexinsights.com'))" "$CONFIG")"
+    RESP="$(mktemp "${TMPDIR:-/tmp}/apex-gate-resp.XXXXXX")"
+    trap 'rm -f "$RESP"' EXIT
 
-    HTTP_CODE="$(curl -sS -o /tmp/decide-plan-gate-resp.json -w '%{http_code}' \
+    HTTP_CODE="$(curl -sS -o "$RESP" -w '%{http_code}' \
       -X POST "$API_BASE/api/agent-coordination/inbox" \
       -H "Content-Type: application/json" \
       -H "X-Agent-Auth: $AUTH_KEY" \
@@ -151,12 +170,12 @@ PY
 
     if [[ "$HTTP_CODE" =~ ^2[0-9][0-9]$ ]]; then
       echo "AWAITING PARTNER — inbox item written for $PARTNER_EMAIL"
-      cat /tmp/decide-plan-gate-resp.json
+      cat "$RESP"
       echo
       exit 2
     else
       echo "Failed to write inbox item (HTTP $HTTP_CODE):" >&2
-      cat /tmp/decide-plan-gate-resp.json >&2
+      cat "$RESP" >&2
       exit 4
     fi
     ;;

@@ -7,11 +7,13 @@
 set -euo pipefail
 
 PLAN="${1:?usage: architecture-review.sh PLAN.md}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found"; exit 1; }
 
-PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
-PLAN_HASH="$(printf '%s' "$PLAN_ABS" | shasum -a 256 | cut -c1-12)"
-STATE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.dev-plan-state/$PLAN_HASH"
+APEX_RESOLVE_MODE=read  # reporting only: a repository mismatch warns
+# shellcheck source=_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+apex_resolve "$PLAN"
 
 WEEK_TAG="$(date -u +%G-W%V)"
 REVIEW_FILE="$STATE_DIR/architecture-reviews/$WEEK_TAG.md"

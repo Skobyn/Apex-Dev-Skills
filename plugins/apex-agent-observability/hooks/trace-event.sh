@@ -9,7 +9,10 @@
 #   - Pure shell + optional python3 for robust JSON. No third-party deps.
 #   - Never block the agent: any failure exits 0 so a hook error can't
 #     stall the host run. Observability must be non-fatal.
-#   - One file per run, keyed off CLAUDE_SESSION_ID when present.
+#   - One file per session, keyed off the payload's `session_id` (every hook
+#     event carries it), then $APEX_TRACE_SESSION, then "local". Claude Code
+#     does not export a session id to hook processes, so the payload is the
+#     only reliable key. The key is reduced to [A-Za-z0-9._-] for the filename.
 set -euo pipefail
 
 EVENT="${1:-Unknown}"
@@ -21,8 +24,19 @@ PAYLOAD="$(cat 2>/dev/null || true)"
 TRACE_DIR="${APEX_TRACE_DIR:-${CLAUDE_PROJECT_DIR:-$PWD}/.claude/traces}"
 mkdir -p "$TRACE_DIR" 2>/dev/null || true
 
-# One trace file per session (or a stable fallback for a single run).
-SESSION="${CLAUDE_SESSION_ID:-local}"
+# One trace file per session: payload session_id, then APEX_TRACE_SESSION, then "local".
+SESSION=""
+if command -v python3 >/dev/null 2>&1; then
+  SESSION="$(printf '%s' "$PAYLOAD" | python3 -I "$(dirname "${BASH_SOURCE[0]}")/_emit.py" --session 2>/dev/null || true)"
+else
+  SESSION="$(printf '%s' "$PAYLOAD" | tr -d '\n' \
+    | { grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' || true; } \
+    | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
+fi
+[ -n "$SESSION" ] || SESSION="${APEX_TRACE_SESSION:-}"
+[ -n "$SESSION" ] || SESSION="local"
+SESSION="$(printf '%s' "$SESSION" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-128)"
+case "$SESSION" in .|..) SESSION="local" ;; esac
 TRACE_FILE="$TRACE_DIR/run-${SESSION}.jsonl"
 
 # Whole-second UTC ISO-8601. Portable across GNU and BSD/macOS date (which
@@ -38,7 +52,7 @@ if command -v python3 >/dev/null 2>&1; then
     "$EVENT" "$TS" "$SESSION" >> "$TRACE_FILE" 2>/dev/null || true
 else
   # Minimal fallback: no token estimate, no parsed tool name.
-  printf '{"ts":"%s","event":"%s","session":"%s","subagent_id":null,"parent_id":null,"tool":null,"token_estimate":0,"edge":null}\n' \
+  printf '{"ts":"%s","event":"%s","session":"%s","subagent_id":null,"parent_id":null,"agent_type":null,"agent_transcript_path":null,"tool":null,"token_estimate":0,"edge":null}\n' \
     "$TS" "$EVENT" "$SESSION" >> "$TRACE_FILE" 2>/dev/null || true
 fi
 

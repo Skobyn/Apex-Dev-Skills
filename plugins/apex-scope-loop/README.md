@@ -24,20 +24,26 @@ The result is a system that **thinks alongside you**: it watches reality, persis
 - **Guardrails by default.** Phases close behind runnable checks or explicit human/partner approval. Bad work can't quietly cascade into the next phase.
 - **Autonomy you can trust.** `/loop` drives active sessions; `/schedule` runs nightly audits and weekly architecture reviews so progress continues while you sleep.
 - **Right-sized compute.** Each phase declares its own swarm — a single agent for trivial work, a full hierarchical-mesh for the heavy lifting.
+- **A harness with teeth.** Execution runs under disciplines adapted from [The Gibson](https://github.com/The-AIE/the-gibson). Each task must pass a green gate measured against the fork-point baseline, then get an independent review of its exact commit from an agent that didn't write it. Anything touching money, auth, PII, security, schema, or prod data stops for your approval. Repeated failures become permanent lessons. See [The Gibson harness](#the-gibson-harness).
 - **Isolated by default.** The whole plan runs in a dedicated git worktree on its own branch. `main` stays clean until the final gate passes and the branch is landed — a half-finished or abandoned plan never leaks partial code into your base branch.
 
 ## Prerequisites
 
-> **apex-scope-loop builds on [ruflo](https://github.com/ruvnet/ruflo). The ruflo plugin suite is required, not optional.**
-
 | Requirement | Why |
 |---|---|
-| **ruflo plugin suite** *(required)* | Provides the `memory_*`, `swarm_init`, `agent_spawn`, and `hooks_route` MCP tools that the EXECUTE loop uses to dispatch swarms and accumulate cross-session memory. Set it up with `ruflo init`. |
 | **Claude Code 2.0+** *(required)* | Needs `/loop`, `/schedule`, `AskUserQuestion`, `ScheduleWakeup`, and `Agent`. |
-| `@claude-flow/cli` v3.6+ *(runtime, via `npx`)* | Used by `iterate.sh` when a phase dispatches a claude-flow swarm. Consumed at runtime; not a declared dependency. |
 | Python 3.11+ *(optional)* | Matches the surrounding apex toolchain; plugin scripts themselves are bash. |
+| A memory store *(optional, via `APEX_MEMORY_CMD`)* | Seeds a plan record into the `apex-scope-loop` namespace. Unset means the seed is skipped quietly. |
 
-Without ruflo's MCP tools the authoring phases still work, but the autonomous EXECUTE loop has nothing to dispatch to — so install ruflo first.
+The loop runs on plain Claude Code subagents. Nothing else needs installing.
+
+Memory seeding is optional and happens only when `APEX_MEMORY_CMD` is set. `init.sh` runs it with `APEX_MEMORY_NAMESPACE`, `APEX_MEMORY_KEY` and `APEX_MEMORY_VALUE` in its environment. With the optional [ruflo](https://github.com/ruvnet/ruflo) CLI, for example (APEX_MEMORY_CMD):
+
+```bash
+export APEX_MEMORY_CMD='npx -y @claude-flow/cli@latest memory store --namespace "$APEX_MEMORY_NAMESPACE" --key "$APEX_MEMORY_KEY" --value "$APEX_MEMORY_VALUE"'
+```
+
+`Swarm:` directives in a plan are advisory (optional ruflo/claude-flow swarms, or apex-dispatch `fanout` once available). Without them, each task runs as a single subagent.
 
 ## Install
 
@@ -80,6 +86,7 @@ Then `/reload-plugins` (or restart Claude Code) to activate.
 | Skill | `apex-execute` | Auto-triggered on "iterate plan", "autonomous loop", `/loop` invocations referencing a plan |
 | Command | `/apex-scope-loop:start <slug>` | Begin a new SCOPE authoring session |
 | Command | `/apex-scope-loop:iterate <plan>` | Run one phase of a promoted plan |
+| Agent | `gibson-reviewer` | Independent, read-only six-lens reviewer of one task's exact head SHA (Opus). Dispatched by the iterate loop; never reviews its own work |
 | Agent | `plan-author` | Delegate the SCOPE/COMPOSE/OPTIMIZE rounds to a Sonnet subagent (saves main-thread context) |
 
 ## How the two skills compose
@@ -102,22 +109,55 @@ apex-execute  (execution — the loop, inside an isolated worktree)
                                               (merge branch → main, remove worktree)
 ```
 
+## The Gibson harness
+
+apex-execute adopts the portable core of [The Gibson](https://github.com/The-AIE/the-gibson), an open source SDLC harness for agent fleets (Apache-2.0, Mark Hinkle). It's **on by default**. Set `APEX_GIBSON=0` to opt out.
+
+Per task, inside the worktree:
+
+```
+build swarm → commit → green-gate.sh check → risk-tier.sh → gibson-reviewer (exact head SHA)
+           → [Tier C: 6-lens fan-out + adversarial pass + your G12 approval] → acceptance → checkpoint complete
+```
+
+| Gibson law | What you get |
+|---|---|
+| Green gate vs. baseline (Law 4) | `init.sh` snapshots generate/typecheck/lint/test/build at the fork. A task fails only on *new* red. Commands come from `.agents/gate.json` (Gibson format), `APEX_GATE_*`, or `package.json` |
+| Never grade your own homework (Law 5) | The `gibson-reviewer` agent reviews in a fresh context and fails closed. Check-off is refused without an `APPROVE` on the current head |
+| Tier C is sacred (Law 7) | `risk-tier.sh` flags money/auth/PII/security/schema/prod-data diffs. They halt for your approval, asked in plain language (the Ask Contract) |
+| The ratchet (Law 9) | A failure seen twice must be filed in `.claude/apex-scope-loop/LESSONS.md`, and lessons are recalled by tag before each task |
+| Kill switch + error budget | `touch .dev-plan-state/HALT` (or `gibson/HALT`, or `APEX_HALT=1`) stops the loop. Two failures in a row buy a second opinion. Three stalled failures halt the plan, and so do six in a row of any kind (a failure that closed findings and moved the head is not a stall) |
+
+### Review-loop calibration (v0.4.0, ADR-0004)
+
+- **Threat model first.** A plan's `## Threat model` section (or a task's `- Threat:` line, else a stated default: trusted agents, accidents and realistic misuse in scope, deliberate tampering and obfuscated inputs out) is printed in the brief and handed to every reviewer verbatim.
+- **A fixed bar.** `[blocking]` means a realistic actor under that model can cause it in an ordinary flow, or Acceptance is unmet, or tests were weakened. At most `APEX_ADVERSARY_BUDGET` (3) blocking findings per pass. Everything else goes to the hardening backlog (`backlog.sh`, `.claude/apex-scope-loop/BACKLOG.md`), which a later docs task consumes.
+- **Verify-only re-reviews.** Round 1 is the full review (and the attempt's one full adversarial pass); later rounds check the prior findings and the fixes since `LAST_REVIEWED`.
+- **Ask the human sooner.** After REQUEST_CHANGES in 2 rounds, `checkpoint.sh review` prints `ASK_HUMAN:`. The human can accept the residual risk at that exact head with `checkpoint.sh waive`; the gate, the tier, G12 and Acceptance still apply, and the completion is recorded as waived, not approved.
+- **Carried findings, frozen heads, shared snapshots.** `findings.sh` keeps each task's findings (a defect counted once; non-blocking ones go to the backlog), `checkpoint.sh freeze` holds the head for a review round, `snapshot.sh` gives reviewers one read-only checkout per commit, and `status.sh --review-metrics` measures rounds and minutes. The review cap counts only rounds that requested changes; a task's `Review:` directive can set it.
+- **Calibrated tiers.** Content signals in tests, fixtures, smoke files, examples and docs no longer raise Tier C (their paths still do), and an explicit `[tier:a reason="…"]`/`[tier:b reason="…"]` override decides over size and content signals (the reason is recorded), never over Tier C paths or `[security]`/`[tier:c]`.
+
+Full mapping, and what was deliberately left out (cross-vendor routing, GitHub claims, CI templates): [skills/apex-execute/docs/GIBSON_HARNESS.md](skills/apex-execute/docs/GIBSON_HARNESS.md). For repo-level setup (CI gates, branch protection, labels), run The Gibson's own `gibson-setup` skill against the target repo.
+
 ## Compatibility
 
 - **Claude Code:** 2.0+ (requires `/loop`, `/schedule`, AskUserQuestion, ScheduleWakeup, Agent)
-- **ruflo plugin suite:** required — supplies the `memory_*`, `swarm_init`, `agent_spawn`, and `hooks_route` MCP tools the EXECUTE loop dispatches through (`ruflo init`)
-- **`@claude-flow/cli`:** v3.6 major+minor when `iterate.sh` dispatches via claude-flow's `swarm_init`/`agent_spawn` (consumed at runtime via `npx`; not declared as a plugin dependency)
-- **Python:** 3.11+ (matches the apex repo's overall toolchain; `start.sh` and `promote-to-loop.sh` are bash but the surrounding apex project uses `uv run`)
+- **git:** 2.40+ (the clean-worktree check builds its comparison checkout with `--attr-source=HEAD`; older git makes the gate fail closed on files git converts on checkout)
+- **bash** 4+ and **python3** 3.8+ (stdlib only)
+- **ruflo / `@claude-flow/cli`:** optional — used only when `APEX_MEMORY_CMD` seeds memory or a plan's advisory `Swarm:` directive is run through it
 
 ## Namespace coordination
 
-This plugin claims the AgentDB / memory namespace **`apex-scope-loop`**, following the kebab-case `<plugin-stem>-<intent>` convention from ruflo-agentdb ADR-0001 §"Namespace convention". Sub-keys:
+This plugin claims the AgentDB / memory namespace **`apex-scope-loop`**, following the kebab-case `<plugin-stem>-<intent>` convention (borrowed from the optional ruflo-agentdb ADR-0001 §"Namespace convention"). Sub-keys:
 
 | Key prefix | Holds |
 |---|---|
 | `apex-scope-loop:adrs/<slug>` | ADR metadata + status |
 | `apex-scope-loop:plans/<slug>` | Plan checkpoint + completion % |
 | `apex-scope-loop:outcomes/<slug>/<phase>` | Per-phase verdict + trajectory pattern |
+| `apex-scope-loop:lessons/<tag>` | Ratchet lessons (mirror of the tracked `.claude/apex-scope-loop/LESSONS.md`, per ADR-0002) |
+
+The hardening backlog (ADR-0004) is a tracked file beside the ledger, `.claude/apex-scope-loop/BACKLOG.md`, not a memory key.
 
 Any future plugin that wants to read/write these keys must claim a non-overlapping prefix and reference this plugin's ADR-0001.
 
@@ -127,11 +167,14 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 10 structural checks (frontmatter, namespace declaration, ADR status, script executability, README sections). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 61 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, and the review-loop calibration of ADR-0004). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 
 - [ADR-0001 — apex-scope-loop plugin contract](docs/adrs/0001-apex-scope-loop-contract.md) — Status: **Proposed**. Defines surface, namespace, compatibility, and smoke contract.
+- [ADR-0002 — Adopt The Gibson's harness disciplines](docs/adrs/0002-gibson-harness.md) — Status: **Proposed**. Green gate, independent review, Tier C / G12, ratchet, kill switch.
+- [ADR-0003 — Portability, the per-run guarantee, and apex-dispatch as a consumer](docs/adrs/0003-portability-and-dispatch-consumer.md) — Status: **Proposed**. ruflo optional, template profiles, the chain and epochs, landing without merge machinery, the clean-worktree contract and what lies outside it.
+- [ADR-0004 — Review-loop calibration](docs/adrs/0004-review-loop-calibration.md) — Status: **Accepted**. Threat model before review, severity bar, verify-only re-reviews, adversary budget, human waiver, progress-aware halts, hardening backlog, classifier calibration; what it loosens and why that is safe.
 
 ## Migration from `.claude/skills/`
 
@@ -157,4 +200,4 @@ The skills' own SKILL.md files document anti-patterns at length. The most import
 
 ## License
 
-MIT — see the repo-level LICENSE.
+MIT — see the repo-level LICENSE. The execution harness adapts concepts from The Gibson (Apache-2.0); see [NOTICE](NOTICE).

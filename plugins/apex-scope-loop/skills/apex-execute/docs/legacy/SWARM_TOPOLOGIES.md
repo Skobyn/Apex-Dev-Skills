@@ -1,5 +1,7 @@
 # Swarm Topologies — Phase Tag → Agent Mapping
 
+> **Legacy:** describes optional ruflo/claude-flow swarms; not required by apex-scope-loop 0.3.0.
+
 The orchestrator selects topology and agent roster based on a task's tags. All swarms run **hierarchical-mesh** with a queen coordinator and Raft consensus, so a leader maintains authoritative state. Workers run in parallel via the Agent tool with `run_in_background: true`.
 
 ## Spawning rule (CLAUDE.md compliance)

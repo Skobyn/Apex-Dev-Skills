@@ -1,5 +1,7 @@
 # apex-dev-harness
 
+> Routing and gate engine for apex-app: lanes + surface-ledger routing, cross-platform guardrails, and phases that close on computed obligations.
+
 Makes apex-app's governance mechanical: lanes and the surface ledger become a query, the guardrails run on every platform, and a phase closes on computed obligations instead of prose.
 
 ## Install
@@ -28,7 +30,7 @@ The bundled engine excludes `dist/mcp/` (it is the only part that needs the
 |---|---|
 | `/apex:route <path>` | Where does this work go? |
 | `/apex:gate` | What does this diff owe? |
-| `/apex:build <ask>` | Orient, decide, execute, gate, done |
+| `/apex:build <ask>` | Orient, decide, route, execute, gate, done |
 | `/apex:status` | Read-only orientation |
 
 ## Policy overlay (0.3.0+)
@@ -77,9 +79,21 @@ to see whether step 2 is needed.
 the engine and the hook together under `engine/`, so a plugin update
 replaces both in one step.
 
-## Relationship to apex-scope-loop
+## Relationship to apex-scope-loop and apex-dispatch
 
-`/apex:build` step 2 hands non-trivial work to `apex-plan`, and step 3 executes it with
-`apex-execute` — both from the **apex-scope-loop** plugin. Install it alongside this one. Claude Code
-plugins have no dependency mechanism, so this is documentation, not enforcement: without
-apex-scope-loop, `/apex:build` still orients and gates, but has no planner to hand off to.
+`/apex:build` runs ORIENT → DECIDE → ROUTE → EXECUTE → GATE → DONE. Step 2 (DECIDE) hands
+non-trivial work to the `apex-plan` skill and step 4 (EXECUTE) works it with `apex-execute` —
+both are skills of the **apex-scope-loop** plugin, loaded from the installed plugin (no
+`.claude/skills/` copy in the repo is assumed). Step 3 (ROUTE) uses **apex-dispatch** when it is
+installed: `/apex-dispatch:run <plan>` (or `/apex-dispatch:route adhoc …` for a bounded ask)
+picks the agent, model, provider, fan-out and review shape and its hooks enforce it.
+
+Two routers, two questions:
+
+- **`/apex:route`** = which apex-app **lane** (STUDIO / DUAL / LEGACY / RETIRED, surface ledger, parity surfaces).
+- **`/apex-dispatch:route`** = which **agent / model / provider** does the work.
+
+Install both plugins alongside this one. Claude Code plugins have no dependency mechanism, so this
+is documentation, not enforcement: without apex-scope-loop, `/apex:build` still orients and gates
+but has no planner to hand off to; without apex-dispatch it skips ROUTE and executes by the plan's
+`Swarm:` directive.

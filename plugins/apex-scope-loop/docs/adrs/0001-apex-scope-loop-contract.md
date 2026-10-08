@@ -4,6 +4,7 @@
 - **Date:** 2026-05-22
 - **Author:** solutions@getapexinsights.com
 - **Plugin:** apex-scope-loop v0.1.0
+- **Note:** Amended by ADR-0003 (portability).
 
 ## Context
 
@@ -54,7 +55,7 @@ The execution stage (`apex-execute`) is **worktree-bound by contract**. `init.sh
 ### Compatibility
 
 - Claude Code: 2.0+
-- Pins to `@claude-flow/cli` v3.6.major.minor when the apex-execute iteration touches claude-flow swarm tools (`swarm_init`, `agent_spawn`, `swarm_status`). The plugin itself does not declare a `@claude-flow/cli` dependency in plugin.json (claude-flow is consumed via npx at runtime by `iterate.sh`).
+- `@claude-flow/cli` (ruflo) is optional and never declared in plugin.json. If a user opts in, it is used only as a memory seed through `APEX_MEMORY_CMD`, or for advisory `Swarm:` directives; the loop itself runs on plain Claude Code subagents.
 - Python 3.11+ (matches apex repo's overall toolchain — `apex-plan` `start.sh` and `promote-to-loop.sh` shell out to scripts that may invoke `uv run` in apex contexts).
 
 ### Namespace coordination
@@ -65,11 +66,11 @@ The plugin reserves a single AgentDB / memory namespace: **`apex-scope-loop`**. 
 - `apex-scope-loop:plans/<slug>` — plan checkpoint + completion %
 - `apex-scope-loop:outcomes/<slug>/<phase>` — per-phase verdict + trajectory pattern
 
-This follows the namespace convention from ruflo-agentdb ADR-0001 §"Namespace convention" (kebab-case `<plugin-stem>-<intent>`, scoped sub-keys with colons). Coordination expectation: any future plugin that wants to read/write these keys must claim a non-overlapping prefix and reference this ADR.
+This follows the namespace convention from the optional ruflo-agentdb ADR-0001 §"Namespace convention" (kebab-case `<plugin-stem>-<intent>`, scoped sub-keys with colons). Coordination expectation: any future plugin that wants to read/write these keys must claim a non-overlapping prefix and reference this ADR.
 
 ### MCP tool surface
 
-The plugin does **not** ship its own MCP server. All MCP usage flows through tools the host environment already provides (claude-flow's `swarm_*` and `memory_*`, ruflo's `hooks_*`, etc.). `allowed-tools` lines in SKILL.md/command/agent files are kept conservative — Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion, Agent, ScheduleWakeup — no wildcards, no MCP tools listed (MCP availability is environmental).
+The plugin does **not** ship its own MCP server. Any MCP usage flows through tools the host environment already provides, if any (for example the optional claude-flow/ruflo `swarm_*`, `memory_*` and `hooks_*` tools); none are required. `allowed-tools` lines in SKILL.md/command/agent files are kept conservative — Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion, Agent, ScheduleWakeup — no wildcards, no MCP tools listed (MCP availability is environmental).
 
 ### Smoke contract
 
@@ -99,7 +100,7 @@ The smoke script exits non-zero on any failing check and names the first failure
 ### Negative
 
 - Two copies of the skill content exist: `.claude/skills/<name>/` and `plugins/apex-scope-loop/skills/<name>/`. Until the originals are removed, drift is possible. **Mitigation:** remove `.claude/skills/apex-plan` and `.claude/skills/apex-execute` once the plugin is verified to work (and document this in the README's "Migration" section).
-- The plugin assumes the host has `/loop`, `/schedule`, and either claude-flow or the host's built-in swarm machinery. Documented in Compatibility but not enforced at install time.
+- The plugin assumes the host has `/loop`, `/schedule`, and Claude Code subagents; claude-flow/ruflo swarm machinery is optional. Documented in Compatibility but not enforced at install time.
 
 ### Neutral
 
@@ -111,3 +112,4 @@ The smoke script exits non-zero on any failing check and names the first failure
 - 2026-05-29 — Renamed plugin `apex-plan-loop` → `apex-scope-loop`; relabeled the authoring stages to spell **SCOPE** (Scope, Compose, Optimize, Plan, Execute).
 - 2026-05-29 — Renamed the two skills: `decide-plan-loop` → `apex-plan`, `dev-plan-loop` → `apex-execute` (directories, frontmatter `name:`, the execution memory namespace, and all cross-references). The `promote-to-loop.sh` handoff mechanism is unchanged.
 - 2026-05-29 — Made execution worktree-bound: `init.sh` provisions an isolated worktree + branch per plan, `iterate.sh` reports/enforces it, and new `land.sh` merges the branch into the base branch after the final gate. Added `worktree_path`/`worktree_branch`/`base_branch`/`landed` to the checkpoint schema.
+- 2026-09-27 — Extended by [ADR-0002](0002-gibson-harness.md): Gibson harness (green gate, independent review, Tier C / G12, ratchet, kill switch); adds the `gibson-reviewer` agent and smoke checks 11–13.

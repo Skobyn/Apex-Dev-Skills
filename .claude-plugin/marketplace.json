@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "apex-project-start",
-      "description": "Interview-first greenfield project initializer: opens with 'what are you trying to build?', researches the context, then scaffolds a fully-governed repo (paved-road defaults), provisions ruflo + the Apex-Dev-Skills suite, and verifies it before the first commit. Generated projects are steered to build features via apex-plan/apex-loop. Supports TypeScript/JavaScript, Python, Go, and Rust.",
+      "description": "Interview-first greenfield project initializer: opens with 'what are you trying to build?', researches the context, then scaffolds a fully-governed repo (paved-road defaults), provisions the Apex-Dev-Skills suite (plus optional ruflo), and verifies it before the first commit. Generated projects are steered to build features via apex-plan/apex-loop. Supports TypeScript/JavaScript, Python, Go, and Rust.",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"
@@ -28,7 +28,7 @@
     },
     {
       "name": "apex-scope-loop",
-      "description": "Decide -> plan -> loop: SPARC-shaped ADR + phased plan authoring, with autonomous /loop + /schedule execution and per-phase swarm dispatch.",
+      "description": "Decide -> plan -> loop: SPARC-shaped ADR + phased plan authoring, with autonomous /loop + /schedule execution, per-phase swarm dispatch, and The Gibson's harness gates (baseline green gate, independent review, Tier-C human approval).",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"
@@ -42,6 +42,27 @@
         "loop",
         "swarm",
         "orchestration",
+        "gibson",
+        "harness",
+        "apex"
+      ]
+    },
+    {
+      "name": "apex-dispatch",
+      "description": "Route and govern delegation: a compiled routing policy picks the tier, provider, fan-out and review shape for each task or ad-hoc ask; PreToolUse/SubagentStop hooks enforce it; provider shims run external workers; every route, spawn, worker run and verdict lands in a hash-chained ledger. Drives apex-scope-loop as its execution engine.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-dispatch",
+      "keywords": [
+        "routing",
+        "delegation",
+        "governance",
+        "hooks",
+        "ledger",
+        "multi-provider",
         "apex"
       ]
     },

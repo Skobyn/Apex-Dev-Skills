@@ -1,7 +1,7 @@
 {
   "name": "apex-agent-observability",
   "description": "Trace, replay, and cost-attribute multi-agent runs: hook-driven JSONL AgentTrace, deterministic OrchestrationReplay, and per-subagent TokenLens — pure artifacts, with an optional read-only MCP dashboard server.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Apex Insights",
     "url": "https://getapexinsights.com"
