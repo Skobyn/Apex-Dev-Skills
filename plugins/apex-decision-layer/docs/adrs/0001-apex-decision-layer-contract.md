@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-10-08
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-decision-layer v0.2.1 (Phase 1 in v0.1.0: the CLI, the `none` and `fake` backends, the validator, rubrics and lint, calibration lookup, the decision log, shadow calls. Phase 2 in v0.2.0: the `jev` and `frontier` backends, the transport policy, `doctor --probe`)
+- **Plugin:** apex-decision-layer v0.3.0 (Phase 3 in v0.3.0: label, corpus, measure, replay. Phase 1 in v0.1.0: the CLI, the `none` and `fake` backends, the validator, rubrics and lint, calibration lookup, the decision log, shadow calls. Phase 2 in v0.2.0: the `jev` and `frontier` backends, the transport policy, `doctor --probe`)
 - **Spec:** `docs/superpowers/specs/2026-10-08-apex-decision-layer-design.md`; Phase 0 results in `docs/research/apex-decision-layer-phase0.md`
 
 ## Context
@@ -14,7 +14,7 @@ apex-dispatch's routing step and apex-scope-loop's `risk-tier.sh --classify` alr
 
 Ship **apex-decision-layer** as its own plugin. It has no hooks. Its consumers call it as a sibling.
 
-- **Surface:** `bin/apex-decide` (`ask` | `lint` | `doctor`; `label`, `corpus`, `measure` and `replay` are reserved for Phase 3 and exit 2), `scripts/lib/decide.py`, `scripts/lib/backends/`, `rubrics/<id>@<v>.json`, commands `decide`, `lint` and `doctor`, skill `decision-rubric`.
+- **Surface:** `bin/apex-decide` (`ask` | `lint` | `doctor` | `label` | `corpus` | `measure` | `replay`; `scripts/lib/measure.py` since 0.3.0), `scripts/lib/decide.py`, `scripts/lib/backends/`, `rubrics/<id>@<v>.json`, commands `decide`, `lint`, `doctor`, `label` and `measure`, skill `decision-rubric`.
 - **CLI contract** (spec §4): `apex-decide [ask] --rubric <id>@<v> (--state <json> | --state -) --json [--deadline-ms N] [--backend B] [--shadow | --no-shadow] [--repo DIR]`. It prints exactly one JSON envelope (`envelope: "apex-decide/1"`). Exit 0 means scored, `uncertain` included. Exit 3 means unscored, and the envelope names the reason: `backend_none`, `egress_disabled`, `deadline`, `provider_error`, `invalid_answer`, `model_mismatch`, `hard_rule`, `state_rejected`, `rubric_unknown` or `config_invalid`. Exit 2 is a usage error and exit 1 an internal error, both with stdout empty. The default `--deadline-ms` is 1500.
 - **Envelope:** the top-level `verdict`, `probabilities`, `uncertain`, `confidence` and `calibrated` describe the rubric's `primary` question, and `answers` carries every question. `probabilities` keys are exactly the primary question's labels, which for `dispatch/task-class@1` are the policy class ids plus `none`. `calibration` says why `calibrated` is what it is. `add_gate` is `null` or a gate id: a field that can add a gate, and no field that can remove one.
 - **Pinned rubric ids:** `dispatch/task-class@1` and `risk-tier@1` ship. `dispatch/size@1`, `dispatch/lens-set@1`, `dispatch/contamination@1` and `escalation@1` are reserved and answer `rubric_unknown` until a consumer calls them. Ids are never renamed. Any change to what reaches the wire is a new version, and `question_hash` makes an edit made in place visible.
@@ -57,6 +57,20 @@ Ship **apex-decision-layer** as its own plugin. It has no hooks. Its consumers c
   - The consumers end to end live in their own smoke tests.
   - Smoke unsets any real API key before it starts.
 
+## Measurement (v0.3.0, spec §8)
+
+- **Labels** go in `.claude/apex-decision-layer/labels/<rubric>@<v>.jsonl` in the consumer repo, committed (decision Q5). `label` accepts only a label of the rubric's primary question, and only for a decision in the decision log. Outcome-proxy labels, and the code-only baseline's answer, come in through `--outcomes FILE`.
+- **Proxy rule.** Proxy labels count only when at least 20 rows carry both a human and a proxy label and the two agree at 0.8 or more. A human label always wins.
+- **Metrics.** AUROC is one-vs-rest per label, macro-averaged over the rubric's `measure.acted_on` labels, with a Hanley-McNeil 95% CI. The macro CI is the mean of the per-label CIs; this is an approximation, stated here. Brier and 10-bin top-label ECE are printed beside it. The report also has coverage and precision at 0.3, 0.5 and 0.7, a threshold sweep against `measure.false_tighten_budget` and `false_loosen_budget` (per 100 rows, with `measure.order` from cheap to expensive), and the ablation arms.
+- **Budgets.** Both v1 rubrics set a false-loosen budget of 0 and a false-tighten budget of 10. That is the spec §8.3 value "set in ADR-0001" for class moves to a cheaper class.
+- **Status.**
+  - `insufficient n`: fewer than 100 labelled rows, or fewer than 10 positives for an acted-on label.
+  - `degenerate`: fewer than 3 distinct scores for an acted-on label, the near-one-hot finding from Phase 0. It never counts toward the kill criterion.
+  - `fails kill criterion`: this includes rows that span more than one resolved model.
+  - `passes kill criterion`: AUROC ≥ 0.6, lift ≥ 0.08 over the code-only baseline, and the CI's lower bound above the baseline.
+- **`--lock`** writes nothing unless the corpus passes, and is refused under an `ACTIVE` lock (exit 5). It writes the §8.4 record and `<backend>.replay.jsonl`: up to 50 rows that have a stored state, whose sha256 is `drift.baseline_answers`. It prints the record's digest for a human to add to `calibration_lock`. The measured `min_confidence` (the lowest sweep threshold within both budgets) becomes the record's threshold.
+- **`replay`** re-asks the replay sample. It reports `drift` (exit 4) when any probability moves more than `drift.tolerance` (0.25), when the provider resolves a different model, or when the sample is missing or edited. Without `--dry-run` it writes `invalidated` into the record. That changes the record's digest, so the record stops matching `calibration_lock` as well as being marked.
+
 ## Phase 0 numbers (spec §14)
 
 | Measure | Result |
@@ -95,3 +109,4 @@ Go/no-go: **go** on `jev` for routing (decision Q4). Frontier serves `risk-tier@
 - 2026-10-08 — Proposed with v0.1.0 (Phase 1).
 - 2026-10-08 — v0.2.0 (Phase 2): the `jev` (TypeSafe and OpenRouter) and `frontier` (Anthropic Messages, `output_config.format`) backends, the §6.4 transport policy with the breaker persisted in `decisions/transport.json`, `APEX_DECIDE_FRONTIER_BASE`, `doctor` key presence and `--probe`, the `doctor` command, and smoke checks 22–27 against loopback stubs. The contract additions are under Decision; the deviations are listed above. Live verification is recorded in `docs/research/apex-decision-layer-phase0.md` § Phase 2. **No native Anthropic Messages call has been made from this environment, because no `ANTHROPIC_API_KEY` is available.** The frontier backend is verified against the loopback stub only (request shape, `output_config.format`, the escaped `<document>`, and every failure mode). The Phase 2 task scope calls for live frontier calls only when the key exists, so this does not block Phase 2; the spec exit criterion's "one live call per backend" then applies to `jev` only. It was met on 2026-10-08: 4 live jev calls (TypeSafe and OpenRouter, both rubrics) were scored with `response.model` equal to the requested id on each transport (research doc § Phase 2, session 2).
 - 2026-10-08 — v0.2.1: `doctor` reports one `calibration <rubric>/<backend>` check per record under `.claude/apex-decision-layer/calibration/`. A record is `ok` only when it is locked, passed, not invalidated and keyed on the rubric's current `question_hash`; otherwise it is `warn`. apex-dispatch 0.5.2's `doctor.sh` summarises this check, and its `report.sh` prices decision calls from the decision log (spec §11.2 items 6 and 7).
+- 2026-10-08 — v0.3.0 (Phase 3): `label`, `corpus`, `measure` (with `--lock`) and `replay` (see Measurement above), the rubric `measure` section (lint-checked, never on the wire, so `question_hash` is unchanged), `untrusted_sent` on decision-log rows, the `label` and `measure` commands, the shadow-pilot runbook (`docs/shadow-pilot.md`), and smoke check 29. Exit codes 4 (drift) and 5 (refused under `ACTIVE`) are added for the measurement subcommands.
