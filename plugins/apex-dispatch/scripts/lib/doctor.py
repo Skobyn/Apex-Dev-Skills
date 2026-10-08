@@ -173,7 +173,7 @@ class Doctor:
                 entry["why"] = "stub"
                 self.add("provider:%s" % pid, "skipped", "no binary (%s)" % p.get("kind"))
                 continue
-            path = shutil.which(os.environ.get("APEX_CLAUDE_BIN") or b) if b == "claude" else shutil.which(b)
+            path = ledger.provider_binary(p, self.root)
             if not path:
                 entry["why"] = "binary %s not on PATH" % b
                 self.add("provider:%s" % pid, "warn", "binary %r not on PATH: routes fall back to claude-session" % b)
@@ -220,6 +220,28 @@ class Doctor:
         cp = prov.get("claude-p") or {}
         self.facts["claude_p_auth"] = "available" if cp.get("available") and cp.get("auth_ok") else "unavailable"
         return prov
+
+    def acceptance(self, pol, state):
+        """Rolling acceptance per subprocess provider (ledger.acceptance over every
+        ledger under the state base): entry `acceptance` and `demoted`; a demoted
+        provider's shim refuses and it is no second reviewer family."""
+        try:
+            acc = ledger.acceptance(state, pol.get("providers", []), self.repo)
+        except Exception as e:                          # never fail doctor on a ledger read
+            return self.add("provider-acceptance", "warn", "rolling acceptance could not be computed: %s" % e)
+        prov = self.facts.get("providers") or {}
+        for pid, a in acc.items():
+            if pid in prov:
+                prov[pid]["acceptance"] = a
+                prov[pid]["demoted"] = a["status"] == "demoted"
+        demoted = sorted(k for k, v in acc.items() if v["status"] == "demoted")
+        seen = sorted(k for k, v in acc.items() if v["decided"] or v["pending"])
+        if demoted:
+            return self.add("provider-acceptance", "warn", "; ".join(ledger.acceptance_line(k, acc[k]) for k in demoted)
+                            + " (demoted: its shim refuses and route.sh skips it)")
+        if not seen:
+            return self.add("provider-acceptance", "ok", "no external dispatches recorded yet (nothing demoted)")
+        return self.add("provider-acceptance", "ok", "; ".join(ledger.acceptance_line(k, acc[k]) for k in seen))
 
     def forbidden_flags(self):
         probed = {k: v for k, v in (self.facts.get("providers") or {}).items() if "flags_ok" in v}
@@ -347,6 +369,7 @@ def main(argv):
     d.compile_check()
     pol = d.policy()
     d.providers(pol)
+    d.acceptance(pol, opts["state"])
     d.forbidden_flags()
     d.subagent_model_env()
     d.settings_snippet()

@@ -156,12 +156,12 @@
     },
     {
       "id": "openai-sdk",
-      "status": "stub",
-      "kind": "stub",
+      "status": "flagged-off",
+      "kind": "subprocess",
       "family": "openai",
-      "binary": null,
+      "binary": "harnesses/openai_sdk_runner.py",
       "key_env": "OPENAI_API_KEY",
-      "forced_flags": [],
+      "forced_flags": ["run", "--output-format", "json"],
       "forbidden_flags": [],
       "allowed_classes": ["docs", "tests", "mechanical"],
       "max_tier": "standard",
@@ -311,7 +311,7 @@
       "fanout": { "shape": "single", "max_lanes": 1 },
       "review_shape": { "A": "solo", "B": "six-lens", "C": "fanout6+adversarial" },
       "review_diversity": { "A": "off", "B": "warn", "C": "block" },
-      "providers_allowed": ["claude-session", "claude-p", "codex", "opencode-ollama", "aider-ollama"],
+      "providers_allowed": ["claude-session", "claude-p", "codex", "openai-sdk", "opencode-ollama", "aider-ollama"],
       "requires_command_acceptance": false,
       "external_builders": true,
       "budgets": { "usd": 0.5, "spawns": 2, "minutes": 15 }
@@ -324,7 +324,7 @@
       "fanout": { "shape": "single", "max_lanes": 1 },
       "review_shape": { "A": "solo", "B": "six-lens", "C": "fanout6+adversarial" },
       "review_diversity": { "A": "off", "B": "warn", "C": "block" },
-      "providers_allowed": ["claude-session", "claude-p", "codex", "opencode-ollama"],
+      "providers_allowed": ["claude-session", "claude-p", "codex", "openai-sdk", "opencode-ollama"],
       "requires_command_acceptance": true,
       "external_builders": true,
       "budgets": { "usd": 1.0, "spawns": 3, "minutes": 30 }
@@ -337,7 +337,7 @@
       "fanout": { "shape": "lanes", "max_lanes": 3 },
       "review_shape": { "A": "solo", "B": "six-lens", "C": "fanout6+adversarial" },
       "review_diversity": { "A": "off", "B": "warn", "C": "block" },
-      "providers_allowed": ["claude-session", "claude-p", "codex"],
+      "providers_allowed": ["claude-session", "claude-p", "codex", "openai-sdk"],
       "requires_command_acceptance": true,
       "external_builders": true,
       "budgets": { "usd": 1.5, "spawns": 4, "minutes": 30 }
