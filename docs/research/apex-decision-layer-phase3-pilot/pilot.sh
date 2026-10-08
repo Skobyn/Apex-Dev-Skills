@@ -16,7 +16,7 @@ printf '{"egress":"hosted","state_fields":"raw","primary":{"default":"jev"},"jev
 [ -n "${OPENROUTER_API_KEY:-}" ] || export OPENROUTER_API_KEY=proxy-injected-key
 # Fixture tasks with the label the fixture intends (an outcome-proxy, never a human label).
 python3 - "$R" "$D" "$OUT" <<'PY'
-import json, subprocess, sys
+import json, subprocess, sys, time
 repo, D, out = sys.argv[1:]
 TC = [("docs", {"task_title": "Fix typos in the installation guide", "tags": ["docs"], "paths": ["docs/install.md"], "risk_tier": "A"}),
       ("tests", {"task_title": "Add unit tests for the date parser", "tags": ["test"], "paths": ["tests/test_dates.py"], "risk_tier": "A"}),
@@ -37,9 +37,16 @@ RT = [("A", {"changed_paths": ["src/cli/format.py"], "changed_lines": 12, "chang
 for rv, tasks, dl in (("dispatch/task-class@1", TC, "1500"), ("risk-tier@1", RT, "10000")):
     rows = []
     for intended, st in tasks:
-        r = subprocess.run([D, "--repo", repo, "--rubric", rv, "--deadline-ms", dl, "--state", "-", "--json"],
-                           input=json.dumps(st), capture_output=True, text=True)
-        env = json.loads(r.stdout) if r.stdout.strip() else {"scored": False, "reason": "no output", "detail": r.stderr[-200:]}
+        for attempt in (1, 2):
+            r = subprocess.run([D, "--repo", repo, "--rubric", rv, "--deadline-ms", dl, "--state", "-", "--json"],
+                               input=json.dumps(st), capture_output=True, text=True)
+            env = json.loads(r.stdout) if r.stdout.strip() else {"scored": False, "reason": "no output", "detail": r.stderr[-200:]}
+            # A pilot is not routing: when the provider is overloaded or the breaker is open, wait the
+            # breaker out (30 s) and try the task once more instead of losing the rest of the run.
+            if env.get("scored") or attempt == 2 or env.get("reason") not in ("provider_error", "deadline"):
+                break
+            time.sleep(31)
+        time.sleep(1)
         print("PILOT %s intended=%s exit=%d scored=%s verdict=%s conf=%s model=%s latency=%sms%s" % (
             rv, intended, r.returncode, env.get("scored"), env.get("verdict"), env.get("confidence"), env.get("model_resolved"),
             env.get("latency_ms"), "" if env.get("scored") else " reason=%s %s" % (env.get("reason"), env.get("detail", "")[:120])))
