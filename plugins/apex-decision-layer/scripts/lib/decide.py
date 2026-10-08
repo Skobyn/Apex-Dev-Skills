@@ -205,6 +205,19 @@ def lint(r, rid=None):
             crit = (qs.get(qid) or {}).get("criteria")
             if not isinstance(crit, dict) or lab not in crit:
                 p.append("hard_rules[%d]: answer %s=%r is not a label of that question" % (i, qid, lab))
+    m = r.get("measure")
+    if m is not None:
+        prim = (qs.get(r.get("primary")) or {}).get("criteria")
+        labs = set(prim) if isinstance(prim, dict) else set()
+        if not isinstance(m, dict) or set(m) - {"acted_on", "order", "false_tighten_budget", "false_loosen_budget"}:
+            p.append("measure has only acted_on, order, false_tighten_budget, false_loosen_budget")
+        else:
+            for k in ("acted_on", "order"):
+                if k in m and not (isinstance(m[k], list) and m[k] and set(m[k]) <= labs):
+                    p.append("measure.%s must list labels of the primary question" % k)
+            for k in ("false_tighten_budget", "false_loosen_budget"):
+                if k in m and not (is_num(m[k]) and m[k] >= 0):
+                    p.append("measure.%s must be a number >= 0 (per 100 tasks)" % k)
     for i, g in enumerate(r.get("gate_for") or []):
         if not isinstance(g, dict) or g.get("question") not in qs or not isinstance(g.get("gate"), str):
             p.append("gate_for[%d] needs question and gate" % i)
@@ -698,7 +711,7 @@ def ask(argv):
         name = choose_backend(a, rv, cfg)
         env["backend"] = row["backend"] = name
         state, dropped, untrusted = build_state(rubric, a["state"], cfg)
-        row.update(state_hash=state_hash(state), dropped_fields=dropped)
+        row.update(state_hash=state_hash(state), dropped_fields=dropped, untrusted_sent=sorted(untrusted))
         if cfg["decision_log"].get("store_state") == "full":
             row["state"] = state
         hr = hard_rule(rubric, state)
@@ -893,8 +906,8 @@ def main(argv):
             print(plugin_version())
             return 0
         if argv and argv[0] in PHASE3:
-            print("apex-decide: %s ships with the measurement job in Phase 3 (spec §14)" % argv[0], file=sys.stderr)
-            return EXIT_USAGE
+            import measure
+            return measure.run(sys.modules[__name__], argv[0], argv[1:])
         if argv and argv[0] == "ask":
             argv = argv[1:]
         return ask(argv)
