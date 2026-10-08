@@ -2,7 +2,7 @@
 
 **Typed answers for the questions routing leaves to judgment.** Typed, probability-carrying answers for the questions apex-dispatch and apex-scope-loop leave to judgment (task class, risk tier): one CLI, rubric files, a fail-closed validator for every backend, tri-state uncertainty, and calibration that only a measurement job can grant. Off until a repo opts in; absent, slow or unconfigured, routing stays table-only.
 
-> **Status: 0.5.0, Phase 5 seeds.** Shipped:
+> **Status: 0.6.0, Phase 5 seeds and shadow hooks.** Shipped:
 > - the `apex-decide` CLI, the validator, the two v1 rubrics and their linter, calibration lookup, the decision log and detached shadow calls (Phase 1);
 > - the hosted backends: `jev` over TypeSafe or OpenRouter, and `frontier` on the Anthropic Messages API;
 > - one transport policy for both (deadline, retries, circuit breaker, host pin, TLS);
@@ -12,7 +12,7 @@
 >
 > - (0.4.0) the lock flow tested end to end through apex-dispatch (`route.sh` takes a calibrated decision, `report.sh --decision` shows it), `replay --all`, and a weekly drift `/schedule` in the runbook.
 >
-> - (0.5.0) five seeded rubrics, shadow-only and never calibrated: `commit-hygiene@1`, `done-claim@1`, `code-review@1`, `tool-risk@1` and `relevance@1`, plus `scripts/shadow-commit-hygiene.sh`.
+> - (0.5.0) five seeded rubrics, shadow-only and never calibrated: `commit-hygiene@1`, `done-claim@1`, `code-review@1`, `tool-risk@1` and `relevance@1`, plus `scripts/shadow-commit-hygiene.sh`, and (0.6.0) two observational shadow hooks for `done-claim@1` (Stop) and `tool-risk@1` (PreToolUse on Bash), both off until a repository names the rubric.
 >
 > Every answer stays uncalibrated until a human locks a record that passes the kill criterion. That needs weeks of real labels, so Phase 4's exit is **pending on data**, not done. Spec: [`2026-10-08-apex-decision-layer-design.md`](../../docs/superpowers/specs/2026-10-08-apex-decision-layer-design.md).
 
@@ -34,12 +34,36 @@ These rubrics carry a `seeded` block naming their consumer. Until a consumer exi
 | Rubric | Question | Consumer |
 |---|---|---|
 | `commit-hygiene@1` | choice: clean / vague / mixed / leak / none | `scripts/shadow-commit-hygiene.sh [REV]` (run by hand or from a git alias; logs only, always exits 0) |
-| `done-claim@1` | noul: does a "done" claim cite its passing acceptance check? | none (a Stop-hook nudge would need a hook, not built) |
+| `done-claim@1` | noul: does a "done" claim cite its passing acceptance check? | the `Stop` shadow hook (logs only) |
 | `code-review@1` | score 0–4: severity of one review finding | none yet |
-| `tool-risk@1` | choice: read_only / local_write / network / destructive / none | none (a PreToolUse consumer would need a hook, not built) |
+| `tool-risk@1` | choice: read_only / local_write / network / destructive / none | the `PreToolUse` (Bash) shadow hook (logs only) |
 | `relevance@1` | noul: does a stored memory bear on the task? | none yet |
 
 Each one needs its own Phase 3–4 cycle (labels, `measure`, a consumer) before its answers can do anything.
+
+### Shadow hooks (0.6.0)
+
+`hooks/hooks.json` registers two hooks:
+- `Stop` → `done-claim@1`, asked about the final assistant message of the turn.
+- `PreToolUse` on `Bash` → `tool-risk@1`, asked about the command.
+
+Both are **observational**, as the repository convention requires:
+- They print nothing, always exit 0, and never emit an allow or deny decision.
+- The decision call runs in a detached background process, so the hook returns in tens of milliseconds whatever the backend does.
+- The answer goes only to the decision log, marked `seeded`.
+
+A hook does nothing, and starts no Python, unless `.claude/apex-decision-layer/config.json` names its rubric. To turn one on:
+
+```json
+{ "egress": "hosted", "state_fields": "raw",
+  "primary": { "default": "none", "done-claim@1": "jev", "tool-risk@1": "jev" } }
+```
+
+What is asked:
+- **`done-claim@1`** is asked only when the final message reads as a completion claim ("done", "fixed", "all tests pass", "ready for review"…), and never while `stop_hook_active`. It sends the claim text and whether the turn ran a Bash command (with that command's exit status).
+- **`tool-risk@1`** sends the command text. `state_fields: raw` is needed for both, because the claim and the command are untrusted text.
+
+Turning either hook on makes one backend call per stop or per Bash command, so expect that cost.
 
 ## Turning it on
 
@@ -113,7 +137,7 @@ The [shadow-pilot runbook](docs/shadow-pilot.md) describes the loop: opt in with
 
 ## Compatibility
 
-- **Claude Code:** any version that loads plugins. The plugin has no hooks, agents or MCP servers.
+- **Claude Code:** any version that loads plugin hooks. The plugin registers two observational hooks (`Stop`, and `PreToolUse` on `Bash`), off by default. It has no agents or MCP servers.
 - **python3** 3.8+ (stdlib only), **bash** 4+, **git** (to find the repository and its run state).
 - **Consumers:** apex-dispatch ≥ 0.5.0 (≥ 0.5.1 also tamper-protects `APEX_DECIDE_FRONTIER_BASE`) and apex-scope-loop ≥ 0.4.2 find this plugin as a sibling (`APEX_DECISION_LAYER_ROOT` overrides the lookup, `APEX_DECIDE_CMD` replaces the CLI). Older consumers call it only when `APEX_DECIDE_CMD` points at `bin/apex-decide`.
 - **Network:** OpenRouter (`openrouter.ai`) or TypeSafe (`api.typesafe.ai`) for `jev`; `api.anthropic.com` for `frontier`. Only with `egress: hosted`. Proxies are taken from `HTTPS_PROXY` / `NO_PROXY`.

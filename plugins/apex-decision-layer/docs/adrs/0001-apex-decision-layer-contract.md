@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-10-08
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-decision-layer v0.5.0 (Phase 5 seeds in v0.5.0. Phase 4 machinery in v0.4.0: the lock flow end to end, `replay --all`. Phase 3 in v0.3.0: label, corpus, measure, replay. Phase 1 in v0.1.0: the CLI, the `none` and `fake` backends, the validator, rubrics and lint, calibration lookup, the decision log, shadow calls. Phase 2 in v0.2.0: the `jev` and `frontier` backends, the transport policy, `doctor --probe`)
+- **Plugin:** apex-decision-layer v0.6.0 (shadow hooks in v0.6.0. Phase 5 seeds in v0.5.0. Phase 4 machinery in v0.4.0: the lock flow end to end, `replay --all`. Phase 3 in v0.3.0: label, corpus, measure, replay. Phase 1 in v0.1.0: the CLI, the `none` and `fake` backends, the validator, rubrics and lint, calibration lookup, the decision log, shadow calls. Phase 2 in v0.2.0: the `jev` and `frontier` backends, the transport policy, `doctor --probe`)
 - **Spec:** `docs/superpowers/specs/2026-10-08-apex-decision-layer-design.md`; Phase 0 results in `docs/research/apex-decision-layer-phase0.md`
 
 ## Context
@@ -12,7 +12,7 @@ apex-dispatch's routing step and apex-scope-loop's `risk-tier.sh --classify` alr
 
 ## Decision
 
-Ship **apex-decision-layer** as its own plugin. It has no hooks. Its consumers call it as a sibling.
+Ship **apex-decision-layer** as its own plugin. Its consumers call it as a sibling. Until v0.6.0 it had no hooks. Since v0.6.0 it has two observational shadow hooks for seeded rubrics; see the status log.
 
 - **Surface:** `bin/apex-decide` (`ask` | `lint` | `doctor` | `label` | `corpus` | `measure` | `replay`; `scripts/lib/measure.py` since 0.3.0), `scripts/lib/decide.py`, `scripts/lib/backends/`, `rubrics/<id>@<v>.json`, commands `decide`, `lint`, `doctor`, `label` and `measure`, skill `decision-rubric`.
 - **CLI contract** (spec §4): `apex-decide [ask] --rubric <id>@<v> (--state <json> | --state -) --json [--deadline-ms N] [--backend B] [--shadow | --no-shadow] [--repo DIR]`. It prints exactly one JSON envelope (`envelope: "apex-decide/1"`). Exit 0 means scored, `uncertain` included. Exit 3 means unscored, and the envelope names the reason: `backend_none`, `egress_disabled`, `deadline`, `provider_error`, `invalid_answer`, `model_mismatch`, `hard_rule`, `state_rejected`, `rubric_unknown` or `config_invalid`. Exit 2 is a usage error and exit 1 an internal error, both with stdout empty. The default `--deadline-ms` is 1500.
@@ -117,3 +117,10 @@ Go/no-go: **go** on `jev` for routing (decision Q4). Frontier serves `risk-tier@
   - The only wiring is `scripts/shadow-commit-hygiene.sh`, a shadow-only script that logs an answer and always exits 0. No hook is added.
   - `done-claim@1` (a Stop-hook nudge) and `tool-risk@1` (a PreToolUse consumer) have no consumer, because each would need a hook, and hooks need the operator's approval.
   - Smoke check 31.
+- 2026-10-08 — v0.6.0: **two observational shadow hooks, approved by the operator.** This reverses spec §2's "no new hooks" for seeded rubrics only.
+  - `Stop` → `done-claim@1`, asked only when the final message reads as a completion claim and never while `stop_hook_active`.
+  - `PreToolUse` on `Bash` → `tool-risk@1`, asked about the command.
+  - Both print nothing, always exit 0, and never emit an allow or deny decision. apex-contracts-reliability's marketplace-wide check that no plugin outside apex-guardrails and apex-dispatch emits allow still passes.
+  - Each hook gates on the repository config naming its rubric, so no Python starts otherwise. The call runs in a detached double-forked child, so the hook returns in tens of milliseconds and the spec's concern about slow, fail-open network calls in hooks does not apply.
+  - Answers go only to the decision log, marked `seeded`. Seeded rubrics are never calibrated, so no answer changes anything.
+  - Smoke check 8 now asserts that `hooks.json` registers exactly these two commands. New check 32 tests the off state, the print-nothing and exit-0 behaviour, the background row, and the payloads that must not be asked about.
