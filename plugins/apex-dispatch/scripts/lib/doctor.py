@@ -329,6 +329,42 @@ class Doctor:
         else:
             self.add("claude-plugin-validate", "unverified", "claude binary unavailable")
 
+    def decision_layer(self):
+        """decision-layer spec §11.2 item 6: the sibling, its version and its own doctor summary."""
+        cmd = os.environ.get("APEX_DECIDE_CMD", "")
+        root = os.environ.get("APEX_DECISION_LAYER_ROOT") or os.path.join(self.root, "..", "apex-decision-layer")
+        exe = os.path.join(root, "bin", "apex-decide")
+        if not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            note = " (APEX_DECIDE_CMD overrides it: %s)" % cmd if cmd else ""
+            return self.add("decision-layer", "skipped", "apex-decision-layer not found beside apex-dispatch: routing is "
+                            "table-only%s" % note)
+        rc, out = run([exe, "doctor", "--json", "--repo", self.repo], timeout=20)
+        try:
+            dd = json.loads(out[out.index("{"):]) if "{" in out else None
+        except ValueError:
+            dd = None
+        if not isinstance(dd, dict):
+            return self.add("decision-layer", "warn", "apex-decide doctor at %s gave no JSON (exit %s)" % (exe, rc))
+        n = {c.get("name"): c for c in dd.get("checks") or [] if isinstance(c, dict)}
+        bad = sorted(k for k, c in n.items() if c.get("status") in ("fail", "warn"))
+        cal = [c for k, c in n.items() if str(k).startswith("calibration ")]
+        summary = {"version": dd.get("version"), "egress": (n.get("egress") or {}).get("detail"),
+                   "primary": (n.get("primary") or {}).get("detail"),
+                   "keys": {k[:-4]: (n[k].get("detail") or "") for k in ("jev_key", "frontier_key") if k in n},
+                   "calibration": {c["name"][len("calibration "):]: c.get("status") for c in cal},
+                   "override": bool(cmd)}
+        self.facts["decision_layer"] = summary
+        # Never fail: the decision layer is optional, and every problem it has degrades routing to table-only.
+        st = "warn" if bad else "ok"
+        return self.add("decision-layer", st, "apex-decision-layer %s at %s; egress %s; primary %s; %s%s%s"
+                        % (summary["version"], os.path.realpath(root), summary["egress"] or "none",
+                           json.dumps(summary["primary"], sort_keys=True) if summary["primary"] else "-",
+                           "; ".join("%s %s" % (k, v) for k, v in sorted(summary["keys"].items())) or "no hosted keys checked",
+                           "; calibration %s" % ", ".join("%s=%s" % kv for kv in sorted(summary["calibration"].items()))
+                           if summary["calibration"] else "; no calibration records",
+                           "; checks needing attention: %s" % ", ".join(bad) if bad else ""),
+                        decision_layer=summary)
+
     def sandbox(self):
         # Non-writing probe (the spec's `touch $HOME/probe` would write): is HOME writable here?
         home = os.path.expanduser("~")
@@ -374,6 +410,7 @@ def main(argv):
     d.subagent_model_env()
     d.settings_snippet()
     d.plugin_version()
+    d.decision_layer()
     d.sandbox()
     d.live_probes()
     sts = [c["status"] for c in d.checks]

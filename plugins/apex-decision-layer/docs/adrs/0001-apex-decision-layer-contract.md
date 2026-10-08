@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-10-08
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-decision-layer v0.2.0 (Phase 1 in v0.1.0: the CLI, the `none` and `fake` backends, the validator, rubrics and lint, calibration lookup, the decision log, shadow calls. Phase 2 in v0.2.0: the `jev` and `frontier` backends, the transport policy, `doctor --probe`)
+- **Plugin:** apex-decision-layer v0.2.1 (Phase 1 in v0.1.0: the CLI, the `none` and `fake` backends, the validator, rubrics and lint, calibration lookup, the decision log, shadow calls. Phase 2 in v0.2.0: the `jev` and `frontier` backends, the transport policy, `doctor --probe`)
 - **Spec:** `docs/superpowers/specs/2026-10-08-apex-decision-layer-design.md`; Phase 0 results in `docs/research/apex-decision-layer-phase0.md`
 
 ## Context
@@ -94,3 +94,4 @@ Go/no-go: **go** on `jev` for routing (decision Q4). Frontier serves `risk-tier@
 
 - 2026-10-08 — Proposed with v0.1.0 (Phase 1).
 - 2026-10-08 — v0.2.0 (Phase 2): the `jev` (TypeSafe and OpenRouter) and `frontier` (Anthropic Messages, `output_config.format`) backends, the §6.4 transport policy with the breaker persisted in `decisions/transport.json`, `APEX_DECIDE_FRONTIER_BASE`, `doctor` key presence and `--probe`, the `doctor` command, and smoke checks 22–27 against loopback stubs. The contract additions are under Decision; the deviations are listed above. Live verification is recorded in `docs/research/apex-decision-layer-phase0.md` § Phase 2. **No native Anthropic Messages call has been made from this environment, because no `ANTHROPIC_API_KEY` is available.** The frontier backend is verified against the loopback stub only (request shape, `output_config.format`, the escaped `<document>`, and every failure mode). The Phase 2 task scope calls for live frontier calls only when the key exists, so this does not block Phase 2; the spec exit criterion's "one live call per backend" then applies to `jev` only. It was met on 2026-10-08: 4 live jev calls (TypeSafe and OpenRouter, both rubrics) were scored with `response.model` equal to the requested id on each transport (research doc § Phase 2, session 2).
+- 2026-10-08 — v0.2.1: `doctor` reports one `calibration <rubric>/<backend>` check per record under `.claude/apex-decision-layer/calibration/`. A record is `ok` only when it is locked, passed, not invalidated and keyed on the rubric's current `question_hash`; otherwise it is `warn`. apex-dispatch 0.5.2's `doctor.sh` summarises this check, and its `report.sh` prices decision calls from the decision log (spec §11.2 items 6 and 7).

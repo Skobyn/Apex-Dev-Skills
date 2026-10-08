@@ -660,7 +660,11 @@ cx = d["providers"]["codex"]
 assert cx["available"] and cx["shim"] and cx["verified"] and cx["version"] == "0.160.0" and cx["auth"] == "none" and cx["auth_ok"] is False and cx["flags_ok"], cx
 assert d["claude_p_auth"] == "unavailable" and d["second_families"] == [] and d["tier_c_diversity"].startswith("warn"), d
 assert d["profile"] and d["providers"]["claude-session"]["available"] is True
+dl = [x for x in d["checks"] if x["id"] == "decision-layer"][0]
+assert c["decision-layer"] == "ok" and dl["decision_layer"]["version"] and "egress none" in dl["detail"] and "no calibration records" in dl["detail"], dl
 ' || fail "doctor.json (claude present) wrong: $(cat "$WORK/doc.out")"
+RC=0; doc APEX_CLAUDE_BIN="$WORK/fakebin/claude" APEX_DECISION_LAYER_ROOT="$WORK/no-decision-layer" || RC=$?
+[ "$RC" = 0 ] && dj 'assert c["decision-layer"] == "skipped"' || fail "doctor without the decision layer did not skip its check: rc=$RC"
 has '^DOCTOR_FILE: .*/dispatch-shadow/doctor.json' "$(cat "$WORK/doc.out")" || fail "doctor did not print DOCTOR_FILE"
 [ ! -e "$WORK/ds/dispatch" ] || fail "doctor.sh created <state>/dispatch/ without enforcement"
 RC=0; doc APEX_CLAUDE_BIN="$WORK/no-such-claude" || RC=$?
@@ -1855,17 +1859,17 @@ for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_cla
 done
 pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
 
-# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.5.1 everywhere
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.5.2 everywhere
 for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
   grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
   if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
   if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
 done
 V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
-[ "$V" = 0.5.1 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
-  || fail "the 0.5.1 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+[ "$V" = 0.5.2 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.5.2 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
 grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
-pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.5.1 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.5.2 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
 
 # --- Phase 4.2: flagged-off grok/opencode/aider shims, openai-sdk stub, compile --target codex,
 #     report --compare/--decision, carried hardening. Provider CLIs are stubs on a fixture PATH. ---
@@ -2364,7 +2368,19 @@ O="$(cd "$FD" && wenv env APEX_DECIDE_CMD="$WORK/decide" FAKE_DECISION='{"verdic
 python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; x=[y for y in r if y["event"]=="decision_shadow"]; assert x and x[-1]["deterministic_choice"]=="feature" and x[-1]["decision_choice"]=="docs" and x[-1]["decision_id"]=="d10", x' "$FSD/dispatch/ledger.jsonl" \
   || fail "an answer that did not move the route wrote no decision_shadow row"
 bash "$LEDGER" verify --state "$FSD" >/dev/null 2>&1 || fail "the ledger does not verify after a decision_shadow row"
-pass "report --compare: unpriced/unverified usage makes USD not comparable (never \$0, no USD delta), one spawn per agent (equal per task), chain printed, mixed arms warned, unfinished tasks out of wall-clock; decision-mode routes record table_choice and --decision reports agreement with the table"
+# Decision calls are priced in their own bucket from the decision log beside the state dir (decision-layer §11.2 item 7).
+O="$(bash "$REPORT" --state "$FSD" 2>&1)"; has '^REPORT_DECISION_COST: no decision log' "$O" || fail "report without a decision log: $O"
+DLOG="$(dirname "$FSD")/decisions/decisions.jsonl"; mkdir -p "$(dirname "$DLOG")"
+printf '%s\n' '{"decision_id":"d9","backend":"jev","usage":{"input_tokens":500,"output_tokens":0,"cost":0.000025}}' \
+  '{"decision_id":"d10","backend":"jev","usage":{"input_tokens":1000,"output_tokens":40}}' \
+  '{"decision_id":"s1","shadow_of":"d9","backend":"frontier","usage":{"input_tokens":700,"output_tokens":40,"cost":0.00009,"cost_estimated":1}}' \
+  '{"decision_id":"d99","backend":"jev","usage":{"input_tokens":9000000,"cost":5.0}}' 'not json' >"$DLOG"
+O="$(bash "$REPORT" --state "$FSD" 2>&1)"
+has '^REPORT_DECISION_COST: 2 call(s) + 1 shadow; USD 0.000025 reported + 0.000132 estimated; 0 unpriced; by backend frontier=1/\$0.000090, jev=2/\$0.000067 ' "$O" \
+  && has '^REPORT_USD_ESTIMATED: 0.0000 ' "$O" || fail "report did not price decision calls in their own bucket (or counted another plan's d99): $O"
+bash "$REPORT" --state "$FSD" --json | python3 -c 'import json,sys; d=json.load(sys.stdin)["decision_cost"]; assert d["calls"]==2 and d["shadow_calls"]==1 and d["usd_reported"]==2.5e-05, d' \
+  || fail "report --json has no decision_cost bucket"
+pass "report --compare: unpriced/unverified usage makes USD not comparable (never \$0, no USD delta), one spawn per agent (equal per task), chain printed, mixed arms warned, unfinished tasks out of wall-clock; decision-mode routes record table_choice and --decision reports agreement with the table; decision calls priced in their own bucket from the decision log (reported, estimated, other plans' calls excluded)"
 
 # 83. run-only files: a provider's project config is moved aside and restored, worktree_files are undone, and both
 #     are restored on an error path too (the engine's outer finally); generated opencode permissions also travel

@@ -31,6 +31,14 @@ what routing did (router.class; table_choice.class in baseline/shadow), the
 agreement rate overall, by calibration and by confidence bucket, how often the
 decision moved the route (route_mode decision), and the approval rate of the
 tasks where they agreed vs disagreed. No such rows: "no decision data".
+
+Decision calls (decision-layer spec §11.2 item 7) are priced in their own bucket,
+never in REPORT_USD_ESTIMATED: the rows of apex-decision-layer's decision log
+(<state-base>/decisions/decisions.jsonl, beside this state dir) whose decision_id
+this ledger references (route.decision.decision_id, decision_shadow rows), plus
+their shadow answers (shadow_of). usage.cost is used when the backend reported it,
+or estimated it (cost_estimated); jev usage without a cost is priced at the
+configured $0.042 per million input tokens; anything else is unpriced.
 """
 import sys
 
@@ -49,6 +57,7 @@ ROUTED_MODES = ("table", "decision", "escalated")
 BASELINE_MODES = ("baseline", "shadow")
 P_BUCKETS = ((0.0, 0.5, "<0.5"), (0.5, 0.8, "0.5-0.8"), (0.8, 1.01, ">=0.8"))
 FAMILIES = ("haiku", "sonnet", "opus", "fable")
+DECISION_PRICE = {"jev": (0.042, 0.0)}   # $ per million input / output tokens (decision-layer spec §6.4)
 
 
 def prices(root):
@@ -383,6 +392,59 @@ def print_decision(d):
                  x["fallback"] or "-", "agree" if x["agree"] else "DISAGREE"))
 
 
+def decision_log_path(state_dir):
+    return os.path.join(os.path.dirname(os.path.realpath(state_dir)), "decisions", "decisions.jsonl")
+
+
+def decision_cost(state_dir, rows, log_path=None):
+    """The decision bucket: calls and USD from the decision log, joined on decision_id."""
+    path = log_path or decision_log_path(state_dir)
+    ids = set()
+    for r in rows:
+        if r.get("event") == "route" and isinstance(r.get("decision"), dict) and r["decision"].get("decision_id"):
+            ids.add(r["decision"]["decision_id"])
+        elif r.get("event") == "decision_shadow" and r.get("decision_id"):
+            ids.add(r["decision_id"])
+    out = {"log": path, "calls": 0, "shadow_calls": 0, "usd_reported": 0.0, "usd_estimated": 0.0, "unpriced": 0,
+           "by_backend": {}, "status": "ok"}
+    if not os.path.exists(path):
+        out["status"] = "no decision log"
+        return out
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError as e:
+        out["status"] = "unreadable: %s" % e
+        return out
+    by = collections.defaultdict(lambda: {"calls": 0, "usd": 0.0})
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(d, dict) or not (d.get("decision_id") in ids or d.get("shadow_of") in ids):
+            continue
+        out["shadow_calls" if d.get("shadow_of") else "calls"] += 1
+        b = str(d.get("backend"))
+        by[b]["calls"] += 1
+        u = d.get("usage") if isinstance(d.get("usage"), dict) else {}
+        cost = u.get("cost")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            out["usd_estimated" if u.get("cost_estimated") else "usd_reported"] += float(cost)
+            by[b]["usd"] += float(cost)
+        elif b in DECISION_PRICE and isinstance(u.get("input_tokens"), (int, float)):
+            pi, po = DECISION_PRICE[b]
+            c = (float(u["input_tokens"]) * pi + float(u.get("output_tokens") or 0) * po) / 1e6
+            out["usd_estimated"] += c
+            by[b]["usd"] += c
+        elif u:
+            out["unpriced"] += 1
+    out["usd_reported"] = round(out["usd_reported"], 8)
+    out["usd_estimated"] = round(out["usd_estimated"], 8)
+    out["by_backend"] = {k: {"calls": v["calls"], "usd": round(v["usd"], 8)} for k, v in sorted(by.items())}
+    return out
+
+
 def summarise(root, state_dir, plan=None):
     ok, rows, msg = ledger.verify(state_dir)
     if not ok:
@@ -431,7 +493,8 @@ def summarise(root, state_dir, plan=None):
             "hook_errors": sum(1 for r in rows if r.get("event") == "hook_error"),
             "model_mismatches": sum(1 for r in rows if r.get("event") == "model_mismatch"),
             "policy_violations": sum(1 for r in rows if r.get("event") == "policy_violation"),
-            "acceptance": provider_acceptance(root, state_dir)}
+            "acceptance": provider_acceptance(root, state_dir),
+            "decision_cost": decision_cost(state_dir, rows)}
 
 
 def provider_acceptance(root, state_dir):
@@ -530,6 +593,15 @@ def main(argv):
     print("REPORT_TOKENS: %s" % fmt_counter(s["tokens"]))
     print("REPORT_USD_ESTIMATED: %.4f (%d priced rows; %s)" % (s["usd_estimated"], s["usd_rows_priced"], s["usd_source"]))
     print("REPORT_UNVERIFIED: %d row(s) with usage but no resolved model (excluded from USD)" % s["unverified"]["count"])
+    dc = s["decision_cost"]
+    if dc["status"] != "ok":
+        print("REPORT_DECISION_COST: %s (kind: decision, priced separately)" % dc["status"])
+    else:
+        print("REPORT_DECISION_COST: %d call(s) + %d shadow; USD %.6f reported + %.6f estimated; %d unpriced; by backend %s "
+              "(kind: decision, not in REPORT_USD_ESTIMATED)" % (dc["calls"], dc["shadow_calls"], dc["usd_reported"],
+                                                                 dc["usd_estimated"], dc["unpriced"],
+                                                                 ", ".join("%s=%d/$%.6f" % (k, v["calls"], v["usd"])
+                                                                           for k, v in dc["by_backend"].items()) or "none"))
     for u in s["unverified"]["rows"]:
         print("REPORT_UNVERIFIED_ROW: seq=%s event=%s route=%s model=%s provider=%s"
               % (u["seq"], u["event"], u["route_id"], u["model"], u["provider"]))
