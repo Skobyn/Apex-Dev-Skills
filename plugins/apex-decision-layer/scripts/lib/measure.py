@@ -3,7 +3,7 @@
   apex-decide label   --rubric R --decision D --label L [--note TEXT] [--source human|outcome-proxy] [--repo DIR]
   apex-decide corpus  --rubric R [--outcomes FILE] [--out FILE] [--repo DIR]
   apex-decide measure --rubric R --backend B [--corpus FILE] [--out FILE] [--lock] [--json] [--repo DIR]
-  apex-decide replay  --rubric R --backend B [--dry-run] [--json] [--repo DIR]
+  apex-decide replay  (--rubric R --backend B | --all) [--dry-run] [--json] [--repo DIR]
 
 Labels live in the consumer repo (.claude/apex-decision-layer/labels/<rubric>.jsonl,
 committed, decision Q5); calibration records in .claude/apex-decision-layer/calibration/.
@@ -474,7 +474,22 @@ def write_record(repo, rubric, rv, backend, rep, rows):
 # -------------------------------------------------------------------- replay ----
 
 def cmd_replay(argv):
-    a = _args(argv, ("--rubric", "--backend", "--repo"), ("--dry-run", "--json"))
+    a = _args(argv, ("--rubric", "--backend", "--repo"), ("--dry-run", "--json", "--all"))
+    if a["--all"]:
+        if a["--rubric"] or a["--backend"]:
+            raise D.Usage("--all replays every calibration record; it takes no --rubric/--backend")
+        repo = D.repo_root(a["--repo"])
+        base = os.path.join(repo, D.CONFIG_REL, "calibration")
+        recs = sorted((os.path.relpath(dp, base), f[:-5]) for dp, _, fs in os.walk(base) for f in fs
+                      if f.endswith(".json"))
+        if not recs:
+            print("REPLAY: no calibration records under %s" % os.path.relpath(base, repo))
+            return 0
+        worst = 0
+        for rv, backend in recs:
+            sub = ["--rubric", rv, "--backend", backend] + [x for x in argv if x != "--all"]
+            worst = max(worst, cmd_replay(sub))
+        return worst
     _need(a, "--rubric", "--backend")
     repo = D.repo_root(a["--repo"])
     rv, backend = a["--rubric"], a["--backend"]

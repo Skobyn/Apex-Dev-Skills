@@ -2,7 +2,7 @@
 
 **Typed answers for the questions routing leaves to judgment.** Typed, probability-carrying answers for the questions apex-dispatch and apex-scope-loop leave to judgment (task class, risk tier): one CLI, rubric files, a fail-closed validator for every backend, tri-state uncertainty, and calibration that only a measurement job can grant. Off until a repo opts in; absent, slow or unconfigured, routing stays table-only.
 
-> **Status: 0.3.0, Phase 3.** Shipped:
+> **Status: 0.4.0, Phase 4 machinery.** Shipped:
 > - the `apex-decide` CLI, the validator, the two v1 rubrics and their linter, calibration lookup, the decision log and detached shadow calls (Phase 1);
 > - the hosted backends: `jev` over TypeSafe or OpenRouter, and `frontier` on the Anthropic Messages API;
 > - one transport policy for both (deadline, retries, circuit breaker, host pin, TLS);
@@ -10,7 +10,9 @@
 >
 > - (0.3.0) the measurement job: `label`, `corpus`, `measure` (with `--lock`) and `replay`, plus the [shadow-pilot runbook](docs/shadow-pilot.md).
 >
-> Every answer stays uncalibrated until a human locks a record that passes the kill criterion, and that needs weeks of real labels (Phase 4). Spec: [`2026-10-08-apex-decision-layer-design.md`](../../docs/superpowers/specs/2026-10-08-apex-decision-layer-design.md).
+> - (0.4.0) the lock flow tested end to end through apex-dispatch (`route.sh` takes a calibrated decision, `report.sh --decision` shows it), `replay --all`, and a weekly drift `/schedule` in the runbook.
+>
+> Every answer stays uncalibrated until a human locks a record that passes the kill criterion. That needs weeks of real labels, so Phase 4's exit is **pending on data**, not done. Spec: [`2026-10-08-apex-decision-layer-design.md`](../../docs/superpowers/specs/2026-10-08-apex-decision-layer-design.md).
 
 ## What it does
 
@@ -73,7 +75,7 @@ bin/apex-decide doctor [--json] [--probe]                             # config, 
 bin/apex-decide label   --rubric R --decision D --label L [--note T]    # a human label (refused under an ACTIVE run lock)
 bin/apex-decide corpus  --rubric R [--outcomes FILE] [--out FILE]       # decision log joined with human and outcome-proxy labels
 bin/apex-decide measure --rubric R --backend B [--outcomes F] [--out F] [--lock]   # AUROC/CI, Brier, ECE, ablation, status
-bin/apex-decide replay  --rubric R --backend B [--dry-run]              # drift check against a locked record (exit 4 on drift)
+bin/apex-decide replay  (--rubric R --backend B | --all) [--dry-run]   # drift check against locked records (exit 4 on drift)
 ```
 
 Slash commands: `/apex-decision-layer:decide <rubric> <state-json>`, `/apex-decision-layer:lint`, `/apex-decision-layer:doctor [--probe]`, `/apex-decision-layer:label` and `/apex-decision-layer:measure` (which never locks).
@@ -131,6 +133,7 @@ The smoke test runs the repository's ten structural checks (manifest, registrati
 - the transport policy: retries only on 408, 429 and 5xx, `Retry-After`, the 2× p50 rule, the deadline, the 4 MiB cap, non-JSON 2xx, redirects, and the circuit breaker opening, persisting and closing;
 - the host pin, egress and TLS (a self-signed certificate is rejected, and `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` are honoured);
 - no key leakage, and `doctor` key presence and `--probe`;
+- the Phase 4 lock flow end to end with the sibling consumers (an unlocked record only tightens; a locked one lets `route.sh` take the decision; `report.sh --decision` shows the calibrated row; `replay --all` is refused under ACTIVE, then invalidates on drift);
 - calibration records in `doctor`; the measurement job against generated corpora (`scripts/test/make_corpus.py`): every status, the proxy rule, `--lock` and its refusals, and `replay` drift;
 - both consumers end to end, including a ROUTE block that is identical with the plugin installed but unconfigured.
 
