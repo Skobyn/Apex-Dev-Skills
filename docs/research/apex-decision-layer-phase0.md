@@ -148,4 +148,17 @@ What the calls showed:
   - (c) ask TypeSafe whether the probabilities can be made less sharp.
 - The live pilot, if run in a session with jev auth, will show whether the real answers are as one-hot as the fixture assumes.
 
-**Run 2 (live, a session with proxy-injected jev keys):** requested; not yet reported.
+**Run 2 (live, a second cloud session with proxy-injected jev keys, TypeSafe, branch head `be84597`):**
+- **Mostly a failed run.** TypeSafe was overloaded.
+  - The first five task-class calls got 2 deadlines at 1.5 s (1850 ms and 1540 ms wall clock) and 2 `HTTP 529 system_overloaded` responses.
+  - One call scored: `tests`, confidence 1.0, model `jev-1.13.0`, 802 ms. Its answer was one-hot again, and correct.
+  - After 3 failed calls in 30 s the circuit breaker opened. It refused the remaining 11 calls in 28–63 ms without sending them, as designed (§6.4). About 5 requests reached TypeSafe.
+  - No placeholder key appeared in any output file.
+- **Both reports say `insufficient n`, n = 0.**
+  - task-class saw 1 answer with an outcome-proxy label. It did not count, because no human labels exist, so the agreement rule has no sample.
+  - risk-tier saw no answers.
+- **What it shows.**
+  - The deadline, the 529 handling and the shared breaker all work against a live, loaded provider, and the consumer would have fallen back to the table on every call.
+  - A 1.5 s routing deadline is tight while TypeSafe is under load: 2 of 5 live calls missed it, against 0 of 80 in Phase 0.
+  - The pilot itself was too brittle: back-to-back calls let one overload burst open the breaker for the rest of the run. `pilot.sh` now waits the breaker out and retries each task once, which routing never does.
+- **A re-run is wanted**, over either transport, in a session with jev auth. It needs that session's operator's approval.
