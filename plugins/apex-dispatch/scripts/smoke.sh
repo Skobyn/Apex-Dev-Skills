@@ -1855,17 +1855,17 @@ for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_cla
 done
 pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
 
-# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.4.0 everywhere
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.5.0 everywhere
 for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
   grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
   if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
   if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
 done
 V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
-[ "$V" = 0.4.0 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
-  || fail "the 0.4.0 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+[ "$V" = 0.5.0 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.5.0 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
 grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
-pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.4.0 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.5.0 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
 
 # --- Phase 4.2: flagged-off grok/opencode/aider shims, openai-sdk stub, compile --target codex,
 #     report --compare/--decision, carried hardening. Provider CLIs are stubs on a fixture PATH. ---
@@ -1950,8 +1950,8 @@ groute() { local o; o="$(cd "$WG" && wenv env PATH="$STUB2:$STUB:$PATH" APEX_DIS
 gdoc() { (cd "$WG" && wenv env PATH="$STUB2:$STUB:$PATH" APEX_DISPATCH_POLICY="$1" XAI_API_KEY=stub-not-a-key bash "$DOCTOR" --state "$GSD" --repo "$WG" >"$WORK/gdoc.out" 2>&1) || true; }
 nlog() { ls "$SLOG" | wc -l | tr -d ' '; }
 
-# 71. the flagged-off shims and the openai-sdk stub ship; the default policy keeps grok/opencode/aider off with
-#     their auto-approve equivalents forbidden; the stub refuses with 6 and runs nothing
+# 71. the flagged-off shims ship (grok, opencode, aider and, since 0.4.0, openai-sdk's runner); the default policy
+#     keeps all four off with their auto-approve equivalents forbidden; nothing runs under the default policy
 for f in bin/worker-grok.sh bin/worker-opencode.sh bin/worker-aider.sh bin/worker-openai-sdk.sh; do
   [ -x "$PLUGIN_ROOT/$f" ] && bash -n "$PLUGIN_ROOT/$f" || fail "$f is missing, not executable or does not parse"
 done
@@ -1959,7 +1959,7 @@ python3 - "$PLUGIN_ROOT/resources/compiled/policy.json" "$PLUGIN_ROOT/scripts/li
 import json, sys
 pol = {p["id"]: p for p in json.load(open(sys.argv[1]))["providers"]}
 sys.path.insert(0, sys.argv[2]); import ledger
-for pid in ("grok", "opencode-ollama", "aider-ollama"):
+for pid in ("grok", "opencode-ollama", "aider-ollama", "openai-sdk"):
     p = pol[pid]
     assert p["enabled"] is False and p["status"] == "flagged-off" and p["kind"] == "subprocess" and not p.get("verified_versions"), p
     assert not set(p["forced_flags"]) & set(p["forbidden_flags"]), p
@@ -1969,13 +1969,16 @@ assert {"--no-auto-commits", "--no-dirty-commits", "--no-git"} <= set(a["forced_
 assert {"--yolo", "--dangerously-skip-permissions", "--always-approve", "--auto-approve", "--worktree"} <= set(g["forbidden_flags"]) and "--worktree" not in g["forced_flags"]
 assert g["roles_allowed"] == ["reviewer", "diagnoser"] and ["--sandbox", "strict"] == g["forced_flags"][1:3]
 assert {"--auto", "--yolo"} <= set(o["forbidden_flags"]) and o["model"].startswith("ollama/") and a["model"].startswith("ollama/")
-assert pol["openai-sdk"]["kind"] == "stub" and pol["openai-sdk"]["enabled"] is False
+sdk = pol["openai-sdk"]
+assert sdk["binary"] == "harnesses/openai_sdk_runner.py" and sdk["forced_flags"] == ["run", "--output-format", "json"], sdk
+assert sdk["roles_allowed"] == ["builder", "tester", "docs"] and not any(p["kind"] == "stub" for p in pol.values())
 assert ledger.shim_name("opencode-ollama") == "worker-opencode.sh" and ledger.shim_provider("worker-aider.sh") == "aider-ollama"
 assert ledger.shim_provider("worker-codex.sh") == "codex" and ledger.shim_provider("worker-common.sh") is None
 PY
-N0="$(nlog)"; WRC=0; bash "$SDKW" --route r --role docs --brief "$WORK/wbrief.md" >"$WORK/sdk.out" 2>"$WORK/sdk.err" || WRC=$?
-[ "$WRC" = 6 ] && grep -q 'not-implemented' "$WORK/sdk.err" && [ ! -s "$WORK/sdk.out" ] && [ "$(nlog)" = "$N0" ] || fail "worker-openai-sdk.sh did not refuse with 6 (rc=$WRC)"
-if grep -nE 'import (urllib|http|socket|requests|openai)|curl |wget ' "$SDKW"; then fail "the openai-sdk stub carries network code"; fi
+N0="$(nlog)"; WRC=0; (cd "$WORK" && bash "$SDKW" --route r --role docs --brief "$WORK/wbrief.md" >"$WORK/sdk.out" 2>"$WORK/sdk.err") || WRC=$?
+[ "$WRC" = 3 ] && grep -q 'DISPATCH-REFUSED' "$WORK/sdk.err" && [ ! -s "$WORK/sdk.out" ] && [ "$(nlog)" = "$N0" ] || fail "worker-openai-sdk.sh ran without a run (rc=$WRC)"
+[ -x "$PLUGIN_ROOT/harnesses/openai_sdk_runner.py" ] || fail "harnesses/openai_sdk_runner.py is missing or not executable"
+if grep -nE 'import (urllib|http|socket|requests|subprocess)|curl |wget |os\.system|shell=True' "$PLUGIN_ROOT/harnesses/openai_sdk_runner.py"; then fail "the openai-sdk runner carries its own network or shell code"; fi
 # Fixture: a [docs] task routed to the local providers (Route: provider=local), with an export-ignore'd file.
 WG="$WORK/wg"; mkdir -p "$WG/plans" "$WG/docs"; git init -q -b main "$WG"
 printf '# G\n\n- [ ] **Phase 1.1** [docs] refresh the local guide\n  - Acceptance: `true`\n  - Route: provider=local\n  - Paths: docs/**\n' >"$WG/plans/p.md"
@@ -1984,14 +1987,14 @@ printf 'docs/hidden.md export-ignore\n' >"$WG/.gitattributes"; git -C "$WG" add 
 (cd "$WG" && wenv bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the 4.2 fixture"
 groute "" claude-session; GWT="$GSD/worktree"; GD="$GSD/dispatch"
 gx "" bash -c 'source "$1"; apex_worker_main openai-sdk --route "$2" --role docs --brief "$3"' _ "$PLUGIN_ROOT/bin/worker-common.sh" "$GRID" "$WORK/wbrief.md"
-[ "$WRC" = 6 ] && grep -q 'not-implemented: provider openai-sdk is a stub seam' "$WORK/w.err" || fail "the engine did not refuse the stub provider with 6 (rc=$WRC: $(cat "$WORK/w.err"))"
-for w in "$OCW --role docs" "$AIW --role docs" "$GKW --role reviewer"; do
+[ "$WRC" = 3 ] && grep -q 'provider openai-sdk is disabled in the policy (status flagged-off)' "$WORK/w.err" || fail "the engine did not refuse the flagged-off openai-sdk with 3 (rc=$WRC: $(cat "$WORK/w.err"))"
+for w in "$OCW --role docs" "$AIW --role docs" "$GKW --role reviewer" "$SDKW --role docs"; do
   # shellcheck disable=SC2086
   gx "" bash ${w% --role *} --route "$GRID" --role "${w##* --role }" --brief "$WORK/wbrief.md"
   [ "$WRC" = 3 ] && grep -q 'disabled in the policy (status flagged-off)' "$WORK/w.err" || fail "$(basename "${w% --role *}") ran with the default policy (rc=$WRC: $(cat "$WORK/w.err"))"
 done
 [ "$(nlog)" = "$N0" ] || fail "a provider stub ran during the 4.2 refusals"
-pass "4.2 shims ship (grok/opencode/aider flagged off, auto-approve equivalents forbidden, --worktree/--yes dropped); worker-openai-sdk.sh and the engine refuse the stub with 6 and run nothing; the flagged-off shims refuse under the default policy (3)"
+pass "flagged-off shims ship (grok/opencode/aider/openai-sdk off, auto-approve equivalents forbidden, --worktree/--yes dropped; the openai-sdk runner carries no network or shell code of its own); all four refuse under the default policy (3) and run nothing"
 
 # 72. per-version gate: an overlay that only enables a flagged-off provider is refused; enabled with a
 #     verified_versions list that does not hold doctor's installed version is refused; doctor records both facts
@@ -2123,7 +2126,7 @@ g, ai, oc, sdk = p["grok"], p["aider-ollama"], p["opencode-ollama"], p["openai-s
 assert g["shim_file"] == "bin/worker-grok.sh" and g["roles_allowed"] == ["reviewer", "diagnoser"] and g["allowed_classes"] == ["docs", "tests"] and g["version_verified"], g
 assert ai["shim"] and ai["version"] == "0.86.1" and ai["auth"] == "n/a" and ai["auth_ok"], ai
 assert not oc["enabled"] and oc["shim_file"] == "bin/worker-opencode.sh", oc
-assert sdk["shim"] and sdk["kind"] == "stub" and not sdk["available"], sdk
+assert sdk["shim"] and sdk["kind"] == "subprocess" and not sdk["enabled"] and sdk["shim_file"] == "bin/worker-openai-sdk.sh", sdk
 assert "grok" not in d["second_families"], d["second_families"]          # grok may not review class security
 PY
 VK="$WORK/vk"; mkdir -p "$VK"; printf '#!/bin/sh\necho "grok-cli 1.0.0 (@vibe-kit/grok-cli)"\n' >"$VK/grok"; chmod +x "$VK/grok"
@@ -2285,7 +2288,7 @@ for p in (".ENV", "docs/.Env.local", ".envrc", "sub/.EnvRC", ".Claude/Settings.j
 for p in ("docs/environment.md", "src/envrc.py", ".claude/commands/x.md", "hooks/useThing.ts"):
     assert worker.path_problem(p, None) is None, p
 assert worker.ARGV_BRIEF_MAX == 120 * 1024 and worker.REVIEWER_MIN_USD == 2.0 and worker.EXIT_NOT_IMPLEMENTED == 6
-assert set(worker.SHIM_PROVIDERS) == {"claude-p", "codex", "grok", "opencode-ollama", "aider-ollama"}
+assert set(worker.SHIM_PROVIDERS) == {"claude-p", "codex", "grok", "opencode-ollama", "aider-ollama", "openai-sdk"}
 src = open(worker.__file__).read()
 assert "dontAsk denies the rest" not in src and "permissions.allow" in src and '"archive", "--format=tar"' not in src
 ok = lambda m: hooks.parse_review(m)[0]
@@ -2293,16 +2296,17 @@ assert ok("Fine.\n[blocking] none found\nVERDICT: APPROVE") == "APPROVE"
 assert ok("- [blocking] (none)\nVERDICT: APPROVE") == "APPROVE"
 assert ok("[blocking] a.py:3 crashes on empty input\nVERDICT: APPROVE") == "REQUEST_CHANGES"
 PY
-pass "carried hardening: case-insensitive never-touch incl. .envrc (own .claude/commands and hooks/ source stay applicable), reviewer USD floor 2.0, 120 KiB argv brief cap, exit 6 for stubs, corrected dontAsk comment, no git archive; [blocking] none found/(none) do not block"
+pass "carried hardening: case-insensitive never-touch incl. .envrc (own .claude/commands and hooks/ source stay applicable), reviewer USD floor 2.0, 120 KiB argv brief cap, exit 6 kept for kind stub, corrected dontAsk comment, no git archive; [blocking] none found/(none) do not block"
 
 # 81. docs: ADR-0001 and README document the 4.2 surface and the deviations; commands describe the new modes
-for t in 'Flagged-off providers (Phase 4.2, v0.3.0)' 'openai-sdk stub (v0.3.0)' 'Codex target (v0.3.0' 'Measurement (v0.3.0' 'Pre-registered minimum n: 20' "Deviation: apply's never-touch list is narrower than the spec's" 'verified_versions'; do
+for t in 'Flagged-off providers (Phase 4.2, v0.3.0)' 'openai-sdk runner (v0.4.0)' 'Codex target (v0.3.0' 'Measurement (v0.3.0' 'Pre-registered minimum n: 20' "Deviation: apply's never-touch list is narrower than the spec's" 'verified_versions'; do
   grep -qF "$t" "$ADR" || fail "ADR-0001 does not document: $t"
 done
-for t in 'bin/worker-grok.sh' 'worker-openai-sdk.sh' '--target codex' '--compare' '--decision' 'verified_versions'; do grep -qF -- "$t" "$R" || fail "README does not document $t"; done
+for t in 'bin/worker-grok.sh' 'worker-openai-sdk.sh' '--target codex' '--compare' '--decision' 'verified_versions' 'provider-smoke.sh' '### Rolling acceptance' 'openai_sdk_runner.py'; do grep -qF -- "$t" "$R" || fail "README does not document $t"; done
+for t in 'Rolling acceptance (v0.4.0' 'Per-version smoke (v0.4.0)' 'worker_rejected' '## Status log'; do grep -qF -- "$t" "$ADR" || fail "ADR-0001 does not document: $t"; done
 grep -qF -- '--compare' "$PLUGIN_ROOT/commands/report.md" && grep -qF -- '--decision' "$PLUGIN_ROOT/commands/report.md" && grep -qF -- '--target codex' "$PLUGIN_ROOT/commands/compile.md" \
   || fail "commands/report.md or compile.md do not describe the new modes"
-pass "docs: ADR-0001 (flagged-off providers, stub, codex target, measurement with min n, never-touch deviation), README and the report/compile commands describe the 4.2 surface"
+pass "docs: ADR-0001 (flagged-off providers, openai-sdk runner, codex target, measurement with min n, never-touch deviation), README and the report/compile commands describe the 4.2 surface"
 
 # 82. report --compare does not invent savings: 20 routed tasks (a codex builder with provider-default usage and no
 #     USD, plus an in-session reviewer) vs 20 baseline tasks (in-session builder + reviewer, identical tokens): USD is
@@ -2394,6 +2398,271 @@ i = src.index("def cmd_run(")
 assert "runfiles.restore()                                 # also on a refusal" in src[i:], "the outer finally does not restore"
 PY
 pass "run-only files: provider project config (opencode.json/.opencode, .env/.aider*) moved aside and restored, grok-style worktree_files undone, restore idempotent and also in cmd_run's outer finally"
+
+# --- 0.4.0: the openai-sdk runner, rolling provider acceptance, the per-version provider smoke. The OpenAI
+#     Agents SDK is a stub package on a fixture PYTHONPATH (through a python3 wrapper first on PATH, because the
+#     engine scrubs the environment); provider CLIs are stubs. Nothing reaches a network. ---
+REALPY="$(command -v python3)"; SDKS="$WORK/sdkstub"; SDKP="$WORK/sdkpy"; SDKLOG="$WORK/sdk-log"
+mkdir -p "$SDKS/agents" "$SDKS/openai_agents-9.9.9.dist-info" "$SDKP" "$SDKLOG"; echo edit >"$WORK/sdkmode"
+printf 'Metadata-Version: 2.1\nName: openai-agents\nVersion: 9.9.9\n' >"$SDKS/openai_agents-9.9.9.dist-info/METADATA"
+printf 'def get_default_model():\n    return "gpt-stub-1"\n' >"$SDKS/agents/models.py"
+cat >"$SDKS/agents/__init__.py" <<PYSTUB
+# A stand-in for the OpenAI Agents SDK: the same names the runner imports; Runner.run_sync drives the
+# runner's own tools the way a model would, and logs what it saw.
+import json, os, re
+LOG, MODEFILE = "$SDKLOG", "$WORK/sdkmode"
+TRACING_OFF = False
+def set_tracing_disabled(v):
+    global TRACING_OFF
+    TRACING_OFF = v
+def function_tool(fn):
+    return fn
+class Agent:
+    def __init__(self, name, instructions=None, model=None, tools=None, **kw):
+        self.name, self.instructions, self.model = name, instructions, model
+        self.tools = {t.__name__: t for t in tools or []}
+class _D: cached_tokens = 5
+class _U:
+    input_tokens, output_tokens, requests, input_tokens_details = 100, 20, 1, _D()
+class _C: usage = _U()
+class _R:
+    def __init__(self, out):
+        self.final_output, self.context_wrapper, self.raw_responses = out, _C(), [1, 2]
+class Runner:
+    @staticmethod
+    def run_sync(agent, brief, max_turns=10):
+        mode = open(MODEFILE).read().strip()
+        t, res = agent.tools, {}
+        m = re.search(r"apex-dispatch smoke [0-9a-f]+", brief)
+        res["escape"] = t["read_file"]("../../../../etc/hostname")
+        res["git"] = t["read_file"](".git/config")
+        if "write_file" in t:
+            line = m.group(0) if m else "sdk edit"
+            res["owned"] = t["write_file"]("docs/guide.md", open("docs/guide.md").read() + line + "\n")
+            res["outside"] = t["write_file"]("README.md", "taken over\n")
+            res["env"] = t["write_file"](".env", "LEAK=1\n")
+            if mode == "stray":
+                open("README.md", "a").write("written around the tools\n")
+        else:
+            res["readonly"] = "write_file" in t
+        n = len(os.listdir(LOG))
+        json.dump({"brief": brief, "instructions": agent.instructions, "model": agent.model, "tools": sorted(t),
+                   "max_turns": max_turns, "tracing_off": TRACING_OFF, "env": sorted(os.environ), "res": res,
+                   "cwd": os.getcwd()}, open(os.path.join(LOG, "%03d.json" % n), "w"))
+        if mode == "fail":
+            raise RuntimeError("the stub model failed")
+        verdict = "\nLENS: correctness\nVERDICT: APPROVE" if "VERDICT: APPROVE" in brief else ""
+        return _R("DONE %s%s" % (m.group(0).split()[-1] if m else "", verdict))
+PYSTUB
+printf '#!/bin/sh\nPYTHONPATH="%s" exec "%s" "$@"\n' "$SDKS" "$REALPY" >"$SDKP/python3"; chmod +x "$SDKP/python3"
+sdklast() { ls "$SDKLOG" | tail -1 | sed "s|^|$SDKLOG/|"; }
+OVS="$WORK/ov-sdk.json"; printf '{"providers":[{"id":"openai-sdk","enabled":true,"verified_versions":["9.9.9"]}]}\n' >"$OVS"
+# sx CMD... -> wrun in the openai-sdk fixture with the stub SDK's python3 first on PATH and the openai-sdk overlay
+sx() { wrun "$WS" env PATH="$SDKP:$STUB:$PATH" APEX_DISPATCH_POLICY="$OVS" OPENAI_API_KEY=stub-not-a-key "$@"; }
+WS="$WORK/ws"; mkdir -p "$WS/plans" "$WS/docs"; git init -q -b main "$WS"
+printf '# S\n\n- [ ] **Phase 1.1** [docs] refresh the sdk guide\n  - Acceptance: `true`\n  - Route: provider=openai-sdk\n  - Paths: docs/**\n\n- [ ] **Phase 1.2** [docs] the next guide\n  - Acceptance: `true`\n  - Paths: docs/**\n' >"$WS/plans/p.md"
+printf '.dev-plan-state/\n' >"$WS/.gitignore"; echo guide >"$WS/docs/guide.md"; echo readme >"$WS/README.md"; echo SECRET=1 >"$WS/.env"
+git -C "$WS" add -A; git -C "$WS" commit -qm ws
+(cd "$WS" && wenv bash "$EXS/init.sh" plans/p.md >/dev/null 2>&1) || fail "init.sh failed in the openai-sdk fixture"
+
+# 84. openai-sdk worker: routed only by Route: provider=openai-sdk with the overlay; doctor reads the SDK version
+#     through the runner; the runner gets the policy's command, a run config (owned Paths as globs and glob_re
+#     patterns, the role contract, the turn limit), a scrubbed env with the key; its tools refuse paths outside the
+#     worktree, .git, never-touch and out-of-Paths writes; usage is parsed; apply.sh commits it; pre-bash refuses
+#     the runner outside the shim
+O="$(cd "$WS" && wenv env PATH="$SDKP:$STUB:$PATH" bash "$ROUTE" plan plans/p.md --line 3 --dry-run 2>&1)"
+[ "$(val ROUTE_PROVIDER "$O")" = claude-session ] || fail "openai-sdk was routed under the default policy: $O"
+O="$(cd "$WS" && wenv env PATH="$SDKP:$STUB:$PATH" APEX_DISPATCH_POLICY="$OVS" bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ "$(val ROUTE_PROVIDER "$O")" = openai-sdk ] || fail "Route: provider=openai-sdk did not route to openai-sdk: $O"
+SRID="$(val ROUTE_ID "$O")"; SSD="$(dirname "$(dirname "$(val ROUTE_FILE "$O")")")"; SWT="$SSD/worktree"; SD4="$SSD/dispatch"
+(cd "$WS" && wenv env PATH="$SDKP:$STUB:$PATH" APEX_DISPATCH_POLICY="$OVS" OPENAI_API_KEY=stub-not-a-key bash "$DOCTOR" --state "$SSD" --repo "$WS" >"$WORK/sdoc.out" 2>&1) || true
+python3 -c 'import json,sys; o=json.load(open(sys.argv[1]))["providers"]["openai-sdk"]; assert o["available"] and o["version"]=="9.9.9" and o["version_verified"] and o["auth"]=="env" and o["flags_ok"] and o["path"].endswith("/harnesses/openai_sdk_runner.py"), o' "$SD4/doctor.json" \
+  || fail "doctor did not resolve the openai-sdk runner and its SDK version: $(cat "$WORK/sdoc.out")"
+sx bash "$SDKW" --route "$SRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 0 ] && [ "$(printf '%s\n' "$WOUT" | tail -1)" = "DISPATCH-DONE exit=0" ] || fail "the openai-sdk worker failed (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+SO1="$(val WORKER_OUT "$WOUT")"
+python3 - "$(sdklast)" "$SO1" "$SD4" "$PLUGIN_ROOT" <<'PY' || fail "the openai-sdk command, config, tools or result are wrong"
+import json, os, sys
+log, out, d, root = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3], sys.argv[4]
+cfg = json.load(open(os.path.join(out, "openai-sdk.json")))
+assert cfg["mode"] == "write" and cfg["owned"] == ["docs/**"] and cfg["owned_rx"] and cfg["model"] is None and cfg["max_turns"] == 30, cfg
+assert os.path.realpath(cfg["root"]) == os.path.realpath(log["cwd"]) and os.path.realpath(cfg["root"]).startswith(os.path.realpath(d) + "/worktrees/")
+assert cfg["instructions"].startswith("You are the **docs** role of apex-dispatch") and "---" not in cfg["instructions"][:5], cfg["instructions"][:80]
+w = json.load(open(os.path.join(out, "worker.json")))
+assert w["command"][0].endswith("/harnesses/openai_sdk_runner.py") and w["command"][1:4] == ["run", "--output-format", "json"], w["command"]
+assert w["command"][4:] == ["--config", os.path.join(out, "openai-sdk.json"), "--brief-file", os.path.join(out, "brief.md")], w["command"]
+assert log["tracing_off"] is True and log["model"] == "gpt-stub-1" and log["instructions"].endswith("do not commit (there is no git tool).")
+assert log["tools"] == ["delete_file", "list_files", "read_file", "replace_in_file", "search_files", "write_file"], log["tools"]
+assert "OPENAI_API_KEY" in log["env"] and "SMOKE_SECRET" not in log["env"] and "PYTHONPATH" in log["env"], log["env"]
+r = log["res"]
+assert r["owned"].startswith("wrote docs/guide.md"), r
+assert r["outside"].startswith("ERROR: README.md is outside the task's owned Paths"), r
+assert r["env"].startswith("ERROR: .env is on the never-touch list") and r["escape"].startswith("ERROR:") and "outside the workspace" in r["escape"], r
+assert r["git"].startswith("ERROR: .git/config: git internals"), r
+res = json.load(open(os.path.join(out, "result.json")))
+assert res["provider"] == "openai-sdk" and res["family"] == "openai" and res["ok"] and res["files_changed"] == ["docs/guide.md"], res
+assert res["usage"] == {"input": 100, "output": 20, "cache_read": 5} and res["model"] == "gpt-stub-1" and res["agent"] == "openai-agents:docs", res
+PY
+wrun "$WS" bash "$APPLY" --worker "$SO1"; [ "$WRC" = 0 ] || fail "apply.sh refused the openai-sdk patch (rc=$WRC: $(cat "$WORK/w.err"))"
+git -C "$SWT" log -1 --format=%B | grep -q 'Dispatch-Provider: openai-sdk' && grep -q 'sdk edit' "$SWT/docs/guide.md" || fail "the openai-sdk patch was not committed with its trailers"
+sbx() { (cd "$WS" && printf '%s' "$(pj tool_name=Bash hook_event_name=PreToolUse "tool_input.command=$1" "cwd=$WS")" | bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null) | one; }
+[ "$(sbx "python3 $PLUGIN_ROOT/harnesses/openai_sdk_runner.py run --output-format json --config c --brief-file b")" = deny ] \
+  && [ "$(sbx "$PLUGIN_ROOT/harnesses/openai_sdk_runner.py run --output-format json --config c --brief-file b")" = deny ] \
+  && [ "$(sbx "python3 $PLUGIN_ROOT/harnesses/openai_sdk_runner.py --version")" = "{}" ] || fail "pre-bash does not confine the openai-sdk runner to its shim"
+pass "openai-sdk worker: routed only with the overlay (Route: provider=openai-sdk), doctor reads the SDK version through the runner, the policy command + run config (owned Paths, role contract, turn limit), scrubbed env with the key, tracing off; tools refuse escapes, .git, never-touch and out-of-Paths writes; usage parsed; applied with trailers; pre-bash refuses the runner outside the shim"
+
+# 85. rolling acceptance: outcomes per dispatch (applied ∧ approved, failed, apply refusals, moved-on tasks,
+#     reviewer verdicts); fewer than 10 decided (or the window) is insufficient; below min_acceptance demotes: the shim refuses (3),
+#     route.sh skips the provider, doctor marks it (and it is no second family), report prints it
+python3 - "$PLUGIN_ROOT/scripts/lib" "$WORK/acc" <<'PY' || fail "ledger.dispatch_outcomes/acceptance are wrong"
+import os, sys
+sys.path.insert(0, sys.argv[1]); import ledger
+base = sys.argv[2]; a, b = os.path.join(base, "aaaaaaaaaaaa"), os.path.join(base, "adhoc", "x1")
+H1, H2 = "1" * 40, "2" * 40
+def ap(sd, ev, data, src="shim", rid=None, head=None):
+    ledger.append(sd, ev, data, src, route_id=rid, head_sha=head, route_mode="table")
+R1, R2 = "r-aaaaaaaaaaaa-L3-1", "r-aaaaaaaaaaaa-L7-1"
+ap(a, "route", {"route_id": R1, "status": "READY", "origin": "plan", "router": {}}, "cli", R1)
+wr = lambda sd, rid, run, role="builder", ex=0, ok=True: ap(sd, "worker_run", {"provider": "codex", "role": role, "exit_code": ex, "run_id": run, "ok": ok, "sentinel_seen": ex == 0}, rid=rid)
+wr(a, R1, "w1"); ap(a, "worker_applied", {"provider": "codex", "run_id": "w1", "commit_sha": H1}, rid=R1, head=H1)
+wr(a, R1, "w2")                                                        # never applied, task still open: pending
+wr(a, R1, "w3", ex=1, ok=False)                                         # failed run
+wr(a, R1, "w4"); ap(a, "worker_rejected", {"provider": "codex", "run_id": "w4", "reason": "outside Paths"}, rid=R1)
+ap(a, "verdict", {"role": "reviewer", "verdict": "APPROVE"}, "hook", R1, H1)
+wr(a, R1, "rv1", role="reviewer"); ap(a, "verdict", {"role": "reviewer", "verdict": "UNPARSED", "run_id": "rv1"}, rid=R1, head=H1)
+wr(a, R1, "rv2", role="reviewer"); ap(a, "verdict", {"role": "reviewer", "verdict": "REQUEST_CHANGES", "run_id": "rv2"}, rid=R1, head=H1)
+o = {x["run_id"]: x["outcome"] for x in ledger.dispatch_outcomes(ledger.read_rows(a))}
+assert o == {"w1": "accepted", "w2": "pending", "w3": "rejected", "w4": "rejected", "rv1": "rejected", "rv2": "accepted"}, o
+ap(a, "route", {"route_id": R2, "status": "READY", "origin": "plan", "router": {}}, "cli", R2)
+o = {x["run_id"]: x["outcome"] for x in ledger.dispatch_outcomes(ledger.read_rows(a))}
+assert o["w2"] == "rejected", o                                          # the task moved on without applying it
+pol = [{"id": "codex", "kind": "subprocess", "min_acceptance": 0.7, "acceptance_window": 20}, {"id": "claude-session", "kind": "in-session"}]
+acc = ledger.acceptance(a, pol)["codex"]
+assert acc["decided"] == 6 and acc["accepted"] == 2 and acc["status"] == "insufficient" and acc["need"] == 10, acc
+for i in range(4):
+    wr(a, R2, "f%d" % i, ex=124, ok=False)
+acc = ledger.acceptance(a, pol)["codex"]
+assert acc["decided"] == 10 and acc["accepted"] == 2 and acc["rate"] == 0.2 and acc["status"] == "demoted", acc
+assert "claude-session" not in ledger.acceptance(a, pol)
+import datetime
+later = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=ledger.ACCEPTANCE_MAX_AGE_DAYS + 1)
+acc = ledger.acceptance(a, pol, now_dt=later)["codex"]
+assert acc["decided"] == 0 and acc["status"] == "insufficient", acc       # old rejections age out: eligible again
+# another plan's and an ad-hoc ask's ledgers under the same base roll in; a window of 4 keeps the newest
+for i in range(4):
+    wr(b, "a-x1-1", "b%d" % i, role="diagnoser")
+acc = ledger.acceptance(b, [dict(pol[0], acceptance_window=4)])["codex"]
+assert acc["decided"] == 4 and acc["accepted"] == 4 and acc["status"] == "ok" and acc["need"] == 4, acc
+acc = ledger.acceptance(b, [dict(pol[0], acceptance_window=6)])["codex"]
+assert acc["decided"] == 6 and acc["accepted"] == 4 and acc["status"] == "demoted" and acc["need"] == 6, acc   # two of a's failures still in the window
+assert ledger.acceptance(b, pol)["codex"]["decided"] == 14
+# a tampered ledger does not count
+p = ledger.ledger_path(a); t = open(p).read(); assert '"exit_code":1' in t; open(p, "w").write(t.replace('"exit_code":1', '"exit_code":0'))
+acc = ledger.acceptance(b, pol)["codex"]
+assert acc["decided"] == 4 and acc["skipped_ledgers"] == [a], acc
+PY
+echo stray >"$WORK/sdkmode"
+O="$(cd "$WS" && wenv env PATH="$SDKP:$STUB:$PATH" APEX_DISPATCH_POLICY="$OVS" bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+SRID="$(val ROUTE_ID "$O")"
+sx bash "$SDKW" --route "$SRID" --role docs --brief "$WORK/wbrief.md"; SO2="$(val WORKER_OUT "$WOUT")"
+[ "$WRC" = 0 ] || fail "the stray openai-sdk run did not finish (rc=$WRC: $(cat "$WORK/w.err"))"
+wrun "$WS" bash "$APPLY" --worker "$SO2"; [ "$WRC" = 1 ] && grep -q 'README.md (outside the route' "$WORK/w.err" || fail "apply.sh did not refuse a write made around the runner's tools (rc=$WRC: $(cat "$WORK/w.err"))"
+[ "$(shimrows "$SD4/ledger.jsonl" worker_rejected provider=openai-sdk)" = 1 ] || fail "apply.sh's refusal left no worker_rejected row"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$SSD" "$SRID" <<'PY' || fail "could not record failed openai-sdk dispatches"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+for i in range(9):
+    ledger.append(sys.argv[2], "worker_run", {"provider": "openai-sdk", "role": "docs", "exit_code": 1, "run_id": "wf%d" % i, "ok": False},
+                  "shim", route_id=sys.argv[3], route_mode="table")
+PY
+echo edit >"$WORK/sdkmode"; N5="$(ls "$SDKLOG" | wc -l)"
+sx bash "$SDKW" --route "$SRID" --role docs --brief "$WORK/wbrief.md"
+[ "$WRC" = 3 ] && grep -q 'provider openai-sdk is demoted: 0 of the last 10 decided dispatches accepted' "$WORK/w.err" && [ "$(ls "$SDKLOG" | wc -l)" = "$N5" ] \
+  || fail "a demoted provider's shim did not refuse (rc=$WRC: $(cat "$WORK/w.err"))"
+O="$(cd "$WS" && wenv env PATH="$SDKP:$STUB:$PATH" APEX_DISPATCH_POLICY="$OVS" bash "$ROUTE" plan plans/p.md --line 3 --dry-run 2>&1)"
+[ "$(val ROUTE_PROVIDER "$O")" = claude-session ] && has 'provider openai-sdk refused: demoted' "$O" || fail "route.sh still routes to a demoted provider: $O"
+(cd "$WS" && wenv env PATH="$SDKP:$STUB:$PATH" APEX_DISPATCH_POLICY="$OVS" OPENAI_API_KEY=stub-not-a-key bash "$DOCTOR" --state "$SSD" --repo "$WS" >"$WORK/sdoc.out" 2>&1) || true
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); o=d["providers"]["openai-sdk"]; c={x["id"]:x for x in d["checks"]}
+assert o["demoted"] is True and o["acceptance"]["status"] == "demoted" and o["acceptance"]["decided"] == 10, o
+assert c["provider-acceptance"]["status"] == "warn" and "openai-sdk" in c["provider-acceptance"]["detail"], c["provider-acceptance"]' "$SD4/doctor.json" \
+  || fail "doctor did not mark the demoted provider: $(cat "$WORK/sdoc.out")"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$PLUGIN_ROOT" <<'PY' || fail "a demoted provider still counts as a second reviewer family"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+e = {"enabled": True, "available": True, "auth_ok": True, "verified": True, "roles_allowed": ["reviewer"], "allowed_classes": ["any"]}
+assert ledger.second_families({"providers": {"codex": e}}, sys.argv[2]) == ["codex"]
+assert ledger.second_families({"providers": {"codex": dict(e, demoted=True)}}, sys.argv[2]) == []
+PY
+O="$(cd "$WS" && APEX_DISPATCH_POLICY="$OVS" bash "$REPORT" --state "$SSD" 2>&1)"
+has '^REPORT_ACCEPTANCE: provider openai-sdk: 0 of the last 10 decided dispatches accepted (rate 0.00, min_acceptance 0.70, window 20; demoted); 1 pending' "$O" \
+  || fail "report.sh does not print the provider's acceptance: $O"
+pass "rolling acceptance: applied+approved accepted, failed runs/apply refusals/moved-on tasks/UNPARSED rejected, pending kept out, other plans' and ad-hoc ledgers roll in, tampered ledgers skipped, <10 decided insufficient; demoted: shim refuses (3) before running, route.sh skips it, doctor warns and drops it as a second family, report prints it; apply refusals write worker_rejected"
+
+# 86. provider-smoke.sh: the real command path against a fixture repo; PASS records verified_versions (+ enabled)
+#     in the overlay with evidence, validated by the same merge; a stray write, a missing verdict or a bad flag FAILs
+#     and records nothing; refused under an ACTIVE lock; usage errors are named
+PSB="$WORK/psb"; mkdir -p "$PSB"; echo good >"$WORK/psmode"
+cat >"$PSB/opencode" <<PYSTUB
+#!/usr/bin/env python3
+import json, os, re, sys
+a = sys.argv[1:]
+mode = open("$WORK/psmode").read().strip()
+if "--version" in a:
+    print("opencode 1.2.3"); sys.exit(0)
+if "--help" in a:
+    print("unknown option --format" if mode == "badflag" else "Usage: opencode run"); sys.exit(2 if mode == "badflag" else 0)
+d, brief = a[a.index("--dir") + 1], a[-1]
+assert not os.path.lexists(os.path.join(d, "opencode.json")) and os.environ.get("OPENCODE_CONFIG_CONTENT")
+open(os.path.join(d, "docs", "guide.md"), "a").write(re.search(r"apex-dispatch smoke [0-9a-f]+", brief).group(0) + "\n")
+if mode == "stray":
+    open(os.path.join(d, "README.md"), "a").write("stray\n")
+print(json.dumps({"type": "text", "part": {"text": "DONE"}}))
+PYSTUB
+cat >"$PSB/grok" <<PYSTUB
+#!/usr/bin/env python3
+import json, sys
+a = sys.argv[1:]
+mode = open("$WORK/psmode").read().strip()
+if "--version" in a:
+    print("grok 0.9.2"); sys.exit(0)
+if "--help" in a:
+    print("Usage: grok"); sys.exit(0)
+text = "Looks fine." if mode == "noverdict" else "Read both files.\nLENS: correctness\nVERDICT: APPROVE"
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text,
+                  "usage": {"input_tokens": 40, "output_tokens": 4}, "modelUsage": {"grok-4": {}}}))
+PYSTUB
+chmod +x "$PSB/opencode" "$PSB/grok"
+PSMOKE="$PLUGIN_ROOT/scripts/provider-smoke.sh"
+PR="$WORK/pr"; git init -q -b main "$PR"; git -C "$PR" commit -q --allow-empty -m pr; PROV="$PR/.claude/apex-dispatch/policy.json"
+psx() { WRC=0; WOUT="$( (cd "$PR" && wenv env PATH="$SDKP:$PSB:$STUB:$PATH" OPENAI_API_KEY=stub-not-a-key bash "$PSMOKE" "$@") 2>"$WORK/w.err")" || WRC=$?; }
+[ -x "$PSMOKE" ] && bash -n "$PSMOKE" || fail "scripts/provider-smoke.sh is missing or does not parse"
+psx opencode-ollama --record --enable
+[ "$WRC" = 0 ] && has '^SMOKE_STATUS: PASS' "$WOUT" && has '^SMOKE_CHECK: attempt 1 patch     ok' "$WOUT" || fail "the opencode provider smoke did not pass (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+python3 -c 'import json,sys; o=json.load(open(sys.argv[1])); e=[x for x in o["providers"] if x["id"]=="opencode-ollama"][0]; assert e=={"id":"opencode-ollama","verified_versions":["1.2.3"],"enabled":True}, o
+v=json.load(open(sys.argv[2])); assert v["passed"] and v["version"]=="1.2.3" and v["role"]=="docs" and {c["id"] for c in v["runs"][-1]["checks"]}=={"run","parse","patch"}, v' "$PROV" "$PR/.claude/apex-dispatch/smoke/opencode-ollama-1.2.3.json" \
+  || fail "the opencode smoke was not recorded in the overlay with its evidence"
+psx grok --record; [ "$WRC" = 0 ] && has '^SMOKE_ROLE: reviewer (readonly)' "$WOUT" && has 'readonly  ok   snapshot unchanged' "$WOUT" && has 'verdict   ok   parsed verdict APPROVE' "$WOUT" \
+  || fail "the read-only grok smoke did not pass (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+psx openai-sdk --record --enable; [ "$WRC" = 0 ] && has '^SMOKE_VERSION: 9.9.9' "$WOUT" && has 'usage     ok' "$WOUT" || fail "the openai-sdk smoke did not pass (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+python3 -c 'import json,sys; o={x["id"]:x for x in json.load(open(sys.argv[1]))["providers"]}
+assert o["grok"]=={"id":"grok","verified_versions":["0.9.2"]} and o["openai-sdk"]["enabled"] is True and o["opencode-ollama"]["verified_versions"]==["1.2.3"], o' "$PROV" \
+  || fail "recording grok/openai-sdk did not merge into the overlay"
+(cd "$PR" && bash "$COMPILE" --print-merged >/dev/null 2>&1) || fail "the recorded overlay does not merge"
+psx opencode-ollama --record; python3 -c 'import json,sys; o=[x for x in json.load(open(sys.argv[1]))["providers"] if x["id"]=="opencode-ollama"][0]; assert o["verified_versions"]==["1.2.3"], o' "$PROV" || fail "a repeat record duplicated the version"
+cp "$PROV" "$WORK/prov.before"
+for m in stray noverdict badflag; do
+  echo "$m" >"$WORK/psmode"
+  if [ "$m" = noverdict ]; then psx grok --record --attempts 1; else psx opencode-ollama --record --attempts 1; fi
+  [ "$WRC" = 1 ] && has '^SMOKE_STATUS: FAIL' "$WOUT" && cmp -s "$PROV" "$WORK/prov.before" || fail "a $m provider passed or changed the overlay (rc=$WRC): $WOUT $(cat "$WORK/w.err")"
+done
+has 'flags               FAIL' "$WOUT" && ! has 'attempt 1' "$WOUT" || fail "a rejected forced flag still ran the provider: $WOUT"
+echo good >"$WORK/psmode"
+psx opencode-ollama --enable; [ "$WRC" = 2 ] && grep -q -- '--enable needs --record' "$WORK/w.err" || fail "--enable without --record was not a usage error"
+psx no-such-provider; [ "$WRC" = 2 ] && grep -q 'not in the policy' "$WORK/w.err" || fail "an unknown provider was not a usage error"
+psx claude-session; [ "$WRC" = 2 ] && grep -q 'nothing to smoke' "$WORK/w.err" || fail "the in-session provider was not a usage error"
+WRC=0; (cd "$WS" && wenv env PATH="$PSB:$STUB:$PATH" bash "$PSMOKE" opencode-ollama >"$WORK/ps.out" 2>"$WORK/w.err") || WRC=$?
+[ "$WRC" = 3 ] && grep -q 'holds the ACTIVE lock' "$WORK/w.err" || fail "provider-smoke ran under an ACTIVE lock (rc=$WRC: $(cat "$WORK/w.err"))"
+pass "provider-smoke.sh: write (opencode, openai-sdk) and read-only (grok) providers through the real command path on a fixture repo; PASS records verified_versions (+ enabled) with evidence and the overlay still merges; a stray write, a missing verdict and a rejected forced flag FAIL and record nothing; usage errors named; refused under an ACTIVE lock"
 
 echo ""
 echo "smoke passed: $N/$N checks"

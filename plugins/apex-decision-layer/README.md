@@ -47,7 +47,7 @@ Slash commands: `/apex-decision-layer:decide <rubric> <state-json>` and `/apex-d
 
 - **Claude Code:** any version that loads plugins. The plugin has no hooks, agents or MCP servers.
 - **python3** 3.8+ (stdlib only), **bash** 4+, **git** (to find the repository and its run state).
-- **Consumers:** apex-dispatch ≥ 0.4.0 and apex-scope-loop ≥ 0.4.1 find this plugin as a sibling (`APEX_DECISION_LAYER_ROOT` overrides the lookup, `APEX_DECIDE_CMD` replaces the CLI). Older consumers call it only when `APEX_DECIDE_CMD` points at `bin/apex-decide`.
+- **Consumers:** apex-dispatch ≥ 0.5.0 and apex-scope-loop ≥ 0.4.2 find this plugin as a sibling (`APEX_DECISION_LAYER_ROOT` overrides the lookup, `APEX_DECIDE_CMD` replaces the CLI). Older consumers call it only when `APEX_DECIDE_CMD` points at `bin/apex-decide`.
 - **Network (Phase 2):** OpenRouter (`openrouter.ai`) or TypeSafe (`api.typesafe.ai`) for `jev`; `api.anthropic.com` for `frontier`.
 
 ## Namespace coordination

@@ -321,12 +321,14 @@ def provider_rule_ok(pol, prov, cls_id, tier_id, role):
 
 
 DIRECTIVE_PROVIDERS = {"claude": ["claude-session"], "claude-p": ["claude-p"], "codex": ["codex"], "grok": ["grok"],
+                       "openai-sdk": ["openai-sdk"],
                        "local": ["opencode-ollama", "aider-ollama"]}
 
 
-def pick_provider(pol, cls, tier_id, role, risk, external_ok, requested, notes, role_for_family=None):
+def pick_provider(pol, cls, tier_id, role, risk, external_ok, requested, notes, role_for_family=None, demoted=None):
     """First eligible provider: the requested one when the policy allows it,
-    else the first of the class's providers_allowed (claude-session)."""
+    else the first of the class's providers_allowed (claude-session). A provider
+    below its min_acceptance (`demoted`: id -> ledger.acceptance entry) is skipped."""
     def eligible(pid):
         prov = pol.providers.get(pid)
         if not prov:
@@ -347,8 +349,10 @@ def pick_provider(pol, cls, tier_id, role, risk, external_ok, requested, notes, 
         ok, rid = provider_rule_ok(pol, prov, cls["id"], tier_id, role)
         if not ok:
             return False, "hard rule " + rid
-        if prov["kind"] == "subprocess" and not (prov.get("binary") and shutil.which(prov["binary"])):
+        if prov["kind"] == "subprocess" and not ledger.provider_binary(prov):
             return False, "binary %s not found (doctor.sh not run)" % prov.get("binary")
+        if demoted and pid in demoted:
+            return False, "demoted: " + ledger.acceptance_line(pid, demoted[pid])
         if prov["kind"] == "stub":
             return False, "stub"
         return True, None
@@ -362,6 +366,19 @@ def pick_provider(pol, cls, tier_id, role, risk, external_ok, requested, notes, 
         if eligible(pid)[0]:
             return pid
     return "claude-session"
+
+
+def demoted_providers(pol, state_dir, repo):
+    """Rolling acceptance from the ledgers under the state base (spec §5.2 step 1:
+    the state object's provider acceptance): {id: entry} of the demoted ones."""
+    if not state_dir:
+        return {}
+    try:
+        acc = ledger.acceptance(state_dir, list(pol.providers.values()), repo)
+    except Exception:
+        return {}
+    keep = ("accepted", "decided", "rate", "min", "window", "need", "status")   # recorded in the route's state object
+    return {k: {f: v[f] for f in keep} for k, v in acc.items() if v["status"] == "demoted"}
 
 
 def builder_role(cls):
@@ -523,7 +540,8 @@ def compute(pol, feats, task, lanes_ctx, mode, escal):
     external_ok = cls.get("external_builders", False) and all(then.get("external_builders", True) for then in floors_then)
     # 6. Provider for the building role.
     brole = builder_role(cls)
-    provider = pick_provider(pol, cls, tier["id"], brole, risk, external_ok, directive.get("provider"), r["notes"])
+    provider = pick_provider(pol, cls, tier["id"], brole, risk, external_ok, directive.get("provider"), r["notes"],
+                             demoted=feats.get("demoted"))
     model = tier["model"] if pol.providers[provider]["family"].startswith("anthropic") else "provider-default"
     diag_provider = None
     if diagnoser:
@@ -532,7 +550,8 @@ def compute(pol, feats, task, lanes_ctx, mode, escal):
             prov = pol.providers.get(pid)
             if prov and prov.get("enabled") and "diagnoser" in prov["roles_allowed"] and \
                     (prov["family"] != fam or pid == "claude-session") and \
-                    (prov["kind"] == "in-session" or (prov.get("binary") and shutil.which(prov["binary"]))):
+                    (prov["kind"] == "in-session" or ledger.provider_binary(prov)) and \
+                    pid not in (feats.get("demoted") or {}):
                 diag_provider = pid
                 break
         if diag_provider and pol.providers[diag_provider]["family"] == fam:
@@ -751,6 +770,7 @@ def cmd_plan(plugin_root, argv):
     if halt_at and failures >= halt_at:
         return early_status(a, "HALTED", "%d consecutive failures reached the escalation HALT rung" % failures)
     feats = features(pol, task, cp, a.get("repo"), "plan")
+    feats["demoted"] = demoted_providers(pol, a.get("state"), a.get("repo"))
     prior = None
     if failures:
         rows = [row for row in ledger_rows(a["state"])
@@ -841,6 +861,7 @@ def cmd_adhoc(plugin_root, argv):
     task = {"line_no": 0, "tags": tags, "acceptance": a.get("acceptance") or "", "paths": paths,
             "route": {}, "budget": {}, "swarm": ""}
     feats = features(pol, task, {}, a.get("repo"), "adhoc")
+    feats["demoted"] = demoted_providers(pol, a.get("state"), a.get("repo"))
     r = compute(pol, feats, task, {"lanes": []}, dispatch_mode(), {})
     extra = {"adhoc_id": a["id"], "acceptance": task["acceptance"], "paths_owned": paths}
     finish(a, pol, feats, task, r, "adhoc", a["id"], a["state"], extra)

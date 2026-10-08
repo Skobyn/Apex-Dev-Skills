@@ -37,6 +37,11 @@
       "description": "scripts/apply.sh committed a write-mode shim worker's patch to the plan worktree (Dispatch-* trailers); head_sha is the new commit.",
       "required": {"route_id": "string", "provider": "string", "run_id": "string", "commit_sha": "string"}
     },
+    "worker_rejected": {
+      "provenance": true,
+      "description": "scripts/apply.sh refused a write-mode shim worker's patch (kept under <D>/rejected/); counts against the provider's rolling acceptance.",
+      "required": {"route_id": "string", "provider": "string", "run_id": "string", "reason": "string"}
+    },
     "model_mismatch": {
       "description": "post-agent.sh: a builder-side subagent ran on a model family other than the route's ROUTE_MODEL (advisory; the spawn was already pinned by pre-agent.sh).",
       "required": {"route_model": "string", "resolved_model": "string"}

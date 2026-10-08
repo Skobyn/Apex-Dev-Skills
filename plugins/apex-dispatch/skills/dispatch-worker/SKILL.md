@@ -6,14 +6,13 @@ allowed-tools: Bash Read Grep Glob Agent
 
 # dispatch-worker — external workers behind one ledger
 
-In-session subagents are Claude-only. Every other worker (a separate `claude -p` session, `codex`; grok, opencode and aider ship flagged off) runs as a **Bash call to a shim**, from the orchestrator or the `apex-dispatch:provider-runner` role, never by invoking the provider CLI directly: `pre-bash.sh` denies `codex …` and `claude -p …` outside the shims, and denies the shims to every other role.
+In-session subagents are Claude-only. Every other worker (a separate `claude -p` session, `codex`; grok, opencode, aider and the OpenAI Agents SDK runner ship flagged off) runs as a **Bash call to a shim**, from the orchestrator or the `apex-dispatch:provider-runner` role, never by invoking the provider CLI directly: `pre-bash.sh` denies `codex …` and `claude -p …` outside the shims, and denies the shims to every other role.
 
 | Provider | Shim |
 |---|---|
 | `codex` (OpenAI; the Tier C diversity reviewer when configured) | `${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh` |
 | `claude-p` (a separate Claude session, family of record `anthropic-separate-session`) | `${CLAUDE_PLUGIN_ROOT}/bin/worker-claude-p.sh` |
-| `grok`, `opencode-ollama`, `aider-ollama` (flagged off: only with an overlay `enabled: true` + `verified_versions`) | `${CLAUDE_PLUGIN_ROOT}/bin/worker-grok.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-opencode.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-aider.sh` |
-| `openai-sdk` (stub seam, exit 6) | `${CLAUDE_PLUGIN_ROOT}/bin/worker-openai-sdk.sh` |
+| `grok`, `opencode-ollama`, `aider-ollama`, `openai-sdk` (flagged off: only with an overlay `enabled: true` + `verified_versions`, which `provider-smoke.sh --record --enable` writes) | `${CLAUDE_PLUGIN_ROOT}/bin/worker-grok.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-opencode.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-aider.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-openai-sdk.sh` |
 
 ## The contract
 
@@ -35,7 +34,7 @@ What the shim does: refuses first when the route, provider, role, stage, budget 
 | 0 | the provider finished and its output parsed | continue (apply, or record the verdict) |
 | 1 | it ran and failed: non-zero exit, timeout (`WORKER_TIMEOUT:`), unparseable output; no verdict | treat as a failed attempt: `checkpoint.sh fail`, or re-dispatch in-session if the route allows |
 | 2 | usage | fix the call; never add flags |
-| 3 | refused (no run, another route, provider disabled or not verified, role/class not allowed, a builder on a route that pins another provider, stage GATE/REVIEW for builders, no gate at HEAD for reviewers, budget spent) | quote the refusal; it is the route speaking |
+| 3 | refused (no run, another route, provider disabled or not verified, provider demoted by its rolling acceptance, role/class not allowed, a builder on a route that pins another provider, stage GATE/REVIEW for builders, no gate at HEAD for reviewers, budget spent) | quote the refusal; it is the route speaking |
 | 4 | provider unavailable (`doctor.json` missing, binary gone, auth missing, forced flags rejected) | fall back to `claude-session` for builder roles and say so; for Tier C diversity the degrade below applies |
 | 5 | confinement could not be set up | stop and report |
 
@@ -52,7 +51,7 @@ The brief file is the worker's entire context; it gets no conversation history. 
 
 ### Which provider for which role
 
-Policy decides (`ROUTE_PROVIDER`, `ROUTE_DIAGNOSER_PROVIDER`, `review-shape`); you do not. External builders only for docs, tests, mechanical and bugfix at tier ≤ standard, never for a Tier C task, and only on a route whose `ROUTE_PROVIDER` names that provider; any enabled provider whose shim ships may review or diagnose. The flagged-off shims (`${CLAUDE_PLUGIN_ROOT}/bin/worker-grok.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-opencode.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-aider.sh`) take the same arguments but refuse with exit 3 unless the repository overlay enables the provider and lists its installed version under `verified_versions`; `${CLAUDE_PLUGIN_ROOT}/bin/worker-openai-sdk.sh` is a stub that always exits 6 (not implemented). Never enable one yourself: that is the human's per-version smoke decision. A Tier C diversity reviewer is `${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh --role reviewer` when `doctor.json` lists `codex` in `second_families`, else `${CLAUDE_PLUGIN_ROOT}/bin/worker-claude-p.sh --role reviewer`.
+Policy decides (`ROUTE_PROVIDER`, `ROUTE_DIAGNOSER_PROVIDER`, `review-shape`); you do not. External builders only for docs, tests, mechanical and bugfix at tier ≤ standard, never for a Tier C task, and only on a route whose `ROUTE_PROVIDER` names that provider; any enabled provider whose shim ships may review or diagnose. The flagged-off shims (`${CLAUDE_PLUGIN_ROOT}/bin/worker-grok.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-opencode.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-aider.sh`, `${CLAUDE_PLUGIN_ROOT}/bin/worker-openai-sdk.sh`) take the same arguments but refuse with exit 3 unless the repository overlay enables the provider and lists its installed version under `verified_versions`. Never enable one yourself, and never run `provider-smoke.sh`: that is the human's per-version smoke decision, made between runs. A provider whose rolling acceptance fell below `min_acceptance` is demoted: its shim refuses with exit 3 and `route.sh` stops routing to it; fall back to `claude-session`, do not retry it. A Tier C diversity reviewer is `${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh --role reviewer` when `doctor.json` lists `codex` in `second_families`, else `${CLAUDE_PLUGIN_ROOT}/bin/worker-claude-p.sh --role reviewer`.
 
 ### Applying a build patch
 

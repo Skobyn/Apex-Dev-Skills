@@ -81,7 +81,7 @@ BLOCKED_ANY_RE = re.compile(r"^\s*(?:[-*+][ \t]+)?Blocked-by:\s*(.*?)\s*$")
 
 ROUTE_VALUES = {
     "class": {"auto", "docs", "tests", "mechanical", "feature", "bugfix", "migration", "security"},
-    "provider": {"auto", "claude", "claude-p", "codex", "grok", "local"},
+    "provider": {"auto", "claude", "claude-p", "codex", "grok", "local", "openai-sdk"},
     "fanout": {"single", "lanes"},
     "review": {"auto", "solo", "six-lens", "fanout"},
 }

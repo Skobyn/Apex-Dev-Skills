@@ -74,7 +74,8 @@ TAMPER_ENV = {
 # Layer A bypass families: denied anywhere in a command.
 BYPASS_PREFIXES = ("--dangerously-", "--yolo", "--always-approve", "--full-auto")
 BYPASS_SUBSTRINGS = ("danger-full-access",)
-PROVIDER_BINS = {"claude", "codex", "grok", "opencode", "aider"}
+PROVIDER_BINS = {"claude", "codex", "grok", "opencode", "aider", "openai_sdk_runner.py"}
+RUNNER_NAME = "openai_sdk_runner.py"             # openai-sdk's runner (harnesses/), a provider CLI like the others
 PROVIDER_PACKAGES = re.compile(r"(^|/|@)(claude-code|codex|grok|opencode(-ai)?|aider(-chat)?)(@|$)")
 INFO_ARGS = {"--version", "-V", "-v", "--help", "-h", "version", "help"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
@@ -1243,7 +1244,7 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
     role = caller_role(p)
     read_only = bool(role and (ctx.roles().get(role) or {}).get("read_only"))
     providers = {x.get("id"): x for x in ctx.policy.get("providers", []) if isinstance(x, dict)}
-    bins = PROVIDER_BINS | {x.get("binary") for x in providers.values() if x.get("binary")}
+    bins = PROVIDER_BINS | {os.path.basename(x.get("binary")) for x in providers.values() if x.get("binary")}
     for words, redirs in segments(cmd):
         c = Cmd(words, redirs)
         # 1. Tamper hardening: the harness's own switches.
@@ -1281,6 +1282,10 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
                     raise Deny("`claude -p` runs only through bin/worker-claude-p.sh (forced flags, budget, ledger)")
             elif not info:
                 raise Deny("provider CLI %s runs only through bin/worker-*.sh (forced flags, sandbox probe, ledger)" % b)
+        elif re.fullmatch(r"python[0-9.]*", b) and any(os.path.basename(x) == RUNNER_NAME for x in c.args):
+            rest = c.args[[os.path.basename(x) for x in c.args].index(RUNNER_NAME) + 1:]
+            if not (rest and all(a in INFO_ARGS for a in rest)):
+                raise Deny("the openai-sdk runner (harnesses/%s) runs only through bin/worker-openai-sdk.sh" % RUNNER_NAME)
         # 4. The ledger has one sanctioned writer interface.
         ledger_py = real(os.path.join(ctx.plugin_root, "scripts", "lib", "ledger.py"))
         if re.fullmatch(r"python[0-9.]*", b) and (any(os.path.basename(a) == "ledger.py" and (

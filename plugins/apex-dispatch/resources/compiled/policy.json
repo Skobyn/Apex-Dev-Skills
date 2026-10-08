@@ -16,6 +16,7 @@
         "claude-session",
         "claude-p",
         "codex",
+        "openai-sdk",
         "opencode-ollama",
         "aider-ollama"
       ],
@@ -53,6 +54,7 @@
         "claude-session",
         "claude-p",
         "codex",
+        "openai-sdk",
         "opencode-ollama"
       ],
       "requires_command_acceptance": true,
@@ -88,7 +90,8 @@
       "providers_allowed": [
         "claude-session",
         "claude-p",
-        "codex"
+        "codex",
+        "openai-sdk"
       ],
       "requires_command_acceptance": true,
       "review_diversity": {
@@ -701,17 +704,21 @@
         "tests",
         "mechanical"
       ],
-      "binary": null,
+      "binary": "harnesses/openai_sdk_runner.py",
       "enabled": false,
       "family": "openai",
       "forbidden_flags": [],
-      "forced_flags": [],
+      "forced_flags": [
+        "run",
+        "--output-format",
+        "json"
+      ],
       "hosts": [
         "api.openai.com"
       ],
       "id": "openai-sdk",
       "key_env": "OPENAI_API_KEY",
-      "kind": "stub",
+      "kind": "subprocess",
       "max_tier": "standard",
       "min_acceptance": 0.7,
       "reports_usage": true,
@@ -721,7 +728,7 @@
         "docs"
       ],
       "sandbox_mode": null,
-      "status": "stub"
+      "status": "flagged-off"
     }
   ],
   "pruning": {
