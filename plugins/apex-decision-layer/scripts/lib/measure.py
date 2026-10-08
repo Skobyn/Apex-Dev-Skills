@@ -403,7 +403,9 @@ def cmd_measure(argv):
     rep, rows = measure(corpus, rubric, rv, backend, qhash)
     if a["--lock"]:
         refuse_if_active(repo, "measure --lock")
-        if not rep["passed"]:
+        if rubric.get("seeded"):
+            rep["lock"] = "not written: %s is a seeded rubric with no consumer (%s)" % (rv, rubric["seeded"]["consumer"])
+        elif not rep["passed"]:
             rep["lock"] = "not written: %s" % rep["status"]
         else:
             rep["lock"] = write_record(repo, rubric, rv, backend, rep, rows)

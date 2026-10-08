@@ -2,7 +2,7 @@
 
 **Typed answers for the questions routing leaves to judgment.** Typed, probability-carrying answers for the questions apex-dispatch and apex-scope-loop leave to judgment (task class, risk tier): one CLI, rubric files, a fail-closed validator for every backend, tri-state uncertainty, and calibration that only a measurement job can grant. Off until a repo opts in; absent, slow or unconfigured, routing stays table-only.
 
-> **Status: 0.4.0, Phase 4 machinery.** Shipped:
+> **Status: 0.5.0, Phase 5 seeds.** Shipped:
 > - the `apex-decide` CLI, the validator, the two v1 rubrics and their linter, calibration lookup, the decision log and detached shadow calls (Phase 1);
 > - the hosted backends: `jev` over TypeSafe or OpenRouter, and `frontier` on the Anthropic Messages API;
 > - one transport policy for both (deadline, retries, circuit breaker, host pin, TLS);
@@ -11,6 +11,8 @@
 > - (0.3.0) the measurement job: `label`, `corpus`, `measure` (with `--lock`) and `replay`, plus the [shadow-pilot runbook](docs/shadow-pilot.md).
 >
 > - (0.4.0) the lock flow tested end to end through apex-dispatch (`route.sh` takes a calibrated decision, `report.sh --decision` shows it), `replay --all`, and a weekly drift `/schedule` in the runbook.
+>
+> - (0.5.0) five seeded rubrics, shadow-only and never calibrated: `commit-hygiene@1`, `done-claim@1`, `code-review@1`, `tool-risk@1` and `relevance@1`, plus `scripts/shadow-commit-hygiene.sh`.
 >
 > Every answer stays uncalibrated until a human locks a record that passes the kill criterion. That needs weeks of real labels, so Phase 4's exit is **pending on data**, not done. Spec: [`2026-10-08-apex-decision-layer-design.md`](../../docs/superpowers/specs/2026-10-08-apex-decision-layer-design.md).
 
@@ -24,6 +26,20 @@ Two consumers ask it questions:
 | apex-scope-loop `risk-tier.sh --classify` | `risk-tier@1` | Raise the tier, never lower it. An uncalibrated answer raises at most to Tier B; only a calibrated `C` adds Tier C (G12 and the seven-reviewer fan-out). |
 
 Each call prints one JSON envelope: the verdict, the probabilities, whether the answer is `uncertain`, whether it is `calibrated` and why, or, unscored (exit 3), the reason it has no answer. Consumers treat every unscored reason the same way: the deterministic path stands.
+
+## Seeded rubrics (Phase 5)
+
+These rubrics carry a `seeded` block naming their consumer. Until a consumer exists, a seeded rubric is **shadow only**: its envelope says `seeded: true`, it is never `calibrated` even with a locked record, and `measure --lock` refuses it.
+
+| Rubric | Question | Consumer |
+|---|---|---|
+| `commit-hygiene@1` | choice: clean / vague / mixed / leak / none | `scripts/shadow-commit-hygiene.sh [REV]` (run by hand or from a git alias; logs only, always exits 0) |
+| `done-claim@1` | noul: does a "done" claim cite its passing acceptance check? | none (a Stop-hook nudge would need a hook, not built) |
+| `code-review@1` | score 0–4: severity of one review finding | none yet |
+| `tool-risk@1` | choice: read_only / local_write / network / destructive / none | none (a PreToolUse consumer would need a hook, not built) |
+| `relevance@1` | noul: does a stored memory bear on the task? | none yet |
+
+Each one needs its own Phase 3–4 cycle (labels, `measure`, a consumer) before its answers can do anything.
 
 ## Turning it on
 

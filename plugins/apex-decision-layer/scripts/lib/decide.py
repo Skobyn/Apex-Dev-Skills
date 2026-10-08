@@ -205,6 +205,9 @@ def lint(r, rid=None):
             crit = (qs.get(qid) or {}).get("criteria")
             if not isinstance(crit, dict) or lab not in crit:
                 p.append("hard_rules[%d]: answer %s=%r is not a label of that question" % (i, qid, lab))
+    sd = r.get("seeded")
+    if sd is not None and not (isinstance(sd, dict) and isinstance(sd.get("consumer"), str) and sd["consumer"].strip()):
+        p.append("seeded must be an object naming its consumer (or `none: why`)")
     m = r.get("measure")
     if m is not None:
         prim = (qs.get(r.get("primary")) or {}).get("criteria")
@@ -625,6 +628,10 @@ def answer(rubric, rv, qhash, name, req, cfg, repo):
     if rubric.get("model_pin", "record") == "strict" and resolved != req["model"]:
         raise Unscored("model_mismatch", "requested %s, the backend resolved %s" % (req["model"], resolved))
     calibrated, thresholds, cal = calibration(repo, cfg, rv, qhash, name, resolved or req["model"])
+    if rubric.get("seeded") and calibrated:
+        # A seeded rubric (spec §14 Phase 5) is shadow-only until it has a consumer: never calibrated.
+        calibrated, thresholds = False, None
+        cal = dict(cal, reason="seeded rubric (consumer: %s): shadow only, never calibrated" % rubric["seeded"]["consumer"])
     for qid, q in questions.items():
         u, v = tri_state(q, answers[qid], (thresholds or {}).get(qid) if calibrated else None)
         answers[qid]["uncertain"], answers[qid]["verdict"] = u, v
@@ -724,6 +731,8 @@ def ask(argv):
         shadow = shadow_plan(a, cfg, name)
         res = answer(rubric, rv, qhash, name, req, cfg, repo)
         p = res["answers"][rubric["primary"]]
+        if rubric.get("seeded"):
+            env["seeded"] = True
         env.update(scored=True, model_resolved=res["model_resolved"], verdict=p["verdict"], uncertain=p["uncertain"],
                    probabilities=p["probabilities"], confidence=p["confidence"], calibrated=res["calibrated"],
                    calibration=res["calibration"], add_gate=gate_for(rubric, res["answers"]),
