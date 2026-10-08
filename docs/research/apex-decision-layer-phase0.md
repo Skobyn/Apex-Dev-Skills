@@ -87,3 +87,12 @@ The spec's Phase 0 exit is "the numbers in ADR-0001; a go/no-go on `jev` fitting
 - **Numbers: measured.** They go into the plugin's ADR-0001 when Phase 1 creates it, since the plugin does not exist yet.
 
 Item 2 above is a confirmation and does not block Phase 1 or the design of Phase 2.
+
+## Phase 2 (live verification of the shipped backends)
+
+**Spec:** [§14 Phase 2](../superpowers/specs/2026-10-08-apex-decision-layer-design.md#14-rollout), whose exit is "one live call per backend recorded on a fixture plan, with `response.model` asserted". **Plugin:** apex-decision-layer 0.2.0.
+
+**Session 1 (2026-10-08, the session that built 0.2.0):**
+- No `TYPESAFE_API_KEY`, `JEV_API_KEY`, `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` was set. A reachability probe of the hosted endpoints was refused by the session's permission policy, so no live call was made.
+- Every backend path was verified against loopback stub servers instead (smoke checks 22–27): both jev transports, frontier, the transport policy, TLS, every failure mode and key redaction.
+- The live calls are still to be run, in a session that has the keys.

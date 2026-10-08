@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-10-06
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-dispatch v0.5.0 (contract introduced in v0.1.0; provider workers in v0.2.0; flagged-off grok/opencode/aider shims, the openai-sdk stub, `compile --target codex` and `report --compare`/`--decision` in v0.3.0; reviewer threat model, severity bar and adversary budget from apex-scope-loop ADR-0004 in v0.3.1; the openai-sdk runner, rolling provider acceptance and the per-version provider smoke in v0.4.0; the apex-decision-layer consumer in v0.5.0)
+- **Plugin:** apex-dispatch v0.5.1 (contract introduced in v0.1.0; provider workers in v0.2.0; flagged-off grok/opencode/aider shims, the openai-sdk stub, `compile --target codex` and `report --compare`/`--decision` in v0.3.0; reviewer threat model, severity bar and adversary budget from apex-scope-loop ADR-0004 in v0.3.1; the openai-sdk runner, rolling provider acceptance and the per-version provider smoke in v0.4.0; the apex-decision-layer consumer in v0.5.0; `APEX_DECIDE_FRONTIER_BASE` tamper-protected in v0.5.1)
 - **Spec:** `docs/superpowers/specs/2026-10-05-apex-dispatch-design.md` (§3, §5)
 
 ## Context
@@ -109,3 +109,4 @@ Ship **apex-dispatch** as a separate plugin that routes and governs delegation, 
   - **`decision_shadow` rows.** An answer that did not move the route (`SEMANTIC_SOURCE: decision-shadow`: uncalibrated and cheaper, or no safe candidate) is written as a `decision_shadow` ledger row: `{rubric, deterministic_choice, decision_choice, decision_id, backend, calibrated, max_p, fallback}`.
   - **Tamper hardening.** `pre-bash` denies setting, exporting or unsetting `APEX_DECIDE_CMD`, `APEX_DECIDE_TIMEOUT`, `APEX_DECIDE_FAKE`, `APEX_DECIDE_JEV_BASE` and `APEX_DECISION_LAYER_ROOT` during a run. Without this, an orchestrator could swap in a CLI that answers `calibrated: true` and route a task to a cheaper class.
   - **Protected paths.** `pre-bash` and `pre-edit` treat `.claude/apex-decision-layer/` (config, labels, calibration records) and the installed apex-decision-layer plugin as protected paths. `apply.sh` adds `.claude/apex-decision-layer/` to its never-touch list.
+- 2026-10-08 (v0.5.1) — **`APEX_DECIDE_FRONTIER_BASE` is tamper-protected.** apex-decision-layer 0.2.0 ships its `frontier` backend with a loopback-only test override, `APEX_DECIDE_FRONTIER_BASE`, beside `APEX_DECIDE_JEV_BASE`. `pre-bash` denies setting, exporting or unsetting it during a run, like the other decision-layer switches (smoke has a denial case).

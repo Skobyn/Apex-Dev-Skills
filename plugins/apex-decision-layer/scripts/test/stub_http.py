@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A scripted loopback HTTP server for the smoke test (no network in smoke).
 
-  stub_http.py SCRIPT.json RECORD.jsonl PORTFILE
+  stub_http.py SCRIPT.json RECORD.jsonl PORTFILE [CERT.pem KEY.pem]
 
 SCRIPT.json is re-read on every request: {"<path>": [response, ...]}, where a response
 is {"status": 200, "headers": {...}, "body": <JSON value, or a string sent as is>,
@@ -67,6 +67,11 @@ class H(BaseHTTPRequestHandler):
 
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
 srv.daemon_threads = True
+if len(sys.argv) > 5:                      # HTTPS with a test certificate
+    import ssl
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(sys.argv[4], sys.argv[5])
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
 with open(PORTFILE + ".tmp", "w") as f:
     f.write(str(srv.server_address[1]))
 import os  # noqa: E402
