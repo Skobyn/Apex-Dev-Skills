@@ -1,7 +1,7 @@
 {
   "name": "apex-decision-layer",
   "description": "Typed, probability-carrying answers for the questions apex-dispatch and apex-scope-loop leave to judgment (task class, risk tier): one CLI, rubric files, a fail-closed validator for every backend, tri-state uncertainty, and calibration that only a measurement job can grant. Off until a repo opts in; absent, slow or unconfigured, routing stays table-only.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": {
     "name": "Apex Insights",
     "url": "https://getapexinsights.com"

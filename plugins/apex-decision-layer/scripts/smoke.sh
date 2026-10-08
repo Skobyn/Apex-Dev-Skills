@@ -85,7 +85,7 @@ done
 pass "skills: kebab-case name = directory, explicit allowed-tools, no wildcards"
 
 # 8. scripts are executable and parse; no hooks are registered (an observational plugin emits no allow/deny)
-for s in "$D" "$PLUGIN_ROOT/scripts/smoke.sh" "$PLUGIN_ROOT/scripts/lib/decide.py" "$PLUGIN_ROOT/scripts/test/stub_http.py" "$PLUGIN_ROOT/scripts/test/make_corpus.py"; do
+for s in "$D" "$PLUGIN_ROOT/scripts/smoke.sh" "$PLUGIN_ROOT/scripts/lib/decide.py" "$PLUGIN_ROOT/scripts/test/stub_http.py" "$PLUGIN_ROOT/scripts/test/make_corpus.py" "$PLUGIN_ROOT/scripts/shadow-commit-hygiene.sh"; do
   [ -x "$s" ] || fail "not executable: $s"
 done
 bash -n "$D" || fail "bin/apex-decide does not parse"
@@ -647,6 +647,33 @@ else
   E2E="consumers not beside this plugin: e2e skipped"
 fi
 pass "Phase 4 lock flow: $E2E"
+
+# 31. Phase 5 seeded rubrics: each lints; a seeded answer is marked seeded and never calibrated, even with a locked
+#     passing record; measure --lock refuses a seeded rubric; the commit-hygiene shadow script logs without a hook
+for r in commit-hygiene@1 done-claim@1 code-review@1 tool-risk@1 relevance@1; do
+  grep -q "^LINT OK $r sha256:" "$WORK/lint.out" || fail "seeded rubric $r does not lint"
+  python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["seeded"]["consumer"]' "$PLUGIN_ROOT/rubrics/$r.json" || fail "$r is not marked seeded"
+done
+S5="$(fx seeded)"; O="$(python3 -I "$MC" "$S5" commit-hygiene@1 fake pass 160)"
+"$D" measure --repo "$S5" --rubric commit-hygiene@1 --backend fake --outcomes "$O" --lock | grep -q 'MEASURE_LOCK: not written: commit-hygiene@1 is a seeded rubric' \
+  && [ ! -e "$S5/.claude/apex-decision-layer/calibration" ] || fail "measure --lock wrote a record for a seeded rubric"
+QH5="$(grep '^LINT OK commit-hygiene@1 ' "$WORK/lint.out" | cut -d' ' -f4)"
+mkdir -p "$S5/.claude/apex-decision-layer/calibration/commit-hygiene@1"; SR5="$S5/.claude/apex-decision-layer/calibration/commit-hygiene@1/fake.json"
+printf '{"rubric_version":"commit-hygiene@1","question_hash":"%s","backend":"fake","model_resolved":"fake-1","passed":true}' "$QH5" >"$SR5"
+printf '{"calibration_lock":["sha256:%s"]}' "$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$SR5")" >"$S5/.claude/apex-decision-layer/config.json"
+F5="$WORK/seeded-fake.json"
+printf '{"commit-hygiene@1":{"*":{"response":{"model":"fake-1","answers":{"hygiene":{"choice":"vague","confidence":0.9,"probabilities":{"clean":0.02,"vague":0.92,"mixed":0.02,"leak":0.02,"none":0.02}}}}}}}' >"$F5"
+O="$(cd "$S5" && printf '{"subject":"wip","changed_paths":["a.py"],"changed_files":1}' | APEX_DECIDE_FAKE="$F5" "$D" --rubric commit-hygiene@1 --state - --json)"
+python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["scored"] and d["seeded"] is True and d["calibrated"] is False and "seeded rubric" in d["calibration"]["reason"], d' "$O" \
+  || fail "a seeded rubric calibrated, or was not marked seeded: $O"
+git -C "$S5" -c user.email=smoke@example.com -c user.name=smoke commit -q --allow-empty -m "wip"
+N5="$(wc -l <"$S5/.dev-plan-state/decisions/decisions.jsonl")"
+(cd "$S5" && APEX_DECIDE_FAKE="$F5" bash "$PLUGIN_ROOT/scripts/shadow-commit-hygiene.sh" 2>"$WORK/sh5") || fail "the shadow script did not exit 0"
+grep -q '^commit-hygiene HEAD: vague' "$WORK/sh5" && [ "$(wc -l <"$S5/.dev-plan-state/decisions/decisions.jsonl")" = $((N5 + 1)) ] \
+  || fail "the commit-hygiene shadow script did not log one answer: $(cat "$WORK/sh5")"
+(cd "$WORK" && bash "$PLUGIN_ROOT/scripts/shadow-commit-hygiene.sh" nope 2>/dev/null) || fail "the shadow script failed outside a repository"
+[ ! -e "$PLUGIN_ROOT/hooks" ] || fail "Phase 5 must not add hooks"
+pass "seeded rubrics: commit-hygiene, done-claim, code-review, tool-risk, relevance lint and are marked seeded; never calibrated even when locked; --lock refused; the commit-hygiene shadow script logs one answer and always exits 0; no hooks"
 
 echo
 echo "smoke passed: $N/$N checks"

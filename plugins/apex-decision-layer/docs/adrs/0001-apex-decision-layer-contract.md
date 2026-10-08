@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-10-08
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-decision-layer v0.4.0 (Phase 4 machinery in v0.4.0: the lock flow end to end, `replay --all`. Phase 3 in v0.3.0: label, corpus, measure, replay. Phase 1 in v0.1.0: the CLI, the `none` and `fake` backends, the validator, rubrics and lint, calibration lookup, the decision log, shadow calls. Phase 2 in v0.2.0: the `jev` and `frontier` backends, the transport policy, `doctor --probe`)
+- **Plugin:** apex-decision-layer v0.5.0 (Phase 5 seeds in v0.5.0. Phase 4 machinery in v0.4.0: the lock flow end to end, `replay --all`. Phase 3 in v0.3.0: label, corpus, measure, replay. Phase 1 in v0.1.0: the CLI, the `none` and `fake` backends, the validator, rubrics and lint, calibration lookup, the decision log, shadow calls. Phase 2 in v0.2.0: the `jev` and `frontier` backends, the transport policy, `doctor --probe`)
 - **Spec:** `docs/superpowers/specs/2026-10-08-apex-decision-layer-design.md`; Phase 0 results in `docs/research/apex-decision-layer-phase0.md`
 
 ## Context
@@ -111,3 +111,9 @@ Go/no-go: **go** on `jev` for routing (decision Q4). Frontier serves `risk-tier@
 - 2026-10-08 — v0.2.1: `doctor` reports one `calibration <rubric>/<backend>` check per record under `.claude/apex-decision-layer/calibration/`. A record is `ok` only when it is locked, passed, not invalidated and keyed on the rubric's current `question_hash`; otherwise it is `warn`. apex-dispatch 0.5.2's `doctor.sh` summarises this check, and its `report.sh` prices decision calls from the decision log (spec §11.2 items 6 and 7).
 - 2026-10-08 — v0.3.0 (Phase 3): `label`, `corpus`, `measure` (with `--lock`) and `replay` (see Measurement above), the rubric `measure` section (lint-checked, never on the wire, so `question_hash` is unchanged), `untrusted_sent` on decision-log rows, the `label` and `measure` commands, the shadow-pilot runbook (`docs/shadow-pilot.md`), and smoke check 29. Exit codes 4 (drift) and 5 (refused under `ACTIVE`) are added for the measurement subcommands.
 - 2026-10-08 — v0.4.0 (Phase 4 machinery): `replay --all` replays every calibration record and exits with the worst status. The runbook documents a weekly drift `/schedule`. Smoke check 30 exercises the lock flow end to end with the sibling consumers: an unlocked record only tightens, a locked one lets `route.sh` take the calibrated decision, `report.sh --decision` shows the calibrated row and prices both calls, and `replay --all` is refused under the run's `ACTIVE` lock and then invalidates on drift. Phase 4's exit (calibrated rows and cost no worse than table-only, on real data) is **pending**, because it needs at least 100 real labels per rubric.
+- 2026-10-08 — v0.5.0 (Phase 5, optional): five seeded rubrics, `commit-hygiene@1`, `done-claim@1`, `code-review@1`, `tool-risk@1` and `relevance@1`.
+  - Each rubric carries a top-level `seeded: {consumer, note}`, which lint checks.
+  - A seeded rubric's envelope carries `seeded: true`. It is never `calibrated`, even with a locked passing record, and `measure --lock` refuses it.
+  - The only wiring is `scripts/shadow-commit-hygiene.sh`, a shadow-only script that logs an answer and always exits 0. No hook is added.
+  - `done-claim@1` (a Stop-hook nudge) and `tool-risk@1` (a PreToolUse consumer) have no consumer, because each would need a hook, and hooks need the operator's approval.
+  - Smoke check 31.
