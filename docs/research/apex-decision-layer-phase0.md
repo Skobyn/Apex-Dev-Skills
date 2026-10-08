@@ -2,17 +2,17 @@
 
 **Spec:** [§14 Phase 0](../superpowers/specs/2026-10-08-apex-decision-layer-design.md#14-rollout) · **Environment:** Claude Code cloud container (Linux), Python 3.13, outbound HTTPS through the session's agent proxy
 
-Three runs on 2026-10-08. Run 1 had no hosted access: TypeSafe and OpenRouter were blocked by the network policy and no keys were set. Run 2 was in a session whose proxy allows both hosts and attaches an OpenRouter key, so the Jev spikes ran live through OpenRouter. Run 3 re-ran every spike that the session could reach, to check that run 2's numbers repeat (see [Run 3](#run-3-re-run)).
+Four runs on 2026-10-08. Run 1 had no hosted access: TypeSafe and OpenRouter were blocked by the network policy and no keys were set. Run 2 was in a session whose proxy allows both hosts and attaches an OpenRouter key, so the Jev spikes ran live through OpenRouter. Run 3 re-ran every spike that the session could reach, to check that run 2's numbers repeat (see [Run 3](#run-3-re-run)). Run 4 was the first with a TypeSafe key on the real path, so it measured the TypeSafe direct transport alongside OpenRouter (see [Run 4](#run-4-typesafe-direct)).
 
 ## Verdict
 
-**Go on `jev` for routing, through the OpenRouter transport.** 40 live calls answered in p50 274 ms, p95 308 ms, max 628 ms, all well inside the ~1.6 s routing budget (decision Q4). A frontier model on the same question took p50 1.2 s and p95 3.5 s, and 4 of 14 answers missed the budget, which confirms Q4's split (`jev` for routing, `frontier` for `risk-tier@1`, shadow and replay). Run 3 repeated it: p50 266 ms, p95 363 ms, max 627 ms over another 40 calls.
+**Go on `jev` for routing, on either transport.** 40 live calls answered in p50 274 ms, p95 308 ms, max 628 ms, all well inside the ~1.6 s routing budget (decision Q4). A frontier model on the same question took p50 1.2 s and p95 3.5 s, and 4 of 14 answers missed the budget, which confirms Q4's split (`jev` for routing, `frontier` for `risk-tier@1`, shadow and replay). Run 3 repeated it: p50 266 ms, p95 363 ms, max 627 ms over another 40 calls. Run 4 added the TypeSafe direct transport: p50 232 ms, p95 285 ms, max 460 ms over 40 calls, slightly faster than OpenRouter's p50 256 ms in the same run.
 
 Three findings change the spec before Phase 2:
 
-1. **`jev-1.13.0` is not a valid model id on OpenRouter.** Pin a dated id per transport (see spike 5).
+1. **The two transports accept disjoint model ids.** TypeSafe accepts only `jev-1.13.0` (and `jev-latest`, which resolves to it). OpenRouter rejects `jev-1.13.0` and resolves its aliases to `typesafe/jev-1.13-20260917`. Pin the id per transport (see spike 5 and run 4).
 2. **Jev's probabilities are close to one-hot.** In run 2, 7 of 8 tasks came back as `1`/`0` with confidence 1. In run 3 the top label was 0.95–1.0 on every task, so the scores are concentrated rather than strictly one-hot. That is fine for routing, but it will flatten AUROC and ECE in Phase 3 (see spike 6).
-3. **The frontier backend can produce invalid JSON and a bad sum** even with a strict schema. Run 2 had 2 invalid responses and 1 bad sum in 16. Run 3 had none in 16, so the failure is intermittent. The validator's reject-don't-repair rule is needed in practice, not just in theory (see spike 8).
+3. **The frontier backend can produce invalid JSON and a bad sum** even with a strict schema. Run 2 had 2 invalid responses and 1 bad sum in 16. Run 3 had none in 16. Run 4 had 0 invalid JSON but the same 1.2 sum again, on a `migration` task as in run 2, so the bad sum recurs and the JSON failure is intermittent. The validator's reject-don't-repair rule is needed in practice, not just in theory (see spike 8).
 
 ## Results
 
@@ -43,20 +43,39 @@ Same day, a new session. The proxy attaches an OpenRouter key on `openrouter.ai`
 
 Run 3 spend: about $0.003.
 
+## Run 4 (TypeSafe direct)
+
+Same day, a new session. The proxy now attaches `TYPESAFE_API_KEY` on `*.typesafe.ai` for both `/api/v1/systemone` and `/v1/systemone`, and the OpenRouter key as before. There is still no `ANTHROPIC_API_KEY`. The harness is committed beside this doc in [`apex-decision-layer-phase0-harness/`](apex-decision-layer-phase0-harness/).
+
+| # | Run 4 result | Agrees with earlier runs? |
+|---|---|---|
+| 1 | Start-up, n=30: **p50 59 ms, p95 77 ms, max 81 ms**. Bare `python3 -I -c pass`: p50 14 ms | Yes, within container noise |
+| 2 | **TypeSafe direct works.** `POST https://api.typesafe.ai/v1/systemone` → `200`. The response is exactly the contract: top-level `{model, answers, usage}` and nothing else, `usage` is `{input_tokens, output_tokens}` with **no `cost`**, and numbers are floats (`1.0`) where OpenRouter sends ints (`1`). `/api/v1/systemone` is still `404` | Run 3's blocker is cleared. `report.sh` has to compute TypeSafe cost from the token price, since only OpenRouter returns `usage.cost`. The validator must accept int and float probabilities |
+| 3 | OpenRouter `200`, same shape and extra fields as runs 2 and 3 (`id`, `provider`, `answers.<id>.type`, `usage.cost`) | Yes |
+| 4 | `api.anthropic.com` direct, invalid key → `401` in 59–68 ms, TLS ~25 ms | Yes |
+| 5 | **TypeSafe:** `jev-1.13.0` → 200 (resolved `jev-1.13.0`). `jev-latest` → 200, resolved `jev-1.13.0` (one `503 model_unavailable` on the first try, then 5 of 5 OK). Every other id → `400 api_usage_error "Unknown model"`, including `jev-1.13`, `jev-1.13-20260917` and all `typesafe/…` forms. **OpenRouter:** identical to runs 2 and 3, plus the bare `jev-1.13-20260917` → 200. OpenRouter's model list also has a `typesafe/jev-router` (a model router built on Jev, not a System One model) | The spec's `jev-1.13.0` is right for TypeSafe and wrong for OpenRouter, and no id works on both. Per-transport `backend_models.jev` is required, not just tidier. The transient 503 on an alias argues for pinning `jev-1.13.0` rather than `jev-latest` on TypeSafe |
+| 6 | Same 8 tasks × 5 on each transport, n=40 each. **TypeSafe (`jev-1.13.0`): p50 232 ms, p95 285 ms, min 197, max 460, mean 243.** **OpenRouter (`typesafe/jev-1.13-20260917`): p50 256 ms, p95 373 ms, min 217, max 575, mean 277.** 0 over 1.6 s, 0 errors on either. 539–564 input tokens. OpenRouter $0.00093 total. All 80 answers correct. 35 of 40 exactly one-hot on each transport (all 7 clear tasks returned `1`/`0`, confidence 1, every time); the vague task returned `none` at 0.93–0.95 (TypeSafe) and 0.95–0.96 (OpenRouter) | Latency yes, and TypeSafe is ~25 ms faster at p50 and ~90 ms at p95. One-hot: closer to run 2 than run 3. The two transports give the same answers to within 0.02, which is consistent with the same model behind both |
+| 7 | Claude Haiku 5.5 via OpenRouter, same strict-schema setup, n=16: **p50 1466 ms, p95 1646 ms, min 958, max 1703**; 2 of 16 over 1.6 s. All 16 correct, soft probabilities (top 0.80–0.93 on clear tasks, 0.55–0.63 on `security`, 0.32–0.40 on the vague task). $0.0018 total | Yes. Frontier still cannot serve the 1.6 s routing budget |
+| 8 | Jev, n=80: 0 all-zero, 0 ties, 0 sums outside 1 ± 0.02. Frontier, n=16: 0 invalid JSON, 0 ties, **1 map summed to 1.2, on the `migration` task again** | The bad sum is back on the `migration` task, as in run 2 (the synthetic tasks differ between runs), so it is a repeated failure on one kind of input, not noise. The reject-don't-rescale rule is confirmed |
+
+Run 4 spend: about $0.003 (OpenRouter), plus about 55 TypeSafe calls that report no cost.
+
 ## Method
 
 - **Run 1:** `curl` probes, 6 per host, recording connect, TLS and total time. A Python harness ran the CLI's start-up path 30 times. Hosted requests used an invalid credential, which measures reachability and round trip only. Spend $0.
 - **Run 2:** a Python stdlib harness (`urllib.request`, `SSL_CERT_FILE` set to the proxy CA bundle, `python3 -I`). It sent the same 8-label `class` question used in `dispatch/task-class@1`, with the `data_handling` clause appended. State used the rubric's allowlisted fields (`tags`, `paths`, `risk_tier`, `task_title`, …) over 8 synthetic tasks, one per label plus one vague task. Each call opened a new connection. Latency is wall clock from request to parsed JSON. The frontier stand-in sent the same labels as a strict JSON schema (one required number per label, `additionalProperties: false`), at temperature 0. Spend: ~$0.003 in total.
 - **Run 3:** a new stdlib harness of the same shape (the run 2 harness was not committed): the same 8 labels and `data_handling` clause, 8 synthetic tasks (one per label plus "Update stuff") with `task_title`, `tags`, `paths` and `risk_tier`, one new connection per call, the adapter's system prompt and `<document>` wrapper for the frontier stand-in, temperature 0. The TypeSafe probes used `curl` against each candidate path.
+- **Run 4:** the run 3 shape, now committed as [`apex-decision-layer-phase0-harness/`](apex-decision-layer-phase0-harness/) (`jev.py` for spikes 5, 6 and 8 on both transports, `frontier.py` for 7 and 8, `entry.sh` for 1). Jev state sends `task_title` as `untrusted_task_title` per §10. Run it with `python3 -I jev.py jev-1.13.0 typesafe/jev-1.13-20260917` and `python3 -I frontier.py`. It sends no key itself: auth came from the session proxy, so elsewhere add a Bearer header in `post()`.
 
 ## What is still open
 
-1. **TypeSafe direct transport:** the key has to reach `POST https://api.typesafe.ai/v1/systemone`. In run 3 the proxy attached `TYPESAFE_API_KEY` only to `/api/v1/systemone`, which is a 404 on that host. Once the path is fixed, repeat spikes 5 and 6 against TypeSafe, including whether it accepts `jev-1.13.0` (jegrep says it did not).
+1. ~~**TypeSafe direct transport.**~~ Closed in run 4: it works, accepts `jev-1.13.0`, and is the faster transport.
 2. **Native frontier call:** needs `ANTHROPIC_API_KEY`. Repeat spikes 7 and 8 on `POST /v1/messages` with `output_config.format` and the pinned dated model.
 3. **Spec edits** to fold in before Phase 2:
-   - §5.1: `backend_models.jev` becomes per-transport.
-   - §6.3: tolerate the extra response fields.
-   - §6.4: record `usage.cost`; the measured p50 is ~270 ms (two runs), not ~100 ms.
+   - §5.1: `backend_models.jev` becomes per-transport: `jev-1.13.0` on TypeSafe, `typesafe/jev-1.13-20260917` on OpenRouter.
+   - §6.3: tolerate the extra response fields (OpenRouter) and accept int or float numbers.
+   - §6.4: record `usage.cost` when present (OpenRouter only) and compute it from tokens otherwise (TypeSafe). The measured p50 is ~230 ms on TypeSafe and ~260 ms on OpenRouter, not ~100 ms.
+   - §5.1: correct the note that jegrep saw `jev-1.13.0` rejected by the hosted service. OpenRouter rejects it; TypeSafe accepts it.
    - §6.5: `output_config.format`.
    - §8: plan for near-one-hot Jev scores.
 
@@ -64,7 +83,7 @@ Run 3 spend: about $0.003.
 
 The spec's Phase 0 exit is "the numbers in ADR-0001; a go/no-go on `jev` fitting the 1.6 s routing budget".
 
-- **Go/no-go: met.** It is a go, through OpenRouter.
+- **Go/no-go: met.** It is a go on both transports. TypeSafe direct is slightly faster; OpenRouter needs no early-access key.
 - **Numbers: measured.** They go into the plugin's ADR-0001 when Phase 1 creates it, since the plugin does not exist yet.
 
-Items 1 and 2 above are confirmations and do not block Phase 1 or the design of Phase 2.
+Item 2 above is a confirmation and does not block Phase 1 or the design of Phase 2.
