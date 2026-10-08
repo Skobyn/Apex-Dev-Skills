@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'bin', 'apex.js');
 const BUILTIN_POLICY_PATH = join(HERE, '..', 'templates', 'policy.json');
+const ENGINE_VERSION = JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf-8')).version;
+const HOOK_VERSION_MARKER = 'apex-dev-harness-hook-version:';
 
 function run(args, opts = {}) {
   return execFileSync(process.execPath, [CLI, ...args], { encoding: 'utf-8', ...opts });
@@ -208,5 +210,89 @@ test('doctor warns when .claude/hooks/package.json is missing', () => {
     writeFileSync(join(dir, '.claude', 'hooks', 'apex-hook.js'), '// stub');
     const out = run(['doctor'], { env });
     assert.match(out, /MODULE_TYPELESS_PACKAGE_JSON/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- hook version stamping (0.3.1) -----------------------------------------
+// The hook is a COPY written by `apex init`; `npm i -D apex-dev-harness@latest`
+// updates dist/ but cannot touch a file it already wrote into a consuming
+// repo. `doctor` used to check only existsSync(), so a repo that upgraded the
+// dependency and forgot to re-run `apex init --force` kept a dead hook while
+// doctor reported it healthy. These tests cover the fix: `init` stamps the
+// engine version into the hook, and `doctor` compares it against the running
+// engine.
+
+test('init stamps the hook with the marker and the current engine version', () => {
+  const dir = repo();
+  try {
+    const env = { ...process.env, APEX_REPO_ROOT: dir };
+    run(['init'], { env });
+    const hook = readFileSync(join(dir, '.claude', 'hooks', 'apex-hook.js'), 'utf-8');
+    const lines = hook.split('\n');
+    assert.equal(lines[0], '#!/usr/bin/env node');
+    assert.match(lines[1], new RegExp(`^// ${HOOK_VERSION_MARKER} ${ENGINE_VERSION.replace(/\./g, '\\.')}$`));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('doctor passes when the stamped hook version matches the engine', () => {
+  const dir = repo();
+  try {
+    const env = { ...process.env, APEX_REPO_ROOT: dir };
+    run(['init'], { env });
+    const out = run(['doctor'], { env });
+    assert.match(out, new RegExp(`\\.claude/hooks/apex-hook\\.js installed \\(${ENGINE_VERSION.replace(/\./g, '\\.')}\\)`));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('doctor warns, naming both versions, when the hook stamp is stale', () => {
+  const dir = repo();
+  try {
+    const env = { ...process.env, APEX_REPO_ROOT: dir };
+    mkdirSync(join(dir, '.claude', 'hooks'), { recursive: true });
+    writeFileSync(join(dir, '.claude', 'hooks', 'apex-hook.js'), [
+      '#!/usr/bin/env node',
+      `// ${HOOK_VERSION_MARKER} 0.2.0`,
+      '// stale stub',
+    ].join('\n'));
+    const out = run(['doctor'], { env });
+    assert.match(out, /is from 0\.2\.0/);
+    assert.match(out, new RegExp(`installed engine is ${ENGINE_VERSION.replace(/\./g, '\\.')}`));
+    assert.match(out, /apex init --force/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('doctor warns when the hook has no version marker at all (pre-0.3.1 install)', () => {
+  const dir = repo();
+  try {
+    const env = { ...process.env, APEX_REPO_ROOT: dir };
+    mkdirSync(join(dir, '.claude', 'hooks'), { recursive: true });
+    writeFileSync(join(dir, '.claude', 'hooks', 'apex-hook.js'), [
+      '#!/usr/bin/env node',
+      '// SPDX-License-Identifier: MIT',
+      '// no stamp here',
+    ].join('\n'));
+    const out = run(['doctor'], { env });
+    assert.match(out, /predates version stamping/);
+    assert.match(out, /apex init --force/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the stamped hook still executes correctly — protocol unbroken by the stamp', () => {
+  const dir = repo();
+  try {
+    const env = { ...process.env, APEX_REPO_ROOT: dir };
+    run(['init'], { env });
+    const DIST = join(HERE, '..', 'dist');
+    const out = execFileSync(process.execPath, [join(dir, '.claude', 'hooks', 'apex-hook.js'), 'pre-tool-use'], {
+      input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: '.env', content: 'x' } }),
+      encoding: 'utf-8',
+      env: { ...process.env, APEX_REPO_ROOT: dir, APEX_ENGINE_DIST: DIST },
+    });
+    // stdout must be exactly one JSON object (trailing newline aside).
+    const trimmed = out.trimEnd();
+    assert.equal(trimmed.split('\n').length, 1);
+    const json = JSON.parse(trimmed);
+    assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, /BOUND-005/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
