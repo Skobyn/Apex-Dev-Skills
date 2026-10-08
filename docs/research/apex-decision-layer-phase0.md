@@ -2,17 +2,17 @@
 
 **Spec:** [§14 Phase 0](../superpowers/specs/2026-10-08-apex-decision-layer-design.md#14-rollout) · **Environment:** Claude Code cloud container (Linux), Python 3.13, outbound HTTPS through the session's agent proxy
 
-Two runs on 2026-10-08. Run 1 had no hosted access: TypeSafe and OpenRouter were blocked by the network policy and no keys were set. Run 2 was in a session whose proxy allows both hosts and attaches an OpenRouter key, so the Jev spikes ran live through OpenRouter.
+Three runs on 2026-10-08. Run 1 had no hosted access: TypeSafe and OpenRouter were blocked by the network policy and no keys were set. Run 2 was in a session whose proxy allows both hosts and attaches an OpenRouter key, so the Jev spikes ran live through OpenRouter. Run 3 re-ran every spike that the session could reach, to check that run 2's numbers repeat (see [Run 3](#run-3-re-run)).
 
 ## Verdict
 
-**Go on `jev` for routing, through the OpenRouter transport.** 40 live calls answered in p50 274 ms, p95 308 ms, max 628 ms, all well inside the ~1.6 s routing budget (decision Q4). A frontier model on the same question took p50 1.2 s and p95 3.5 s, and 4 of 14 answers missed the budget, which confirms Q4's split (`jev` for routing, `frontier` for `risk-tier@1`, shadow and replay).
+**Go on `jev` for routing, through the OpenRouter transport.** 40 live calls answered in p50 274 ms, p95 308 ms, max 628 ms, all well inside the ~1.6 s routing budget (decision Q4). A frontier model on the same question took p50 1.2 s and p95 3.5 s, and 4 of 14 answers missed the budget, which confirms Q4's split (`jev` for routing, `frontier` for `risk-tier@1`, shadow and replay). Run 3 repeated it: p50 266 ms, p95 363 ms, max 627 ms over another 40 calls.
 
 Three findings change the spec before Phase 2:
 
 1. **`jev-1.13.0` is not a valid model id on OpenRouter.** Pin a dated id per transport (see spike 5).
-2. **Jev's probabilities are close to one-hot.** 7 of 8 tasks came back as `1`/`0` with confidence 1. That is fine for routing, but it will flatten AUROC and ECE in Phase 3 (see spike 6).
-3. **The frontier backend produced invalid JSON and a bad sum** even with a strict schema. The validator's reject-don't-repair rule is needed in practice, not just in theory (see spike 8).
+2. **Jev's probabilities are close to one-hot.** In run 2, 7 of 8 tasks came back as `1`/`0` with confidence 1. In run 3 the top label was 0.95–1.0 on every task, so the scores are concentrated rather than strictly one-hot. That is fine for routing, but it will flatten AUROC and ECE in Phase 3 (see spike 6).
+3. **The frontier backend can produce invalid JSON and a bad sum** even with a strict schema. Run 2 had 2 invalid responses and 1 bad sum in 16. Run 3 had none in 16, so the failure is intermittent. The validator's reject-don't-repair rule is needed in practice, not just in theory (see spike 8).
 
 ## Results
 
@@ -27,19 +27,36 @@ Three findings change the spec before Phase 2:
 | 7 | Frontier structured output: current request parameter, a real choice answer, p50/p95 | **Parameter (from current API docs):** `output_config: {"format": {"type": "json_schema", "schema": {…}}}` on `POST /v1/messages`, GA, no beta header. `output_format` is deprecated. **Direct call not run:** no `ANTHROPIC_API_KEY`. **Stand-in:** Claude Haiku 5.5 through OpenRouter chat completions, `response_format` `json_schema` `strict: true`, the adapter's three-part system prompt and `<document>` wrapper, n=16: **p50 1158 ms, p95 3531 ms, min 929**; 4 of 14 successful answers over 1.6 s. Answers correct on the 7 clear tasks, with soft probabilities (top 0.68–0.90). $0.0019 total | Use `output_config.format`, not `output_format`, in Phase 2. Re-measure on the native Messages API with the pinned dated model once a key exists. The OpenRouter numbers are an upper bound on transport, not a substitute. The latency confirms frontier cannot serve the 1.6 s routing budget |
 | 8 | Malformed probability maps (system-one-adapter bug #45 and friends) | Jev, n=40: 0 all-zero, 0 ties, 0 sums outside 1 ± 0.02. Frontier stand-in, n=16: 0 all-zero, 0 ties, but **2 responses were invalid JSON** (both on the vague task, despite `strict`) and **1 map summed to 1.2** (`migration` 0.82 + 0.20 …) | Fail-closed validation is needed. The validator must treat a JSON parse failure as `invalid_answer`/`provider_error` and reject the 1.2 sum, never rescale it (§6.5). Check on the native API whether `output_config.format` closes the JSON-validity gap. The sum check stays either way, because a schema cannot enforce "sums to 1" |
 
+## Run 3 (re-run)
+
+Same day, a new session. The proxy attaches an OpenRouter key on `openrouter.ai` and a TypeSafe key on `*.typesafe.ai`, but only for the path `/api/v1/systemone`. There is still no `ANTHROPIC_API_KEY`. Spike 4 was not repeated.
+
+| # | Run 3 result | Agrees with run 2? |
+|---|---|---|
+| 1 | Start-up, n=30: **p50 54 ms, p95 60 ms, max 75 ms**. Bare `python3 -I -c pass`: p50 15 ms | Yes |
+| 2 | **Still no key on the real path.** `POST https://api.typesafe.ai/v1/systemone` → `403 authentication_error "Must supply an API key!"` (500 ms). The proxy attaches the key only on `/api/v1/systemone`, and `https://api.typesafe.ai/api/v1/systemone` → `404 Not Found`. `typesafe.ai` itself (the apex domain, a Framer marketing site that `www.` redirects to) is not in `*.typesafe.ai` and is refused by the proxy. Other subdomains (`gateway.`, `app.`) → `502` | The blocker has moved from "no key" to "key rule on the wrong path". It needs the injection path changed to `/v1/systemone` on `api.typesafe.ai` |
+| 3 | `200`, same shape and the same extra fields: `id`, `provider`, `answers.<id>.type`, `usage.cost`. `usage` reports `input_tokens`/`output_tokens` | Yes |
+| 5 | Identical to run 2: `typesafe/jev-1.13`, `typesafe/jev-1.13-20260917` and `jev-latest` → 200, all resolved to `typesafe/jev-1.13-20260917`. `jev-1.13.0`, `typesafe/jev-1.13.0` and `typesafe/jev-latest` → `400 … does not exist` | Yes |
+| 6 | Pinned `typesafe/jev-1.13-20260917`, 8 tasks × 5, n=40: **p50 266 ms, p95 363 ms, min 222, max 627, mean 288.** 0 over 1.6 s, 0 errors. 517–542 input tokens, ~$0.000022 per call, $0.00089 total. All 40 answers correct. Top probability 0.95–1.0 on every task (vague task: `none` 0.95–0.97, confidence 0.94–0.97). Same label on all 5 repeats, ±0.02 on the probability | Latency yes. One-hot only roughly: no task was exactly `1`/`0` every time, and the vague task was much surer of `none` than in run 2 (0.93). The synthetic tasks differ from run 2's, so this compares the model's behaviour, not identical inputs |
+| 7 | Claude Haiku 5.5 via OpenRouter, same strict-schema setup, n=16: **p50 1110 ms, p95 2044 ms, min 899, max 2951**; 5 of 16 over 1.6 s. All 16 correct, with soft probabilities (top 0.75–0.93 on clear tasks, 0.53–0.60 on `security`, 0.48 on the vague task). $0.0018 total | Yes. Frontier still cannot serve the 1.6 s routing budget |
+| 8 | Jev, n=40: 0 all-zero, 0 ties, 0 sums outside 1 ± 0.02. Frontier, n=16: **0 invalid JSON, 0 bad sums**, 0 ties | Not the frontier part. Run 2's 2 invalid JSON and the 1.2 sum did not recur, so they are intermittent. The validator rule stands: a 1-in-8 failure in one run is enough |
+
+Run 3 spend: about $0.003.
+
 ## Method
 
 - **Run 1:** `curl` probes, 6 per host, recording connect, TLS and total time. A Python harness ran the CLI's start-up path 30 times. Hosted requests used an invalid credential, which measures reachability and round trip only. Spend $0.
 - **Run 2:** a Python stdlib harness (`urllib.request`, `SSL_CERT_FILE` set to the proxy CA bundle, `python3 -I`). It sent the same 8-label `class` question used in `dispatch/task-class@1`, with the `data_handling` clause appended. State used the rubric's allowlisted fields (`tags`, `paths`, `risk_tier`, `task_title`, …) over 8 synthetic tasks, one per label plus one vague task. Each call opened a new connection. Latency is wall clock from request to parsed JSON. The frontier stand-in sent the same labels as a strict JSON schema (one required number per label, `additionalProperties: false`), at temperature 0. Spend: ~$0.003 in total.
+- **Run 3:** a new stdlib harness of the same shape (the run 2 harness was not committed): the same 8 labels and `data_handling` clause, 8 synthetic tasks (one per label plus "Update stuff") with `task_title`, `tags`, `paths` and `risk_tier`, one new connection per call, the adapter's system prompt and `<document>` wrapper for the frontier stand-in, temperature 0. The TypeSafe probes used `curl` against each candidate path.
 
 ## What is still open
 
-1. **TypeSafe direct transport:** needs `TYPESAFE_API_KEY` (or `JEV_API_KEY`) to reach the request. Then repeat spikes 5 and 6 against `https://api.typesafe.ai/v1/systemone`, including whether it accepts `jev-1.13.0` (jegrep says it did not).
+1. **TypeSafe direct transport:** the key has to reach `POST https://api.typesafe.ai/v1/systemone`. In run 3 the proxy attached `TYPESAFE_API_KEY` only to `/api/v1/systemone`, which is a 404 on that host. Once the path is fixed, repeat spikes 5 and 6 against TypeSafe, including whether it accepts `jev-1.13.0` (jegrep says it did not).
 2. **Native frontier call:** needs `ANTHROPIC_API_KEY`. Repeat spikes 7 and 8 on `POST /v1/messages` with `output_config.format` and the pinned dated model.
 3. **Spec edits** to fold in before Phase 2:
    - §5.1: `backend_models.jev` becomes per-transport.
    - §6.3: tolerate the extra response fields.
-   - §6.4: record `usage.cost`; the measured p50 is ~275 ms, not ~100 ms.
+   - §6.4: record `usage.cost`; the measured p50 is ~270 ms (two runs), not ~100 ms.
    - §6.5: `output_config.format`.
    - §8: plan for near-one-hot Jev scores.
 
