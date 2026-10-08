@@ -82,23 +82,15 @@ class FakeBackend:
         return resp
 
 
-class NotYetBackend:
-    """jev and frontier ship in Phase 2 (apex-decision-layer 0.2.0)."""
-    hosted = True
-
-    def __init__(self, name):
-        self.name = name
-
-    def ask(self, req):
-        raise BackendUnavailable("provider_error", "the %s backend ships in Phase 2 (apex-decision-layer 0.2.0); "
-                                 "this release has none and fake only" % self.name)
-
-
 def get_backend(name):
     if name == "none":
         return NoneBackend()
     if name == "fake":
         return FakeBackend()
-    if name in HOSTED:
-        return NotYetBackend(name)
+    if name == "jev":
+        from .jev import JevBackend
+        return JevBackend()
+    if name == "frontier":
+        from .frontier import FrontierBackend
+        return FrontierBackend()
     raise ValueError("unknown backend %r" % name)

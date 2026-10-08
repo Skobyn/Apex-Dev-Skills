@@ -4,7 +4,7 @@
   apex-decide [ask] --rubric <id>@<v> (--state <json> | --state -) --json
               [--deadline-ms N] [--backend B] [--shadow | --no-shadow] [--repo DIR]
   apex-decide lint [RUBRIC_FILE...]
-  apex-decide doctor [--json] [--repo DIR]
+  apex-decide doctor [--json] [--probe] [--repo DIR]
 
 Prints exactly one JSON envelope on stdout. Exit 0 scored (uncertain included),
 3 unscored (the envelope says why), 2 usage, 1 internal error (stdout empty).
@@ -245,7 +245,7 @@ def load_config(repo):
     """The per-repo config (§10.1). Absent: everything off."""
     path = os.path.join(repo, CONFIG_REL, "config.json")
     cfg = {"egress": "none", "state_fields": "structured", "primary": {"default": "none"}, "shadow": {},
-           "jev": {"transport": "openrouter", "api_key_env": "OPENROUTER_API_KEY"},
+           "jev": {"transport": "openrouter"},
            "frontier": {"provider": "anthropic", "api_key_env": "ANTHROPIC_API_KEY"},
            "decision_log": {"store_state": "hash"}, "calibration_lock": [], "_path": None}
     if not os.path.exists(path):
@@ -285,6 +285,14 @@ def load_config(repo):
     for sec in ("jev", "frontier"):
         if not isinstance(user.get(sec, {}), dict):
             problems.append("%s must be an object" % sec)
+            continue
+        ke = user.get(sec, {}).get("api_key_env")
+        if ke is not None and not (isinstance(ke, str) and re.fullmatch(r"[A-Z_][A-Z0-9_]{0,127}", ke)):
+            problems.append("%s.api_key_env must name an environment variable (the key itself never goes in config)" % sec)
+    if isinstance(user.get("jev", {}), dict) and user.get("jev", {}).get("transport", "openrouter") not in ("typesafe", "openrouter"):
+        problems.append("jev.transport must be typesafe or openrouter")
+    if isinstance(user.get("frontier", {}), dict) and user.get("frontier", {}).get("provider", "anthropic") != "anthropic":
+        problems.append("frontier.provider must be anthropic")
     if problems:
         raise Unscored("config_invalid", "%s: %s" % (path, "; ".join(problems)))
     for k, v in user.items():
@@ -316,16 +324,44 @@ def state_base(repo):
     return os.path.join(common, "apex-scope-loop-state")
 
 
-def log_row(repo, row):
-    """Append one decision-log row (§11.1). A log failure never fails the call. Nothing
-    is created in a repository that has neither run state nor a decision-layer config."""
+def decisions_dir(repo):
+    """<state-base>/decisions, or None in a repository that has neither run state nor a
+    decision-layer config (nothing is created there). The transport's circuit breaker and
+    latency samples live here too (§6.4), beside the log."""
     try:
         base = state_base(repo)
-        if not os.path.isdir(base) and not os.path.isdir(os.path.join(repo, CONFIG_REL)):
+    except OSError:
+        return None
+    if not os.path.isdir(base) and not os.path.isdir(os.path.join(repo, CONFIG_REL)):
+        return None
+    return os.path.join(base, "decisions")
+
+
+KEY_ENVS = ("TYPESAFE_API_KEY", "JEV_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY")
+
+
+def scrub(text, cfg=None):
+    """Belt for §6.4 'the key never appears': no API key value survives into stdout or the log."""
+    names = set(KEY_ENVS)
+    for sec in ("jev", "frontier"):
+        n = ((cfg or {}).get(sec) or {}).get("api_key_env")
+        if isinstance(n, str):
+            names.add(n)
+    for n in names:
+        v = os.environ.get(n, "")
+        if len(v) >= 4:
+            text = text.replace(v, "[redacted]").replace(json.dumps(v)[1:-1], "[redacted]")
+    return text
+
+
+def log_row(repo, row, cfg=None):
+    """Append one decision-log row (§11.1). A log failure never fails the call."""
+    try:
+        d = decisions_dir(repo)
+        if d is None:
             return
-        d = os.path.join(base, "decisions")
         os.makedirs(d, exist_ok=True)
-        line = (json.dumps(row, sort_keys=True, ensure_ascii=True) + "\n").encode()
+        line = (scrub(json.dumps(row, sort_keys=True, ensure_ascii=True), cfg) + "\n").encode()
         fd = os.open(os.path.join(d, "decisions.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -620,7 +656,7 @@ def spawn_shadow(b, rubric, rv, qhash, req, cfg, repo, decision_id):
         dn = os.open(os.devnull, os.O_RDWR)
         for fd in (0, 1, 2):
             os.dup2(dn, fd)
-        sreq = dict(req, shadow=True, model=model_for(rubric, b, cfg),
+        sreq = dict(req, shadow=True, model=model_for(rubric, b, cfg), meta={},
                     deadline=time.monotonic() + int((cfg.get("shadow") or {}).get("deadline_ms", 20000)) / 1000.0)
         row = {"decision_id": "d-" + secrets.token_hex(6), "shadow_of": decision_id, "ts": now_iso(),
                "rubric_version": rv, "question_hash": qhash, "backend": b, "model_requested": sreq["model"],
@@ -634,7 +670,9 @@ def spawn_shadow(b, rubric, rv, qhash, req, cfg, repo, decision_id):
         except Unscored as e:
             row.update(scored=False, reason=e.reason, detail=e.detail)
         row["latency_ms"] = int((time.monotonic() - t) * 1000)
-        log_row(repo, row)
+        if sreq.get("meta"):
+            row["transport"] = sreq["meta"]
+        log_row(repo, row, cfg)
     finally:
         os._exit(0)
 
@@ -651,7 +689,7 @@ def ask(argv):
     env = {"envelope": ENVELOPE, "rubric_version": rv, "decision_id": decision_id}
     repo = repo_root(a["repo"])
     row = {"decision_id": decision_id, "ts": now_iso(), "rubric_version": rv, "cli_version": plugin_version()}
-    shadow = None
+    shadow = cfg = req = None
     try:
         cfg = load_config(repo)
         rubric = load_rubric(rv)
@@ -667,7 +705,8 @@ def ask(argv):
         if hr is not None:
             raise Unscored("hard_rule", json.dumps(hr, sort_keys=True))
         req = {"rubric_version": rv, "rubric": rubric, "state": state, "untrusted": untrusted,
-               "model": model_for(rubric, name, cfg), "deadline": deadline, "config": cfg}
+               "model": model_for(rubric, name, cfg), "deadline": deadline, "config": cfg,
+               "state_dir": decisions_dir(repo)}
         env["model_requested"] = row["model_requested"] = req["model"]
         shadow = shadow_plan(a, cfg, name)
         res = answer(rubric, rv, qhash, name, req, cfg, repo)
@@ -691,9 +730,11 @@ def ask(argv):
     if shadow:
         env["shadow"] = {"backend": shadow, "pending": True}
     env = {"envelope": env.pop("envelope"), "scored": env.pop("scored"), **env}
-    sys.stdout.write(json.dumps(env, ensure_ascii=True) + "\n")
+    if isinstance(req, dict) and req.get("meta"):
+        row["transport"] = req["meta"]
+    sys.stdout.write(scrub(json.dumps(env, ensure_ascii=True), cfg) + "\n")
     sys.stdout.flush()
-    log_row(repo, row)
+    log_row(repo, row, cfg)
     if shadow:
         spawn_shadow(shadow, rubric, rv, qhash, req, cfg, repo, decision_id)
     return code
@@ -726,7 +767,26 @@ def cmd_lint(argv):
     return 1 if bad else 0
 
 
+def doctor_backends(cfg):
+    """(backend, key env names, endpoint or None, header builder or the error) for jev and frontier."""
+    from backends import frontier, jev
+    out = []
+    try:
+        url = jev.endpoint(cfg)
+        out.append(("jev", jev.key_envs(cfg), url, lambda k: {"Authorization": "Bearer " + k}))
+    except BackendUnavailable as e:
+        out.append(("jev", ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY"), None, e.detail))
+    try:
+        url = frontier.endpoint()
+        out.append(("frontier", (frontier.key_env(cfg),), url,
+                    lambda k: {"x-api-key": k, "anthropic-version": frontier.API_VERSION}))
+    except BackendUnavailable as e:
+        out.append(("frontier", (frontier.key_env(cfg),), None, e.detail))
+    return out
+
+
 def cmd_doctor(argv):
+    probe_on = "--probe" in argv
     repo = None
     if "--repo" in argv:
         i = argv.index("--repo")
@@ -745,11 +805,27 @@ def cmd_doctor(argv):
     if cfg:
         add("egress", "ok", cfg["egress"])
         add("primary", "ok", cfg["primary"])
-        for sec in ("jev", "frontier"):
-            env_name = cfg[sec].get("api_key_env")
-            used = sec in set(cfg["primary"].values()) | {(cfg.get("shadow") or {}).get("backend")}
-            add("%s_key" % sec, "ok" if os.environ.get(env_name or "") or not used else "warn",
-                "%s %s" % (env_name, "present" if os.environ.get(env_name or "") else "absent"))
+        used = set(cfg["primary"].values()) | {(cfg.get("shadow") or {}).get("backend")}
+        for sec, keys, url, hdr in doctor_backends(cfg):
+            present = [k for k in keys if os.environ.get(k)]
+            # The key's presence only, never its value (§10.1).
+            add("%s_key" % sec, "ok" if present or sec not in used else "warn",
+                "%s present" % present[0] if present else "%s absent" % " / ".join(keys))
+            if sec in used and cfg["egress"] != "hosted":
+                add("%s_egress" % sec, "warn", "configured as a backend but egress is %s: every call is egress_disabled"
+                    % cfg["egress"])
+            if url is None:
+                add("%s_reach" % sec, "fail", hdr)
+            elif probe_on:
+                from backends import transport
+                secret = os.environ.get(present[0]) if present else ""
+                r = transport.probe(url, hdr(secret) if secret else {}, 5.0, secrets=(secret,))
+                st = "ok" if r["reachable"] and (r["status"] not in (401, 403) or not secret) else (
+                    "warn" if r["reachable"] else "fail")
+                add("%s_reach" % sec, st, "%s: %s (%s ms%s)" % (url, r["detail"], r["latency_ms"],
+                                                                ", HTTP %s" % r["status"] if r["status"] else ""))
+            else:
+                add("%s_reach" % sec, "ok", "%s (not probed; doctor --probe sends one empty request)" % url)
     for dp, _, fs in os.walk(os.path.join(PLUGIN_ROOT, "rubrics")):
         for f in sorted(fs):
             rid = os.path.relpath(os.path.join(dp, f), os.path.join(PLUGIN_ROOT, "rubrics"))[:-5]

@@ -69,6 +69,7 @@ TAMPER_ENV = {
     "APEX_DECIDE_TIMEOUT": None,
     "APEX_DECIDE_FAKE": None,
     "APEX_DECIDE_JEV_BASE": None,
+    "APEX_DECIDE_FRONTIER_BASE": None,                   # apex-decision-layer 0.2.0's frontier test override
     "APEX_DECISION_LAYER_ROOT": None,
 }
 # Layer A bypass families: denied anywhere in a command.

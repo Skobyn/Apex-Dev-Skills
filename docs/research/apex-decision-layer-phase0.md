@@ -87,3 +87,36 @@ The spec's Phase 0 exit is "the numbers in ADR-0001; a go/no-go on `jev` fitting
 - **Numbers: measured.** They go into the plugin's ADR-0001 when Phase 1 creates it, since the plugin does not exist yet.
 
 Item 2 above is a confirmation and does not block Phase 1 or the design of Phase 2.
+
+## Phase 2 (live verification of the shipped backends)
+
+**Spec:** [§14 Phase 2](../superpowers/specs/2026-10-08-apex-decision-layer-design.md#14-rollout), whose exit is "one live call per backend recorded on a fixture plan, with `response.model` asserted". **Plugin:** apex-decision-layer 0.2.0.
+
+**Session 1 (2026-10-08, the session that built 0.2.0):**
+- No `TYPESAFE_API_KEY`, `JEV_API_KEY`, `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` was set. A reachability probe of the hosted endpoints was refused by the session's permission policy, so no live call was made.
+- Every backend path was verified against loopback stub servers instead (smoke checks 22–27): both jev transports, frontier, the transport policy, TLS, every failure mode and key redaction.
+- **frontier:** no `ANTHROPIC_API_KEY` is available in this environment, now or later. A native `POST /v1/messages` call with `output_config.format` is **not verified here**. The backend is verified against the loopback stub only, and the Phase 2 task scope calls for live frontier calls only when the key exists, so this does not block Phase 2. Spikes 7 and 8 on the native API (Phase 0 "What is still open", item 2) stay open.
+
+**Session 2 (2026-10-08, a second cloud session, branch head `7f874e1`):**
+- Smoke there: 27/27.
+- No key was set in the environment. That session's agent proxy injects the TypeSafe key on `*.typesafe.ai` (paths `/v1/systemone` and `/api/v1/systemone`) and the OpenRouter key on `openrouter.ai`. It holds nothing for Anthropic.
+- With that session's operator's approval, each call ran with `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY` set to a placeholder, and the proxy swapped in the real key. The placeholder appeared in no envelope, no stderr output and no `.dev-plan-state` file.
+- 4 live calls through `bin/apex-decide`, in a throwaway repository with `egress: hosted` and `state_fields: raw`:
+
+| Transport | Rubric (deadline) | Exit | `model_requested` → `model_resolved` | Verdict, confidence | Usage | Latency (whole CLI) |
+|---|---|---|---|---|---|---|
+| TypeSafe | `risk-tier@1` (10 s), `src/auth/session.py`, 40 lines | 0 | `jev-1.13.0` → `jev-1.13.0` | `C`, 1.0 | 635 in, 45 out, $0.0000267 (estimated) | 910 ms |
+| TypeSafe | `dispatch/task-class@1` (1.5 s), "Add CSV export button to the reports page" | 0 | `jev-1.13.0` → `jev-1.13.0` | `feature`, 1.0 | 872 in, 76 out, $0.0000366 (estimated) | 367 ms |
+| OpenRouter | `risk-tier@1` (10 s), same state | 0 | `typesafe/jev-1.13-20260917` → same | `C`, 1.0 | 635 in, 45 out, $0.0000267 (reported) | 560 ms |
+| OpenRouter | `dispatch/task-class@1` (1.5 s), same state | 0 | `typesafe/jev-1.13-20260917` → same | `feature`, 1.0 | 872 in, 76 out, $0.0000366 (reported) | 335 ms |
+
+What the calls showed:
+- **Model ids.** On both transports `response.model` equals the requested id, so the per-transport pin is right and `model_pin: strict` would also pass. The spec's exit criterion ("one live call per backend … with `response.model` asserted") is met for `jev`.
+- **The answers.** All four were scored, `uncertain: false`, `calibrated: false` (no record), `add_gate: null`. Both answers are correct by the rubrics (`src/auth/session.py` is a Tier C path under `risk-tier@1`'s criteria).
+- **One-hot scores.** Every probability came back exactly 0 or 1, as in Phase 0 (spike 6), which is the near-one-hot risk §8.1 plans for.
+- **Cost.** OpenRouter's reported `usage.cost` equals the client-side estimate at $0.042 per million input tokens, so the TypeSafe estimate is calibrated. Both transports now report output tokens (45 and 76) that Phase 0 saw as 0. Output is free, so the estimate is unchanged.
+- **Latency.** The task-class calls took 335–367 ms, inside the 1.6 s routing budget. The first TypeSafe call (910 ms) includes a cold TLS connection and the Python start-up.
+
+**Cloud sessions with proxy-injected keys.** When a key exists only as a proxy-injected secret, `apex-decide` sees no key and sends nothing (`provider_error`). Setting the key variable to any placeholder makes it send. The README documents this.
+
+**frontier:** not run. There was no `ANTHROPIC_API_KEY` and no proxy secret for Anthropic (see Session 1).

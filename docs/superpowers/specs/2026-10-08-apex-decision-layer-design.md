@@ -443,3 +443,10 @@ From the survey and its follow-up: the wire contract and the validator (jegrep, 
 
 - 2026-10-08 — Phase 0 done (`docs/research/apex-decision-layer-phase0.md`): go on `jev` for routing over either transport. Findings folded into §4.2, §5.1, §6.3–§6.5 and §8.1.
 - 2026-10-08 — Phase 1 shipped: apex-decision-layer 0.1.0, apex-dispatch 0.5.0, apex-scope-loop 0.4.2. Deviations from the text above, all recorded in the plugin's ADR-0001: unknown state fields are dropped rather than rejected; the reason `config_invalid` is added; the schemas live as checks in `decide.py` (`lint`, config validation) rather than as separate `resources/*.schema.json` files; and `doctor` ships in Phase 1 with the config, egress, key-presence and rubric checks.
+- 2026-10-08 — Phase 2 built: apex-decision-layer 0.2.0 and apex-dispatch 0.5.1. It ships the `jev` (TypeSafe, OpenRouter) and `frontier` (Anthropic Messages, `output_config.format`) backends with the §6.4 transport policy, `doctor` key presence and `--probe`, and smoke checks against loopback stubs. The deviations are recorded in the plugin's ADR-0001:
+  - the frontier model stays `claude-haiku-5-5`, because current Claude ids have no dated snapshot;
+  - `APEX_DECIDE_FRONTIER_BASE` is added as a loopback-only override, tamper-protected by apex-dispatch 0.5.1;
+  - `doctor --probe` is opt-in;
+  - retries are capped at three attempts.
+
+  §11.2 item 5 (title and Acceptance text in the decision state) shipped with Phase 1, in apex-dispatch 0.5.0. Items 6 (a `decision_layer` section in `doctor.sh`) and 7 (`report.sh` pricing decision calls from the decision log's `usage`, which now carries `cost`) are still open. Live verification (`docs/research/apex-decision-layer-phase0.md` § Phase 2): 4 live `jev` calls scored on both transports, with `response.model` equal to the pinned id (`jev-1.13.0` on TypeSafe, `typesafe/jev-1.13-20260917` on OpenRouter) and task-class answered in 335–367 ms. `frontier` is verified against the stub only, because no Anthropic key is available.
