@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # apex-scope-loop structural smoke test
-# Verifies the plugin contract from ADR-0001 (checks 1-10), ADR-0002 (11-13), ADR-0003 (14-43) and ADR-0004 (44-60). Exits non-zero on first failure.
+# Verifies the plugin contract from ADR-0001 (checks 1-10), ADR-0002 (11-13), ADR-0003 (14-43) and ADR-0004 (44-61). Exits non-zero on first failure.
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1542,7 +1542,7 @@ assert c["review"]=="waived" and w["kind"]=="review_waiver" and w["sha"]==c["hea
 assert not any(x["verdict"]=="APPROVE" for x in s["reviews"]["1"]["records"])' "$T47S/checkpoint.json" || fail "the waived completion was not recorded as waived (or an APPROVE was fabricated)"
 # Tier C: a waiver covers the adversarial REQUEST_CHANGES but never G12.
 T47C="$SMOKE_TMP/t47c"; TW="$(cal_run "$T47C" '- [ ] **Phase 1.1** [docs][tier:c] a\n  - Acceptance: true\n')" || fail "init for check 47 (Tier C) failed"
-WC="$(wcommit "$TW" c1 a.md)"
+WC="$(wcommit "$TW" c1 a.md)"; (cd "$T47C" && "$EX/risk-tier.sh" plans/v-plan.md 1 >/dev/null)
 vc "$T47C" review 1 "$WC" APPROVE >/dev/null; vc "$T47C" review 1 "$WC" REQUEST_CHANGES adv --role adversarial >/dev/null
 vc "$T47C" waive 1 "$WC" "waive 1" "refutation needs a planted file" >/dev/null || fail "Tier C waiver refused"
 (cd "$T47C" && "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/v-plan.md 1 >/dev/null) || true
@@ -1803,8 +1803,8 @@ vc "$T60" freeze 1 "$W60" --reviewers 3 >/dev/null
 has '^ASK_HUMAN:' "$(cd "$T60" && APEX_ASK_HUMAN_AFTER=1 "$CP" plans/v-plan.md review 1 "$W60" REQUEST_CHANGES rA 2>&1)" || fail "no ASK_HUMAN with APEX_ASK_HUMAN_AFTER=1"
 expect_refusal "a waiver while the round has verdicts outstanding" "verdicts outstanding (1/3)" vc "$T60" waive 1 "$W60" "waive 1" "r"
 vc "$T60" unfreeze 1 >/dev/null
-expect_refusal "a negated waiver reply" "negates the waiver" vc "$T60" waive 1 "$W60" "I do not want to waive 1" "r"
-expect_refusal "a 'keep fixing' waiver reply" "negates the waiver" vc "$T60" waive 1 "$W60" "waive 1 later, keep fixing for now" "r"
+expect_refusal "a negated waiver reply" "refuses or hedges the waiver" vc "$T60" waive 1 "$W60" "I do not want to waive 1" "r"
+expect_refusal "a 'keep fixing' waiver reply" "refuses or hedges the waiver" vc "$T60" waive 1 "$W60" "waive 1 later, keep fixing for now" "r"
 vc "$T60" halt "awaiting human review waiver line 3" >/dev/null
 vc "$T60" waive 1 "$W60" "yes, waive 1" "rA's finding" >/dev/null || fail "the waiver of rA was refused"
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s["halted"]; w=s["operator_overrides"][-1]; assert w["waived_verdicts"]==1 and len(w["covered"])==1' "$(st "$T60" plans/v-plan.md)/checkpoint.json" \
@@ -1869,7 +1869,8 @@ python3 -c 'import json,sys; assert "1" not in (json.load(open(sys.argv[1])).get
 # (8) findings: distinct mechanisms stay separate; a non-blocking re-report never reopens.
 T60I="$SMOKE_TMP/t60i"; TW="$(cal_run "$T60I" "$TWO")" || fail "init for check 60 (i) failed"; I1="$(wcommit "$TW" i a.md)"
 fx2 "$T60I" "$FS" plans/v-plan.md add 1 --severity blocking --class race --at a.py:1 --sha "$I1" "lock released early" >/dev/null
-has 'F-002 open' "$(fx2 "$T60I" "$FS" plans/v-plan.md add 1 --severity blocking --class race --at a.py:1 --sha "$I1" "double write on retry")" || fail "a different mechanism at the same file:line was merged"
+has 'DUPLICATE.*mechanism added' "$(fx2 "$T60I" "$FS" plans/v-plan.md add 1 --severity blocking --class race --at a.py:1 --sha "$I1" "double write on retry")" || fail "a second mechanism of the same defect was not added to its entry"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert len(d["items"])==1 and len(d["items"][0]["mechanisms"])==2, d' "$(fx2 "$T60I" "$FS" plans/v-plan.md path 1)" || fail "a defect was counted twice"
 fx2 "$T60I" "$FS" plans/v-plan.md close 1 F-001 >/dev/null
 has 'DUPLICATE.*-> closed' "$(fx2 "$T60I" "$FS" plans/v-plan.md add 1 --severity non-blocking --class race --at a.py:1 --sha "$I1" "lock released early")" || fail "a non-blocking re-report reopened a closed blocking finding"
 # (9) backlog: done from a task is pending until that task completes; fail reopens it.
@@ -1884,9 +1885,8 @@ vc "$T60J" fail 1 x >/dev/null
   && "$CP" plans/v-plan.md review 1 "$J1" APPROVE >/dev/null && "$CP" plans/v-plan.md complete 1 ok >/dev/null 2>&1) || fail "complete failed in check 60 (j)"
 [ "$(cd "$T60J" && "$EX/backlog.sh" plans/v-plan.md count)" = 0 ] && grep -q "B-001 .*(done .* at ${J1:0:12}, line 1)" "$T60J/.claude/apex-scope-loop/BACKLOG.md" || fail "complete did not confirm the pending close"
 # (10) Markdown outside docs/ and smoke-named source files are scanned.
-for c in 'README.md|stripe keys live here' 'src/smoke_helper.py|import stripe'; do
-  has '^TIER: C' "$(rtc '[docs]' "${c%%|*}" "${c#*|}")" || fail "content in ${c%%|*} was exempted"
-done
+has '^TIER: B' "$(rtc '[docs]' README.md 'stripe keys live here')" || fail "a Markdown-only content term was exempted or raised to C"
+has '^TIER: C' "$(rtc '[docs]' src/smoke_helper.py 'import stripe')" || fail "content in src/smoke_helper.py was exempted"
 # (11) A run without a worktree keeps snapshots outside the work tree.
 T60K="$SMOKE_TMP/t60k"; mkdir -p "$T60K/plans"; git init -q -b main "$T60K"; printf '.dev-plan-state/\n' >"$T60K/.gitignore"
 printf -- "$TWO" >"$T60K/plans/v-plan.md"; git -C "$T60K" add -A; git -C "$T60K" commit -qm k
@@ -1896,5 +1896,49 @@ case "$SPK" in "$T60K/.git/apex-scope-loop-snapshots/"*) ;; *) fail "a no-worktr
 has 'GATE: SKIPPED\|GATE: PASS' "$(cd "$T60K" && "$EX/green-gate.sh" plans/v-plan.md check 2>&1)" || fail "a no-worktree snapshot dirtied the gate"
 ok "round-1 fixes: waiver covers only its listed verdicts (freeze, negation, own-line halt, late verdicts); TIER_REASONS and unanticipated overrides; distinct and signal lenses; full review after a tier rise; directive floors; freeze cleared; findings key; backlog pending close; narrower exemption; no-worktree snapshots"
 
+# 61. Round-2 review fixes (ADR-0004): the review mode is enforced, every Tier C
+#     content term is checked against an override, plain waiver replies, ASK_HUMAN
+#     pending during a freeze, Markdown-only terms give Tier B, done without state.
+# (1) A tier rise after round 1: the brief (taken before risk-tier) still says
+#     verify; review-mode and freeze know better; a verify-only Tier C fan-out
+#     cannot complete; a full Tier C round can.
+T61="$SMOKE_TMP/t61"; TW="$(cal_run "$T61" "$TWO")" || fail "init for check 61 failed"
+R1="$(wcommit "$TW" r1 a.md)"; (cd "$T61" && "$EX/risk-tier.sh" plans/v-plan.md 1 --raise B --reason "shared helper" >/dev/null); vc "$T61" review 1 "$R1" REQUEST_CHANGES >/dev/null
+mkdir -p "$TW/src/auth"; R2="$(wcommit "$TW" fix src/auth/token.py)"
+has '^REVIEW_MODE: verify$' "$(brief "$T61" plans/v-plan.md)" || fail "the brief before risk-tier did not still say verify (fixture)"
+(cd "$T61" && "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/v-plan.md 1 >/dev/null)
+has '^REVIEW_MODE: full (the tier rose to C' "$(vc "$T61" review-mode 1)" || fail "review-mode after risk-tier did not say full"
+expect_refusal "freeze --mode verify after a tier rise" "the tier rose to C" vc "$T61" freeze 1 "$R2" --reviewers 2 --mode verify
+vc "$T61" review 1 "$R2" APPROVE --mode verify >/dev/null; vc "$T61" review 1 "$R2" APPROVE adv --role adversarial --mode verify >/dev/null
+vc "$T61" approve 1 "$R2" "approve G12 1" >/dev/null
+expect_refusal "a verify-only Tier C fan-out" "no full review at Tier C" vc "$T61" complete 1 ok
+vc "$T61" freeze 1 "$R2" --reviewers 1 --mode full >/dev/null || fail "freeze --mode full refused"
+vc "$T61" review 1 "$R2" APPROVE adv2 --role adversarial >/dev/null
+python3 -c 'import json,sys; x=json.load(open(sys.argv[1]))["reviews"]["1"]["records"][-1]; assert x["mode"]=="full" and x["tier"]=="C", x' "$(st "$T61" plans/v-plan.md)/checkpoint.json" || fail "a frozen full round did not record mode full at Tier C"
+vc "$T61" complete 1 ok >/dev/null 2>&1 || fail "a full Tier C round with an adversarial pass did not complete"
+# (2) Every distinct Tier C content term is checked against the override reason.
+O61="$(rtc '[docs][tier:b reason="price display formatting"]' a_view.py 'label = price' b_util.py 'h = bcrypt.hash(p)')"
+has "^TIER_C_OVERRIDDEN: tier-c content signal in diff: 'price' (a_view.py)" "$O61" && has "^TIER_C_UNANTICIPATED: tier-c content signal in diff: 'bcrypt' (b_util.py)" "$O61" \
+  && has '^SIGNAL_LENSES: .*security' "$O61" && has '^TIER: B' "$O61" || fail "not every Tier C content term was checked against the override: $O61"
+# (3) Waiver replies: plain wording with other words is accepted, refusals are named.
+T61B="$SMOKE_TMP/t61b"; TW="$(cal_run "$T61B" "$TWO")" || fail "init for check 61 (b) failed"; RB="$(wcommit "$TW" b a.md)"
+vc "$T61B" review 1 "$RB" REQUEST_CHANGES >/dev/null
+for ok in "No worries, waive 1" "waive 1 — no further changes needed" "waive 1, not worth another round"; do
+  vc "$T61B" waive 1 "$RB" "$ok" "r" >/dev/null || fail "the plain waiver reply '$ok' was refused"
+done
+expect_refusal "a 'don't waive' reply" "ask the human to reply plainly \`waive 1\`" vc "$T61B" waive 1 "$RB" "don't waive 1" "r"
+expect_refusal "a 'no waiver' reply" "refuses or hedges" vc "$T61B" waive 1 "$RB" "no waiver; waive 1 only if it is cheap" "r"
+# (4) ASK_HUMAN during an outstanding freeze says to finish the round first.
+R4="$(wcommit "$TW" b2 a.md)"; vc "$T61B" freeze 1 "$R4" --reviewers 2 >/dev/null
+O61="$(cd "$T61B" && APEX_ASK_HUMAN_AFTER=1 "$CP" plans/v-plan.md review 1 "$R4" REQUEST_CHANGES 2>&1)"
+has "^ASK_HUMAN: pending — record the rest of this round's verdicts first (1/2 in)" "$O61" && ! has 'halt and ask' "$O61" || fail "ASK_HUMAN asked for a halt during an outstanding freeze: $O61"
+# (6) Markdown with a code signal beside it is still Tier C.
+has '^TIER: C' "$(rtc '[docs]' README.md 'stripe' src/x.py 'import stripe')" || fail "a content term in code beside Markdown was not Tier C"
+# (7) done --line --sha without run state is refused.
+T61N="$SMOKE_TMP/t61n"; mkdir -p "$T61N/plans"; git init -q -b main "$T61N"; printf -- "$TWO" >"$T61N/plans/v-plan.md"; git -C "$T61N" add -A; git -C "$T61N" commit -qm n
+(cd "$T61N" && "$EX/backlog.sh" plans/v-plan.md add 1 "x" >/dev/null) || fail "backlog add without run state failed"
+expect_refusal "done --line --sha without run state" "no run state" indir "$T61N" "$EX/backlog.sh" plans/v-plan.md done B-001 --line 1 --sha "$(git -C "$T61N" rev-parse HEAD)"
+ok "round-2 fixes: review mode enforced (brief predates the rise; review-mode, freeze and complete enforce full); every content term vs the override; plain waiver replies; ASK_HUMAN pending; Markdown-only Tier B; done needs run state"
+
 echo ""
-echo "smoke passed: 60/60 checks"
+echo "smoke passed: 61/61 checks"

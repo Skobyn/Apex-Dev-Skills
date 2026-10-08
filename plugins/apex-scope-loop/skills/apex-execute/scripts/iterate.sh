@@ -273,14 +273,15 @@ else:
 order = {"A": 0, "B": 1, "C": 2}
 trec = (s.get("tiers") or {}).get(line_no) or {}
 tier = trec.get("tier") if trec.get("epoch", 0) == epoch else None
-reviewed_at = max([order.get(x.get("tier") or "A", 0) for x in recs] or [-1])
+full = [x for x in recs if x.get("mode", "full") == "full"]
+reviewed_at = max([order.get(x.get("tier") or "A", 0) for x in full] or [-1])
 why = ""
 if n == 1 or last == "none":
     mode = "full"
 elif tier in order and order[tier] > reviewed_at:
     mode, why = "full", "the tier rose to %s after reviews at %s in this attempt" % (tier, "ABC"[max(reviewed_at, 0)])
-elif tier == "C" and not any(x.get("role") == "adversarial" for x in recs):
-    mode, why = "full", "a Tier C attempt with no adversarial review yet"
+elif tier == "C" and not any(x.get("role") == "adversarial" and x.get("tier") == "C" for x in full):
+    mode, why = "full", "a Tier C attempt with no full-mode adversarial review at Tier C yet"
 else:
     mode = "verify"
 print("LAST_REVIEWED: " + last)
@@ -291,8 +292,9 @@ print("REVIEW_SINCE: " + (task_base if mode == "full" else last))
 # tier's REASON lines, an overridden Tier C signal first.
 if tier:
     print("TIER_REASONS: Tier %s at %s (risk-tier.sh; pass these to every reviewer)" % (tier, str(trec.get("head") or "?")[:12]))
-    if trec.get("overridden_c"):
-        print("  ! " + trec["overridden_c"])
+    ov = trec.get("overridden_c") or []
+    for x in ([ov] if isinstance(ov, str) else ov):
+        print("  ! " + x)
     for x in trec.get("reasons") or []:
         print("  - " + x)
 PY

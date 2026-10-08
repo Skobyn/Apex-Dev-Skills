@@ -5,10 +5,10 @@
 #   <state>/findings/L<LINE>.json   {"line": N, "items": [ {id, sha, severity, class,
 #                                     at, mechanism, status, from, rounds, created, closed, reason} ]}
 # The orchestrator records every reviewer finding here. A defect is counted
-# once: an item with the same class, file:line and (normalised) mechanism is
-# the same finding — its rounds grow and a blocking re-report re-opens it if
-# it was closed; a non-blocking re-report never re-opens anything. Distinct
-# mechanisms at the same file:line stay separate entries.
+# once: an item with the same class and file:line is the same finding — its
+# rounds grow, a new mechanism is added to its `mechanisms` list, and a
+# blocking re-report re-opens it if it was closed; a non-blocking re-report
+# never re-opens anything.
 # Non-blocking findings are "residuals": status residual, copied to the
 # hardening backlog (backlog.sh), and they never reopen a review round.
 #
@@ -109,8 +109,7 @@ def show(x):
 if action == "add":
     one = " ".join(mech.split())
     norm = lambda m: re.sub(r"[^a-z0-9]+", " ", m.lower()).strip()
-    same = [x for x in items if x.get("class") == cls and x.get("at") == " ".join(at.split())
-            and norm(x.get("mechanism", "")) == norm(one)]
+    same = [x for x in items if x.get("class") == cls and x.get("at") == " ".join(at.split())]
     if same:
         x = same[0]
         if sha not in x.setdefault("rounds", []):
@@ -122,11 +121,16 @@ if action == "add":
         elif sev == "blocking" and x["status"] == "residual":
             x["status"] = "open"                       # a non-blocking re-report never reopens anything
         save(path, d)
-        print(f"FINDING: {x['id']} DUPLICATE (same class and file:line; counted once) -> {x['status']}")
+        mechs = x.setdefault("mechanisms", [x.get("mechanism", "")])
+        added = not any(norm(m) == norm(one) for m in mechs)
+        if added:
+            mechs.append(one)                          # another mechanism of the same defect, on the same entry
+        save(path, d)
+        print(f"FINDING: {x['id']} DUPLICATE (same class and file:line; counted once{'; mechanism added' if added else ''}) -> {x['status']}")
     else:
         n = max([int(x["id"][2:]) for x in items if str(x.get("id", "")).startswith("F-")] or [0]) + 1
         x = {"id": "F-%03d" % n, "sha": sha, "severity": sev, "class": cls, "at": " ".join(at.split()),
-             "mechanism": one, "status": "open" if sev == "blocking" else "residual", "from": " ".join(src.split()),
+             "mechanism": one, "mechanisms": [one], "status": "open" if sev == "blocking" else "residual", "from": " ".join(src.split()),
              "rounds": [sha], "created": now}
         items.append(x)
         save(path, d)

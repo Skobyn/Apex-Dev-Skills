@@ -63,6 +63,7 @@ case "$ACTION" in
     if [[ "$NOW_DONE" != 1 ]]; then
       [[ "$D_LINE" =~ ^[1-9][0-9]{0,8}$ && "$D_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
         || { echo "ERROR: done needs --line LINE --sha <full SHA of the closing commit> (pending until that task completes), or --now" >&2; exit 2; }
+      [[ -f "$CHECKPOINT" ]] || { echo "ERROR: this plan has no run state (init.sh was not run), so no task can confirm a pending close — use: backlog.sh $PLAN done $ID --now" >&2; exit 2; }
     fi ;;
   confirm) D_LINE="${ARGS[0]:?LINE}"; D_SHA="${ARGS[1]:?HEAD}" ;;
   reopen) D_LINE="${ARGS[0]:?LINE}" ;;

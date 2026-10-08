@@ -5,11 +5,12 @@
 #   ./checkpoint.sh PLAN.md fail     LINE_NO REASON [--progress "what this attempt closed"]
 #   ./checkpoint.sh PLAN.md review   LINE_NO SHA APPROVE|REQUEST_CHANGES [REVIEWER]
 #                     [--role reviewer|adversarial|lens:<name>] [--agent-id ID | --worker DIR]
-#                     [--provider P] [--model M] [--route ROUTE_ID]
+#                     [--provider P] [--model M] [--route ROUTE_ID] [--mode full|verify]
 #   ./checkpoint.sh PLAN.md approve  LINE_NO SHA "<the human's literal approval reply>"
 #   ./checkpoint.sh PLAN.md waive    LINE_NO SHA "<the human's literal reply>" "<the residual risk accepted>"
-#   ./checkpoint.sh PLAN.md freeze   LINE_NO SHA [--reviewers N]   # hold the head during a review round
+#   ./checkpoint.sh PLAN.md freeze   LINE_NO SHA [--reviewers N] [--mode full|verify]   # hold the head during a review round
 #   ./checkpoint.sh PLAN.md unfreeze LINE_NO
+#   ./checkpoint.sh PLAN.md review-mode LINE_NO   # read-only: REVIEW_MODE / REVIEW_SINCE for the next round
 #   ./checkpoint.sh PLAN.md halt     REASON
 #   ./checkpoint.sh PLAN.md resume   REASON       # human: clear a halt and the error budget
 #   ./checkpoint.sh PLAN.md refork   REASON       # after merging a moved base: re-review against it
@@ -77,7 +78,7 @@
 set -euo pipefail
 
 PLAN="${1:?usage: checkpoint.sh PLAN.md ACTION [...]}"
-ACTION="${2:?action: complete|fail|review|approve|waive|freeze|unfreeze|halt|resume|refork|rewind}"
+ACTION="${2:?action: complete|fail|review|review-mode|approve|waive|freeze|unfreeze|halt|resume|refork|rewind}"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found"; exit 1; }
 
@@ -304,6 +305,16 @@ elif not skip:
                         f"{head[:12]} in this attempt — dispatch the reviewer, then: checkpoint.sh {plan_arg} review {line_no} {head} APPROVE|REQUEST_CHANGES")
     elif tier == "C" and not any(x.get("role") == "adversarial" and (x.get("verdict") == "APPROVE" or waived(x)) for x in recs):
         problems.append("Tier C: an adversarial review (--role adversarial) approving this exact head is required")
+    # Review mode (ADR-0004 §3): some round of this attempt must have been a
+    # full review at the effective tier, and for Tier C a full-mode
+    # adversarial pass at Tier C; verify-only rounds never stand in for them.
+    att = [x for x in records if x.get("attempt", 1) == attempt and x.get("epoch", 0) == epoch]
+    full = [x for x in att if x.get("mode", "full") == "full"]
+    if not full or max(order.get(x.get("tier") or "A", 0) for x in full) < order[tier]:
+        problems.append(f"no full review at Tier {tier} in this attempt (the tier rose after the full round, or every round was verify-only) "
+                        f"— run a full round: SINCE = TASK_BASE, checkpoint.sh {plan_arg} freeze {line_no} <sha> --mode full, review … --mode full")
+    elif tier == "C" and not any(x.get("role") == "adversarial" and x.get("tier") == "C" for x in full):
+        problems.append("Tier C: a full-mode adversarial review at Tier C in this attempt is required (risk-tier.sh before it; --mode full)")
 # The plan's Review: directive (ADR-0004 addendum B). Tier A/B: it may drop
 # the adversarial pass and choose the lenses. Tier C (and, without dispatch
 # state, a task tagged security/auth/money/billing/payment/pii/consent/
@@ -602,9 +613,10 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:
     shift 5
     REVIEWER="gibson-reviewer"; REVIEWER_NAMED=0
     if [[ $# -gt 0 && "$1" != --* ]]; then REVIEWER="$1"; REVIEWER_NAMED=1; shift; fi
-    ROLE=""; AGENT_ID=""; WORKER=""; PROVIDER=""; MODEL=""; ROUTE_ID=""
+    ROLE=""; AGENT_ID=""; WORKER=""; PROVIDER=""; MODEL=""; ROUTE_ID=""; RMODE=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
+        --mode) RMODE="${2:?}"; shift 2 ;;
         --role) ROLE="${2:?}"; shift 2 ;;
         --agent-id) AGENT_ID="${2:?}"; shift 2 ;;
         --worker) WORKER="${2:?}"; shift 2 ;;
@@ -624,11 +636,12 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:
     [[ -z "$ROLE" || "$ROLE" =~ ^(reviewer|adversarial|lens:[a-z/-]+)$ ]] || { echo "ERROR: --role must be reviewer, adversarial or lens:<name>" >&2; exit 1; }
     [[ -n "$AGENT_ID" && -n "$WORKER" ]] && { echo "ERROR: --agent-id and --worker are exclusive" >&2; exit 1; }
     ASK_AFTER="${APEX_ASK_HUMAN_AFTER:-2}"; [[ "$ASK_AFTER" =~ ^[1-9][0-9]{0,2}$ ]] || ASK_AFTER=2
+    [[ -z "$RMODE" || "$RMODE" == full || "$RMODE" == verify ]] || { echo "ERROR: --mode must be full or verify" >&2; exit 1; }
     python3 - "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$VERDICT" "$REVIEWER" "$REVIEWER_NAMED" "$ROLE" "$AGENT_ID" "$WORKER" \
-      "$PROVIDER" "$MODEL" "$ROUTE_ID" "$DISPATCH_STATE" "${PLAN_TOP:-$REPO_ROOT}" "$REVIEW_CAP" "$(head_sha)" "$ASK_AFTER" "$DCAP" "$TASK_JSON" <<'PY'
+      "$PROVIDER" "$MODEL" "$ROUTE_ID" "$DISPATCH_STATE" "${PLAN_TOP:-$REPO_ROOT}" "$REVIEW_CAP" "$(head_sha)" "$ASK_AFTER" "$DCAP" "$TASK_JSON" "$RMODE" <<'PY'
 import json, os, re, sys
 (path, now, line_no, sha, verdict, reviewer, reviewer_named, role, agent_id, worker,
- provider, model, route_id, dstate, top, cap, wt_head, ask_after, dcap, task_json) = sys.argv[1:]
+ provider, model, route_id, dstate, top, cap, wt_head, ask_after, dcap, task_json, rmode) = sys.argv[1:]
 def die(msg):
     print(f"[checkpoint] REFUSED review @ line {line_no}: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -767,7 +780,9 @@ if sha not in rounds:
         die(f"REVIEW_CAP: {len(blocking_rounds)} review rounds requested changes in this attempt ({', '.join(x[:12] for x in blocking_rounds)}; cap {cap}); "
             "record `checkpoint.sh PLAN fail LINE REASON` and retry, or ask the human (waive)")
     rounds.append(sha)
-r.setdefault("records", []).append({"attempt": attempt, "epoch": s.get("epoch", 0), "tier": tier_at, "sha": sha, "verdict": verdict, "reviewer": reviewer,
+# The review's mode (ADR-0004 §3): --mode, else the freeze's, else full.
+mode = rmode or (fz.get("mode") if fz and fz.get("sha") == sha else "") or "full"
+r.setdefault("records", []).append({"attempt": attempt, "epoch": s.get("epoch", 0), "tier": tier_at, "mode": mode, "sha": sha, "verdict": verdict, "reviewer": reviewer,
     "role": role, "provider": provider, "model": model, "agent_id": agent_id, "route": route_id,
     "provenance": provenance, "source": source, "at": now})
 r.update({"sha": sha, "verdict": verdict, "reviewer": reviewer, "round": rounds.index(sha) + 1, "at": now})
@@ -790,7 +805,11 @@ rc_rounds = sorted({x["sha"] for x in r["records"] if x.get("attempt", 1) == att
                    key=lambda x: rounds.index(x) if x in rounds else 99)
 prior_waivers = [w for w in s.get("operator_overrides") or [] if isinstance(w, dict) and w.get("kind") == "review_waiver"
                  and str(w.get("line")) == line_no and w.get("sha") == sha and w.get("attempt") == attempt and w.get("epoch", 0) == s.get("epoch", 0)]
-if verdict == "REQUEST_CHANGES" and prior_waivers:
+outstanding = fz and not lifted
+if verdict == "REQUEST_CHANGES" and outstanding and (prior_waivers or len(rc_rounds) >= int(ask_after)):
+    print(f"ASK_HUMAN: pending — record the rest of this round's verdicts first ({fz.get('recorded', 0)}/{fz.get('reviewers', 1)} in), "
+          "then ask the human about all of them (do not halt yet)")
+elif verdict == "REQUEST_CHANGES" and prior_waivers:
     print(f"ASK_HUMAN: new REQUEST_CHANGES at {sha[:12]} after the waiver — not covered by it; ask the human again "
           f"(a new waiver covers it: checkpoint.sh PLAN waive {line_no} {sha} \"<their literal reply>\" \"<the residual risk accepted>\")")
 elif verdict == "REQUEST_CHANGES" and len(rc_rounds) >= int(ask_after):
@@ -846,14 +865,15 @@ path, line_no, sha, reply = sys.argv[1:]
 def refuse(msg):
     print("[checkpoint] REFUSED waive: " + msg, file=sys.stderr)
     sys.exit(1)
-# The reply must say "waive <LINE>" in a sentence with no negation (fail closed).
+# The reply must say "waive <LINE>" and must not refuse the waiver itself
+# ("don't waive", "do not waive", "not waive", "never waive", "no waiver",
+# "keep fixing"): those are refused (ask again), other words are fine.
 want = re.compile(r"(?<![a-z0-9])waive\s+(?:line\s+)?%s(?![0-9])" % re.escape(line_no), re.I)
-NEG = re.compile(r"(?<![a-z])(no|not|don'?t|do not|never|keep fixing|cannot|can'?t|won'?t)(?![a-z])", re.I)
-sentences = [x for x in re.split(r"[.!?;\n]+", reply) if want.search(x)]
-if not sentences:
+REFUSAL = re.compile(r"(?<![a-z])(?:(?:don'?t|do\s+not|not|never|won'?t|will\s+not|can'?t|cannot)\s+(?:\w+\s+){0,2}waive|no\s+waiver|keep\s+fixing)(?![a-z])", re.I)
+if not want.search(reply):
     refuse(f"the reply does not contain 'waive {line_no}' — record the human's literal reply to the Ask Contract, never a paraphrase")
-if any(NEG.search(x) for x in sentences):
-    refuse(f"the reply negates the waiver (a 'no', 'not', 'don't' or 'keep fixing' beside 'waive {line_no}') — treat it as keep fixing")
+if REFUSAL.search(reply):
+    refuse(f"the reply refuses or hedges the waiver ('{REFUSAL.search(reply).group(0)}') — ask the human to reply plainly `waive {line_no}`")
 s = json.load(open(path))
 fz = (s.get("freezes") or {}).get(line_no)
 if fz and fz.get("recorded", 0) < int(fz.get("reviewers", 1)):
@@ -897,6 +917,37 @@ print(f"[checkpoint] review waiver recorded @ line {line_no} for {sha[:12]} (att
       "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$REPLY" "$RISK" "$W_ATTEMPT" "$W_EPOCH" "$W_N" "$W_COV"
     ;;
 
+  review-mode)
+    # Read-only (ADR-0004 §3): the mode and SINCE of the next review round,
+    # computed from the tier recorded NOW (run it after risk-tier.sh; it is
+    # what iterate.sh prints, without re-routing or touching the lock).
+    LINE_NO="${3:?line_no required}"
+    need_line "$LINE_NO"
+    python3 - "$CHECKPOINT" "$LINE_NO" "$(apex_floor "$WT" 2>/dev/null || echo none)" <<'PY'
+import json, sys
+path, line_no, base = sys.argv[1:]
+s = json.load(open(path))
+order = {"A": 0, "B": 1, "C": 2}
+r = (s.get("reviews") or {}).get(line_no) or {}
+attempt, epoch = r.get("attempt", 1), s.get("epoch", 0)
+recs = [x for x in r.get("records") or [] if x.get("attempt", 1) == attempt and x.get("epoch", 0) == epoch]
+full = [x for x in recs if x.get("mode", "full") == "full"]
+trec = (s.get("tiers") or {}).get(line_no) or {}
+tier = trec.get("tier") if trec.get("epoch", 0) == epoch else None
+why = ""
+if not full:
+    mode, why = "full", "no full round in this attempt yet"
+elif tier in order and order[tier] > max(order.get(x.get("tier") or "A", 0) for x in full):
+    mode, why = "full", "the tier rose to %s above every full round of this attempt" % tier
+elif tier == "C" and not any(x.get("role") == "adversarial" and x.get("tier") == "C" for x in full):
+    mode, why = "full", "a Tier C attempt with no full-mode adversarial review at Tier C"
+else:
+    mode = "verify"
+print("REVIEW_MODE: " + mode + (" (" + why + ")" if why else ""))
+print("REVIEW_SINCE: " + (base if mode == "full" else recs[-1]["sha"]))
+PY
+    ;;
+
   freeze)
     # Freeze the head for one review round (ADR-0004 addendum C): `review` of
     # any other SHA for this line is refused until the round's verdicts are
@@ -904,21 +955,48 @@ print(f"[checkpoint] review waiver recorded @ line {line_no} for {sha[:12]} (att
     # ACTIVE lock moves GATE -> REVIEW, where its hooks refuse commits.
     LINE_NO="${3:?line_no required}"
     SHA="${4:?sha required}"
-    NREV=1
-    [[ "${5:-}" == "--reviewers" ]] && NREV="${6:?--reviewers needs a count}"
+    NREV=1; FMODE=full; shift 4
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --reviewers) NREV="${2:?--reviewers needs a count}"; shift 2 ;;
+        --mode) FMODE="${2:?--mode needs full or verify}"; shift 2 ;;
+        *) echo "ERROR: unknown freeze option $1" >&2; exit 1 ;;
+      esac
+    done
     [[ "$NREV" =~ ^[1-9][0-9]?$ ]] || { echo "ERROR: --reviewers must be 1-99" >&2; exit 1; }
+    [[ "$FMODE" == full || "$FMODE" == verify ]] || { echo "ERROR: --mode must be full or verify" >&2; exit 1; }
     need_line "$LINE_NO"
     need_sha "$SHA"
     refuse_if_halted
     [[ "$SHA" == "$(head_sha)" ]] || { echo "[checkpoint] REFUSED freeze: $SHA is not the worktree head ($(head_sha)) — freeze the head you dispatch reviewers for" >&2; exit 1; }
     python3 -c "$PY_SAVE"'
 import sys
-path, now, line_no, sha, n = sys.argv[1:]
+path, now, line_no, sha, n, mode = sys.argv[1:]
 s = json.load(open(path))
-s.setdefault("freezes", {})[line_no] = {"sha": sha, "reviewers": int(n), "recorded": 0, "at": now}
+order = {"A": 0, "B": 1, "C": 2}
+r = (s.get("reviews") or {}).get(line_no) or {}
+attempt, epoch = r.get("attempt", 1), s.get("epoch", 0)
+recs = [x for x in r.get("records") or [] if x.get("attempt", 1) == attempt and x.get("epoch", 0) == epoch]
+full = [x for x in recs if x.get("mode", "full") == "full"]
+trec = (s.get("tiers") or {}).get(line_no) or {}
+tier = trec.get("tier") if trec.get("epoch", 0) == epoch else None
+since = recs[-1]["sha"] if recs else None
+if mode == "verify":
+    why = None
+    if not full:
+        why = "no full review in this attempt yet"
+    elif tier in order and order[tier] > max(order.get(x.get("tier") or "A", 0) for x in full):
+        why = f"the tier rose to {tier} above every full review of this attempt"
+    elif tier == "C" and not any(x.get("role") == "adversarial" and x.get("tier") == "C" for x in full):
+        why = "this Tier C attempt has no full-mode adversarial review at Tier C"
+    if why:
+        print(f"[checkpoint] REFUSED freeze: --mode verify, but {why} — run a full round (SINCE = TASK_BASE, --mode full)", file=sys.stderr)
+        sys.exit(1)
+s.setdefault("freezes", {})[line_no] = {"sha": sha, "reviewers": int(n), "recorded": 0, "mode": mode,
+                                         "since": since if mode == "verify" else "TASK_BASE", "at": now}
 save(path, s)
-print(f"[checkpoint] FROZEN: line {line_no} at {sha[:12]} until {n} verdict(s) are recorded (or: checkpoint.sh PLAN unfreeze {line_no})")' \
-      "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$NREV"
+print(f"[checkpoint] FROZEN: line {line_no} at {sha[:12]} for a {mode} round until {n} verdict(s) are recorded (or: checkpoint.sh PLAN unfreeze {line_no})")' \
+      "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$NREV" "$FMODE"
     apex_lock_stage "$PLAN_HASH" REVIEW GATE
     ;;
 
