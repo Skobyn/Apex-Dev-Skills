@@ -1518,14 +1518,14 @@ T47S="$(st "$T47" plans/v-plan.md)"
 W1="$(wcommit "$TW" w1 a.md)"; vc "$T47" review 1 "$W1" REQUEST_CHANGES >/dev/null
 W2="$(wcommit "$TW" w2 a.md)"; vc "$T47" review 1 "$W2" REQUEST_CHANGES >/dev/null
 expect_refusal "a waiver without the human's reply" "literal reply is required" vc "$T47" waive 1 "$W2" "" "risk"
-expect_refusal "a waiver whose reply does not say 'waive 1'" "does not contain 'waive 1'" vc "$T47" waive 1 "$W2" "sure, ship it" "risk"
-expect_refusal "a waiver for another line's number" "does not contain 'waive 1'" vc "$T47" waive 1 "$W2" "waive 11" "risk"
+expect_refusal "a waiver whose reply does not say 'waive 1'" "does not start with 'waive 1'" vc "$T47" waive 1 "$W2" "sure, ship it" "risk"
+expect_refusal "a waiver for another line's number" "does not start with 'waive 1'" vc "$T47" waive 1 "$W2" "waive 11" "risk"
 expect_refusal "a waiver without the accepted risk" "name the residual risk" vc "$T47" waive 1 "$W2" "waive 1" " "
 expect_refusal "a waiver for a SHA nobody rejected" "nothing to waive" vc "$T47" waive 1 "$(git -C "$TW" rev-parse HEAD~2)" "waive 1" "risk"
 vc "$T47" waive 1 "$W1" "waive 1" "old head" >/dev/null || fail "a waiver at an earlier rejected SHA was refused"
 (cd "$T47" && "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1; "$EX/risk-tier.sh" plans/v-plan.md 1 >/dev/null) || fail "gate/tier for check 47 failed"
 expect_refusal "a waiver at another SHA" "requested changes" vc "$T47" complete 1 ok
-vc "$T47" waive 1 "$W2" "OK, waive 1 — accept it" "cache edge under tampering" >/dev/null || fail "a valid waiver was refused"
+vc "$T47" waive 1 "$W2" "waive 1 — accept it" "cache edge under tampering" >/dev/null || fail "a valid waiver was refused"
 rm -f "$T47S/gate/last.json"
 expect_refusal "a waiver that skips the green gate" "no green-gate result" vc "$T47" complete 1 ok
 (cd "$T47" && "$EX/green-gate.sh" plans/v-plan.md check >/dev/null 2>&1) || true
@@ -1538,7 +1538,7 @@ expect_refusal "a waiver from an earlier attempt" "requested changes" vc "$T47" 
 cp "$T47S/cp.bak" "$T47S/checkpoint.json"
 O47="$(vc "$T47" complete 1 ok 2>&1)" || fail "complete refused a waived head with a green gate: $O47"
 has 'recorded as waived, not approved' "$O47" && python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); c=s["completes"][-1]; w=s["operator_overrides"][c["waiver"]]
-assert c["review"]=="waived" and w["kind"]=="review_waiver" and w["sha"]==c["head"] and w["reply"].startswith("OK, waive 1") and w["residual_risk"]
+assert c["review"]=="waived" and w["kind"]=="review_waiver" and w["sha"]==c["head"] and w["reply"].startswith("waive 1") and w["residual_risk"]
 assert not any(x["verdict"]=="APPROVE" for x in s["reviews"]["1"]["records"])' "$T47S/checkpoint.json" || fail "the waived completion was not recorded as waived (or an APPROVE was fabricated)"
 # Tier C: a waiver covers the adversarial REQUEST_CHANGES but never G12.
 T47C="$SMOKE_TMP/t47c"; TW="$(cal_run "$T47C" '- [ ] **Phase 1.1** [docs][tier:c] a\n  - Acceptance: true\n')" || fail "init for check 47 (Tier C) failed"
@@ -1803,10 +1803,9 @@ vc "$T60" freeze 1 "$W60" --reviewers 3 >/dev/null
 has '^ASK_HUMAN:' "$(cd "$T60" && APEX_ASK_HUMAN_AFTER=1 "$CP" plans/v-plan.md review 1 "$W60" REQUEST_CHANGES rA 2>&1)" || fail "no ASK_HUMAN with APEX_ASK_HUMAN_AFTER=1"
 expect_refusal "a waiver while the round has verdicts outstanding" "verdicts outstanding (1/3)" vc "$T60" waive 1 "$W60" "waive 1" "r"
 vc "$T60" unfreeze 1 >/dev/null
-expect_refusal "a negated waiver reply" "refuses or hedges the waiver" vc "$T60" waive 1 "$W60" "I do not want to waive 1" "r"
-expect_refusal "a 'keep fixing' waiver reply" "refuses or hedges the waiver" vc "$T60" waive 1 "$W60" "waive 1 later, keep fixing for now" "r"
+expect_refusal "a negated waiver reply" "does not start with 'waive 1'" vc "$T60" waive 1 "$W60" "I do not want to waive 1" "r"
 vc "$T60" halt "awaiting human review waiver line 3" >/dev/null
-vc "$T60" waive 1 "$W60" "yes, waive 1" "rA's finding" >/dev/null || fail "the waiver of rA was refused"
+vc "$T60" waive 1 "$W60" "waive 1" "rA's finding" >/dev/null || fail "the waiver of rA was refused"
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s["halted"]; w=s["operator_overrides"][-1]; assert w["waived_verdicts"]==1 and len(w["covered"])==1' "$(st "$T60" plans/v-plan.md)/checkpoint.json" \
   || fail "a waiver cleared another line's halt or did not list what it covers"
 vc "$T60" resume "probe" >/dev/null
@@ -1817,7 +1816,7 @@ W60="$(wcommit "$TW" w a.md)"; (cd "$T60B" && "$EX/green-gate.sh" plans/v-plan.m
 vc "$T60B" review 1 "$W60" REQUEST_CHANGES rA >/dev/null; vc "$T60B" waive 1 "$W60" "waive 1" "r" >/dev/null
 vc "$T60B" review 1 "$W60" REQUEST_CHANGES rC --role adversarial >/dev/null
 expect_refusal "a late adversarial REQUEST_CHANGES after the waiver" "requested changes" vc "$T60B" complete 1 ok
-vc "$T60B" waive 1 "$W60" "ok, waive 1 as well" "r2" >/dev/null
+vc "$T60B" waive 1 "$W60" "waive 1, as well" "r2" >/dev/null
 python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["operator_overrides"][-1]["waived_verdicts"]=7; s["operator_overrides"][0]["waived_verdicts"]=7; json.dump(s, open(p,"w"))' "$(st "$T60B" plans/v-plan.md)/checkpoint.json"
 expect_refusal "a waiver whose waived_verdicts does not match" "requested changes" vc "$T60B" complete 1 ok
 python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["operator_overrides"][-1]["waived_verdicts"]=2; json.dump(s, open(p,"w"))' "$(st "$T60B" plans/v-plan.md)/checkpoint.json"
@@ -1923,11 +1922,14 @@ has "^TIER_C_OVERRIDDEN: tier-c content signal in diff: 'price' (a_view.py)" "$O
 # (3) Waiver replies: plain wording with other words is accepted, refusals are named.
 T61B="$SMOKE_TMP/t61b"; TW="$(cal_run "$T61B" "$TWO")" || fail "init for check 61 (b) failed"; RB="$(wcommit "$TW" b a.md)"
 vc "$T61B" review 1 "$RB" REQUEST_CHANGES >/dev/null
-for ok in "No worries, waive 1" "waive 1 — no further changes needed" "waive 1, not worth another round"; do
+# Round 3: the reply must START with "waive <LINE>" (after quotes/backticks); nothing else is parsed.
+for ok in "waive 1" "Waive 1 — not worth another round" '`waive 1`' "waive 1, no further changes needed"; do
   vc "$T61B" waive 1 "$RB" "$ok" "r" >/dev/null || fail "the plain waiver reply '$ok' was refused"
 done
-expect_refusal "a 'don't waive' reply" "ask the human to reply plainly \`waive 1\`" vc "$T61B" waive 1 "$RB" "don't waive 1" "r"
-expect_refusal "a 'no waiver' reply" "refuses or hedges" vc "$T61B" waive 1 "$RB" "no waiver; waive 1 only if it is cheap" "r"
+for bad in "I don't think we should waive 1" "I do not think you should waive 1 yet" "Do NOT under any circumstances waive 1" \
+           "Please hold off, I won't be able to waive 1 until Monday" "don’t waive 1" "No worries, waive 1" "Yes waive 1" "waive 10"; do
+  expect_refusal "the waiver reply '$bad'" "ask the human to reply plainly \`waive 1\` (optionally followed by a remark)" vc "$T61B" waive 1 "$RB" "$bad" "r"
+done
 # (4) ASK_HUMAN during an outstanding freeze says to finish the round first.
 R4="$(wcommit "$TW" b2 a.md)"; vc "$T61B" freeze 1 "$R4" --reviewers 2 >/dev/null
 O61="$(cd "$T61B" && APEX_ASK_HUMAN_AFTER=1 "$CP" plans/v-plan.md review 1 "$R4" REQUEST_CHANGES 2>&1)"
@@ -1938,6 +1940,14 @@ has '^TIER: C' "$(rtc '[docs]' README.md 'stripe' src/x.py 'import stripe')" || 
 T61N="$SMOKE_TMP/t61n"; mkdir -p "$T61N/plans"; git init -q -b main "$T61N"; printf -- "$TWO" >"$T61N/plans/v-plan.md"; git -C "$T61N" add -A; git -C "$T61N" commit -qm n
 (cd "$T61N" && "$EX/backlog.sh" plans/v-plan.md add 1 "x" >/dev/null) || fail "backlog add without run state failed"
 expect_refusal "done --line --sha without run state" "no run state" indir "$T61N" "$EX/backlog.sh" plans/v-plan.md done B-001 --line 1 --sha "$(git -C "$T61N" rev-parse HEAD)"
+# Round 3: a frozen round that completes with an APPROVE still asks, when one of its verdicts requested changes.
+R5="$(wcommit "$TW" b3 a.md)"; vc "$T61B" freeze 1 "$R5" --reviewers 2 >/dev/null
+vc "$T61B" review 1 "$R5" REQUEST_CHANGES >/dev/null
+O61="$(vc "$T61B" review 1 "$R5" APPROVE r2 --role lens:money 2>&1)"
+has '^FREEZE: lifted' "$O61" && has '^ASK_HUMAN: line 1 has REQUEST_CHANGES in' "$O61" || fail "a completed frozen round with a REQUEST_CHANGES did not ask the human: $O61"
+# Round 3: Markdown that ships as a plugin surface keeps Tier C; other Markdown gets Tier B.
+has '^TIER: C' "$(rtc '[docs]' plugins/x/agents/a.md 'Store the stripe secret')" || fail "a Tier C term in a shipped agent prompt was downgraded"
+has '^TIER: B' "$(rtc '[docs]' README.md 'stripe')" || fail "a top-level README term was not Tier B"
 ok "round-2 fixes: review mode enforced (brief predates the rise; review-mode, freeze and complete enforce full); every content term vs the override; plain waiver replies; ASK_HUMAN pending; Markdown-only Tier B; done needs run state"
 
 echo ""

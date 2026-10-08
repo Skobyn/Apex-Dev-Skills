@@ -225,7 +225,10 @@ for raw in sys.stdin.buffer:
     if exempt(cur):
         skipped.add(cur)
         continue
-    is_md = cur is not None and cur.lower().endswith((".md", ".markdown"))
+    # Markdown is documentation unless it ships as product (the agents,
+    # skills, commands or hooks of a plugin): there Tier C terms keep Tier C.
+    is_md = cur is not None and cur.lower().endswith((".md", ".markdown")) \
+        and not re.search(r"(^|/)(agents|skills|commands|hooks)/", cur)
     for m in ms:
         term = m.group(0).lower()
         (md_hits if is_md else hits).setdefault(term, (m.group(0), cur or "?"))

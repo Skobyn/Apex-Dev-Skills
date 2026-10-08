@@ -806,13 +806,19 @@ rc_rounds = sorted({x["sha"] for x in r["records"] if x.get("attempt", 1) == att
 prior_waivers = [w for w in s.get("operator_overrides") or [] if isinstance(w, dict) and w.get("kind") == "review_waiver"
                  and str(w.get("line")) == line_no and w.get("sha") == sha and w.get("attempt") == attempt and w.get("epoch", 0) == s.get("epoch", 0)]
 outstanding = fz and not lifted
+# When a frozen round completes, its REQUEST_CHANGES (any of its verdicts)
+# trigger the final ASK_HUMAN now, even if the last verdict approved.
+rc_now = verdict == "REQUEST_CHANGES" or (lifted and any(x.get("sha") == sha and x.get("attempt", 1) == attempt
+                                                          and x.get("verdict") == "REQUEST_CHANGES" for x in r["records"]))
 if verdict == "REQUEST_CHANGES" and outstanding and (prior_waivers or len(rc_rounds) >= int(ask_after)):
     print(f"ASK_HUMAN: pending — record the rest of this round's verdicts first ({fz.get('recorded', 0)}/{fz.get('reviewers', 1)} in), "
           "then ask the human about all of them (do not halt yet)")
-elif verdict == "REQUEST_CHANGES" and prior_waivers:
+elif rc_now and prior_waivers and any(i not in {c.get("index") for w in prior_waivers for c in (w.get("covered") or []) if isinstance(c, dict)}
+                                     for i, x in enumerate(r["records"]) if x.get("sha") == sha and x.get("verdict") == "REQUEST_CHANGES"
+                                     and x.get("attempt", 1) == attempt):
     print(f"ASK_HUMAN: new REQUEST_CHANGES at {sha[:12]} after the waiver — not covered by it; ask the human again "
           f"(a new waiver covers it: checkpoint.sh PLAN waive {line_no} {sha} \"<their literal reply>\" \"<the residual risk accepted>\")")
-elif verdict == "REQUEST_CHANGES" and len(rc_rounds) >= int(ask_after):
+elif rc_now and not prior_waivers and len(rc_rounds) >= int(ask_after):
     print(f"ASK_HUMAN: line {line_no} has REQUEST_CHANGES in {len(rc_rounds)} review rounds of attempt {attempt} "
           f"(APEX_ASK_HUMAN_AFTER={ask_after}) — halt and ask the human with the Ask Contract: accept the residual risk "
           f"at {sha[:12]} (reply 'waive {line_no}', then: checkpoint.sh PLAN waive {line_no} {sha} \"<their literal reply>\" "
@@ -865,15 +871,12 @@ path, line_no, sha, reply = sys.argv[1:]
 def refuse(msg):
     print("[checkpoint] REFUSED waive: " + msg, file=sys.stderr)
     sys.exit(1)
-# The reply must say "waive <LINE>" and must not refuse the waiver itself
-# ("don't waive", "do not waive", "not waive", "never waive", "no waiver",
-# "keep fixing"): those are refused (ask again), other words are fine.
-want = re.compile(r"(?<![a-z0-9])waive\s+(?:line\s+)?%s(?![0-9])" % re.escape(line_no), re.I)
-REFUSAL = re.compile(r"(?<![a-z])(?:(?:don'?t|do\s+not|not|never|won'?t|will\s+not|can'?t|cannot)\s+(?:\w+\s+){0,2}waive|no\s+waiver|keep\s+fixing)(?![a-z])", re.I)
-if not want.search(reply):
-    refuse(f"the reply does not contain 'waive {line_no}' — record the human's literal reply to the Ask Contract, never a paraphrase")
-if REFUSAL.search(reply):
-    refuse(f"the reply refuses or hedges the waiver ('{REFUSAL.search(reply).group(0)}') — ask the human to reply plainly `waive {line_no}`")
+# Strict form, no negation parsing: after trimming whitespace and optional
+# surrounding quotes/backticks, the reply must START with "waive <LINE>"
+# (any case), followed by the end or a separator; a remark may follow.
+body = reply.strip().strip("\"'`\u2018\u2019\u201c\u201d").strip()
+if not re.match(r"waive\s+%s(?:$|[\s.,:;\u2014\u2013-])" % re.escape(line_no), body, re.I):
+    refuse(f"the reply does not start with 'waive {line_no}' — ask the human to reply plainly `waive {line_no}` (optionally followed by a remark)")
 s = json.load(open(path))
 fz = (s.get("freezes") or {}).get(line_no)
 if fz and fz.get("recorded", 0) < int(fz.get("reviewers", 1)):
