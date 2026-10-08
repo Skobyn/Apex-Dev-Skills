@@ -39,6 +39,7 @@ Nothing leaves the machine until a repository opts in with `.claude/apex-decisio
 - Keys come only from the environment variable named for each backend. They are never written to config, rubrics, logs or envelopes.
 - `jev.transport` is `typesafe` (`TYPESAFE_API_KEY`, else `JEV_API_KEY`) or `openrouter` (`OPENROUTER_API_KEY`, the default). The two accept different model ids, so each rubric pins one per transport in `backend_models.jev`. `api_key_env` names a different variable.
 - A missing key, an unreachable host or a refusal is `provider_error`. The consumer then takes its deterministic path.
+- In a cloud session whose network proxy injects the provider key, the variable is absent in the container. Set it to any placeholder (a distinctive one, for example `OPENROUTER_API_KEY=proxy-injected-key`), and the proxy replaces it on the wire. The placeholder is scrubbed like a real key.
 
 ## Hosted backends
 
