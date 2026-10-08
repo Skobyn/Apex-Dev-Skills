@@ -1,0 +1,219 @@
+{
+ "ablation": {
+  "backend, structured fields": 0.9343,
+  "backend, with untrusted text": null,
+  "code-only baseline": 0.79
+ },
+ "acted_on": [
+  "security",
+  "migration",
+  "docs",
+  "tests",
+  "mechanical"
+ ],
+ "auroc": 0.9343,
+ "auroc_all_labels": 0.9536,
+ "auroc_ci": [
+  0.8599,
+  0.9966
+ ],
+ "backend": "jev",
+ "baseline_auroc": 0.79,
+ "baseline_n": 160,
+ "brier": 0.1625,
+ "coverage": {
+  "0.3": {
+   "coverage": 1.0,
+   "precision": 0.9187
+  },
+  "0.5": {
+   "coverage": 1.0,
+   "precision": 0.9187
+  },
+  "0.7": {
+   "coverage": 1.0,
+   "precision": 0.9187
+  }
+ },
+ "criterion": {
+  "min_auroc": 0.6,
+  "min_lift": 0.08,
+  "min_n": 100,
+  "min_positives": 10
+ },
+ "ece": 0.0813,
+ "label_sources": {
+  "human": 112,
+  "outcome-proxy": 48
+ },
+ "measured_at": "2026-10-08T12:22:30Z",
+ "models_resolved": [
+  "jev-1.13.0"
+ ],
+ "n": 160,
+ "passed": false,
+ "per_label": {
+  "bugfix": {
+   "auroc": 0.9964,
+   "ci": [
+    0.9779,
+    1.0
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 20
+  },
+  "docs": {
+   "auroc": 0.8857,
+   "ci": [
+    0.7884,
+    0.9831
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 20
+  },
+  "feature": {
+   "auroc": 0.9679,
+   "ci": [
+    0.9132,
+    1.0
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 20
+  },
+  "mechanical": {
+   "auroc": 0.925,
+   "ci": [
+    0.8439,
+    1.0
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 20
+  },
+  "migration": {
+   "auroc": 0.9429,
+   "ci": [
+    0.8712,
+    1.0
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 20
+  },
+  "none": {
+   "auroc": 0.9929,
+   "ci": [
+    0.9667,
+    1.0
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 20
+  },
+  "security": {
+   "auroc": 0.9679,
+   "ci": [
+    0.9132,
+    1.0
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 20
+  },
+  "tests": {
+   "auroc": 0.95,
+   "ci": [
+    0.8826,
+    1.0
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 20
+  }
+ },
+ "proxy_rule": {
+  "agreement": 0.8571,
+  "answers": 160,
+  "proxy_counts": true,
+  "rule": "outcome-proxy labels count only when >= 20 rows carry both labels and agree >= 0.8",
+  "sample": 112,
+  "with_human": 112,
+  "with_proxy": 160
+ },
+ "question": "class",
+ "question_hash": "sha256:d62e1a587f4effa9a1cc7540f461d837a0519916fdc828e95c0b6087fbdc24c9",
+ "reasons": [
+  "too few distinct scores (< 3) for security, migration, docs, tests, mechanical: AUROC measures little (near-one-hot answers, Phase 0 spike 6); not counted toward the kill criterion"
+ ],
+ "recommended_min_confidence": null,
+ "rubric_version": "dispatch/task-class@1",
+ "status": "degenerate",
+ "sweep": [
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 3.12,
+   "false_tighten_per_100": 3.75,
+   "min_confidence": 0.1,
+   "precision": 0.9187
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 3.12,
+   "false_tighten_per_100": 3.75,
+   "min_confidence": 0.2,
+   "precision": 0.9187
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 3.12,
+   "false_tighten_per_100": 3.75,
+   "min_confidence": 0.3,
+   "precision": 0.9187
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 3.12,
+   "false_tighten_per_100": 3.75,
+   "min_confidence": 0.4,
+   "precision": 0.9187
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 3.12,
+   "false_tighten_per_100": 3.75,
+   "min_confidence": 0.5,
+   "precision": 0.9187
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 3.12,
+   "false_tighten_per_100": 3.75,
+   "min_confidence": 0.6,
+   "precision": 0.9187
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 3.12,
+   "false_tighten_per_100": 3.75,
+   "min_confidence": 0.7,
+   "precision": 0.9187
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 3.12,
+   "false_tighten_per_100": 3.75,
+   "min_confidence": 0.8,
+   "precision": 0.9187
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 3.12,
+   "false_tighten_per_100": 3.75,
+   "min_confidence": 0.9,
+   "precision": 0.9187
+  }
+ ]
+}

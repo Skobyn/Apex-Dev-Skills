@@ -318,6 +318,8 @@ def measure_rows(corpus, backend, rubric):
             rows.append(r)
             sources[src] += 1
     rule = {"sample": len(both), "agreement": None if agree is None else round(agree, 4), "proxy_counts": proxy_ok,
+            "answers": len(mine), "with_human": sum(1 for r in mine if r.get("human")),
+            "with_proxy": sum(1 for r in mine if r.get("outcome_proxy")),
             "rule": "outcome-proxy labels count only when >= %d rows carry both labels and agree >= %.1f"
                     % (PROXY_SAMPLE, PROXY_AGREEMENT)}
     return rows, sources, rule
@@ -328,6 +330,9 @@ def measure(corpus, rubric, rv, backend, qhash):
     mc = measure_cfg(rubric)
     rows, sources, rule = measure_rows(corpus, backend, rubric)
     rows = [r for r in rows if r.get("question_hash") == qhash]
+    if not rule["proxy_counts"] and rule["with_proxy"]:
+        rule["why_not"] = ("%d rows carry both labels (need >= %d with agreement >= %.1f)"
+                           % (rule["sample"], PROXY_SAMPLE, PROXY_AGREEMENT))
     models = sorted({str(r.get("model_resolved")) for r in rows})
     rep = {"rubric_version": rv, "question_hash": qhash, "backend": backend, "question": rubric["primary"],
            "measured_at": D.now_iso(), "n": len(rows), "label_sources": sources, "proxy_rule": rule,
@@ -426,8 +431,11 @@ def print_report(rep):
     print("MEASURE_CALIBRATION: brier %s; ece(10 bins) %s (a base-rate predictor has perfect ECE: read it beside AUROC)"
           % (f(rep["brier"]), f(rep["ece"])))
     print("MEASURE_ABLATION: " + "; ".join("%s %s" % (k, f(v)) for k, v in rep["ablation"].items()))
-    print("MEASURE_PROXY: %s (sample %d, agreement %s)" % ("counted" if rep["proxy_rule"]["proxy_counts"] else "not counted",
-                                                            rep["proxy_rule"]["sample"], f(rep["proxy_rule"]["agreement"])))
+    pr = rep["proxy_rule"]
+    print("MEASURE_LABELS: %d answers from %s; %d with a human label, %d with an outcome-proxy label"
+          % (pr["answers"], rep["backend"], pr["with_human"], pr["with_proxy"]))
+    print("MEASURE_PROXY: %s (sample %d, agreement %s)%s" % ("counted" if pr["proxy_counts"] else "not counted", pr["sample"],
+                                                          f(pr["agreement"]), "; " + pr["why_not"] if pr.get("why_not") else ""))
     print("MEASURE_THRESHOLD: recommended min_confidence %s" % f(rep["recommended_min_confidence"]))
     if rep.get("lock"):
         print("MEASURE_LOCK: %s" % (rep["lock"] if isinstance(rep["lock"], str) else rep["lock"]["detail"]))

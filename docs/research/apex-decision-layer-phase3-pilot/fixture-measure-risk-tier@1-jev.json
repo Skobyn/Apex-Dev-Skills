@@ -1,0 +1,176 @@
+{
+ "ablation": {
+  "backend, structured fields": 0.9396,
+  "backend, with untrusted text": null,
+  "code-only baseline": 0.7854
+ },
+ "acted_on": [
+  "C",
+  "B"
+ ],
+ "auroc": 0.9396,
+ "auroc_all_labels": 0.9417,
+ "auroc_ci": [
+  0.8874,
+  0.9916
+ ],
+ "backend": "jev",
+ "baseline_auroc": 0.7854,
+ "baseline_n": 160,
+ "brier": 0.175,
+ "coverage": {
+  "0.3": {
+   "coverage": 1.0,
+   "precision": 0.9125
+  },
+  "0.5": {
+   "coverage": 1.0,
+   "precision": 0.9125
+  },
+  "0.7": {
+   "coverage": 1.0,
+   "precision": 0.9125
+  }
+ },
+ "criterion": {
+  "min_auroc": 0.6,
+  "min_lift": 0.08,
+  "min_n": 100,
+  "min_positives": 10
+ },
+ "ece": 0.0875,
+ "label_sources": {
+  "human": 112,
+  "outcome-proxy": 48
+ },
+ "measured_at": "2026-10-08T12:22:30Z",
+ "models_resolved": [
+  "jev-1.13.0"
+ ],
+ "n": 160,
+ "passed": false,
+ "per_label": {
+  "A": {
+   "auroc": 0.9333,
+   "ci": [
+    0.8783,
+    0.9884
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 40
+  },
+  "B": {
+   "auroc": 0.9542,
+   "ci": [
+    0.908,
+    1.0
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 40
+  },
+  "C": {
+   "auroc": 0.925,
+   "ci": [
+    0.8668,
+    0.9832
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 40
+  },
+  "none": {
+   "auroc": 0.9542,
+   "ci": [
+    0.908,
+    1.0
+   ],
+   "degenerate": true,
+   "distinct_scores": 2,
+   "positives": 40
+  }
+ },
+ "proxy_rule": {
+  "agreement": 0.8571,
+  "answers": 160,
+  "proxy_counts": true,
+  "rule": "outcome-proxy labels count only when >= 20 rows carry both labels and agree >= 0.8",
+  "sample": 112,
+  "with_human": 112,
+  "with_proxy": 160
+ },
+ "question": "tier",
+ "question_hash": "sha256:19f55fec3bebfeb15f082692d639562323d9abf6ce0cd96f55a6e0741df42d91",
+ "reasons": [
+  "too few distinct scores (< 3) for C, B: AUROC measures little (near-one-hot answers, Phase 0 spike 6); not counted toward the kill criterion"
+ ],
+ "recommended_min_confidence": null,
+ "rubric_version": "risk-tier@1",
+ "status": "degenerate",
+ "sweep": [
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 2.5,
+   "false_tighten_per_100": 1.88,
+   "min_confidence": 0.1,
+   "precision": 0.9125
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 2.5,
+   "false_tighten_per_100": 1.88,
+   "min_confidence": 0.2,
+   "precision": 0.9125
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 2.5,
+   "false_tighten_per_100": 1.88,
+   "min_confidence": 0.3,
+   "precision": 0.9125
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 2.5,
+   "false_tighten_per_100": 1.88,
+   "min_confidence": 0.4,
+   "precision": 0.9125
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 2.5,
+   "false_tighten_per_100": 1.88,
+   "min_confidence": 0.5,
+   "precision": 0.9125
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 2.5,
+   "false_tighten_per_100": 1.88,
+   "min_confidence": 0.6,
+   "precision": 0.9125
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 2.5,
+   "false_tighten_per_100": 1.88,
+   "min_confidence": 0.7,
+   "precision": 0.9125
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 2.5,
+   "false_tighten_per_100": 1.88,
+   "min_confidence": 0.8,
+   "precision": 0.9125
+  },
+  {
+   "coverage": 1.0,
+   "false_loosen_per_100": 2.5,
+   "false_tighten_per_100": 1.88,
+   "min_confidence": 0.9,
+   "precision": 0.9125
+  }
+ ]
+}
