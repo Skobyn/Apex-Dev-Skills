@@ -85,11 +85,11 @@ done
 pass "skills: kebab-case name = directory, explicit allowed-tools, no wildcards"
 
 # 8. scripts are executable and parse; no hooks are registered (an observational plugin emits no allow/deny)
-for s in "$D" "$PLUGIN_ROOT/scripts/smoke.sh" "$PLUGIN_ROOT/scripts/lib/decide.py" "$PLUGIN_ROOT/scripts/test/stub_http.py"; do
+for s in "$D" "$PLUGIN_ROOT/scripts/smoke.sh" "$PLUGIN_ROOT/scripts/lib/decide.py" "$PLUGIN_ROOT/scripts/test/stub_http.py" "$PLUGIN_ROOT/scripts/test/make_corpus.py"; do
   [ -x "$s" ] || fail "not executable: $s"
 done
 bash -n "$D" || fail "bin/apex-decide does not parse"
-python3 -m py_compile "$PLUGIN_ROOT/scripts/lib/decide.py" "$PLUGIN_ROOT"/scripts/lib/backends/*.py "$PLUGIN_ROOT/scripts/test/stub_http.py" || fail "python sources do not compile"
+python3 -m py_compile "$PLUGIN_ROOT/scripts/lib/decide.py" "$PLUGIN_ROOT"/scripts/lib/backends/*.py "$PLUGIN_ROOT/scripts/test/stub_http.py" "$PLUGIN_ROOT/scripts/lib/measure.py" "$PLUGIN_ROOT/scripts/test/make_corpus.py" || fail "python sources do not compile"
 find "$PLUGIN_ROOT" -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 [ ! -e "$PLUGIN_ROOT/hooks" ] || fail "apex-decision-layer must not register hooks"
 pass "scripts executable and parse; no hooks"
@@ -179,10 +179,10 @@ set +e; O="$(cd "$R0" && "$D" --rubric "$TC" --state 'not json' 2>/dev/null)"; c
 [ "$c" = 2 ] && [ -z "$O" ] || fail "malformed --state: exit $c, stdout '$O'"
 set +e; O="$(cd "$R0" && "$D" --rubric "$TC" --state '{}' --bogus 2>/dev/null)"; c=$?; set -e
 [ "$c" = 2 ] && [ -z "$O" ] || fail "an unknown flag: exit $c, stdout '$O'"
-set +e; "$D" measure >/dev/null 2>&1; c=$?; set -e; [ "$c" = 2 ] || fail "measure (Phase 3) did not exit 2"
+set +e; "$D" measure >/dev/null 2>&1; c=$?; set -e; [ "$c" = 2 ] || fail "measure without --rubric did not exit 2"
 E="$WORK/empty"; mkdir -p "$E"; git init -q "$E"; (cd "$E" && "$D" --rubric "$TC" --state '{}' >/dev/null) || true
 [ ! -e "$E/.dev-plan-state" ] || fail "a call in a repo without run state or config created .dev-plan-state"
-pass "exit codes: unconfigured = 3 backend_none (logged); usage = 2 with empty stdout; Phase 3 subcommands exit 2; no log created in a bare repo"
+pass "exit codes: unconfigured = 3 backend_none (logged); usage = 2 with empty stdout; measure without arguments exits 2; no log created in a bare repo"
 
 # 13. a scored answer: envelope shape, extra response fields ignored, unknown state fields dropped, untrusted text withheld
 fake "$TC" "$GOOD_TC"
@@ -539,6 +539,74 @@ python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); r["invalidated"]="d
 calcheck warn "invalidated (drift)"; calcheck warn "not the rubric's current hash"
 rm -rf "$CFG"
 pass "doctor: calibration records reported per rubric/backend; unlocked, invalidated (drift) and stale-hash records are warn, a locked passing record is ok"
+
+# 29. the measurement job: label (refused under ACTIVE), corpus, measure statuses, --lock, and replay drift
+MC="$PLUGIN_ROOT/scripts/test/make_corpus.py"
+fx() { local r="$WORK/m-$1"; rm -rf "$r"; mkdir -p "$r/.dev-plan-state"; git init -q "$r"; printf '%s' "$r"; }
+mst() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$1"; }
+fake "$TC" "$GOOD_TC"; APEX_DECIDE_FAKE="$FAKE" ask "$TC" "$TC_STATE"; DID="$(fld decision_id)"
+(cd "$R0" && "$D" label --rubric "$TC" --decision "$DID" --label feature --note "operator") >/dev/null || fail "label did not record a human label"
+grep -q "\"decision_id\": \"$DID\".*\"source\": \"human\"" "$CFG/labels/$TC.jsonl" || fail "the label file has no human label for $DID"
+set +e; (cd "$R0" && "$D" label --rubric "$TC" --decision "$DID" --label nonsense) >/dev/null 2>&1; c1=$?
+(cd "$R0" && "$D" label --rubric "$TC" --decision d-nope --label docs) >/dev/null 2>&1; c2=$?
+mkdir -p "$R0/.dev-plan-state/ACTIVE"; printf '{}' >"$R0/.dev-plan-state/ACTIVE/owner.json"
+(cd "$R0" && "$D" label --rubric "$TC" --decision "$DID" --label docs) >/dev/null 2>"$WORK/lerr"; c3=$?; set -e
+rm -rf "$R0/.dev-plan-state/ACTIVE"
+[ "$c1" = 2 ] && [ "$c2" = 2 ] && [ "$c3" = 5 ] && grep -q ACTIVE "$WORK/lerr" && [ "$(grep -c "$DID" "$CFG/labels/$TC.jsonl")" = 1 ] \
+  || fail "label accepted a bad label ($c1), an unknown decision ($c2) or a write under an ACTIVE lock ($c3)"
+(cd "$R0" && "$D" corpus --rubric "$TC" --out "$WORK/corpus.jsonl") >/dev/null || fail "corpus failed"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; x=[y for y in r if y["decision_id"]==sys.argv[2]][0]; assert x["human"]=="feature" and x["backend"]=="fake" and x["probabilities"]["feature"]==0.84, x' "$WORK/corpus.jsonl" "$DID" \
+  || fail "the corpus row does not join the answer with its human label"
+rm -rf "$CFG"
+for m in pass fail degenerate; do
+  R="$(fx "$m")"; O="$(python3 -I "$MC" "$R" risk-tier@1 fake "$m" 160)"
+  "$D" measure --repo "$R" --rubric risk-tier@1 --backend fake --outcomes "$O" --out "$WORK/rep-$m.json" >/dev/null || fail "measure ($m) failed"
+done
+R="$(fx small)"; O="$(python3 -I "$MC" "$R" risk-tier@1 fake pass 40)"
+"$D" measure --repo "$R" --rubric risk-tier@1 --backend fake --outcomes "$O" --out "$WORK/rep-small.json" >/dev/null
+[ "$(mst "$WORK/rep-pass.json")" = "passes kill criterion" ] && [ "$(mst "$WORK/rep-fail.json")" = "fails kill criterion" ] \
+  && [ "$(mst "$WORK/rep-degenerate.json")" = degenerate ] && [ "$(mst "$WORK/rep-small.json")" = "insufficient n" ] \
+  || fail "measure statuses: pass=$(mst "$WORK/rep-pass.json") fail=$(mst "$WORK/rep-fail.json") degenerate=$(mst "$WORK/rep-degenerate.json") small=$(mst "$WORK/rep-small.json")"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["auroc"]>0.8 and r["auroc_ci"][0]>r["baseline_auroc"] and r["brier"] is not None and r["ece"] is not None and r["label_sources"]["outcome-proxy"]>0 and r["proxy_rule"]["proxy_counts"] and "code-only baseline" in r["ablation"] and len(r["sweep"])==9, r' "$WORK/rep-pass.json" \
+  || fail "the passing report lacks AUROC/CI/baseline/Brier/ECE/proxy rule/ablation/sweep"
+[ ! -e "$WORK/m-pass/.claude/apex-decision-layer/calibration" ] || fail "measure without --lock wrote a calibration record"
+# --lock: refused for a failing corpus and under ACTIVE; a passing one writes the record + digest, trusted only once locked
+"$D" measure --repo "$WORK/m-fail" --rubric risk-tier@1 --backend fake --outcomes "$WORK/m-fail/outcomes-risk-tier@1-fail.jsonl" --lock | grep -q 'MEASURE_LOCK: not written: fails kill criterion' \
+  && [ ! -e "$WORK/m-fail/.claude/apex-decision-layer/calibration" ] || fail "measure --lock wrote a record for a failing corpus"
+P="$WORK/m-pass"; PO="$P/outcomes-risk-tier@1-pass.jsonl"
+mkdir -p "$P/.dev-plan-state/ACTIVE"; printf '{}' >"$P/.dev-plan-state/ACTIVE/owner.json"
+set +e; "$D" measure --repo "$P" --rubric risk-tier@1 --backend fake --outcomes "$PO" --lock >/dev/null 2>&1; c=$?; set -e; rm -rf "$P/.dev-plan-state/ACTIVE"
+[ "$c" = 5 ] && [ ! -e "$P/.claude/apex-decision-layer/calibration" ] || fail "measure --lock ran under an ACTIVE lock (exit $c)"
+LK="$("$D" measure --repo "$P" --rubric risk-tier@1 --backend fake --outcomes "$PO" --lock --json)"
+DG="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["lock"]["digest"])' "$LK")"
+REC="$P/.claude/apex-decision-layer/calibration/risk-tier@1/fake.json"
+[ "sha256:$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$REC")" = "$DG" ] || fail "the printed digest is not the record's sha256"
+# The record answers the same state the same way; calibrated only once a human adds the digest.
+python3 - "$FAKE" "$P/.claude/apex-decision-layer/calibration/risk-tier@1/fake.replay.jsonl" "$PLUGIN_ROOT" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[3] + "/scripts/lib")
+from backends import state_hash
+ent = {}
+for line in open(sys.argv[2]):
+    s = json.loads(line); p = s["probabilities"]; top = max(p, key=p.get)
+    ent[state_hash(s["state"])] = {"response": {"model": "fake-1", "answers": {"tier": {"choice": top, "probabilities": p, "confidence": 0.9}}}}
+json.dump({"risk-tier@1": ent}, open(sys.argv[1], "w"))
+PY
+ST1="$(head -1 "${REC%.json}.replay.jsonl" | python3 -c 'import json,sys; print(json.dumps(json.loads(sys.stdin.read())["state"]))')"
+cal() { (cd "$P" && printf '%s' "$ST1" | APEX_DECIDE_FAKE="$FAKE" "$D" --rubric risk-tier@1 --state - --json) | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["calibrated"])'; }
+[ "$(cal)" = False ] || fail "a record calibrated before its digest was locked"
+printf '{"calibration_lock":["%s"]}' "$DG" >"$P/.claude/apex-decision-layer/config.json"
+[ "$(cal)" = True ] || fail "a locked passing record from measure --lock did not calibrate"
+set +e; APEX_DECIDE_FAKE="$FAKE" "$D" replay --repo "$P" --rubric risk-tier@1 --backend fake >"$WORK/rp1" 2>&1; c=$?; set -e
+[ "$c" = 0 ] && grep -q 'REPLAY risk-tier@1 fake: ok (50 rows, max delta 0.0' "$WORK/rp1" || fail "replay of unchanged answers: exit $c $(cat "$WORK/rp1")"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))
+for e in d["risk-tier@1"].values(): e["response"]["answers"]["tier"].update(choice="A", probabilities={"A":0.4,"B":0.3,"C":0.2,"none":0.1})
+json.dump(d, open(sys.argv[1],"w"))' "$FAKE"
+set +e; APEX_DECIDE_FAKE="$FAKE" "$D" replay --repo "$P" --rubric risk-tier@1 --backend fake --dry-run >"$WORK/rp2" 2>&1; c=$?; set -e
+[ "$c" = 4 ] && grep -q 'drift' "$WORK/rp2" && [ "$(cal)" = True ] || fail "replay --dry-run did not report drift, or invalidated the record: exit $c $(cat "$WORK/rp2")"
+set +e; APEX_DECIDE_FAKE="$FAKE" "$D" replay --repo "$P" --rubric risk-tier@1 --backend fake >"$WORK/rp3" 2>&1; c=$?; set -e
+[ "$c" = 4 ] && grep -q 'record invalidated' "$WORK/rp3" && grep -q '"invalidated"' "$REC" && [ "$(cal)" = False ] || fail "replay drift did not invalidate the record: exit $c $(cat "$WORK/rp3")"
+pass "measure: label (bad label, unknown decision and ACTIVE lock refused), corpus joins labels, statuses pass/fail/degenerate/insufficient n, proxy-agreement rule, --lock (refused failing/ACTIVE; digest printed; calibrates only once locked), replay ok vs drift (dry-run keeps, real run invalidates)"
 
 echo
 echo "smoke passed: $N/$N checks"
