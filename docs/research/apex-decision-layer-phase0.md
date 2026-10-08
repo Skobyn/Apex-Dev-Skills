@@ -136,8 +136,8 @@ What the calls showed:
 
 | Rubric | Status | AUROC (acted-on), 95% CI | Code-only baseline | Brier | ECE |
 |---|---|---|---|---|---|
-| `dispatch/task-class@1` | **degenerate** | 0.934 [0.860, 0.997] | 0.790 | see JSON | see JSON |
-| `risk-tier@1` | **degenerate** | 0.940 [0.887, 0.992] | 0.785 | see JSON | see JSON |
+| `dispatch/task-class@1` | **degenerate** | 0.934 [0.860, 0.997] | 0.790 | 0.1625 | 0.0813 |
+| `risk-tier@1` | **degenerate** | 0.940 [0.887, 0.992] | 0.785 | 0.175 | 0.0875 |
 
 **What this means for Phase 4.**
 - If Jev keeps answering one-hot, every Jev measurement will be `degenerate`: fewer than 3 distinct scores, so AUROC ranks nothing. The kill criterion then cannot pass, and Jev cannot become calibrated, however accurate it is.
