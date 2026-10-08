@@ -8,7 +8,7 @@
 # bin/worker-<provider>.sh). Refused during stage GATE/REVIEW, for another route, a failed run,
 # a patch whose sha256 differs from result.json, a plan worktree that moved since the worker
 # forked or has uncommitted changes, any path outside the route's owned Paths (the lanes' union,
-# else the task's Paths:) or on the never-touch list (.dev-plan-state, .git, .claude/apex-dispatch,
+# else the task's Paths:) or on the never-touch list (.dev-plan-state, .git, .claude/apex-dispatch, .claude/apex-decision-layer,
 # .claude/settings*.json, .claude/hooks, hooks/hooks.json, .mcp.json, .gitmodules, .env*, keys),
 # and symlinks/submodules. On success: one commit with Dispatch-Route/-Provider/-Model/-Result
 # trailers, a worker_applied ledger row bound to the new HEAD, and the throwaway worktree removed.

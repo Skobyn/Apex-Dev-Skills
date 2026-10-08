@@ -771,13 +771,23 @@ RWT="$(st "$RT" plans/r-plan.md)/worktree"
 printf '#!/bin/sh\necho "{\\"verdict\\": \\"$FAKE_TIER\\", \\"uncertain\\": false}"\n' >"$SMOKE_TMP/decide.sh"; chmod +x "$SMOKE_TMP/decide.sh"
 has "^TIER: B" "$(cd "$RT" && FAKE_TIER=B APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 3 --classify)" || fail "the decision layer could not raise the tier"
 has "^TIER: B" "$(cd "$RT" && FAKE_TIER=A APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 3 --classify)" || fail "the decision layer lowered a recorded tier"
+O="$(cd "$RT" && FAKE_TIER=C APEX_DECIDE_CMD="$SMOKE_TMP/decide.sh" "$EX/risk-tier.sh" plans/r-plan.md 3 --classify)"
+has "^TIER: B" "$O" && has "said C, uncalibrated: not raised past B" "$O" || fail "an uncalibrated decision raised the tier to C: $O"
+printf '#!/bin/sh\necho "{\\"scored\\": true, \\"verdict\\": \\"C\\", \\"uncertain\\": false, \\"calibrated\\": true}"\n' >"$SMOKE_TMP/decide-cal.sh"; chmod +x "$SMOKE_TMP/decide-cal.sh"
+has "^TIER: C" "$(cd "$RT" && APEX_DECIDE_CMD="$SMOKE_TMP/decide-cal.sh" "$EX/risk-tier.sh" plans/r-plan.md 3 --classify)" || fail "a calibrated C did not raise the tier"
+O="$(cd "$RT" && APEX_DECISION_LAYER_ROOT="$SMOKE_TMP/no-decision-layer" "$EX/risk-tier.sh" plans/r-plan.md 1 --classify --no-record)"
+has "not installed and APEX_DECIDE_CMD not set" "$O" || fail "risk-tier --classify without a decision layer did not say so: $O"
+if [ -x "$PLUGIN_ROOT/../apex-decision-layer/bin/apex-decide" ]; then
+  O="$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1 --classify --no-record)"
+  has "no usable answer (backend_none)" "$O" || fail "risk-tier --classify did not reach the unconfigured sibling apex-decision-layer: $O"
+fi
 git -C "$RWT" mv src/auth/session.py src/x.py; git -C "$RWT" commit -qm mv
 has "^TIER: C" "$(cd "$RT" && "$EX/risk-tier.sh" plans/r-plan.md 1)" || fail "an auth file renamed to a bland name was not Tier C"
 expect_refusal "an unknown --since" "not a commit" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 1 --since deadbeefdeadbeef
 expect_refusal "a --since later than the task's base" "later than this task's base" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 1 --since "$(git -C "$RWT" rev-parse HEAD)"
 expect_refusal "a non-numeric risk-tier line" "plan line number" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md '1,$'
 expect_refusal "a risk-tier line that is not a task" "not a task" indir "$RT" "$EX/risk-tier.sh" plans/r-plan.md 2
-ok "risk-tier: fail-closed path classes, renames, UTF-8 paths, chain floor; decision layer raises only"
+ok "risk-tier: fail-closed path classes, renames, UTF-8 paths, chain floor; decision layer raises only, uncalibrated at most to B, sibling CLI found"
 
 # 35. green-gate re-baselines a step the baseline never ran, at the fork SHA,
 #     only when the fork resolves the same command (a plan-added step stays strict).
@@ -1330,10 +1340,10 @@ touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
 ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head (submodules included) and allows ignored tool caches"
 
-# 42. Portability (ADR-0003): version 0.4.0, ADR-0003 and ADR-0004 present, reviewer cannot
+# 42. Portability (ADR-0003): version 0.4.1, ADR-0003 and ADR-0004 present, reviewer cannot
 #     edit, ruflo optional (no required ruflo/claude-flow reference outside
 #     docs/legacy/), apex-plan template profiles.
-grep -q '"version": "0.4.0"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.4.0"
+grep -q '"version": "0.4.1"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.4.1"
 ADR4="$PLUGIN_ROOT/docs/adrs/0004-review-loop-calibration.md"
 [ -f "$ADR4" ] && grep -qE "^- \*\*Status:\*\* Accepted" "$ADR4" && grep -q '^## What this loosens and why it is safe' "$ADR4" || fail "ADR-0004 missing, not Accepted, or without its loosening section"
 ADR3="$PLUGIN_ROOT/docs/adrs/0003-portability-and-dispatch-consumer.md"
@@ -1347,7 +1357,7 @@ for prof in generic apex; do for t in adr-template.md plan-template.md; do
   [ -f "$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles/$prof/$t" ] || fail "apex-plan profile $prof lacks $t"
 done; done
 ! grep -qi 'getapexinsights\|apex-app' "$PLUGIN_ROOT"/skills/apex-plan/resources/templates/profiles/generic/*.md || fail "the generic apex-plan profile carries Apex-specific vocabulary"
-ok "portability: version 0.4.0, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
+ok "portability: version 0.4.1, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
 
 # 43. apex-dispatch Phase 3.2 consumers: green-gate.sh check PASS moves the ACTIVE
 #     lock BUILD -> GATE (only from BUILD; a FAIL leaves it); checkpoint.sh review

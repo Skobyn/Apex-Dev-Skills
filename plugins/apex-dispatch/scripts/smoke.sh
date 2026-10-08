@@ -426,6 +426,15 @@ O="$(rt plan plans/p.md --line "$L_AUTO" --dry-run)"
 printf '%s' '{"escalation":{"max_review_rounds":4}}' >"$WORK/ov-route.json"
 if APEX_DISPATCH_POLICY="$WORK/ov-route.json" rt plan plans/p.md --line "$L_AUTO" --dry-run >"$WORK/ov-route.out"; then fail "route.sh accepted an overlay that loosens a bound"; fi
 grep -q 'policy is invalid' "$WORK/ov-route.out" || fail "route.sh did not name the invalid overlay"
+# The sibling apex-decision-layer, installed but unconfigured, changes no ROUTE block: it answers
+# backend_none (logged), exactly like no CLI at all (decision-layer spec §13 item 9).
+O1="$(APEX_DECISION_LAYER_ROOT="$WORK/no-decision-layer" rt plan plans/p.md --line "$L_AUTO" --dry-run)"
+O2="$(rt plan plans/p.md --line "$L_AUTO" --dry-run)"
+[ "$O1" = "$O2" ] || fail "an unconfigured apex-decision-layer changed the ROUTE block: $(diff <(printf '%s\n' "$O1") <(printf '%s\n' "$O2") | head -5)"
+if [ -x "$MARKET_ROOT/plugins/apex-decision-layer/bin/apex-decide" ]; then
+  tail -1 "$FX/.dev-plan-state/decisions/decisions.jsonl" 2>/dev/null | grep -q '"reason": "backend_none"' \
+    || fail "route.sh did not call the sibling apex-decision-layer (no backend_none row in the decision log)"
+fi
 pass "modes: baseline/shadow emit baseline and record the table; off; decision seam (absent → table, uncalibrated only tightens, invalid → table); route.sh enforces the overlay bounds"
 
 # --- Phase 2.4: ledger.sh, report.sh, doctor.sh ------------------------------
@@ -883,6 +892,8 @@ for c in 'APEX_GIBSON=0 bash x' 'export APEX_GIBSON=0' 'env APEX_DISPATCH_MODE=b
          "sed -i s/BUILD/GATE/ .dev-plan-state/ACTIVE/owner.json" 'mv .claude/apex-dispatch/policy.json /tmp/' 'echo {} > .mcp.json' \
          'bash -c "git config core.autocrlf false"' 'echo $(rm -f .dev-plan-state/x)' "python3 $PLUGIN_ROOT/scripts/lib/ledger.py append" \
          'echo x > ~/.gitconfig' \
+         'APEX_DECIDE_CMD=./always-calibrated.sh bash iterate.sh' 'export APEX_DECIDE_FAKE=/tmp/f.json' 'unset APEX_DECISION_LAYER_ROOT' \
+         'APEX_DECIDE_TIMEOUT=60 bash risk-tier.sh' 'echo {} > .claude/apex-decision-layer/config.json' \
          "for f in \$(git ls-files '*.lock'); do git update-index --assume-unchanged \"\$f\"; done" \
          'git ls-files -m | while read f; do git update-index --skip-worktree "$f"; done' \
          'if [ -d .dev-plan-state/ACTIVE ]; then rm -rf .dev-plan-state/ACTIVE; fi' \
@@ -913,11 +924,13 @@ for c in 'git status' 'git log -1' 'git branch --show-current' 'echo x >/dev/nul
 done
 stage BUILD
 bash "$LEDGER" verify --state "$HSD" >/dev/null 2>&1 || fail "the ledger does not verify after hook rows"
-pass "pre-bash: tamper env, provider CLIs only via shims, bypass flags, git config writes/index flags/-c overrides/.git writes, run state; reads allowed; GATE denies git mutation and writes"
+pass "pre-bash: tamper env (decision layer included), provider CLIs only via shims, bypass flags, git config writes/index flags/-c overrides/.git writes, run state; reads allowed; GATE denies git mutation and writes"
 
 # 47. pre-edit: protected paths for any role, GATE/REVIEW, read-only roles, outside the worktree, lanes' Paths
 for f in .dev-plan-state/x .dev-plan-state/ACTIVE/owner.json .claude/apex-dispatch/policy.json .claude/settings.json \
          .claude/settings.local.json .mcp.json .git/config .git/info/attributes "$PLUGIN_ROOT/hooks/pre-bash.sh" \
+         .claude/apex-decision-layer/config.json .claude/apex-decision-layer/calibration/risk-tier@1/jev.json \
+         "$PLUGIN_ROOT/../apex-decision-layer/bin/apex-decide" \
          /usr/local/apex-smoke-outside.py; do
   is_deny pre-edit "$(pl edit "$HX" "$f")" "pre-edit allowed a write to $f"
 done
@@ -928,7 +941,7 @@ is_deny pre-edit "$(pl edit "$HX" src/a/x.py agent_id=r1 agent_type=apex-dispatc
 stage REVIEW
 is_deny pre-edit "$(pl edit "$HX" src/a/x.py)" "pre-edit allowed a write during REVIEW"
 stage BUILD
-pass "pre-edit: .dev-plan-state, .claude/apex-dispatch, settings, .mcp.json, .git, plugin files, outside the worktree denied; lanes' Paths; read-only roles; REVIEW"
+pass "pre-edit: .dev-plan-state, .claude/apex-dispatch, .claude/apex-decision-layer, settings, .mcp.json, .git, plugin files, outside the worktree denied; lanes' Paths; read-only roles; REVIEW"
 
 # 48. pre-mcp: a no-op unless the merged policy sets mcp.default_deny; then only allowlisted servers
 is_allow pre-mcp "$(pl mcp "$HX" mcp__other__tool)" "pre-mcp denied with mcp.default_deny false"
@@ -1842,17 +1855,17 @@ for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_cla
 done
 pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
 
-# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.3.1 everywhere
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.4.0 everywhere
 for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
   grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
   if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
   if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
 done
 V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
-[ "$V" = 0.3.1 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
-  || fail "the 0.3.1 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+[ "$V" = 0.4.0 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.4.0 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
 grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
-pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.3.1 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.4.0 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
 
 # --- Phase 4.2: flagged-off grok/opencode/aider shims, openai-sdk stub, compile --target codex,
 #     report --compare/--decision, carried hardening. Provider CLIs are stubs on a fixture PATH. ---
@@ -2342,6 +2355,11 @@ python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; x=[y 
   || fail "a decision-mode route row does not record the table's choice"
 O="$(bash "$REPORT" --state "$FSD" --decision 2>&1)"
 has "^REPORT_DECISION_TABLE: agreement with the table's own class 0.0% (n=1" "$O" && has '^REPORT_DECISION: 1 row(s); agreement 100.0%; moved the route 1' "$O" || fail "--decision did not report agreement with the table: $O"
+O="$(cd "$FD" && wenv env APEX_DECIDE_CMD="$WORK/decide" FAKE_DECISION='{"verdict":"docs","probabilities":{"docs":0.95,"feature":0.05},"calibrated":false,"uncertain":false,"backend":"fake","decision_id":"d10"}' bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_CLASS "$O")" = feature ] && [ "$(val SEMANTIC_SOURCE "$O")" = decision-shadow ] || fail "an uncalibrated cheaper decision moved the route: $O"
+python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; x=[y for y in r if y["event"]=="decision_shadow"]; assert x and x[-1]["deterministic_choice"]=="feature" and x[-1]["decision_choice"]=="docs" and x[-1]["decision_id"]=="d10", x' "$FSD/dispatch/ledger.jsonl" \
+  || fail "an answer that did not move the route wrote no decision_shadow row"
+bash "$LEDGER" verify --state "$FSD" >/dev/null 2>&1 || fail "the ledger does not verify after a decision_shadow row"
 pass "report --compare: unpriced/unverified usage makes USD not comparable (never \$0, no USD delta), one spawn per agent (equal per task), chain printed, mixed arms warned, unfinished tasks out of wall-clock; decision-mode routes record table_choice and --decision reports agreement with the table"
 
 # 83. run-only files: a provider's project config is moved aside and restored, worktree_files are undone, and both

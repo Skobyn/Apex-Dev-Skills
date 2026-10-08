@@ -96,6 +96,7 @@ NEVER_TOUCH = tuple((re.compile(rx, re.I), what) for rx, what in (
     (r"(^|/)\.dev-plan-state(/|$)", "run state (.dev-plan-state/)"),
     (r"(^|/)\.git(/|$)", "git internals (.git)"),
     (r"(^|/)\.claude/apex-dispatch(/|$)", ".claude/apex-dispatch/"),
+    (r"(^|/)\.claude/apex-decision-layer(/|$)", ".claude/apex-decision-layer/"),
     (r"(^|/)\.claude/settings[^/]*\.json$", ".claude/settings*.json"),
     (r"(^|/)\.claude/hooks(/|$)", ".claude/hooks/"),
     (r"(^|/)hooks/hooks\.json$", "hooks/hooks.json (hook registrations)"),

@@ -10,10 +10,12 @@
 #      approval (G12) before the task can be checked off
 #
 # Usage: ./risk-tier.sh PLAN.md LINE_NO [--since SHA] [--tags t1,t2] [--classify]
-#   --classify  also ask the decision layer (${APEX_DECIDE_CMD}, rubric
-#               risk-tier@1) and combine as max(heuristic, decision): a
-#               decision can raise the tier, never lower it (spec §6). Absent,
-#               failing or malformed: the heuristic stands, noted in REASON.
+#   --classify  also ask the decision layer (${APEX_DECIDE_CMD}, else the sibling
+#               apex-decision-layer; rubric risk-tier@1) and combine as
+#               max(heuristic, decision): a decision can raise the tier, never
+#               lower it (spec §6), and an uncalibrated one raises at most to B.
+#               Absent, unscored, uncertain or malformed: the heuristic stands,
+#               noted in REASON.
 #   --since  diff base for this task. Default and latest allowed: the chain
 #            floor (TASK_BASE in iterate.sh's brief: the head the last reviewed
 #            complete verified, else the run's fork point). An earlier base
@@ -317,7 +319,12 @@ print(",".join(out))' 2>/dev/null || true)"
 # Decision layer (optional): max(heuristic, decision). The state holds
 # observed facts only (paths, sizes, tags), never another model's labels.
 if [[ "$CLASSIFY" == "1" ]]; then
-  if [[ -n "${APEX_DECIDE_CMD:-}" ]]; then
+  # The CLI (decision-layer spec §11.3): APEX_DECIDE_CMD overrides; else the sibling
+  # apex-decision-layer's bin/apex-decide (APEX_DECISION_LAYER_ROOT overrides the lookup).
+  # Called as an argv list with the state on stdin, never through a shell.
+  DROOT="${APEX_DECISION_LAYER_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)/apex-decision-layer}"
+  DEXE=""; [[ -z "${APEX_DECIDE_CMD:-}" && -x "$DROOT/bin/apex-decide" ]] && DEXE="$DROOT/bin/apex-decide"
+  if [[ -n "${APEX_DECIDE_CMD:-}" || -n "$DEXE" ]]; then
     DSTATE="$(python3 - "$FILES" "$LINES" "$NFILES" "$TAGS" <<'PY'
 import json, sys
 files, lines, nfiles, tags = sys.argv[1:]
@@ -327,29 +334,44 @@ PY
 )"
     # Timeout in python: no dependency on coreutils `timeout` (absent on stock macOS).
     DOUT="$(python3 -c '
-import subprocess, sys
-cmd, state, limit = sys.argv[1:]
+import shlex, subprocess, sys
+cmd, exe, state, limit = sys.argv[1:]
+argv = shlex.split(cmd) if cmd else [exe]
+lim = float(limit)
 try:
-    p = subprocess.run(["bash", "-c", cmd + " --rubric risk-tier@1 --state \"$1\" --json", "_", state],
-                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=float(limit))
+    p = subprocess.run(argv + ["--rubric", "risk-tier@1", "--state", "-", "--json", "--deadline-ms", str(max(100, int(lim * 1000) - 400))],
+                       input=state.encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=lim)
     sys.stdout.write(p.stdout.decode("utf-8", "replace"))
 except Exception:
-    pass' "$APEX_DECIDE_CMD" "$DSTATE" "${APEX_DECIDE_TIMEOUT:-10}" 2>/dev/null || true)"
-    DTIER="$(python3 -c '
+    pass' "${APEX_DECIDE_CMD:-}" "$DEXE" "$DSTATE" "${APEX_DECIDE_TIMEOUT:-10}" 2>/dev/null || true)"
+    # TIER|CALIBRATED|WHY: a usable tier only when scored, a known tier and not uncertain.
+    DANS="$(python3 -c '
 import json, sys
 try:
     d = json.loads(sys.argv[1])
 except Exception:
-    sys.exit(0)
+    print("||malformed or no answer"); sys.exit(0)
+if not isinstance(d, dict):
+    print("||malformed answer"); sys.exit(0)
 v = str(d.get("verdict", "")).strip().upper()
-print(v if v in ("A", "B", "C") and not d.get("uncertain") else "")' "$DOUT" 2>/dev/null || true)"
-    if [[ -n "$DTIER" ]]; then
-      raise "$DTIER" "decision layer risk-tier@1: $DTIER"
+if d.get("scored") is False:
+    print("||%s" % (d.get("reason") or "unscored")); sys.exit(0)
+if d.get("uncertain"):
+    print("||uncertain"); sys.exit(0)
+if v not in ("A", "B", "C"):
+    print("||no tier in the answer"); sys.exit(0)
+print("%s|%s|" % (v, "calibrated" if d.get("calibrated") is True else "uncalibrated"))' "$DOUT" 2>/dev/null || echo '||malformed')"
+    IFS='|' read -r DTIER DCAL DWHY <<<"$DANS"
+    if [[ "$DTIER" == "C" && "$DCAL" != "calibrated" ]]; then
+      # Decision Q3: an uncalibrated answer may raise to B, never to C (Tier C costs G12 and seven reviewers).
+      raise B "decision layer risk-tier@1 said C, uncalibrated: not raised past B (reviewers: raise to C with --raise if real)"
+    elif [[ -n "$DTIER" ]]; then
+      raise "$DTIER" "decision layer risk-tier@1: $DTIER ($DCAL)"
     else
-      REASONS+=("decision layer: no usable answer (absent, uncertain or malformed); heuristic stands")
+      REASONS+=("decision layer: no usable answer ($DWHY); heuristic stands")
     fi
   else
-    REASONS+=("decision layer: APEX_DECIDE_CMD not set; heuristic only")
+    REASONS+=("decision layer: not installed and APEX_DECIDE_CMD not set; heuristic only")
   fi
 fi
 

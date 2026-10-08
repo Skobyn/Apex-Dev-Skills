@@ -63,6 +63,13 @@ TAMPER_ENV = {
     "APEX_ERROR_BUDGET": None,
     "APEX_ESCALATE_AFTER": None,
     "APEX_DISPATCH_WORKER_WT": None,                     # set only by worker.py for a claude -p write worker
+    # The decision layer (decision-layer spec §11.2 item 2): which CLI answers, how long it
+    # may take, a scripted fake backend, a test-only host override and the sibling lookup.
+    "APEX_DECIDE_CMD": None,
+    "APEX_DECIDE_TIMEOUT": None,
+    "APEX_DECIDE_FAKE": None,
+    "APEX_DECIDE_JEV_BASE": None,
+    "APEX_DECISION_LAYER_ROOT": None,
 }
 # Layer A bypass families: denied anywhere in a command.
 BYPASS_PREFIXES = ("--dangerously-", "--yolo", "--always-approve", "--full-auto")
@@ -138,6 +145,8 @@ class Ctx:
         self.kind, self.plugin_root, self.exec_scripts = kind, real(plugin_root), exec_scripts
         self.state_base, self.repo_root = real(state_base), real(repo_root)
         self.scope_loop_root = real(os.path.join(exec_scripts, "..", "..", "..")) if exec_scripts else None
+        dl = os.environ.get("APEX_DECISION_LAYER_ROOT") or os.path.join(plugin_root, "..", "apex-decision-layer")
+        self.decision_layer_root = real(dl) if os.path.isdir(dl) else None
         self.owner = read_json(os.path.join(state_base, "ACTIVE", "owner.json"))
         self.owner_ok = isinstance(self.owner, dict) and bool(self.owner)
         o = self.owner if self.owner_ok else {}
@@ -316,6 +325,8 @@ def protected_reason(ctx, path, removal=True):
         return "git internals (.git/: config, info/, hooks/, index) are not written during a run"
     if re.search(r"(^|/)\.claude/apex-dispatch(/|$)", path):
         return ".claude/apex-dispatch/ (policy overlay, tracked ledger) is not written during a run"
+    if re.search(r"(^|/)\.claude/apex-decision-layer(/|$)", path):
+        return ".claude/apex-decision-layer/ (decision config, labels, calibration records) is not written during a run"
     if re.search(r"(^|/)\.claude/settings[^/]*\.json$", path):
         return ".claude/settings*.json is not written during a run"
     if re.search(r"(^|/)\.claude/hooks(/|$)", path):
@@ -324,7 +335,8 @@ def protected_reason(ctx, path, removal=True):
         return ".mcp.json is not written during a run"
     if os.path.basename(path) == ".gitconfig" or re.search(r"(^|/)\.config/git(/|$)", path) or path == "/etc/gitconfig":
         return "git configuration files are not written during a run"
-    for root, what in ((ctx.plugin_root, "apex-dispatch"), (ctx.scope_loop_root, "apex-scope-loop")):
+    for root, what in ((ctx.plugin_root, "apex-dispatch"), (ctx.scope_loop_root, "apex-scope-loop"),
+                       (ctx.decision_layer_root, "apex-decision-layer")):
         if root and under(path, root):
             return "the installed %s plugin (its hooks and scripts) is not written during a run" % what
     return None
