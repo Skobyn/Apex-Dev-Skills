@@ -33,10 +33,9 @@ done
 TEMP=()
 if [[ -n "$PLAN" ]]; then
   [[ -f "$PLAN" ]] || { echo "doctor: plan not found: $PLAN" >&2; exit 1; }
-  EX=""
-  for c in "${APEX_SCOPE_LOOP_ROOT:-}" "$PLUGIN_ROOT/../apex-scope-loop"; do
-    [[ -n "$c" && -f "$c/skills/apex-execute/scripts/_lib.sh" ]] && { EX="$c/skills/apex-execute/scripts"; break; }
-  done
+  # shellcheck source=lib/sibling.bash
+  source "$PLUGIN_ROOT/scripts/lib/sibling.bash"
+  EX="$(apex_scope_loop_scripts "$PLUGIN_ROOT")"
   [[ -n "$EX" ]] || { echo "doctor: --plan needs apex-scope-loop beside apex-dispatch (or pass --state)" >&2; exit 1; }
   # shellcheck source=/dev/null
   source "$EX/_lib.sh"

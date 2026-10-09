@@ -115,7 +115,7 @@ if [[ -z "$(read_field worktree_branch)" ]]; then
     EXCL+=(":(exclude,top,literal)$rel")
   done
 fi
-PATHSPEC=(-- . "${EXCL[@]}")
+PATHSPEC=(-- . ${EXCL[@]+"${EXCL[@]}"})   # bash 3.2 (macOS) + set -u: an empty array is "unbound"
 # Paths are read NUL-separated (git C-quotes control characters even with
 # quotepath off, and a quote escape can fuse with the next word); control
 # characters become "_" (a word break) before classification.
@@ -292,10 +292,10 @@ if grep -aqiE '(^|/)(api|routes?|shared|common|core|lib)/' <<<"$FILES"; then
   BSIG+=("touches a shared module or API route")
 fi
 if [[ -n "$TAG_TIER" ]]; then
-  for b in "${BSIG[@]}"; do REASONS+=("$b — the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER") reason=\"$TAG_REASON\"] decides"); done
+  for b in ${BSIG[@]+"${BSIG[@]}"}; do REASONS+=("$b — the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER") reason=\"$TAG_REASON\"] decides"); done
   [[ "$TAG_TIER" == B ]] && raise B "task override [tier:b reason=\"$TAG_REASON\"]"
 else
-  for b in "${BSIG[@]}"; do raise B "$b"; done
+  for b in ${BSIG[@]+"${BSIG[@]}"}; do raise B "$b"; done
 fi
 
 # The lens each Tier C signal belongs to (ADR-0004: a Tier C lens narrowing
@@ -322,7 +322,7 @@ if [[ "$CLASSIFY" == "1" ]]; then
   # The CLI (decision-layer spec §11.3): APEX_DECIDE_CMD overrides; else the sibling
   # apex-decision-layer's bin/apex-decide (APEX_DECISION_LAYER_ROOT overrides the lookup).
   # Called as an argv list with the state on stdin, never through a shell.
-  DROOT="${APEX_DECISION_LAYER_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)/apex-decision-layer}"
+  DROOT="${APEX_DECISION_LAYER_ROOT:-$(apex_sibling_root apex-decision-layer)}"
   DEXE=""; [[ -z "${APEX_DECIDE_CMD:-}" && -x "$DROOT/bin/apex-decide" ]] && DEXE="$DROOT/bin/apex-decide"
   if [[ -n "${APEX_DECIDE_CMD:-}" || -n "$DEXE" ]]; then
     DSTATE="$(python3 - "$FILES" "$LINES" "$NFILES" "$TAGS" <<'PY'
@@ -394,7 +394,7 @@ epoch = s.get("epoch", 0)               # the tier still ratchets across a refor
 prev_rec = tiers.get(line_no) or {}
 rec = {"tier": final, "since": since, "head": head, "epoch": epoch}
 if ov_tier:
-    rec["override"] = {"tier": ov_tier, "reason": ov_reason}      # the plan's explicit override and why
+    rec["override"] = {"tier": ov_tier, "reason": ov_reason}      # the explicit override in the plan, and why
 raised = list(prev_rec.get("raised") or [])
 if raise_tier:
     raised.append({"tier": raise_tier, "reason": raise_reason})  # a reviewer raised it (never lowers)

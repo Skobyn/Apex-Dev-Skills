@@ -252,7 +252,7 @@ elif trec.get("head") != head:
     problems.append(f"the risk tier was recorded for {str(trec.get('head') or 'an older version')[:12]}, not the head {head[:12]} "
                     f"— re-run: risk-tier.sh {plan_arg} {line_no} --since {floor} (TASK_BASE)")
 # Effective tier: the higher of the recorded tier and the tier the task diff
-# shows now (classified here from the chain floor, with the plan's tags).
+# shows now (classified here from the chain floor, with the tags of the plan).
 tier = max([t for t in (recorded, computed) if t in order], key=order.get)
 if recorded in order and order[computed] > order[recorded]:
     problems.append(f"the task diff since {floor[:12]} classifies as Tier {computed}, above the recorded Tier {recorded} "
@@ -315,13 +315,13 @@ elif not skip:
                         f"— run a full round: SINCE = TASK_BASE, checkpoint.sh {plan_arg} freeze {line_no} <sha> --mode full, review … --mode full")
     elif tier == "C" and not any(x.get("role") == "adversarial" and x.get("tier") == "C" for x in full):
         problems.append("Tier C: a full-mode adversarial review at Tier C in this attempt is required (risk-tier.sh before it; --mode full)")
-# The plan's Review: directive (ADR-0004 addendum B). Tier A/B: it may drop
+# The Review: directive of the plan (ADR-0004 addendum B). Tier A/B: it may drop
 # the adversarial pass and choose the lenses. Tier C (and, without dispatch
 # state, a task tagged security/auth/money/billing/payment/pii/consent/
 # migration): it may narrow the lens fan-out to no fewer than 3 DISTINCT
 # lenses, which must include the lens of each triggering signal (money,
 # security, consent-pii); the adversarial pass and G12 stay. With dispatch
-# state it never goes below the active route's review shape.
+# state it never goes below the review shape of the active route.
 tj = json.loads(task_json)
 rdir = tj.get("review") or {}
 dir_applied, dir_ignored = [], []
@@ -345,7 +345,7 @@ if rdir:
     if lz and lz != "all":
         ls = sorted({x for x in lz.split(",") if x})
         if route_floor == "fanout6+adversarial":
-            dir_ignored.append(f"lenses={lz} (the active route's review shape {route_floor} needs all six)")
+            dir_ignored.append(f"lenses={lz} (for the active route, review shape {route_floor} needs all six)")
         elif strict and len(ls) < 3:
             dir_ignored.append(f"lenses={lz} (Tier C keeps at least 3 distinct lenses: all six required)")
         else:
@@ -356,7 +356,7 @@ if rdir:
         if strict:
             dir_ignored.append("adversarial=no (mandatory for Tier C / sensitive tasks)")
         elif route_floor == "fanout6+adversarial":
-            dir_ignored.append(f"adversarial=no (the active route's review shape {route_floor} requires it)")
+            dir_ignored.append(f"adversarial=no (for the active route, review shape {route_floor} requires it)")
         else:
             need_adversarial_override = False
             dir_applied.append("adversarial=no")
@@ -438,9 +438,9 @@ if os.path.isdir(dstate) and not skip:
             doc = json.load(open(os.path.join(dstate, "doctor.json")))
         except Exception:
             doc = {}
-        # One rule with doctor.sh: apex-dispatch's ledger.second_families (an
+        # One rule with doctor.sh: ledger.second_families in apex-dispatch (an
         # available, verified provider whose bin/worker-*.sh shim ships and that
-        # may review this route's class).
+        # may review the class of this route).
         second = []
         if droot:
             try:
@@ -702,7 +702,15 @@ if os.path.isdir(dstate):
     if rec.get("head_sha") != sha:
         die(f"the provenance record reviewed {str(rec.get('head_sha'))[:12]}, not {sha[:12]}")
     if rec.get("verdict") != verdict:
-        die(f"the provenance record says {rec.get('verdict')}, not {verdict}")
+        # The hook writes verdict_trace (apex-dispatch 0.6.0+): the lines it read and why each
+        # did or did not count, so an UNPARSED record names its cause.
+        tr = rec.get("verdict_trace") if isinstance(rec.get("verdict_trace"), list) else []
+        why = "; ".join("line %s %r -> %s%s" % (t.get("line"), str(t.get("text", ""))[:80], t.get("value"),
+                                                 " (" + str(t.get("why")) + ")" if t.get("why") else "")
+                        for t in tr[-6:] if isinstance(t, dict))
+        die(f"the provenance record says {rec.get('verdict')}, not {verdict}"
+            + (f". The hook read: {why}" if why else "")
+            + (f". Source: {rec.get('verdict_source')}" if rec.get("verdict_source") else ""))
     rrole = str(rec.get("role", ""))
     if not re.fullmatch(ROLE_RE, rrole):
         die(f"the provenance record has role {rec.get('role')!r}, not a reviewer role")
@@ -874,7 +882,7 @@ def refuse(msg):
 # Strict form, no negation parsing: after trimming whitespace and optional
 # surrounding quotes/backticks, the reply must START with "waive <LINE>"
 # (any case), followed by the end or a separator; a remark may follow.
-body = reply.strip().strip("\"'`\u2018\u2019\u201c\u201d").strip()
+body = reply.strip().strip("\"\x27\x60\u2018\u2019\u201c\u201d").strip()   # \x27, \x60: bash 3.2 reads this heredoc
 if not re.match(r"waive\s+%s(?:$|[\s.,:;\u2014\u2013-])" % re.escape(line_no), body, re.I):
     refuse(f"the reply does not start with 'waive {line_no}' — ask the human to reply plainly `waive {line_no}` (optionally followed by a remark)")
 s = json.load(open(path))

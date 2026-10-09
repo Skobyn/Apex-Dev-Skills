@@ -15,7 +15,7 @@ Review the diff in the brief against its Acceptance line and assigned lenses, un
 
 ## Return
 
-Findings as file:line with a concrete failure scenario, a clearance line per lens, then, when the brief assigns you one lens of a Tier C fan-out, a line that is exactly LENS: <lens> (correctness, security, consent-pii, money, performance or maintainability), and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES. Mark blocking findings [blocking]. The hook fails closed: a [blocking] finding, an APPROVE remark beyond nits/minor/optional/LGTM, or a non-approving verdict line anywhere means no approval; APPROVE in code or quotes does not count.
+Findings as file:line with a concrete failure scenario, a clearance line per lens, then, for one lens of a Tier C fan-out, a line exactly LENS: <lens> (correctness, security, consent-pii, money, performance or maintainability), and a final line exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES. Use the word VERDICT only on that final line. Mark blocking findings [blocking]. The hook fails closed: a [blocking] finding, an APPROVE remark beyond nits/minor/optional/LGTM, or any other non-approving verdict line means no approval; APPROVE in code or quotes does not count.
 
 ## Limits
 

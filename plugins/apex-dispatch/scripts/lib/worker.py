@@ -64,6 +64,7 @@ sys.path.insert(0, HERE)
 os.environ.pop("APEX_DISPATCH_WORKER_WT", None)        # the shim is never itself a worker session
 import hooks  # noqa: E402  (Ctx, parse_review, live_agents, set_stage, glob_re, ...)
 import ledger  # noqa: E402  (the single ledger writer)
+import sibling  # noqa: E402  (the highest installed version of a sibling plugin)
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_REFUSED, EXIT_UNAVAILABLE, EXIT_CONFINE = 0, 1, 2, 3, 4, 5
 EXIT_NOT_IMPLEMENTED = 6
@@ -307,7 +308,7 @@ def build_claude_p(ctx, p, binary, role, mode, router, usd, cwd, out):
         tools = [t for t in tools if t in ("Read", "Grep", "Glob")]
     argv = [binary] + list(p.get("forced_flags") or [])
     argv += ["--plugin-dir", ctx.plugin_root]
-    g = os.path.realpath(os.path.join(ctx.plugin_root, "..", "apex-guardrails"))
+    g = sibling.find(ctx.plugin_root, "apex-guardrails")[0] or os.path.join(ctx.plugin_root, "..", "apex-guardrails")
     if os.path.isfile(os.path.join(g, ".claude-plugin", "plugin.json")):
         argv += ["--plugin-dir", g]
     argv += ["--agent", "apex-dispatch:%s" % agent, "--model", model, "--max-budget-usd", "%.2f" % usd]

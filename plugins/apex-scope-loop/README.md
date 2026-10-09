@@ -143,7 +143,7 @@ Full mapping, and what was deliberately left out (cross-vendor routing, GitHub c
 
 - **Claude Code:** 2.0+ (requires `/loop`, `/schedule`, AskUserQuestion, ScheduleWakeup, Agent)
 - **git:** 2.40+ (the clean-worktree check builds its comparison checkout with `--attr-source=HEAD`; older git makes the gate fail closed on files git converts on checkout)
-- **bash** 4+ and **python3** 3.8+ (stdlib only)
+- **bash** 3.2+ (the macOS default `/bin/bash` included) and **python3** 3.8+ (stdlib only)
 - **ruflo / `@claude-flow/cli`:** optional — used only when `APEX_MEMORY_CMD` seeds memory or a plan's advisory `Swarm:` directive is run through it
 
 ## Namespace coordination

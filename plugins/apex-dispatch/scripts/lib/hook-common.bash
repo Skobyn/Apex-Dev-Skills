@@ -25,14 +25,10 @@ apex_hook_out() {
 }
 
 apex_hook_scope_loop_scripts() {
-  local root="$1" c
-  for c in "${APEX_SCOPE_LOOP_ROOT:-}" "$root/../apex-scope-loop"; do
-    [[ -n "$c" && -f "$c/skills/apex-execute/scripts/_lib.sh" ]] && { (cd "$c/skills/apex-execute/scripts" && pwd); return 0; }
-  done
-  for c in "$root"/../../apex-scope-loop/*/; do
-    [[ -f "$c/skills/apex-execute/scripts/_lib.sh" ]] && { (cd "$c/skills/apex-execute/scripts" && pwd); return 0; }
-  done
-  return 0
+  # The highest installed version wins (scripts/lib/sibling.bash), never the first glob match.
+  # shellcheck source=/dev/null
+  source "$1/scripts/lib/sibling.bash"
+  apex_scope_loop_scripts "$1"
 }
 
 # apex_hook_run KIND — KIND is agent | bash | edit | mcp | post-agent | post-bash |

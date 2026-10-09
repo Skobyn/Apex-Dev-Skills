@@ -1340,10 +1340,10 @@ touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
 ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head (submodules included) and allows ignored tool caches"
 
-# 42. Portability (ADR-0003): version 0.4.3, ADR-0003 and ADR-0004 present, reviewer cannot
+# 42. Portability (ADR-0003): version 0.4.4, ADR-0003 and ADR-0004 present, reviewer cannot
 #     edit, ruflo optional (no required ruflo/claude-flow reference outside
 #     docs/legacy/), apex-plan template profiles.
-grep -q '"version": "0.4.3"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.4.3"
+grep -q '"version": "0.4.4"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.4.4"
 ADR4="$PLUGIN_ROOT/docs/adrs/0004-review-loop-calibration.md"
 [ -f "$ADR4" ] && grep -qE "^- \*\*Status:\*\* Accepted" "$ADR4" && grep -q '^## What this loosens and why it is safe' "$ADR4" || fail "ADR-0004 missing, not Accepted, or without its loosening section"
 ADR3="$PLUGIN_ROOT/docs/adrs/0003-portability-and-dispatch-consumer.md"
@@ -1357,7 +1357,7 @@ for prof in generic apex; do for t in adr-template.md plan-template.md; do
   [ -f "$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles/$prof/$t" ] || fail "apex-plan profile $prof lacks $t"
 done; done
 ! grep -qi 'getapexinsights\|apex-app' "$PLUGIN_ROOT"/skills/apex-plan/resources/templates/profiles/generic/*.md || fail "the generic apex-plan profile carries Apex-specific vocabulary"
-ok "portability: version 0.4.3, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
+ok "portability: version 0.4.4, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
 
 # 43. apex-dispatch Phase 3.2 consumers: green-gate.sh check PASS moves the ACTIVE
 #     lock BUILD -> GATE (only from BUILD; a FAIL leaves it); checkpoint.sh review
@@ -1960,5 +1960,63 @@ has '^TIER: C' "$(rtc '[docs]' plugins/x/agents/a.md 'Store the stripe secret')"
 has '^TIER: B' "$(rtc '[docs]' README.md 'stripe')" || fail "a top-level README term was not Tier B"
 ok "round-2 fixes: review mode enforced (brief predates the rise; review-mode, freeze and complete enforce full); every content term vs the override; plain waiver replies; ASK_HUMAN pending; Markdown-only Tier B; done needs run state"
 
+# bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
+# expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
+# lines just above, or name an array that is never empty.
+python3 - "$PLUGIN_ROOT" <<'PY' || fail "an unguarded array expansion would crash under macOS bash 3.2 with set -u"
+import glob, os, re, sys
+ALWAYS = {"GIT", "DIFF_OPTS", "PATHSPEC", "STEPS", "ARGS"}
+bad = []
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "skills", "*", "scripts", "*.sh"))):
+    L = open(f).read().splitlines()
+    if not any(re.match(r"\s*set -[a-z]*u", l) for l in L):
+        continue
+    for i, l in enumerate(L):
+        for m in re.finditer(r'"\$\{([A-Za-z_]\w*)\[[@*]\]\}"|\$\{([A-Za-z_]\w*)\[\*\]\}|"\$\{!([A-Za-z_]\w*)\[@\]\}"', l):
+            n = m.group(1) or m.group(2) or m.group(3)
+            if n in ALWAYS or ("${%s[@]+" % n) in l or ("#%s[@]" % n) in "\n".join(L[max(0, i - 5):i + 1]):
+                continue
+            bad.append("%s:%d %s" % (os.path.relpath(f, sys.argv[1]), i + 1, n))
+if bad:
+    print("\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+PY
+ok "bash 3.2: every array expansion in a set -u script is guarded, follows a length test, or names a never-empty array"
+
+# bash 3.2 cannot parse a heredoc inside $( ) whose body has an odd count of ' or ` (checkpoint.sh did not parse on macOS).
+python3 - "$PLUGIN_ROOT" <<'PY' || fail "a heredoc inside \$( ) has an odd count of ' or \` (bash 3.2 cannot parse it)"
+import glob, os, re, sys
+bad = []
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "**", "*.sh"), recursive=True)):
+    L = open(f, encoding="utf-8").read().split("\n")
+    i = 0
+    while i < len(L):
+        m = re.search(r"<<-?\s*['\"]?(\w+)['\"]?\s*$", L[i])
+        if m and "$(" in L[i]:
+            j = i + 1
+            while j < len(L) and L[j].strip() != m.group(1):
+                j += 1
+            body = "\n".join(L[i + 1:j])
+            if body.count("'") % 2 or body.count("`") % 2:
+                bad.append("%s:%d" % (os.path.relpath(f, sys.argv[1]), i + 1))
+            i = j
+        i += 1
+if bad:
+    print("\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+PY
+# Siblings resolve to the highest installed version, never the first glob match; iterate.md passes only the plan path.
+SC="$(mktemp -d)"; mkdir -p "$SC/mk/apex-scope-loop/0.4.4/skills/apex-execute"
+for v in 0.1.0 0.6.0 0.10.0 0.9.9; do mkdir -p "$SC/mk/apex-dispatch/$v/.claude-plugin" "$SC/mk/apex-dispatch/$v/scripts"; printf '{"version": "%s"}\n' "$v" >"$SC/mk/apex-dispatch/$v/.claude-plugin/plugin.json"; printf '#!/bin/sh\n' >"$SC/mk/apex-dispatch/$v/scripts/route.sh"; chmod +x "$SC/mk/apex-dispatch/$v/scripts/route.sh"; done
+GOT="$(APEX_SCOPE_LOOP_PLUGIN_ROOT="$SC/mk/apex-scope-loop/0.4.4" bash -c 'source "$1"; APEX_SCOPE_LOOP_PLUGIN_ROOT="$2"; apex_dispatch_root' _ "$PLUGIN_ROOT/skills/apex-execute/scripts/_lib.sh" "$SC/mk/apex-scope-loop/0.4.4")"
+[ "$GOT" = "$(cd "$SC/mk/apex-dispatch/0.10.0" && pwd -P)" ] || fail "apex_dispatch_root did not pick the highest cached version (0.10.0): $GOT"
+rm -rf "$SC"
+! grep -qF 'DROOT="${APEX_DECISION_LAYER_ROOT:-$(cd' "$PLUGIN_ROOT/skills/apex-execute/scripts/risk-tier.sh" && grep -qF 'apex_sibling_root apex-decision-layer' "$PLUGIN_ROOT/skills/apex-execute/scripts/risk-tier.sh" \
+  || fail "risk-tier.sh does not find the decision layer through apex_sibling_root"
+! grep -qE '\$S/[a-z-]+\.sh \$ARGUMENTS' "$PLUGIN_ROOT/commands/iterate.md" && grep -qF '**The plan path.**' "$PLUGIN_ROOT/commands/iterate.md" \
+  || fail "commands/iterate.md still passes \$ARGUMENTS to a script"
+grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh" || fail "checkpoint.sh does not print the verdict trace of a refused record"
+ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
+
 echo ""
-echo "smoke passed: 61/61 checks"
+echo "smoke passed: 63/63 checks"
