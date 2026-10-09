@@ -1860,17 +1860,17 @@ for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_cla
 done
 pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
 
-# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.6.0 everywhere
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.6.1 everywhere
 for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
   grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
   if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
   if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
 done
 V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
-[ "$V" = 0.6.0 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
-  || fail "the 0.6.0 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+[ "$V" = 0.6.1 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.6.1 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
 grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
-pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.6.0 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.6.1 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
 
 # --- Phase 4.2: flagged-off grok/opencode/aider shims, openai-sdk stub, compile --target codex,
 #     report --compare/--decision, carried hardening. Provider CLIs are stubs on a fixture PATH. ---
@@ -2711,13 +2711,37 @@ with open(t, "w") as f:
                {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done.\nVERDICT: APPROVE"}]}}):
         f.write(json.dumps(ln) + "\n")
 assert hooks.transcript_last_text(t) == "Done.\nVERDICT: APPROVE" and hooks.transcript_last_text(t + ".missing") is None
+def tx(name, *entries):
+    q = os.path.join(sys.argv[2], name)
+    with open(q, "w") as f:
+        for content in entries:
+            f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": content}}) + "\n")
+    return q
+use = lambda name, inp: {"type": "tool_use", "id": "u-" + name, "name": name, "input": inp}
+# A report handed back through a tool call (last_assistant_message empty) is read from the call's input.
+hb = tx("sa-handback.jsonl", [{"type": "text", "text": "Reading."}, use("Read", {"file_path": "a.py"})],
+        [use("SubmitReport", {"report": {"summary": "Acceptance met.", "body": "LENS: security\nVERDICT: APPROVE"}})])
+assert hooks.transcript_report(hb) == ("Acceptance met.\nLENS: security\nVERDICT: APPROVE", "agent_transcript:tool_use:SubmitReport"), hooks.transcript_report(hb)
+# Work after the text is not a report; a work tool is never a hand-back; mcp tools neither.
+assert hooks.transcript_report(tx("sa-work.jsonl", [{"type": "text", "text": "VERDICT: APPROVE"}, use("Bash", {"command": "echo hi"})])) == (None, None)
+assert hooks.transcript_report(tx("sa-mcp.jsonl", [use("mcp__x__post", {"body": "VERDICT: APPROVE"})])) == (None, None)
+assert hooks.transcript_report(tx("sa-txt.jsonl", [use("Read", {"file_path": "a"})], [{"type": "text", "text": "ok\nVERDICT: REQUEST_CHANGES"}]))[1] == "agent_transcript:text"
 PY
 start ind1 apex-dispatch:reviewer; stopa ind1 apex-dispatch:reviewer "$(printf '  Findings: none\n  VERDICT: APPROVE')"
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["verdict"]=="APPROVE" and r["verdict_source"]=="last_assistant_message" and r["verdict_trace"][-1]["value"]=="APPROVE", r' "$UD/reviews-raw/ind1.json" \
   || fail "an indented reviewer APPROVE was not recorded as APPROVE with its trace"
 start tx1 apex-dispatch:reviewer; stopa tx1 apex-dispatch:reviewer '' false "$WORK/sa-transcript.jsonl"
-python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["verdict"]=="APPROVE" and r["verdict_source"]=="agent_transcript", r' "$UD/reviews-raw/tx1.json" \
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["verdict"]=="APPROVE" and r["verdict_source"]=="agent_transcript:text", r' "$UD/reviews-raw/tx1.json" \
   || fail "an empty last_assistant_message did not fall back to the subagent transcript"
+start hb1 apex-dispatch:reviewer; stopa hb1 apex-dispatch:reviewer '' false "$WORK/sa-handback.jsonl"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["verdict"]=="APPROVE" and r["lens"]=="security" and r["verdict_source"]=="agent_transcript:tool_use:SubmitReport", r' "$UD/reviews-raw/hb1.json" \
+  || fail "a report handed back through a tool call was not recorded from the call input"
+start hb2 apex-dispatch:reviewer; stopa hb2 apex-dispatch:reviewer 'Report submitted.' false "$WORK/sa-handback.jsonl"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["verdict"]=="APPROVE" and r["verdict_source"].startswith("agent_transcript:tool_use:"), r' "$UD/reviews-raw/hb2.json" \
+  || fail "a note without a VERDICT line after a hand-back did not fall back to the hand-back report"
+start hb3 apex-dispatch:reviewer; stopa hb3 apex-dispatch:reviewer "$(printf 'Verdict: approve if CI passes')" false "$WORK/sa-handback.jsonl"
+[ "$(jget "$UD/reviews-raw/hb3.json" verdict)" = UNPARSED ] && [ "$(jget "$UD/reviews-raw/hb3.json" verdict_source)" = last_assistant_message ] \
+  || fail "a payload message with its own non-clean verdict line was overridden by the transcript"
 ustage BUILD
 SC="$WORK/sibcache/mk"; for v in 0.1.0 0.4.2 0.9.9 0.10.1; do mkdir -p "$SC/apex-scope-loop/$v/.claude-plugin" "$SC/apex-scope-loop/$v/skills/apex-execute/scripts"; printf '{"name":"apex-scope-loop","version":"%s"}\n' "$v" >"$SC/apex-scope-loop/$v/.claude-plugin/plugin.json"; : >"$SC/apex-scope-loop/$v/skills/apex-execute/scripts/_lib.sh"; done
 mkdir -p "$SC/apex-dispatch/0.6.0"; SIBPY="$PLUGIN_ROOT/scripts/lib/sibling.py"
@@ -2754,7 +2778,7 @@ RUNMD="$PLUGIN_ROOT/commands/run.md"
   || fail "commands/run.md still passes \$ARGUMENTS to a script or resolves \$S by a first-match glob"
 ! grep -rqE 'apex-scope-loop/\*/|\.\./\.\./apex-scope-loop' "$PLUGIN_ROOT/scripts" "$PLUGIN_ROOT/bin" --include=*.sh --include=*.bash --exclude=smoke.sh --exclude=sibling.bash \
   || fail "a script still resolves apex-scope-loop by a first-match glob"
-pass "macOS field fixes: verdict parser (shared indent, 'APPROVE. nits', CommonMark fences, unclosed fence, trace on the record, transcript fallback); sibling resolver takes the highest cached version (py and bash), env override, --min names the installs; no bash-3.2-breaking heredoc; run.md extracts the plan path"
+pass "macOS field fixes: verdict parser (shared indent, 'APPROVE. nits', CommonMark fences, unclosed fence, trace on the record, transcript fallback incl. a hand-back tool call); sibling resolver takes the highest cached version (py and bash), env override, --min names the installs; no bash-3.2-breaking heredoc; run.md extracts the plan path"
 
 echo ""
 echo "smoke passed: $N/$N checks"

@@ -1633,19 +1633,45 @@ def parse_review_traced(msg):
     return ("APPROVE" if values else "UNPARSED"), lens, trace
 
 
-def transcript_last_text(path, limit=4 * 1024 * 1024):
-    """The last assistant text in a subagent transcript (JSONL), or None. Used only
-    when the hook payload carries no last_assistant_message."""
+# Tools a reviewer works with. Its last act being one of these is work, not a report;
+# any other tool as its last act (a hand-back or report tool) carries the report.
+WORK_TOOLS = EDIT_TOOLS | {"Read", "Grep", "Glob", "Bash", "BashOutput", "KillShell", "Agent", "Task", "TodoWrite",
+                           "WebFetch", "WebSearch", "LS", "NotebookRead", "ToolSearch", "Skill"}
+
+
+def _input_text(value, out, budget=200 * 1024):
+    """Every string in a tool input, depth first, up to budget characters in all."""
+    if sum(len(x) for x in out) >= budget:
+        return out
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            _input_text(v, out, budget)
+    elif isinstance(value, list):
+        for v in value:
+            _input_text(v, out, budget)
+    return out
+
+
+def transcript_report(path, limit=4 * 1024 * 1024):
+    """(text, source) of a reviewer's report from its transcript (JSONL), or (None, None).
+
+    The report is the reviewer's last act: its last assistant text block, or, when a
+    tool call came after that text and the tool is not one it works with (WORK_TOOLS,
+    mcp__*), every string of that call's input. Some Claude Code builds deliver a
+    subagent's final report through such a hand-back call, which leaves
+    last_assistant_message empty. The text is parsed fail-closed like any message."""
     if not isinstance(path, str) or not os.path.isfile(path):
-        return None
+        return None, None
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as f:
             f.seek(max(0, size - limit))
             data = f.read().decode("utf-8", "replace")
     except OSError:
-        return None
-    text = None
+        return None, None
+    found = (None, None)
     for ln in data.splitlines():
         try:
             obj = json.loads(ln)
@@ -1655,13 +1681,31 @@ def transcript_last_text(path, limit=4 * 1024 * 1024):
         if not isinstance(msg, dict) or (msg.get("role") != "assistant" and obj.get("type") != "assistant"):
             continue
         content = msg.get("content")
-        if isinstance(content, list):
-            parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
-        else:
-            parts = [content] if isinstance(content, str) else []
-        if any(p.strip() for p in parts):
-            text = "\n".join(parts)
-    return text
+        items = content if isinstance(content, list) else [{"type": "text", "text": content}] if isinstance(content, str) else []
+        texts = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if it.get("type") == "text" and isinstance(it.get("text"), str):
+                texts.append(it["text"])
+            elif it.get("type") == "tool_use":
+                if any(t.strip() for t in texts):
+                    found = ("\n".join(texts), "agent_transcript:text")
+                texts = []
+                name = str(it.get("name") or "")
+                if name in WORK_TOOLS or name.startswith("mcp__"):
+                    found = (None, None)                     # work came after: no report yet
+                else:
+                    body = "\n".join(_input_text(it.get("input"), []))
+                    found = (body, "agent_transcript:tool_use:" + name[:64]) if body.strip() else (None, None)
+        if any(t.strip() for t in texts):
+            found = ("\n".join(texts), "agent_transcript:text")
+    return found
+
+
+def transcript_last_text(path, limit=4 * 1024 * 1024):
+    """The reviewer's report text from its transcript, or None (see transcript_report)."""
+    return transcript_report(path, limit)[0]
 
 
 def audit_transcript(ctx, p):
@@ -1762,12 +1806,18 @@ def subagent_stop(ctx, p):
         return {}
     # Fail closed: a missing or unreadable verdict is recorded as UNPARSED, which
     # blocks checkpoint.sh complete at this head like a REQUEST_CHANGES.
+    # The payload message first. When it has no verdict line at all (empty, or a short
+    # note after a hand-back tool call), the report is the reviewer's last act in its
+    # transcript; either is parsed with the same fail-closed rules.
     msg = p.get("last_assistant_message")
-    msg_source = "last_assistant_message"
-    if not (isinstance(msg, str) and msg.strip()):
-        msg = transcript_last_text(p.get("agent_transcript_path"))
-        msg_source = "agent_transcript" if msg else "none"
+    msg_source = "last_assistant_message" if isinstance(msg, str) and msg.strip() else "none"
     verdict, lens, trace = parse_review_traced(msg)
+    if not any(t.get("line") for t in trace):
+        tmsg, tsrc = transcript_report(p.get("agent_transcript_path"))
+        if tmsg:
+            tv, tl, ttr = parse_review_traced(tmsg)
+            if any(t.get("line") for t in ttr) or msg_source == "none":
+                msg_source, verdict, lens, trace = tsrc, tv, tl, ttr
     if os.path.exists(rec_path):
         return {}                                          # one record per review run
     if role == "adversarial-reviewer" or (gibson and lens == "adversarial"):
