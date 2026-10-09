@@ -68,10 +68,13 @@ emit_hooks_json() {
   if [ "${#bash_hooks[@]}" -gt 0 ]; then
     blocks+=("$(printf '      {\n        "matcher": "Bash",\n        "hooks": [\n%s\n        ]\n      }' "$(hook_array "${bash_hooks[@]}")")")
   fi
-  local i
-  for i in "${!blocks[@]}"; do
+  local i n="${#blocks[@]}"
+  # Index loop, not "${!blocks[@]}": bash 3.2 (macOS) with set -u treats an empty array as unbound.
+  i=0
+  while [ "$i" -lt "$n" ]; do
     printf '%s' "${blocks[$i]}"
-    [ "$i" -lt $(( ${#blocks[@]} - 1 )) ] && printf ',\n' || printf '\n'
+    [ "$i" -lt $(( n - 1 )) ] && printf ',\n' || printf '\n'
+    i=$((i + 1))
   done
   printf '    ]\n  }\n}\n'
 }

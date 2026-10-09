@@ -115,7 +115,7 @@ if [[ -z "$(read_field worktree_branch)" ]]; then
     EXCL+=(":(exclude,top,literal)$rel")
   done
 fi
-PATHSPEC=(-- . "${EXCL[@]}")
+PATHSPEC=(-- . ${EXCL[@]+"${EXCL[@]}"})   # bash 3.2 (macOS) + set -u: an empty array is "unbound"
 # Paths are read NUL-separated (git C-quotes control characters even with
 # quotepath off, and a quote escape can fuse with the next word); control
 # characters become "_" (a word break) before classification.
@@ -292,10 +292,10 @@ if grep -aqiE '(^|/)(api|routes?|shared|common|core|lib)/' <<<"$FILES"; then
   BSIG+=("touches a shared module or API route")
 fi
 if [[ -n "$TAG_TIER" ]]; then
-  for b in "${BSIG[@]}"; do REASONS+=("$b — the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER") reason=\"$TAG_REASON\"] decides"); done
+  for b in ${BSIG[@]+"${BSIG[@]}"}; do REASONS+=("$b — the task's [tier:$(tr 'AB' 'ab' <<<"$TAG_TIER") reason=\"$TAG_REASON\"] decides"); done
   [[ "$TAG_TIER" == B ]] && raise B "task override [tier:b reason=\"$TAG_REASON\"]"
 else
-  for b in "${BSIG[@]}"; do raise B "$b"; done
+  for b in ${BSIG[@]+"${BSIG[@]}"}; do raise B "$b"; done
 fi
 
 # The lens each Tier C signal belongs to (ADR-0004: a Tier C lens narrowing

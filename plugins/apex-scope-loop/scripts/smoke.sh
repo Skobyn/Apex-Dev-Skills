@@ -1340,10 +1340,10 @@ touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
 ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head (submodules included) and allows ignored tool caches"
 
-# 42. Portability (ADR-0003): version 0.4.3, ADR-0003 and ADR-0004 present, reviewer cannot
+# 42. Portability (ADR-0003): version 0.4.4, ADR-0003 and ADR-0004 present, reviewer cannot
 #     edit, ruflo optional (no required ruflo/claude-flow reference outside
 #     docs/legacy/), apex-plan template profiles.
-grep -q '"version": "0.4.3"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.4.3"
+grep -q '"version": "0.4.4"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.4.4"
 ADR4="$PLUGIN_ROOT/docs/adrs/0004-review-loop-calibration.md"
 [ -f "$ADR4" ] && grep -qE "^- \*\*Status:\*\* Accepted" "$ADR4" && grep -q '^## What this loosens and why it is safe' "$ADR4" || fail "ADR-0004 missing, not Accepted, or without its loosening section"
 ADR3="$PLUGIN_ROOT/docs/adrs/0003-portability-and-dispatch-consumer.md"
@@ -1357,7 +1357,7 @@ for prof in generic apex; do for t in adr-template.md plan-template.md; do
   [ -f "$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles/$prof/$t" ] || fail "apex-plan profile $prof lacks $t"
 done; done
 ! grep -qi 'getapexinsights\|apex-app' "$PLUGIN_ROOT"/skills/apex-plan/resources/templates/profiles/generic/*.md || fail "the generic apex-plan profile carries Apex-specific vocabulary"
-ok "portability: version 0.4.3, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
+ok "portability: version 0.4.4, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
 
 # 43. apex-dispatch Phase 3.2 consumers: green-gate.sh check PASS moves the ACTIVE
 #     lock BUILD -> GATE (only from BUILD; a FAIL leaves it); checkpoint.sh review
@@ -1960,5 +1960,28 @@ has '^TIER: C' "$(rtc '[docs]' plugins/x/agents/a.md 'Store the stripe secret')"
 has '^TIER: B' "$(rtc '[docs]' README.md 'stripe')" || fail "a top-level README term was not Tier B"
 ok "round-2 fixes: review mode enforced (brief predates the rise; review-mode, freeze and complete enforce full); every content term vs the override; plain waiver replies; ASK_HUMAN pending; Markdown-only Tier B; done needs run state"
 
+# bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
+# expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
+# lines just above, or name an array that is never empty.
+python3 - "$PLUGIN_ROOT" <<'PY' || fail "an unguarded array expansion would crash under macOS bash 3.2 with set -u"
+import glob, os, re, sys
+ALWAYS = {"GIT", "DIFF_OPTS", "PATHSPEC", "STEPS", "ARGS"}
+bad = []
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "skills", "*", "scripts", "*.sh"))):
+    L = open(f).read().splitlines()
+    if not any(re.match(r"\s*set -[a-z]*u", l) for l in L):
+        continue
+    for i, l in enumerate(L):
+        for m in re.finditer(r'"\$\{([A-Za-z_]\w*)\[[@*]\]\}"|\$\{([A-Za-z_]\w*)\[\*\]\}|"\$\{!([A-Za-z_]\w*)\[@\]\}"', l):
+            n = m.group(1) or m.group(2) or m.group(3)
+            if n in ALWAYS or ("${%s[@]+" % n) in l or ("#%s[@]" % n) in "\n".join(L[max(0, i - 5):i + 1]):
+                continue
+            bad.append("%s:%d %s" % (os.path.relpath(f, sys.argv[1]), i + 1, n))
+if bad:
+    print("\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+PY
+ok "bash 3.2: every array expansion in a set -u script is guarded, follows a length test, or names a never-empty array"
+
 echo ""
-echo "smoke passed: 61/61 checks"
+echo "smoke passed: 62/62 checks"

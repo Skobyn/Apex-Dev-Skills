@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-05-29
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-guardrails v0.2.0 (contract introduced in v0.1.0)
+- **Plugin:** apex-guardrails v0.2.1 (contract introduced in v0.1.0)
 
 ## Context
 
@@ -203,3 +203,4 @@ on the first failure with a named reason:
 - 2026-05-29 — Proposed (initial scaffold)
 - 2026-10-07 — v0.2.0: always-on bypass-flag denials, `tool_input.command` scoping,
   quoted `"${CLAUDE_PLUGIN_ROOT}"`, smoke checks 11–12 (apex-dispatch spec §7). Still Proposed.
+- 2026-10-09 — v0.2.1: `compile-policy.sh` no longer expands an empty array under `set -u`, which crashed macOS bash 3.2 on a policy with no hook blocks.

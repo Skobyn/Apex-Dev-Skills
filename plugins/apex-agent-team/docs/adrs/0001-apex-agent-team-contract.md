@@ -139,3 +139,4 @@ It exits non-zero on the first failing check and names the failure.
 ## Status changes
 
 - 2026-05-29 — Proposed (initial scaffold).
+- 2026-10-09 — v0.1.2: `team-lint.sh` guards an empty reference-file list, which crashed macOS bash 3.2 under `set -u`.

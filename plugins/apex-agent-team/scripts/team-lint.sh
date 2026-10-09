@@ -132,7 +132,7 @@ for i in "${!NAMES[@]}"; do
   [ -z "$name" ] && { note_med "agent file ${AGENT_FILES[$i]#$ROOT/} has no 'name:' frontmatter"; continue; }
   self="${AGENT_FILES[$i]}"
   refs=0
-  for rf in "${REF_FILES[@]}"; do
+  for rf in ${REF_FILES[@]+"${REF_FILES[@]}"}; do
     [ "$rf" = "$self" ] && continue
     if grep -Eqw -- "$name" "$rf"; then refs=$((refs + 1)); fi
   done
