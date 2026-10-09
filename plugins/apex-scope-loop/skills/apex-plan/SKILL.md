@@ -72,7 +72,7 @@ Use `AskUserQuestion` to surface scope and constraints **before drafting anythin
 3. **Success criteria** — how we know we're done (runnable checks where possible)
 4. **Ownership** — who reviews, who implements, which partners are affected
 5. **Execution preference** — should phases dispatch a single agent, multiple parallel agents, or a full hierarchical-mesh swarm? Default is hierarchical-mesh for substantial phases, single agent for trivial ones
-6. **Gating preference** — for each phase boundary: auto-gate (runnable check), human-gate (user types "approved phase N"), or partner-gate (inbox item to a specific email)
+6. **Gating preference** — for each phase boundary: auto-gate (runnable check), human-gate (user types "approved phase N"), or partner-gate (a notice to a specific email's owner)
 
 Capture answers in working memory; surface them back to the user in Stage 2 as the ADR draft so they see their words on the page.
 
@@ -117,7 +117,7 @@ Walk the ADR section-by-section. For each section:
 
 **Every "Open Question" must resolve to a decision before promoting.** Default proposals are starting points, not endings. The user (or partner, if cross-boundary) signs off on each. Replace the `Default:` line with `Decision:` once resolved.
 
-**Surface parity check** (per the project's `CLAUDE.md`): if the feature touches user-facing UI, explicitly enumerate the surfaces (admin desktop/mobile, portal desktop/mobile, roles) in the ADR's "What changes / What stays" section. Don't let this default to "obvious" — write it down.
+**Surface parity check**: if the feature touches user-facing UI, explicitly enumerate every surface it lives on (for example web and mobile, each app or portal, each user role) in the ADR's Surface Matrix. Use the project's own list of surfaces when its `CLAUDE.md` defines one. Don't let this default to "obvious" — write it down.
 
 ## Stage 4: PLAN
 
@@ -194,15 +194,14 @@ This:
 
 From here on, apex-execute owns execution. This skill's job is done.
 
-## Surface-parity, debugging, and venue-specific guidance
+## Surface-parity and debugging guidance
 
-This project's `CLAUDE.md` has hard rules about surface parity, debugging order, and venue conventions. The ADR template includes prompts for each:
+Both template profiles prompt for two things that are easy to skip:
 
-- A **Surface Matrix** subsection under "What changes / What stays" that forces enumeration of admin / portal / mobile / desktop / role surfaces
-- A **Debugging guarantees** line in the Risks section ("we will check Firestore data before touching save/load flows")
-- A **Venue impact** subsection if `venue_slug` shows up anywhere in the ADR scope
+- A **Surface Matrix** under "What changes / What stays" that forces enumeration of every user-facing surface and role the change touches
+- A **Debugging guarantees** line in the Risks section (for example "we will inspect the stored data before touching save/load flows")
 
-If you're authoring an ADR that touches the site builder, also reference the `apex-site-builder-tasks` skill's decision tree before locking in the architecture.
+If the project's `CLAUDE.md` sets its own rules for surfaces, debugging order or domain conventions, those rules win: fill these sections in its terms. The `apex` profile adds the Apex Insights specifics (its admin/portal surfaces, Firestore data paths and a Venue Impact section).
 
 ## Validation checklist
 
@@ -243,7 +242,7 @@ Templates come in two profiles, `resources/templates/profiles/generic/` (default
 
 1. **Composing before scoping.** If you write the ADR before asking the user questions, you've made the decisions for them. Stage 1 (SCOPE) is non-negotiable.
 2. **Vague acceptance criteria.** "Improve UX" is not runnable. Either it's a check (`pytest`, `curl`, `grep -q`) or it's a human-gate with a literal approval phrase the user will say.
-3. **Skipping the surface parity check.** This project's `CLAUDE.md` is explicit: most features live on multiple surfaces. The ADR template asks for it; don't delete the section because "it doesn't apply" without verifying.
+3. **Skipping the surface parity check.** Most user-facing features live on more than one surface (and the project's `CLAUDE.md` may say so explicitly). The ADR template asks for it; don't delete the section because "it doesn't apply" without verifying.
 4. **One mega-phase.** If a phase has > 6 tasks or > 1 day of work, split it. Gates between small phases are cheaper than rollbacks of giant phases.
 5. **Promoting with unresolved open questions.** The whole point of the refinement stage is to convert defaults into decisions. If you leave a `Default:` line in, you're handing an ambiguity to the implementing agent — they'll either freeze or guess.
 
@@ -255,4 +254,4 @@ Templates come in two profiles, `resources/templates/profiles/generic/` (default
 
 ## Skill ownership
 
-Owned by the Apex Insights platform team. Updates should be PR'd; non-trivial changes to the templates or the gate semantics are themselves architecture decisions and should follow `architecture-decision-propose` (recursive, but it's the right shape).
+Owned by the Apex Insights platform team. Updates should be PR'd; non-trivial changes to the templates or the gate semantics are themselves architecture decisions and should get their own ADR under this plugin's `docs/adrs/` (recursive, but it's the right shape).
