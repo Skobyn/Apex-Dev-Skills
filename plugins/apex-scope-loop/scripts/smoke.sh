@@ -1983,5 +1983,40 @@ if bad:
 PY
 ok "bash 3.2: every array expansion in a set -u script is guarded, follows a length test, or names a never-empty array"
 
+# bash 3.2 cannot parse a heredoc inside $( ) whose body has an odd count of ' or ` (checkpoint.sh did not parse on macOS).
+python3 - "$PLUGIN_ROOT" <<'PY' || fail "a heredoc inside \$( ) has an odd count of ' or \` (bash 3.2 cannot parse it)"
+import glob, os, re, sys
+bad = []
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "**", "*.sh"), recursive=True)):
+    L = open(f, encoding="utf-8").read().split("\n")
+    i = 0
+    while i < len(L):
+        m = re.search(r"<<-?\s*['\"]?(\w+)['\"]?\s*$", L[i])
+        if m and "$(" in L[i]:
+            j = i + 1
+            while j < len(L) and L[j].strip() != m.group(1):
+                j += 1
+            body = "\n".join(L[i + 1:j])
+            if body.count("'") % 2 or body.count("`") % 2:
+                bad.append("%s:%d" % (os.path.relpath(f, sys.argv[1]), i + 1))
+            i = j
+        i += 1
+if bad:
+    print("\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+PY
+# Siblings resolve to the highest installed version, never the first glob match; iterate.md passes only the plan path.
+SC="$(mktemp -d)"; mkdir -p "$SC/mk/apex-scope-loop/0.4.4/skills/apex-execute"
+for v in 0.1.0 0.6.0 0.10.0 0.9.9; do mkdir -p "$SC/mk/apex-dispatch/$v/.claude-plugin" "$SC/mk/apex-dispatch/$v/scripts"; printf '{"version": "%s"}\n' "$v" >"$SC/mk/apex-dispatch/$v/.claude-plugin/plugin.json"; printf '#!/bin/sh\n' >"$SC/mk/apex-dispatch/$v/scripts/route.sh"; chmod +x "$SC/mk/apex-dispatch/$v/scripts/route.sh"; done
+GOT="$(APEX_SCOPE_LOOP_PLUGIN_ROOT="$SC/mk/apex-scope-loop/0.4.4" bash -c 'source "$1"; APEX_SCOPE_LOOP_PLUGIN_ROOT="$2"; apex_dispatch_root' _ "$PLUGIN_ROOT/skills/apex-execute/scripts/_lib.sh" "$SC/mk/apex-scope-loop/0.4.4")"
+[ "$GOT" = "$(cd "$SC/mk/apex-dispatch/0.10.0" && pwd -P)" ] || fail "apex_dispatch_root did not pick the highest cached version (0.10.0): $GOT"
+rm -rf "$SC"
+! grep -qF 'DROOT="${APEX_DECISION_LAYER_ROOT:-$(cd' "$PLUGIN_ROOT/skills/apex-execute/scripts/risk-tier.sh" && grep -qF 'apex_sibling_root apex-decision-layer' "$PLUGIN_ROOT/skills/apex-execute/scripts/risk-tier.sh" \
+  || fail "risk-tier.sh does not find the decision layer through apex_sibling_root"
+! grep -qE '\$S/[a-z-]+\.sh \$ARGUMENTS' "$PLUGIN_ROOT/commands/iterate.md" && grep -qF '**The plan path.**' "$PLUGIN_ROOT/commands/iterate.md" \
+  || fail "commands/iterate.md still passes \$ARGUMENTS to a script"
+grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh" || fail "checkpoint.sh does not print the verdict trace of a refused record"
+ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
+
 echo ""
-echo "smoke passed: 62/62 checks"
+echo "smoke passed: 63/63 checks"

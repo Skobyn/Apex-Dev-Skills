@@ -27,14 +27,10 @@ fi
 apex_worker_root() { (cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd); }
 
 apex_worker_scope_loop_scripts() {
-  local root="$1" c
-  for c in "${APEX_SCOPE_LOOP_ROOT:-}" "$root/../apex-scope-loop"; do
-    [[ -n "$c" && -f "$c/skills/apex-execute/scripts/_lib.sh" ]] && { (cd "$c/skills/apex-execute/scripts" && pwd); return 0; }
-  done
-  for c in "$root"/../../apex-scope-loop/*/; do
-    [[ -f "$c/skills/apex-execute/scripts/_lib.sh" ]] && { (cd "$c/skills/apex-execute/scripts" && pwd); return 0; }
-  done
-  return 0
+  # The highest installed version wins (scripts/lib/sibling.bash), never the first glob match.
+  # shellcheck source=/dev/null
+  source "$1/scripts/lib/sibling.bash"
+  apex_scope_loop_scripts "$1"
 }
 
 # apex_worker_env — sets APEX_W_ROOT, APEX_W_SCRIPTS, APEX_W_STATE_BASE, APEX_W_REPO or exits.

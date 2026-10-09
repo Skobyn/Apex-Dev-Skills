@@ -418,16 +418,36 @@ apex_guard() {
   apex_die "$(printf '%s; ' "${problems[@]}")refusing to act. Recover: run from a checkout of the plan's repository; check the recorded branch back out in the worktree; if the repository was moved or re-cloned, the old run cannot be resumed — remove $STATE_DIR and re-run init.sh"
 }
 
+# apex_sibling_root NAME — the sibling plugin NAME of this marketplace, or empty.
+# A checkout keeps it at <root>/../NAME; the plugin cache keeps
+# <cache>/<marketplace>/NAME/<version>/, often several versions at once. The highest
+# version (its .claude-plugin/plugin.json) wins, never the first match of a glob
+# (which picked an old 0.1.0 over 0.4.2). The same rule as apex-dispatch's
+# scripts/lib/sibling.bash; this copy keeps apex-scope-loop usable without it.
+apex_sibling_root() {
+  local name="$1" c v k best="" bestk=""
+  for c in "$APEX_SCOPE_LOOP_PLUGIN_ROOT/../$name" "$APEX_SCOPE_LOOP_PLUGIN_ROOT"/../../"$name"/*/; do
+    c="${c%/}"
+    v="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' \
+      "$c/.claude-plugin/plugin.json" 2>/dev/null | head -n 1)"
+    [[ -n "$v" ]] || continue
+    k="$(printf '%s\n' "$v" | awk -F. '{ printf "%06d%06d%06d", $1, $2, $3 }')"
+    if [[ -z "$bestk" || "$k" > "$bestk" ]]; then
+      bestk="$k"
+      best="$c"
+    fi
+  done
+  [[ -n "$best" ]] && (cd "$best" && pwd -P)
+  return 0
+}
+
 # apex_dispatch_root — the sibling apex-dispatch plugin, or empty.
 apex_dispatch_root() {
   local c
-  for c in "${APEX_DISPATCH_ROOT:-}" "$APEX_SCOPE_LOOP_PLUGIN_ROOT/../apex-dispatch"; do
-    [[ -n "$c" && -x "$c/scripts/route.sh" ]] && { (cd "$c" && pwd); return; }
-  done
-  # Plugin cache layout <cache>/<marketplace>/<plugin>/<version>/ (assumed; Phase 0 spike 11 left the marketplace-install layout unverified)
-  for c in "$APEX_SCOPE_LOOP_PLUGIN_ROOT"/../../apex-dispatch/*/; do
-    [[ -x "$c/scripts/route.sh" ]] && { (cd "$c" && pwd); return; }
-  done
+  c="${APEX_DISPATCH_ROOT:-}"
+  [[ -n "$c" && -x "$c/scripts/route.sh" ]] && { (cd "$c" && pwd); return; }
+  c="$(apex_sibling_root apex-dispatch)"
+  [[ -n "$c" && -x "$c/scripts/route.sh" ]] && printf '%s\n' "$c"
   return 0
 }
 

@@ -29,11 +29,11 @@ PROVIDER="$1"; shift
 REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
 # The run-state base, resolved as apex-scope-loop does (only to refuse under an ACTIVE lock).
 BASE=""
-for c in "${APEX_SCOPE_LOOP_ROOT:-}" "$ROOT/../apex-scope-loop"; do
-  if [[ -n "$c" && -f "$c/skills/apex-execute/scripts/_lib.sh" ]]; then
-    # shellcheck source=/dev/null
-    BASE="$(REPO_ROOT="$PWD"; source "$c/skills/apex-execute/scripts/_lib.sh" && apex_state_base "$PWD" 2>/dev/null)" || BASE=""
-    break
-  fi
-done
+# shellcheck source=lib/sibling.bash
+source "$ROOT/scripts/lib/sibling.bash"
+EX="$(apex_scope_loop_scripts "$ROOT")"
+if [[ -n "$EX" ]]; then
+  # shellcheck source=/dev/null
+  BASE="$(REPO_ROOT="$PWD"; source "$EX/_lib.sh" && apex_state_base "$PWD" 2>/dev/null)" || BASE=""
+fi
 exec python3 -B "$ROOT/scripts/lib/worker.py" smoke "$PROVIDER" "$ROOT" "$BASE" "$REPO" -- "$@"

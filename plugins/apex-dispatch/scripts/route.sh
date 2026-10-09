@@ -54,17 +54,10 @@ fi
 
 # The sibling apex-scope-loop owns .dev-plan-state/, the kill switches and the
 # ACTIVE lock (its ADR-0003); route.sh reuses its _lib.sh rather than a copy.
-scope_loop_scripts() {
-  local c
-  for c in "${APEX_SCOPE_LOOP_ROOT:-}" "$PLUGIN_ROOT/../apex-scope-loop"; do
-    [[ -n "$c" && -f "$c/skills/apex-execute/scripts/_lib.sh" ]] && { (cd "$c/skills/apex-execute/scripts" && pwd); return; }
-  done
-  for c in "$PLUGIN_ROOT"/../../apex-scope-loop/*/; do
-    [[ -f "$c/skills/apex-execute/scripts/_lib.sh" ]] && { (cd "$c/skills/apex-execute/scripts" && pwd); return; }
-  done
-  return 0
-}
-EXEC_SCRIPTS="$(scope_loop_scripts)"
+# The highest installed version wins (scripts/lib/sibling.bash), never the first glob match.
+# shellcheck source=lib/sibling.bash
+source "$PLUGIN_ROOT/scripts/lib/sibling.bash"
+EXEC_SCRIPTS="$(apex_scope_loop_scripts "$PLUGIN_ROOT")"
 [[ -n "$EXEC_SCRIPTS" ]] || { echo "route: apex-scope-loop not found beside apex-dispatch (set APEX_SCOPE_LOOP_ROOT)" >&2; exit 1; }
 # shellcheck source=/dev/null
 source "$EXEC_SCRIPTS/_lib.sh"

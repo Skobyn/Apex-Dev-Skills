@@ -849,7 +849,9 @@ def summary_rows(rows):
 
 def baseline_capture(state_dir, label, root):
     pj = read_json(os.path.join(root, ".claude-plugin", "plugin.json"), {}) or {}
-    sl = read_json(os.path.join(root, "..", "apex-scope-loop", ".claude-plugin", "plugin.json"), {}) or {}
+    import sibling  # local: ledger.py is imported by every other module
+    sl_root = sibling.find(root, "apex-scope-loop")[0] or os.path.join(root, "..", "apex-scope-loop")
+    sl = read_json(os.path.join(sl_root, ".claude-plugin", "plugin.json"), {}) or {}
     ver = {}
     try:
         with open(os.path.join(root, "resources", "compiled", "VERSION"), encoding="utf-8") as f:

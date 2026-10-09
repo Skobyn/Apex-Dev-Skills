@@ -32,12 +32,14 @@ import os  # noqa: E402
 import re  # noqa: E402
 import shlex  # noqa: E402
 import subprocess  # noqa: E402
+import textwrap  # noqa: E402
 import time  # noqa: E402
 
 T0 = time.monotonic()
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import ledger  # noqa: E402  (the single ledger writer)
+import sibling  # noqa: E402  (the highest installed version of a sibling plugin)
 
 MODELS = ("sonnet", "opus", "haiku", "fable")           # Agent `model` enum (spec §5.3 E)
 REVIEWER_ROLES = {"reviewer", "adversarial-reviewer", "reviewer-exec"}
@@ -147,7 +149,8 @@ class Ctx:
         self.kind, self.plugin_root, self.exec_scripts = kind, real(plugin_root), exec_scripts
         self.state_base, self.repo_root = real(state_base), real(repo_root)
         self.scope_loop_root = real(os.path.join(exec_scripts, "..", "..", "..")) if exec_scripts else None
-        dl = os.environ.get("APEX_DECISION_LAYER_ROOT") or os.path.join(plugin_root, "..", "apex-decision-layer")
+        dl = (os.environ.get("APEX_DECISION_LAYER_ROOT") or sibling.find(plugin_root, "apex-decision-layer")[0]
+              or os.path.join(plugin_root, "..", "apex-decision-layer"))
         self.decision_layer_root = real(dl) if os.path.isdir(dl) else None
         self.owner = read_json(os.path.join(state_base, "ACTIVE", "owner.json"))
         self.owner_ok = isinstance(self.owner, dict) and bool(self.owner)
@@ -1477,7 +1480,7 @@ def subagent_start(ctx, p):
 VERDICT_LINE_RE = re.compile(r"^verdict\s*:\s*(.*)$", re.I)
 APPROVE_RE = re.compile(r"approve[.!]?", re.I)                 # exactly APPROVE (any case)
 # APPROVE, a separator (whitespace + dash/en/em dash, or colon/comma/paren), then a remark.
-APPROVE_REMARK_RE = re.compile(r"approve(\s*[:,(\u2014\u2013]|\s+-)(.*)$", re.I | re.S)
+APPROVE_REMARK_RE = re.compile(r"approve(\s*[:,(\u2014\u2013]|\s+-|\.\s+)(.*)$", re.I | re.S)
 # A remark counts only if every word is one of these (an allowlist: anything else may be a condition).
 REMARK_WORDS = {"nit", "nits", "nitpick", "nitpicks", "non-blocking", "nonblocking", "minor", "optional", "cosmetic",
                 "style", "lgtm", "only", "with", "and", "a", "few", "some", "small", "suggestions", "comments", "notes",
@@ -1492,7 +1495,7 @@ BLOCKING_LINE_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])?\s*(?:\[blocking\]|\(block
 BLOCKING_NONE = {"none", "n/a", "na", "nothing", "none found", "none identified"}
 # The reviewer template's own placeholder tokens: a line made only of these is a pasted template.
 PLACEHOLDERS_RE = re.compile(r"^((<path:line>|<file:line>|<lens>|<failure scenario>|<scenario>)[\s\u2014\u2013-]*)+$", re.I)
-FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")       # a CommonMark fence: the run, then an info string
 LENS_RE = re.compile(r"^LENS:\s*(.{1,60})$", re.I)
 # The six canonical lenses (and the adversarial pass); anything else is no lens.
 LENSES = ("correctness", "security", "consent-pii", "money", "performance", "maintainability")
@@ -1531,64 +1534,134 @@ def verdict_value(v):
 
 
 def parse_review(msg):
-    """(verdict, lens) from a reviewer's last message, fail-closed.
+    """(verdict, lens) from a reviewer's last message, fail-closed; see parse_review_traced."""
+    verdict, lens, _trace = parse_review_traced(msg)
+    return verdict, lens
+
+
+def _verdict_text(raw):
+    return re.sub(r"[*`]", "", raw).strip().strip("_#> ").strip()
+
+
+def parse_review_traced(msg):
+    """(verdict, lens, trace) from a reviewer's last message, fail-closed.
 
     Every line `verdict: <value>` (any case, markdown emphasis and backticks
     ignored) is a verdict line. Its value is APPROVE when it is exactly APPROVE,
-    or APPROVE + a separator (whitespace then - / en or em dash, or : , ( ) + a
-    remark whose every word is in REMARK_WORDS (nits, non-blocking, minor,
-    optional, cosmetic, style, LGTM, only, suggestions, looks good, all lenses
-    clear, nits noted, ... plus the phrases "no blockers" / "no blocking
-    findings"; a bare "no" or "above" is not allowed): an allowlist, so
+    or APPROVE + a separator (whitespace then - / en or em dash, or : , ( or a
+    period and a space) + a remark whose every word is in REMARK_WORDS (nits,
+    non-blocking, minor, optional, cosmetic, style, LGTM, only, suggestions, looks
+    good, all lenses clear, nits noted, ... plus the phrases "no blockers" / "no
+    blocking findings"; a bare "no" or "above" is not allowed): an allowlist, so
     "APPROVE, provided ..." or "APPROVE (assuming CI goes green)" is UNPARSED;
     REQUEST_CHANGES when it starts with REQUEST CHANGES / REQUEST_CHANGES /
     request-changes; a template placeholder naming both outcomes joined by
     or / | / slash is no verdict; anything else ("APPROVED", "APPROVE-ish",
     "LGTM") is UNPARSED.
 
-    Context only discounts approvals: an APPROVE line inside a fenced code block,
-    a blockquote (`>`) or indented code (4+ spaces or a tab) is an example and is
-    skipped, but a REQUEST_CHANGES or UNPARSED line counts wherever it is. A fence
-    left open at the end of the message adds UNPARSED. Any line -- inside a code
-    fence too -- that starts with `[blocking]` or `(blocking)` (optionally as a
-    `-`/`*` or numbered list item) forces REQUEST_CHANGES, unless the text after
-    the tag is only the template's own placeholders (`<path:line>`, `<file:line>`,
-    `<lens>`, `<failure scenario>`, `<scenario>`) or says
-    none / (none) / n/a / none found / none identified.
+    An indent shared by every line (a hand-back that indents the whole report) is
+    removed first. Context only discounts approvals: an APPROVE line inside a
+    fenced code block (paired as CommonMark does: a fence closes only with the same
+    character, at least as long, and no info string), a blockquote (`>`) or
+    indented code (4+ spaces or a tab) is an example and is skipped, but a
+    REQUEST_CHANGES or UNPARSED line counts wherever it is. A fence left open at
+    the end of the message adds UNPARSED. Any line -- inside a code fence too -- that starts with `[blocking]` or
+    `(blocking)` (optionally as a `-`/`*` or numbered list item) forces
+    REQUEST_CHANGES, unless the text after the tag is only the template's own
+    placeholders (`<path:line>`, `<file:line>`, `<lens>`, `<failure scenario>`,
+    `<scenario>`) or says none / (none) / n/a / none found / none identified.
 
     The result is REQUEST_CHANGES if a blocking finding is listed; otherwise the
     last non-approving value if any; otherwise APPROVE if there is at least one
     counted APPROVE; otherwise UNPARSED. The lens is the last prose `LENS:` line,
-    canonicalised."""
-    values, lens, fenced, blocking = [], None, False, False
-    for raw in str(msg or "").splitlines():
-        if FENCE_RE.match(raw):
-            fenced = not fenced
-            continue
+    canonicalised. The trace lists every verdict line (its number, text, value,
+    whether it counted and why), each blocking line and an unclosed fence, so a
+    record says what the hook read."""
+    values, lens, blocking, trace = [], None, False, []
+    fence = None                                           # (char, length) of the open fence
+    lines = textwrap.dedent(str(msg or "").replace("\r\n", "\n")).splitlines()
+    for i, raw in enumerate(lines):
+        fm = FENCE_RE.match(raw)
+        if fm:
+            run = fm.group(1)
+            if fence is None:
+                fence = (run[0], len(run))
+                continue
+            if run[0] == fence[0] and len(run) >= fence[1] and not fm.group(2).strip():
+                fence = None
+                continue
         b = BLOCKING_LINE_RE.match(re.sub(r"[*_`]", "", raw.lstrip(" \t>")))
         if b:
-            rest = b.group(1).strip(" :.-\u2014\u2013")
+            rest = b.group(1).strip(" :.-—–")
             if rest.strip("() ").lower() not in BLOCKING_NONE and not PLACEHOLDERS_RE.match(rest):
                 blocking = True
-        example = fenced or raw.startswith(("    ", "\t")) or raw.lstrip().startswith(">")
-        line = re.sub(r"[*`]", "", raw).strip().strip("_#> ").strip()
+                trace.append({"line": i + 1, "text": raw.strip()[:160], "value": "BLOCKING", "counted": True,
+                              "why": "a [blocking] finding"})
+        why = ("in a code fence" if fence else "indented code" if raw.startswith(("    ", "\t"))
+               else "blockquote" if raw.lstrip().startswith(">") else None)
+        line = _verdict_text(raw)
         m = VERDICT_LINE_RE.match(line)
         if m:
             v = verdict_value(m.group(1).strip().strip("_*` "))
-            if v is not None and not (example and v == "APPROVE"):
+            counted = v is not None and not (why and v == "APPROVE")
+            if counted:
                 values.append(v)
+            trace.append({"line": i + 1, "text": raw.strip()[:160], "value": v, "counted": counted,
+                          "why": ("template placeholder" if v is None
+                                  else ("example (%s)" % why) if not counted
+                                  else "remark not on the allowlist, or not a verdict" if v == "UNPARSED"
+                                  else None)})
             continue
         m = LENS_RE.match(line.rstrip("."))
-        if m and not example:
+        if m and not why:
             lens = canonical_lens(m.group(1))
-    if fenced:
+    if fence:
         values.append("UNPARSED")
+        trace.append({"line": len(lines), "text": "", "value": "UNPARSED", "counted": True,
+                      "why": "a code fence is still open at the end of the message"})
+    if not values and not blocking:
+        seen = any(t.get("value") != "BLOCKING" for t in trace)
+        trace.append({"line": 0, "text": "", "value": "UNPARSED", "counted": True,
+                      "why": ("empty message" if not lines else "no VERDICT line counted (each was an example)"
+                              if seen else "no VERDICT line")})
+    trace = trace[-20:]
     if blocking:
-        return "REQUEST_CHANGES", lens
+        return "REQUEST_CHANGES", lens, trace
     bad = [v for v in values if v != "APPROVE"]
     if bad:
-        return bad[-1], lens
-    return ("APPROVE" if values else "UNPARSED"), lens
+        return bad[-1], lens, trace
+    return ("APPROVE" if values else "UNPARSED"), lens, trace
+
+
+def transcript_last_text(path, limit=4 * 1024 * 1024):
+    """The last assistant text in a subagent transcript (JSONL), or None. Used only
+    when the hook payload carries no last_assistant_message."""
+    if not isinstance(path, str) or not os.path.isfile(path):
+        return None
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - limit))
+            data = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    text = None
+    for ln in data.splitlines():
+        try:
+            obj = json.loads(ln)
+        except ValueError:
+            continue
+        msg = obj.get("message") if isinstance(obj, dict) else None
+        if not isinstance(msg, dict) or (msg.get("role") != "assistant" and obj.get("type") != "assistant"):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+        else:
+            parts = [content] if isinstance(content, str) else []
+        if any(p.strip() for p in parts):
+            text = "\n".join(parts)
+    return text
 
 
 def audit_transcript(ctx, p):
@@ -1689,7 +1762,12 @@ def subagent_stop(ctx, p):
         return {}
     # Fail closed: a missing or unreadable verdict is recorded as UNPARSED, which
     # blocks checkpoint.sh complete at this head like a REQUEST_CHANGES.
-    verdict, lens = parse_review(p.get("last_assistant_message"))
+    msg = p.get("last_assistant_message")
+    msg_source = "last_assistant_message"
+    if not (isinstance(msg, str) and msg.strip()):
+        msg = transcript_last_text(p.get("agent_transcript_path"))
+        msg_source = "agent_transcript" if msg else "none"
+    verdict, lens, trace = parse_review_traced(msg)
     if os.path.exists(rec_path):
         return {}                                          # one record per review run
     if role == "adversarial-reviewer" or (gibson and lens == "adversarial"):
@@ -1712,7 +1790,8 @@ def subagent_stop(ctx, p):
     rec = {"record_id": record_id, "line": line, "head_sha": head, "sha": head, "role": rrole, "lens": lens,
            "verdict": verdict, "agent_id": aid, "agent_type": at, "route": rid, "provider": "claude-session",
            "family": "anthropic", "plan_hash": o.get("id"), "session_id": p.get("session_id"),
-           "written_at": now_ts(), "source": "hook:subagent-stop"}
+           "written_at": now_ts(), "source": "hook:subagent-stop", "verdict_source": msg_source,
+           "verdict_trace": trace}
     if stale:
         rec["stale"] = "HEAD moved from %s to %s while the reviewer ran" % (start_head[:12], git(ctx.worktree, "rev-parse", "HEAD")[:12])
     try:

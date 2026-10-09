@@ -36,6 +36,7 @@ import subprocess  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger  # noqa: E402  (the single ledger writer, scripts/lib/ledger.py)
+import sibling  # noqa: E402  (the highest installed version of a sibling plugin)
 
 EFFORTS = ["low", "medium", "high", "xhigh"]
 SHAPES = ["none", "solo", "six-lens", "fanout6+adversarial"]
@@ -208,7 +209,8 @@ def decide_argv(pol):
     cmd = os.environ.get(sem.get("cmd_env", "APEX_DECIDE_CMD"), "")
     if cmd:
         return shlex.split(cmd)
-    root = os.environ.get("APEX_DECISION_LAYER_ROOT") or os.path.join(PLUGIN_ROOT, "..", "apex-decision-layer")
+    root = (os.environ.get("APEX_DECISION_LAYER_ROOT") or sibling.find(PLUGIN_ROOT, "apex-decision-layer")[0]
+            or os.path.join(PLUGIN_ROOT, "..", "apex-decision-layer"))
     exe = os.path.join(root, "bin", sem.get("default_cmd", "apex-decide"))
     if os.path.isfile(exe) and os.access(exe, os.X_OK):
         return [os.path.realpath(exe)]

@@ -1391,7 +1391,8 @@ cases = {"VERDICT: REQUEST CHANGES": "REQUEST_CHANGES", "VERDICT: REQUEST_CHANGE
          "VERDICT: APPROVE \u2014 LGTM": "APPROVE", "VERDICT: APPROVE (minor suggestions)": "APPROVE",
          # fences, blockquotes and indented code discount APPROVE lines only
          "```\nVERDICT: APPROVE\n```": "UNPARSED", "~~~\nVERDICT: APPROVE\n~~~": "UNPARSED",
-         "> VERDICT: APPROVE": "UNPARSED", "    VERDICT: APPROVE": "UNPARSED", "\tVERDICT: APPROVE": "UNPARSED",
+         "> VERDICT: APPROVE": "UNPARSED", "Example:\n    VERDICT: APPROVE": "UNPARSED", "Example:\n\tVERDICT: APPROVE": "UNPARSED",
+         "    VERDICT: APPROVE": "APPROVE",  # 0.6.0: an indent shared by every line is removed first
          "```\nVERDICT: REQUEST_CHANGES\n```\nVERDICT: APPROVE": "REQUEST_CHANGES",
          "> VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "REQUEST_CHANGES",
          "    VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE": "REQUEST_CHANGES",
@@ -1859,17 +1860,17 @@ for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_cla
 done
 pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
 
-# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.5.2 everywhere
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.6.0 everywhere
 for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
   grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
   if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
   if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
 done
 V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
-[ "$V" = 0.5.2 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
-  || fail "the 0.5.2 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+[ "$V" = 0.6.0 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.6.0 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
 grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
-pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.5.2 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.6.0 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
 
 # --- Phase 4.2: flagged-off grok/opencode/aider shims, openai-sdk stub, compile --target codex,
 #     report --compare/--decision, carried hardening. Provider CLIs are stubs on a fixture PATH. ---
@@ -2679,6 +2680,81 @@ psx claude-session; [ "$WRC" = 2 ] && grep -q 'nothing to smoke' "$WORK/w.err" |
 WRC=0; (cd "$WS" && wenv env PATH="$PSB:$STUB:$PATH" bash "$PSMOKE" opencode-ollama >"$WORK/ps.out" 2>"$WORK/w.err") || WRC=$?
 [ "$WRC" = 3 ] && grep -q 'holds the ACTIVE lock' "$WORK/w.err" || fail "provider-smoke ran under an ACTIVE lock (rc=$WRC: $(cat "$WORK/w.err"))"
 pass "provider-smoke.sh: write (opencode, openai-sdk) and read-only (grok) providers through the real command path on a fixture repo; PASS records verified_versions (+ enabled) with evidence and the overlay still merges; a stray write, a missing verdict and a rejected forced flag FAIL and record nothing; usage errors named; refused under an ACTIVE lock"
+
+# 87. field fixes from a macOS run (0.6.0): (a) the verdict parser removes a shared indent, accepts "APPROVE. <allowlisted remark>",
+#     pairs fences as CommonMark does, fails closed on an unclosed fence and writes a trace on the record; an empty
+#     last_assistant_message falls back to the subagent transcript; (b) the sibling resolver takes the highest installed
+#     version from a multi-version plugin cache (python and bash agree), honours the env override and --min; (c) no
+#     heredoc inside $( ) has an odd count of ' or ` (bash 3.2 cannot parse it); (d) /apex-dispatch:run extracts the
+#     plan path from $ARGUMENTS and resolves $S through the resolver, never a first-match glob
+python3 - "$PLUGIN_ROOT/scripts/lib" "$WORK" <<'PY' || fail "the verdict parser fixes are missing"
+import json, os, sys
+sys.path.insert(0, sys.argv[1]); import hooks
+pr = lambda m: hooks.parse_review(m)[0]
+assert pr("    Acceptance met.\n    LENS: security\n    VERDICT: APPROVE") == "APPROVE"
+assert pr("All good.\nVERDICT: APPROVE. Nits only.") == "APPROVE"
+assert pr("VERDICT: APPROVE. Provided CI goes green.") == "UNPARSED"
+assert pr("````\n```\nVERDICT: APPROVE\n```\n````\nVERDICT: APPROVE") == "APPROVE"
+assert pr("~~~\nVERDICT: APPROVE\n```\nVERDICT: APPROVE") == "UNPARSED"
+assert pr("Summary.\nVerdict: approve if CI passes.\nVERDICT: APPROVE") == "UNPARSED"
+assert pr("") == "UNPARSED"
+v, lens, tr = hooks.parse_review_traced("Summary.\nVerdict: approve if CI passes.\nVERDICT: APPROVE")
+assert v == "UNPARSED" and tr[0]["line"] == 2 and tr[0]["value"] == "UNPARSED" and tr[0]["counted"] and tr[1]["value"] == "APPROVE", tr
+v, lens, tr = hooks.parse_review_traced("```\nVERDICT: APPROVE\n```\nno verdict here")
+assert v == "UNPARSED" and tr[0]["why"] == "example (in a code fence)" and tr[-1]["why"] == "no VERDICT line counted (each was an example)", tr
+assert hooks.parse_review_traced("looks fine")[2][-1]["why"] == "no VERDICT line" and hooks.parse_review_traced("")[2][-1]["why"] == "empty message"
+t = os.path.join(sys.argv[2], "sa-transcript.jsonl")
+with open(t, "w") as f:
+    for ln in ({"type": "user", "message": {"role": "user", "content": "review it"}},
+               {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "draft\nVERDICT: REQUEST_CHANGES"}]}},
+               {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read", "input": {}}]}},
+               {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done.\nVERDICT: APPROVE"}]}}):
+        f.write(json.dumps(ln) + "\n")
+assert hooks.transcript_last_text(t) == "Done.\nVERDICT: APPROVE" and hooks.transcript_last_text(t + ".missing") is None
+PY
+start ind1 apex-dispatch:reviewer; stopa ind1 apex-dispatch:reviewer "$(printf '  Findings: none\n  VERDICT: APPROVE')"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["verdict"]=="APPROVE" and r["verdict_source"]=="last_assistant_message" and r["verdict_trace"][-1]["value"]=="APPROVE", r' "$UD/reviews-raw/ind1.json" \
+  || fail "an indented reviewer APPROVE was not recorded as APPROVE with its trace"
+start tx1 apex-dispatch:reviewer; stopa tx1 apex-dispatch:reviewer '' false "$WORK/sa-transcript.jsonl"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["verdict"]=="APPROVE" and r["verdict_source"]=="agent_transcript", r' "$UD/reviews-raw/tx1.json" \
+  || fail "an empty last_assistant_message did not fall back to the subagent transcript"
+ustage BUILD
+SC="$WORK/sibcache/mk"; for v in 0.1.0 0.4.2 0.9.9 0.10.1; do mkdir -p "$SC/apex-scope-loop/$v/.claude-plugin" "$SC/apex-scope-loop/$v/skills/apex-execute/scripts"; printf '{"name":"apex-scope-loop","version":"%s"}\n' "$v" >"$SC/apex-scope-loop/$v/.claude-plugin/plugin.json"; : >"$SC/apex-scope-loop/$v/skills/apex-execute/scripts/_lib.sh"; done
+mkdir -p "$SC/apex-dispatch/0.6.0"; SIBPY="$PLUGIN_ROOT/scripts/lib/sibling.py"
+[ "$(python3 "$SIBPY" "$SC/apex-dispatch/0.6.0" apex-scope-loop)" = "$(cd "$SC/apex-scope-loop/0.10.1" && pwd -P)" ] || fail "sibling.py did not pick the highest cached version (0.10.1)"
+[ "$(bash -c 'source "$1"; apex_scope_loop_scripts "$2"' _ "$PLUGIN_ROOT/scripts/lib/sibling.bash" "$SC/apex-dispatch/0.6.0")" = "$(cd "$SC/apex-scope-loop/0.10.1" && pwd -P)/skills/apex-execute/scripts" ] \
+  || fail "sibling.bash did not pick the highest cached version (0.10.1)"
+[ "$(APEX_SCOPE_LOOP_ROOT="$SC/apex-scope-loop/0.4.2" python3 "$SIBPY" "$SC/apex-dispatch/0.6.0" apex-scope-loop --env APEX_SCOPE_LOOP_ROOT)" = "$(cd "$SC/apex-scope-loop/0.4.2" && pwd -P)" ] || fail "the env override did not win"
+python3 "$SIBPY" "$SC/apex-dispatch/0.6.0" apex-scope-loop --min 0.11.0 >/dev/null 2>"$WORK/sib.err" && fail "--min 0.11.0 accepted an older install"
+grep -q 'apex-scope-loop 0.11.0 or newer is required; installed: 0.1.0, 0.10.1, 0.4.2, 0.9.9' "$WORK/sib.err" || fail "--min did not name the installed versions: $(cat "$WORK/sib.err")"
+[ "$(bash -c 'source "$1"; apex_sibling "$2" apex-scope-loop' _ "$PLUGIN_ROOT/scripts/lib/sibling.bash" "$PLUGIN_ROOT")" = "$(cd "$PLUGIN_ROOT/../apex-scope-loop" && pwd -P)" ] || fail "sibling.bash did not find the checkout sibling"
+python3 - "$PLUGIN_ROOT" <<'PY' || fail "a heredoc inside \$( ) has an odd count of ' or \` (bash 3.2 cannot parse it)"
+import glob, os, re, sys
+bad = []
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "**", "*.sh"), recursive=True) + glob.glob(os.path.join(sys.argv[1], "**", "*.bash"), recursive=True)):
+    L = open(f, encoding="utf-8").read().split("\n")
+    i = 0
+    while i < len(L):
+        m = re.search(r"<<-?\s*['\"]?(\w+)['\"]?\s*$", L[i])
+        if m and "$(" in L[i]:
+            j = i + 1
+            while j < len(L) and L[j].strip() != m.group(1):
+                j += 1
+            body = "\n".join(L[i + 1:j])
+            if body.count("'") % 2 or body.count("`") % 2:
+                bad.append("%s:%d" % (os.path.relpath(f, sys.argv[1]), i + 1))
+            i = j
+        i += 1
+if bad:
+    print("\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+PY
+RUNMD="$PLUGIN_ROOT/commands/run.md"
+! grep -qE '\$S/[a-z-]+\.sh \$ARGUMENTS|route\.sh plan \$ARGUMENTS|apex-scope-loop/\*/' "$RUNMD" && grep -qF 'scripts/lib/sibling.py' "$RUNMD" && grep -qF '**The plan path.**' "$RUNMD" \
+  || fail "commands/run.md still passes \$ARGUMENTS to a script or resolves \$S by a first-match glob"
+! grep -rqE 'apex-scope-loop/\*/|\.\./\.\./apex-scope-loop' "$PLUGIN_ROOT/scripts" "$PLUGIN_ROOT/bin" --include=*.sh --include=*.bash --exclude=smoke.sh --exclude=sibling.bash \
+  || fail "a script still resolves apex-scope-loop by a first-match glob"
+pass "macOS field fixes: verdict parser (shared indent, 'APPROVE. nits', CommonMark fences, unclosed fence, trace on the record, transcript fallback); sibling resolver takes the highest cached version (py and bash), env override, --min names the installs; no bash-3.2-breaking heredoc; run.md extracts the plan path"
 
 echo ""
 echo "smoke passed: $N/$N checks"

@@ -898,7 +898,7 @@
       "maxTurns": 40,
       "mcp_allow": [],
       "read_only": true,
-      "returns": "Findings as file:line with a concrete failure scenario, a clearance line per lens, then, when the brief assigns you one lens of a Tier C fan-out, a line that is exactly LENS: <lens> (correctness, security, consent-pii, money, performance or maintainability), and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES. Mark blocking findings [blocking]. The hook fails closed: a [blocking] finding, an APPROVE remark beyond nits/minor/optional/LGTM, or a non-approving verdict line anywhere means no approval; APPROVE in code or quotes does not count.",
+      "returns": "Findings as file:line with a concrete failure scenario, a clearance line per lens, then, for one lens of a Tier C fan-out, a line exactly LENS: <lens> (correctness, security, consent-pii, money, performance or maintainability), and a final line exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES. Use the word VERDICT only on that final line. Mark blocking findings [blocking]. The hook fails closed: a [blocking] finding, an APPROVE remark beyond nits/minor/optional/LGTM, or any other non-approving verdict line means no approval; APPROVE in code or quotes does not count.",
       "tools": [
         "Read",
         "Grep",
@@ -923,7 +923,7 @@
       "maxTurns": 40,
       "mcp_allow": [],
       "read_only": true,
-      "returns": "Findings as file:line with a concrete failure scenario, the commands run with their results, and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES (any [blocking] finding, or a conditional APPROVE, is recorded as REQUEST_CHANGES or unparsed).",
+      "returns": "Findings as file:line with a concrete failure scenario, the commands run with their results, and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES (any [blocking] finding, or a conditional APPROVE, is recorded as REQUEST_CHANGES or unparsed). Write the word VERDICT only on that final line, never in a heading, summary or earlier sentence.",
       "tools": [
         "Read",
         "Grep",
@@ -950,7 +950,7 @@
       "maxTurns": 40,
       "mcp_allow": [],
       "read_only": true,
-      "returns": "Each refutation attempt with its input and outcome, and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES (any [blocking] finding, or a conditional APPROVE, is recorded as REQUEST_CHANGES or unparsed).",
+      "returns": "Each refutation attempt with its input and outcome, and a final line that is exactly VERDICT: APPROVE or VERDICT: REQUEST_CHANGES (any [blocking] finding, or a conditional APPROVE, is recorded as REQUEST_CHANGES or unparsed). Write the word VERDICT only on that final line, never in a heading, summary or earlier sentence.",
       "tools": [
         "Read",
         "Grep",

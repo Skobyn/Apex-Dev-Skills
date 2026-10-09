@@ -30,6 +30,7 @@ import subprocess  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger  # noqa: E402
+import sibling  # noqa: E402  (the highest installed version of a sibling plugin)
 
 MIN_CLAUDE = (2, 1, 251)
 MIN_SCOPE_LOOP = (0, 3, 0)
@@ -90,7 +91,7 @@ class Doctor:
                         % (vstr(v), path, real, vstr(MIN_CLAUDE)), version=vstr(v), path=path, resolved=real)
 
     def scope_loop(self):
-        cands = [os.environ.get("APEX_SCOPE_LOOP_ROOT") or "", os.path.join(self.root, "..", "apex-scope-loop")]
+        cands = [os.environ.get("APEX_SCOPE_LOOP_ROOT") or "", sibling.find(self.root, "apex-scope-loop")[0] or ""]
         for c in cands:
             pj = os.path.join(c, ".claude-plugin", "plugin.json") if c else ""
             if pj and os.path.isfile(pj):
@@ -103,7 +104,8 @@ class Doctor:
         return self.add("scope-loop-sibling", "fail", "apex-scope-loop not found beside apex-dispatch (APEX_SCOPE_LOOP_ROOT)")
 
     def guardrails(self):
-        g = os.path.join(self.root, "..", "apex-guardrails", ".claude-plugin", "plugin.json")
+        g = os.path.join(sibling.find(self.root, "apex-guardrails")[0] or os.path.join(self.root, "..", "apex-guardrails"),
+                         ".claude-plugin", "plugin.json")
         if os.path.isfile(g):
             return self.add("guardrails-sibling", "ok", "apex-guardrails present (layer B floor)")
         return self.add("guardrails-sibling", "warn", "apex-guardrails not found beside apex-dispatch: the always-on "
@@ -332,7 +334,8 @@ class Doctor:
     def decision_layer(self):
         """decision-layer spec §11.2 item 6: the sibling, its version and its own doctor summary."""
         cmd = os.environ.get("APEX_DECIDE_CMD", "")
-        root = os.environ.get("APEX_DECISION_LAYER_ROOT") or os.path.join(self.root, "..", "apex-decision-layer")
+        root = (os.environ.get("APEX_DECISION_LAYER_ROOT") or sibling.find(self.root, "apex-decision-layer")[0]
+                or os.path.join(self.root, "..", "apex-decision-layer"))
         exe = os.path.join(root, "bin", "apex-decide")
         if not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
             note = " (APEX_DECIDE_CMD overrides it: %s)" % cmd if cmd else ""
