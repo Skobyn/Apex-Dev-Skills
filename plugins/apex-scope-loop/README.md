@@ -158,6 +158,10 @@ The review-loop strictness and the risk-tier definitions can be set per reposito
 
 Full mapping, and what was deliberately left out (cross-vendor routing, GitHub claims, CI templates): [skills/apex-execute/docs/GIBSON_HARNESS.md](skills/apex-execute/docs/GIBSON_HARNESS.md). For repo-level setup (CI gates, branch protection, labels), run The Gibson's own `gibson-setup` skill against the target repo.
 
+
+### Replaying a past task (v0.6.0)
+
+`risk-tier.sh PLAN LINE --no-record --since <base> --head <sha> [--knobs <file>]` classifies a completed task's committed diff, `<base>..<sha>`, without touching the current head or anything uncommitted. With `--knobs`, it classifies the diff under a proposed knobs file instead of the one in force. That file is validated the same way, and an invalid one exits 3. Both flags need `--no-record` and refuse `--raise` and `--classify`, so a replay never changes a recorded tier. apex-console's tier simulator uses them to show what a tier-definition change would have done to your past tasks before you apply it.
 ## Compatibility
 
 - **Claude Code:** 2.0+ (requires `/loop`, `/schedule`, AskUserQuestion, ScheduleWakeup, Agent)
@@ -186,7 +190,7 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 64 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, the review-loop calibration of ADR-0004, and the knobs file). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 65 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, the review-loop calibration of ADR-0004, and the knobs file). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 
