@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # apex-scope-loop structural smoke test
-# Verifies the plugin contract from ADR-0001 (checks 1-10), ADR-0002 (11-13), ADR-0003 (14-43) and ADR-0004 (44-61). Exits non-zero on first failure.
+# Verifies the plugin contract from ADR-0001 (checks 1-10), ADR-0002 (11-13), ADR-0003 (14-43), ADR-0004 (44-61) and the knobs file (62). Exits non-zero on first failure.
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1340,10 +1340,10 @@ touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
 ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head (submodules included) and allows ignored tool caches"
 
-# 42. Portability (ADR-0003): version 0.4.4, ADR-0003 and ADR-0004 present, reviewer cannot
+# 42. Portability (ADR-0003): version 0.5.0, ADR-0003 and ADR-0004 present, reviewer cannot
 #     edit, ruflo optional (no required ruflo/claude-flow reference outside
 #     docs/legacy/), apex-plan template profiles.
-grep -q '"version": "0.4.4"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.4.4"
+grep -q '"version": "0.5.0"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.5.0"
 ADR4="$PLUGIN_ROOT/docs/adrs/0004-review-loop-calibration.md"
 [ -f "$ADR4" ] && grep -qE "^- \*\*Status:\*\* Accepted" "$ADR4" && grep -q '^## What this loosens and why it is safe' "$ADR4" || fail "ADR-0004 missing, not Accepted, or without its loosening section"
 ADR3="$PLUGIN_ROOT/docs/adrs/0003-portability-and-dispatch-consumer.md"
@@ -1357,7 +1357,7 @@ for prof in generic apex; do for t in adr-template.md plan-template.md; do
   [ -f "$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles/$prof/$t" ] || fail "apex-plan profile $prof lacks $t"
 done; done
 ! grep -qi 'getapexinsights\|apex-app' "$PLUGIN_ROOT"/skills/apex-plan/resources/templates/profiles/generic/*.md || fail "the generic apex-plan profile carries Apex-specific vocabulary"
-ok "portability: version 0.4.4, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
+ok "portability: version 0.5.0, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
 
 # 43. apex-dispatch Phase 3.2 consumers: green-gate.sh check PASS moves the ACTIVE
 #     lock BUILD -> GATE (only from BUILD; a FAIL leaves it); checkpoint.sh review
@@ -1960,6 +1960,79 @@ has '^TIER: C' "$(rtc '[docs]' plugins/x/agents/a.md 'Store the stripe secret')"
 has '^TIER: B' "$(rtc '[docs]' README.md 'stripe')" || fail "a top-level README term was not Tier B"
 ok "round-2 fixes: review mode enforced (brief predates the rise; review-mode, freeze and complete enforce full); every content term vs the override; plain waiver replies; ASK_HUMAN pending; Markdown-only Tier B; done needs run state"
 
+# 62. The knobs file (<state-base>/knobs/scope-loop.json, knobslib.py): one validator
+#     (unknown keys, ranges, regexes, catch-all globs, reasons, schema), precedence
+#     env > file > default, fail closed on an invalid file, extra Tier C terms,
+#     exempt globs, Tier B thresholds, review.cap reaching checkpoint, KNOBS in the
+#     tier record, the brief and risk-tier's output; the built-in regexes live once.
+KL="$EX/knobslib.py"; K62="$SMOKE_TMP/k62"; mkdir -p "$K62/sb/knobs"
+GOODK='{"schema": 1, "review": {"cap": 4, "adversary_budget": 0}, "tiers": {"c_terms_extra": ["frobnicate"], "exempt": [{"glob": "plugins/*/agents/*.md", "reason": "agent prompts name auth terms as prose"}], "b_max_lines": 150, "b_shared_dirs": ["api", "lib"]}}'
+printf '%s\n' "$GOODK" >"$K62/good.json"
+has '^OK$' "$(python3 "$KL" validate "$K62/good.json" 2>&1)" || fail "knobslib rejected a good knobs file: $(python3 "$KL" validate "$K62/good.json" 2>&1)"
+for c in '{"bogus": 1}|bogus: unknown key' '{"review": {"cap": 1, "speed": 2}}|review.speed: unknown key' '{"review": {"cap": 11}}|review.cap: 11 is out of range 1-10' \
+         '{"review": {"attempt_cap": 0}}|review.attempt_cap: 0 is out of range' '{"tiers": {"b_max_lines": 9}}|tiers.b_max_lines: 9 is out of range' \
+         '{"tiers": {"c_terms_extra": ["(unclosed"]}}|tiers.c_terms_extra\[0\]: not a valid Python regex' '{"tiers": {"c_paths_extra": ["x?"]}}|matches the empty string' \
+         '{"tiers": {"exempt": [{"glob": "**", "reason": "everything is fine here"}]}}|catch-all' '{"tiers": {"exempt": [{"glob": "*", "reason": "everything is fine here"}]}}|catch-all' '{"tiers": {"exempt": [{"glob": "*/*", "reason": "everything is fine here"}]}}|names no directory' \
+         '{"tiers": {"exempt": [{"glob": "docs/*.md", "reason": "  short  "}]}}|tiers.exempt\[0\].reason: required, at least 8' \
+         '{"schema": 2}|schema: must be 1' '{"tiers": {"b_shared_dirs": ["a/b"]}}|tiers.b_shared_dirs\[0\]' '{"review": {"cap": "3"}}|review.cap: must be a whole number'; do
+  printf '%s\n' "${c%%|*}" >"$K62/bad.json"
+  O62="$(python3 "$KL" validate "$K62/bad.json" 2>&1)" && fail "knobslib accepted ${c%%|*}"
+  has "^ERROR: .*${c#*|}" "$O62" || fail "knobslib refused ${c%%|*} for the wrong reason: $O62"
+done
+# Precedence: env (set, non-empty, a whole number) > file > default.
+has '^3$' "$(python3 "$KL" get --state-base "$K62/sb" review.cap --env APEX_REVIEW_CAP --default 3)" || fail "knobslib get without a file is not the default"
+cp "$K62/good.json" "$K62/sb/knobs/scope-loop.json"
+has '^4$' "$(python3 "$KL" get --state-base "$K62/sb" review.cap --env APEX_REVIEW_CAP --default 3)" || fail "knobslib get did not take the file over the default"
+has '^7$' "$(APEX_REVIEW_CAP=7 python3 "$KL" get --state-base "$K62/sb" review.cap --env APEX_REVIEW_CAP --default 3)" || fail "knobslib get did not take the env over the file"
+has '^4$' "$(APEX_REVIEW_CAP= python3 "$KL" get --state-base "$K62/sb" review.cap --env APEX_REVIEW_CAP --default 3)" || fail "an empty env var won over the file"
+python3 - "$(APEX_ERROR_BUDGET=5 python3 "$KL" effective --state-base "$K62/sb")" "$K62/sb/knobs/scope-loop.json" <<'PY' || fail "knobslib effective has the wrong shape"
+import hashlib, json, sys
+d = json.loads(sys.argv[1])
+assert d["file"] == sys.argv[2] and d["exists"] is True and d["sha"] == hashlib.sha256(open(sys.argv[2], "rb").read()).hexdigest()[:12], d
+assert d["effective"]["review"]["cap"] == 4 and d["sources"]["review.cap"] == "file" and d["effective"]["review"]["error_budget"] == 5 and d["sources"]["review.error_budget"] == "env"
+assert d["sources"]["review.attempt_cap"] == "default" and d["effective"]["tiers"]["b_max_files"] == 6 and d["effective"]["tiers"]["c_terms_extra"] == ["frobnicate"]
+assert "stripe" in d["builtins"]["c_terms"] and "auth" in d["builtins"]["c_paths"] and d["limits"]["review.cap"] == [1, 10] and d["env"]["review.cap"] == "APEX_REVIEW_CAP"
+PY
+! grep -qE "^C_(PATHS|CONTENT)=" "$EX/risk-tier.sh" && grep -q 'knobslib.py' "$EX/risk-tier.sh" || fail "risk-tier.sh keeps its own copy of the Tier C regexes (knobslib.py is the one copy)"
+# rtk KNOBS TAGS FILE CONTENT... — risk-tier output (recorded) for a fresh one-task run with that knobs file.
+rtk() {
+  local d w sb; d="$(mktemp -d "$SMOKE_TMP/rtk.XXXXXX")"; w="$(cal_run "$d" "- [ ] **Phase 1.1** $2 a\n  - Acceptance: true\n")" || { echo init-failed; return 0; }
+  sb="$(dirname "$(dirname "$w")")"; mkdir -p "$sb/knobs"; printf '%s\n' "$1" >"$sb/knobs/scope-loop.json"
+  shift 2; while [ $# -ge 2 ]; do mkdir -p "$w/$(dirname "$1")"; printf '%s\n' "$2" >"$w/$1"; shift 2; done
+  git -C "$w" add -A; git -C "$w" commit -qm t; (cd "$d" && "$EX/risk-tier.sh" plans/v-plan.md 1 2>&1) || true; echo "RTK_STATE: $(dirname "$w")"
+}
+O62="$(rtk '{"review": {"cap": 0}}' '[docs]' src/x.py x)"
+has 'knobs file .*/knobs/scope-loop.json is invalid: review.cap: 0 is out of range' "$O62" && ! has '^TIER:' "$O62" || fail "risk-tier did not refuse an invalid knobs file (naming it): $O62"
+has '^TIER: A' "$(rtc '[docs]' src/x.py 'frobnicate(1)')" || fail "the fixture for the extra term is not Tier A without knobs"
+O62="$(rtk '{"tiers": {"c_terms_extra": ["frobnicate"]}}' '[docs]' src/x.py 'frobnicate(1)')"
+has '^TIER: C' "$O62" && has "tier-c content signal in diff: 'frobnicate'" "$O62" && has '^KNOBS: [0-9a-f]\{12\}$' "$O62" || fail "an extra Tier C term from the knobs file did not raise Tier C: $O62"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["tiers"]["1"]; assert r["tier"]=="C" and len(r["knobs"])==12, r' "$(sed -n 's/^RTK_STATE: //p' <<<"$O62")/checkpoint.json" || fail "the tier record does not carry the knobs sha"
+O62="$(rtk "$GOODK" '[docs]' plugins/x/agents/a.md 'Store the stripe secret')"
+has '^TIER: A' "$O62" && has '^REASON: exempted by knobs: plugins/x/agents/a.md (plugins/\*/agents/\*.md: agent prompts name auth terms as prose)' "$O62" || fail "an exempt glob did not keep a shipped agent prompt out of Tier C: $O62"
+has '^TIER: C' "$(rtk "$GOODK" '[docs]' plugins/x/agents/a.md 'Store the stripe secret' src/auth/s.py x)" || fail "an exempt glob hid another file's Tier C path"
+has '^TIER: C' "$(rtk "$GOODK" '[docs][security]' plugins/x/agents/a.md 'x')" || fail "an exempt glob overrode a [security] tag"
+has '^TIER: A' "$(rtc '[docs]' src/x.py "$(seq 1 40)")" || fail "the fixture for b_max_lines is not Tier A without knobs"
+O62="$(rtk '{"tiers": {"b_max_lines": 20}}' '[docs]' src/x.py "$(seq 1 40)")"
+has '^TIER: B' "$O62" && has 'diff size: 40 changed lines (>20)' "$O62" || fail "a lowered b_max_lines did not raise Tier B: $O62"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["tiers"]["1"]; assert r["knobs"] and r["tier"]=="B", r' "$(sed -n 's/^RTK_STATE: //p' <<<"$O62")/checkpoint.json" || fail "the Tier B record does not carry the knobs sha"
+# review.cap from the file reaches the brief and checkpoint review; KNOBS in the brief; iterate refuses an invalid file.
+T62="$SMOKE_TMP/t62"; TW="$(cal_run "$T62" "$TWO")" || fail "init for check 62 failed"
+SB62="$(dirname "$(st "$T62" plans/v-plan.md)")"
+has '^KNOBS: default$' "$(brief "$T62" plans/v-plan.md)" || fail "the brief does not print KNOBS: default without a knobs file"
+mkdir -p "$SB62/knobs"; printf '{"review": {"cap": 1, "adversary_budget": 5}}\n' >"$SB62/knobs/scope-loop.json"
+B62="$(brief "$T62" plans/v-plan.md)"
+has '^REVIEW_CAP: 1 (blocking rounds per attempt)' "$B62" && has '^ADVERSARY_BUDGET: 5$' "$B62" && has '^KNOBS: [0-9a-f]\{12\}$' "$B62" || fail "the brief does not show the knobs file's review.cap / adversary_budget / KNOBS"
+has '^ADVERSARY_BUDGET: 2$' "$( (cd "$T62" && APEX_ADVERSARY_BUDGET=2 "$EX/iterate.sh" plans/v-plan.md) 2>&1)" || fail "APEX_ADVERSARY_BUDGET did not win over the knobs file"
+vc "$T62" review 1 "$(wcommit "$TW" k1 a.md)" REQUEST_CHANGES >/dev/null || fail "the first blocking round was refused"
+expect_refusal "a second blocking round over review.cap=1 from the knobs file" "REVIEW_CAP: 1 review rounds requested changes" vc "$T62" review 1 "$(wcommit "$TW" k2 a.md)" REQUEST_CHANGES
+printf '{"review": {"cap": 1}, "tiers": {"exempt": [{"glob": "**/*", "reason": "exempt the whole repository"}]}}\n' >"$SB62/knobs/scope-loop.json"
+B62="$(brief "$T62" plans/v-plan.md)"
+has '^STATUS: ERROR knobs file .*/knobs/scope-loop.json is invalid: tiers.exempt\[0\].glob' "$B62" && has '^__RC__: 1' "$B62" || fail "iterate did not refuse an invalid knobs file: $B62"
+expect_refusal "checkpoint review with an invalid knobs file" "knobs file .* is invalid" vc "$T62" review 1 "$(git -C "$TW" rev-parse HEAD)" APPROVE
+expect_refusal "checkpoint fail with an invalid knobs file" "knobs file .* is invalid" vc "$T62" fail 1 x
+rm -f "$SB62/knobs/scope-loop.json"
+ok "knobs file: one validator (keys, ranges, regexes, catch-all globs, reasons, schema); env > file > default; invalid file refused by risk-tier, iterate and checkpoint; extra terms, exempt globs, B thresholds, review.cap reach the classifier and the loop; KNOBS recorded and printed"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2019,4 +2092,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 63/63 checks"
+echo "smoke passed: 64/64 checks"

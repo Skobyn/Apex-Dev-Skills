@@ -86,6 +86,25 @@
       ]
     },
     {
+      "name": "apex-console",
+      "description": "A local admin console for apex-scope-loop, apex-dispatch and apex-decision-layer: manage API keys, see progress per repo, plan and task, measure the software factory (Uber's cost equation, cost per outcome paired with quality, and flow and integrity metrics) against your own targets, and turn the knobs each plugin honours (review strictness, tier definitions, reviewers and providers, decision-layer config) with a kill switch and an undoable audit log. An admin layer: it never starts or drives work.",
+      "author": {
+        "name": "Apex Insights",
+        "url": "https://getapexinsights.com"
+      },
+      "category": "development",
+      "source": "./plugins/apex-console",
+      "keywords": [
+        "admin",
+        "console",
+        "metrics",
+        "keys",
+        "dashboard",
+        "governance",
+        "apex"
+      ]
+    },
+    {
       "name": "apex-guardrails",
       "description": "Deterministic runtime guardrails via PreToolUse hooks: hard-block edits to sensitive paths, deny destructive bash, scan tool inputs for secrets, and compile a declarative YAML policy into enforced matcher config.",
       "author": {
@@ -166,7 +185,7 @@
     },
     {
       "name": "apex-agent-observability",
-      "description": "Trace, replay, and cost-attribute multi-agent runs: hook-driven JSONL AgentTrace, deterministic OrchestrationReplay, and per-subagent TokenLens \u2014 pure artifacts, with an optional read-only MCP dashboard server.",
+      "description": "Trace, replay, and cost-attribute multi-agent runs: hook-driven JSONL AgentTrace, deterministic OrchestrationReplay, and per-subagent TokenLens — pure artifacts, with an optional read-only MCP dashboard server.",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"
@@ -188,7 +207,7 @@
     },
     {
       "name": "apex-rag-memory",
-      "description": "Diagnose RAG/embedding/memory lifecycle health: audit chunking, detect embedding-model drift, find stale vectors, and regression-test retrieval recall with a golden Q/A harness. Not a vendor connector \u2014 it diagnoses retrieval quality.",
+      "description": "Diagnose RAG/embedding/memory lifecycle health: audit chunking, detect embedding-model drift, find stale vectors, and regression-test retrieval recall with a golden Q/A harness. Not a vendor connector — it diagnoses retrieval quality.",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"

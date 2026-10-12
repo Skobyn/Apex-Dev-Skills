@@ -37,7 +37,16 @@
 #
 # Tier only ratchets upward: a line already recorded as C stays C.
 #
-# Emits: TIER: A|B|C, then one REASON: line per trigger.
+# Knobs (knobslib.py, <state-base>/knobs/scope-loop.json): the built-in Tier C
+# path and content regexes live in knobslib.py (the one copy); the file may add
+# regexes to both (OR-ed on), set the Tier B thresholds (b_max_lines,
+# b_max_files) and shared directories, and exempt globs: a path that matches
+# one (fnmatch on the repo-relative path, "*" crosses "/") is not Tier C
+# path-classified and its added lines are not content-scanned (one REASON per
+# exempted path). Tags, --raise and the decision layer raise as always. An
+# invalid knobs file is fatal; a missing one means the built-ins.
+#
+# Emits: TIER: A|B|C, then one REASON: line per trigger; KNOBS: <sha12>|default.
 set -euo pipefail
 
 PLAN="${1:?usage: risk-tier.sh PLAN.md LINE_NO [--since SHA] [--tags t1,t2]}"
@@ -72,6 +81,16 @@ python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" validate "$PLAN" >/dev/null 2>&1 \
   || { echo "ERROR: the plan is invalid — run: planlib.py validate $PLAN" >&2; exit 2; }
 python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO" >/dev/null 2>&1 \
   || { echo "ERROR: line $LINE_NO is not a task in $PLAN" >&2; exit 2; }
+
+# The knobs file (fail closed: an invalid file stops the classification).
+KNOBS_JSON="$(apex_knobs_effective)" || exit 3
+{ IFS= read -r KNOBS_SHA; IFS= read -r B_MAX_LINES; IFS= read -r B_MAX_FILES; IFS= read -r B_SHARED_ERE; } < <(python3 -c '
+import json, sys
+k = json.loads(sys.argv[1]); t = k["effective"]["tiers"]
+print(k["sha"]); print(int(t["b_max_lines"])); print(int(t["b_max_files"]))
+print("(^|/)(" + "|".join(d.replace(".", "[.]") for d in t["b_shared_dirs"]) + ")/" if t["b_shared_dirs"] else "")' "$KNOBS_JSON")
+[[ "$KNOBS_SHA" =~ ^([0-9a-f]{12}|default)$ && "$B_MAX_LINES" =~ ^[0-9]+$ && "$B_MAX_FILES" =~ ^[0-9]+$ ]] \
+  || { echo "ERROR: could not read the effective knobs (knobslib.py effective)" >&2; exit 3; }
 
 WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 BASE_BRANCH="$(read_field base_branch)"
@@ -153,7 +172,7 @@ esac
 # punctuation, digits and camelCase humps) that is exactly an allowlisted
 # word ("lessons", "processor", "oracle", …). "associateSSOIdentity",
 # "lessonsso" and "ProcessorSSO" stay Tier C.
-C_PATHS='(auth|login|logout|session|oauth|password|passwd|credential|permission|billing|payment|stripe|paypal|invoice|pricing|checkout|subscription|refund|ledger|wallet|consent|gdpr|ccpa|privacy|personal|migration|migrate|schema|\.sql$|prisma|secret|crypto|encrypt|security|middleware|rate.?limit|webhook|alert|pagerduty|oncall|incident|prod(uction)?[-_.]?(data|db|config)|jwt|rbac|saml|pii|csp|cors|role)'
+# The path regex is knobslib.py's C_PATHS plus the knobs file's c_paths_extra.
 SHORT_HITS="$(printf '%s\n' "$FILES" | python3 -c '
 import re, sys
 BENIGN = set("""lesson lessons processor processors accessor accessors successor successors predecessor
@@ -169,23 +188,42 @@ for path in sys.stdin.read().splitlines():
         if not any(s <= a and a + 3 <= e and w in BENIGN for s, e, w in spans):
             print(path)
             break')"
-while IFS= read -r f; do
-  [[ -z "$f" ]] && continue
-  if grep -aqiE "$C_PATHS" <<<"$f" || grep -aqxF -- "$f" <<<"$SHORT_HITS"; then
-    raise C "tier-c path: $f"
-  fi
-done <<<"$FILES"
+# One line per path: "C<TAB>path" (Tier C path signal) or "X<TAB>path<TAB>glob<TAB>reason"
+# (exempted by a knobs glob: neither path- nor content-classified).
+PATH_OUT="$(printf '%s\n' "$FILES" | python3 -c '
+import fnmatch, json, re, sys
+k = json.loads(sys.argv[1]); t = k["effective"]["tiers"]
+pats = [re.compile(r, re.I) for r in [k["builtins"]["c_paths"]] + list(t["c_paths_extra"])]
+short = set(sys.argv[2].splitlines())
+for f in sys.stdin.read().splitlines():
+    if not f:
+        continue
+    ex = next((e for e in t["exempt"] if fnmatch.fnmatchcase(f, e["glob"])), None)
+    if ex:
+        print("X\t%s\t%s\t%s" % (f, ex["glob"], " ".join(ex["reason"].split())))
+    elif f in short or any(p.search(f) for p in pats):
+        print("C\t" + f)' "$KNOBS_JSON" "$SHORT_HITS")" || { echo "ERROR: could not classify the changed paths" >&2; exit 3; }
+while IFS=$'\t' read -r kind f g why; do
+  case "$kind" in
+    C) raise C "tier-c path: $f" ;;
+    X) REASONS+=("exempted by knobs: $f ($g: $why)") ;;
+  esac
+done <<<"$PATH_OUT"
 
 # Tier C: content signals in added lines (catches risk in innocuously named
 # files). Calibrated (ADR-0004): added lines of test, fixture, smoke, example
 # and docs files are not scanned (test data that names "stripe" is not money
 # code); their paths still are. A file is exempt only when its diff header
 # parses cleanly; anything unparsed is scanned (fail closed).
-C_CONTENT='(stripe|charge\(|amount_cents|price|currency|bcrypt|argon2|jwt\.|verify_?token|set-cookie|httponly|samesite|csrf|consent|date_of_birth|ssn|social_security|DROP (TABLE|COLUMN)|ALTER TABLE|DELETE FROM|TRUNCATE)'
+# The content regex is knobslib.py's C_TERMS plus the knobs file's c_terms_extra;
+# a path exempted by a knobs glob is not scanned.
 CONTENT_OUT="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null \
   | python3 -c '
-import re, sys
-pat = re.compile(sys.argv[1], re.I)
+import fnmatch, json, re, sys
+K = json.loads(sys.argv[1]); KT = K["effective"]["tiers"]
+pats = [re.compile(r, re.I) for r in [K["builtins"]["c_terms"]] + list(KT["c_terms_extra"])]
+def knob_exempt(path):
+    return path is not None and any(fnmatch.fnmatchcase(path, e["glob"]) for e in KT["exempt"])
 EXEMPT_DIR = re.compile(r"(^|/)(tests?|__tests__|spec|fixtures?|examples?|docs?)/", re.I)
 def exempt(path):
     if path is None:
@@ -221,8 +259,8 @@ for raw in sys.stdin.buffer:
         continue
     if not line.startswith("+"):
         continue
-    ms = list(pat.finditer(line[1:]))
-    if not ms:
+    ms = [m for p in pats for m in p.finditer(line[1:]) if m.group(0)]
+    if not ms or knob_exempt(cur):
         continue
     if exempt(cur):
         skipped.add(cur)
@@ -243,7 +281,7 @@ for p in sorted(skipped)[:5]:
     print("SKIP\t" + p)
 if len(skipped) > 5:
     print("SKIP\t... and %d more" % (len(skipped) - 5))
-' "$C_CONTENT" 2>/dev/null || echo "HIT	(could not scan the diff)	?")"
+' "$KNOBS_JSON" 2>/dev/null || echo "HIT	(could not scan the diff)	?")"
 CONTENT_HITS=(); MD_HITS=()
 while IFS=$'\t' read -r kind a b; do
   case "$kind" in
@@ -286,9 +324,11 @@ esac
 # Tier B: size and shared-surface signals (never above B; a [tier:a] /
 # [tier:b] tag decides instead of them).
 BSIG=()
-[[ "$LINES" -gt 150 ]] && BSIG+=("diff size: $LINES changed lines (>150)")
-[[ "$NFILES" -gt 6 ]] && BSIG+=("diff breadth: $NFILES files (>6)")
-if grep -aqiE '(^|/)(api|routes?|shared|common|core|lib)/' <<<"$FILES"; then
+# Thresholds and shared directories from the knobs (built-in: 150 lines,
+# 6 files, api|routes?|shared|common|core|lib).
+[[ "$LINES" -gt "$B_MAX_LINES" ]] && BSIG+=("diff size: $LINES changed lines (>$B_MAX_LINES)")
+[[ "$NFILES" -gt "$B_MAX_FILES" ]] && BSIG+=("diff breadth: $NFILES files (>$B_MAX_FILES)")
+if [[ -n "$B_SHARED_ERE" ]] && grep -aqiE "$B_SHARED_ERE" <<<"$FILES"; then
   BSIG+=("touches a shared module or API route")
 fi
 if [[ -n "$TAG_TIER" ]]; then
@@ -378,9 +418,9 @@ fi
 # Persist (tier only ratchets upward — diffs may drift into C, never out).
 # Under checkpoint.sh's state lock, written atomically. --no-record (used by
 # checkpoint.sh complete) prints the heuristic for the diff without recording.
-[[ "$NO_RECORD" == "1" ]] || TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" "$TAG_TIER" "$TAG_REASON" "$RAISE" "$RAISE_REASON" "$(printf '%s\037' ${REASONS[@]+"${REASONS[@]}"})" "$SIGNAL_LENSES" "$(printf '%s\037' ${OVERRIDDEN_C[@]+"${OVERRIDDEN_C[@]}"})" <<'PY'
+[[ "$NO_RECORD" == "1" ]] || TIER="$(python3 - "$CHECKPOINT" "$LINE_NO" "$TIER" "$SINCE" "$STATE_DIR/.checkpoint.lock" "$HEAD_NOW" "$TAG_TIER" "$TAG_REASON" "$RAISE" "$RAISE_REASON" "$(printf '%s\037' ${REASONS[@]+"${REASONS[@]}"})" "$SIGNAL_LENSES" "$(printf '%s\037' ${OVERRIDDEN_C[@]+"${OVERRIDDEN_C[@]}"})" "$KNOBS_SHA" <<'PY'
 import fcntl, json, os, sys
-path, line_no, tier, since, lock, head, ov_tier, ov_reason, raise_tier, raise_reason, reasons, sig, overridden = sys.argv[1:]
+path, line_no, tier, since, lock, head, ov_tier, ov_reason, raise_tier, raise_reason, reasons, sig, overridden, knobs = sys.argv[1:]
 fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(fd, fcntl.LOCK_EX)
 s = json.load(open(path))
@@ -392,7 +432,7 @@ final = tier if order[tier] >= order.get(prev, 0) else prev
 # recorded for an older head.
 epoch = s.get("epoch", 0)               # the tier still ratchets across a refork
 prev_rec = tiers.get(line_no) or {}
-rec = {"tier": final, "since": since, "head": head, "epoch": epoch}
+rec = {"tier": final, "since": since, "head": head, "epoch": epoch, "knobs": knobs}   # knobs: the knobs file sha, or "default"
 if ov_tier:
     rec["override"] = {"tier": ov_tier, "reason": ov_reason}      # the explicit override in the plan, and why
 raised = list(prev_rec.get("raised") or [])
@@ -425,6 +465,7 @@ echo "HEAD: $HEAD_NOW"
 echo "DIFF: $NFILES file(s), $LINES line(s) since ${SINCE:0:12}"
 [[ ${#OVERRIDDEN_C[@]} -gt 0 ]] && printf '%s\n' "${OVERRIDDEN_C[@]}"
 echo "SIGNAL_LENSES: $SIGNAL_LENSES"
+echo "KNOBS: $KNOBS_SHA"
 if [[ ${#REASONS[@]} -eq 0 ]]; then
   echo "REASON: no elevated-risk signals"
 else

@@ -1,0 +1,19 @@
+{
+  "name": "apex-console",
+  "description": "A local admin console for apex-scope-loop, apex-dispatch and apex-decision-layer: manage API keys, see progress per repo, plan and task, measure the software factory (Uber's cost equation, cost per outcome paired with quality, and flow and integrity metrics) against your own targets, and turn the knobs each plugin honours (review strictness, tier definitions, reviewers and providers, decision-layer config) with a kill switch and an undoable audit log. An admin layer: it never starts or drives work.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Apex Insights",
+    "url": "https://getapexinsights.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "admin",
+    "console",
+    "metrics",
+    "keys",
+    "dashboard",
+    "governance",
+    "apex"
+  ]
+}
