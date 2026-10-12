@@ -75,6 +75,12 @@
 # HALTED line names the counter that fired. A failure starts a new review
 # attempt for the line. With apex-dispatch, ESCALATE_ROUTE: lines
 # come from `route.sh escalate`.
+#
+# Knobs: each APEX_* number above is also a key of the per-repository knobs
+# file <state-base>/knobs/scope-loop.json (review.cap, review.ask_human_after,
+# review.escalate_after, review.error_budget, review.attempt_cap; knobslib.py).
+# A set env var wins over the file, the file over the default; an invalid
+# file makes review and fail refuse (fail closed).
 set -euo pipefail
 
 PLAN="${1:?usage: checkpoint.sh PLAN.md ACTION [...]}"
@@ -550,6 +556,10 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$VERDICT" "$LINE_NO" "$SKIP_REVIEW" "$HEAD_
     # failure on this line (else since the task's diff base).
     HEAD_F="$(head_sha)"
     FLOOR_F="$(apex_floor "$WT" 2>/dev/null || true)"
+    # Halt thresholds: env > knobs file > default (an invalid knobs file is fatal).
+    K_ESC="$(apex_knob review.escalate_after APEX_ESCALATE_AFTER 2)" || exit 3
+    K_BUDGET="$(apex_knob review.error_budget APEX_ERROR_BUDGET 3)" || exit 3
+    K_CAP="$(apex_knob review.attempt_cap APEX_ATTEMPT_CAP 6)" || exit 3
     python3 -c "$PY_SAVE"'
 import sys
 path, now, reason, line_no, esc, budget, cap, progress, head, floor = sys.argv[1:]
@@ -587,7 +597,7 @@ r = s.setdefault("reviews", {}).setdefault(line_no, {})
 r["attempt"] = r.get("attempt", 1) + 1
 r["rounds"] = []
 (s.get("freezes") or {}).pop(line_no, None)     # a new attempt is never frozen
-save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:-2}" "${APEX_ERROR_BUDGET:-3}" "${APEX_ATTEMPT_CAP:-6}" \
+save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "$K_ESC" "$K_BUDGET" "$K_CAP" \
       "$PROGRESS" "$HEAD_F" "$FLOOR_F"
     "$APEX_EXECUTE_SCRIPTS/backlog.sh" "$PLAN" reopen "$LINE_NO" 9>&- >/dev/null 2>&1 || true   # pending closes of a failed attempt
     # apex-dispatch decides the next rung (effort+1, model+1, diagnoser, HALT).
@@ -630,12 +640,14 @@ save(path, s)' "$CHECKPOINT" "$NOW" "$REASON" "$LINE_NO" "${APEX_ESCALATE_AFTER:
     need_sha "$SHA"
     refuse_if_halted
     # A plan's Review: cap=<n> sets this task's cap (ADR-0004 addendum B).
-    REVIEW_CAP="${APEX_REVIEW_CAP:-3}"
+    # env > knobs file > default (an invalid knobs file is fatal).
+    REVIEW_CAP="$(apex_knob review.cap APEX_REVIEW_CAP 3)" || exit 3
     DCAP="$(python3 -c 'import json,sys; print((json.loads(sys.argv[1]).get("review") or {}).get("cap") or "")' "$TASK_JSON")"
     case "$VERDICT" in APPROVE|REQUEST_CHANGES) ;; *) echo "ERROR: verdict must be APPROVE or REQUEST_CHANGES" >&2; exit 1 ;; esac
     [[ -z "$ROLE" || "$ROLE" =~ ^(reviewer|adversarial|lens:[a-z/-]+)$ ]] || { echo "ERROR: --role must be reviewer, adversarial or lens:<name>" >&2; exit 1; }
     [[ -n "$AGENT_ID" && -n "$WORKER" ]] && { echo "ERROR: --agent-id and --worker are exclusive" >&2; exit 1; }
-    ASK_AFTER="${APEX_ASK_HUMAN_AFTER:-2}"; [[ "$ASK_AFTER" =~ ^[1-9][0-9]{0,2}$ ]] || ASK_AFTER=2
+    ASK_AFTER="$(apex_knob review.ask_human_after APEX_ASK_HUMAN_AFTER 2)" || exit 3
+    [[ "$ASK_AFTER" =~ ^[1-9][0-9]{0,2}$ ]] || ASK_AFTER="$(apex_knob review.ask_human_after "" 2)" || exit 3
     [[ -z "$RMODE" || "$RMODE" == full || "$RMODE" == verify ]] || { echo "ERROR: --mode must be full or verify" >&2; exit 1; }
     python3 - "$CHECKPOINT" "$NOW" "$LINE_NO" "$SHA" "$VERDICT" "$REVIEWER" "$REVIEWER_NAMED" "$ROLE" "$AGENT_ID" "$WORKER" \
       "$PROVIDER" "$MODEL" "$ROUTE_ID" "$DISPATCH_STATE" "${PLAN_TOP:-$REPO_ROOT}" "$REVIEW_CAP" "$(head_sha)" "$ASK_AFTER" "$DCAP" "$TASK_JSON" "$RMODE" <<'PY'

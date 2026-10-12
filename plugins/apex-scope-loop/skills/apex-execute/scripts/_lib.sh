@@ -370,6 +370,39 @@ apex_die() {
   exit 3
 }
 
+# --- Knobs file (knobslib.py; README "Knobs file") -----------------------------
+# <state-base>/knobs/scope-loop.json sets the review-loop strictness and the
+# risk-tier definitions. A set, non-empty env var (a whole number) wins over
+# the file, the file over the built-in default. An invalid file is fatal for
+# every reader (apex_die names the file and each problem); a missing file
+# means the defaults. Needs STATE_BASE (call after apex_resolve).
+
+# apex_knob KEY ENV_VAR DEFAULT — the effective value of KEY (e.g. review.cap).
+# ENV_VAR may be empty (file and default only).
+apex_knob() {
+  local key="$1" envvar="${2:-}" def="${3:-}" out
+  [[ -n "${STATE_BASE:-}" ]] || apex_die "apex_knob $key: STATE_BASE is not resolved (call apex_resolve first)"
+  if ! out="$(python3 "$APEX_EXECUTE_SCRIPTS/knobslib.py" get --state-base "$STATE_BASE" "$key" ${envvar:+--env "$envvar"} --default "$def" 2>/dev/null)"; then
+    apex_die "$(apex_knobs_problem)"
+  fi
+  printf '%s\n' "$out"
+}
+
+# apex_knobs_problem — one line naming the knobs file and every problem in it.
+apex_knobs_problem() {
+  local errs
+  errs="$(python3 "$APEX_EXECUTE_SCRIPTS/knobslib.py" effective --state-base "$STATE_BASE" 2>&1 >/dev/null || true)"
+  errs="$(printf '%s\n' "$errs" | sed -n 's/^ERROR: //p' | awk 'NR == 1 { printf "%s", $0; next } { printf "%s%s", (NR == 2 ? " " : "; "), $0 }')"
+  printf '%s — fix or remove it (knobslib.py validate FILE); scripts refuse to run on an invalid knobs file' "${errs:-knobs file under $STATE_BASE/knobs is invalid}"
+}
+
+# apex_knobs_effective — knobslib.py effective as JSON (dies on an invalid file).
+apex_knobs_effective() {
+  local out
+  out="$(python3 "$APEX_EXECUTE_SCRIPTS/knobslib.py" effective --state-base "$STATE_BASE" 2>/dev/null)" || apex_die "$(apex_knobs_problem)"
+  printf '%s\n' "$out"
+}
+
 # apex_guard — one repository, proven (ADR-0003). State is keyed on the
 # plan's repository; git actions run in the caller's checkout and in the
 # checkpoint's worktree. Before any script acts, all four must name the same

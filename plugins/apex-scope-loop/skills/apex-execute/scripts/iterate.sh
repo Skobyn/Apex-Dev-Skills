@@ -37,7 +37,9 @@
 #                 attempt, or a Tier C attempt has no adversarial review yet
 #   REVIEW_SINCE: <sha>         # SINCE for the next review (TASK_BASE when full)
 #   TIER_REASONS: the recorded tier's reasons ("  ! " an overridden Tier C signal)
-#   ADVERSARY_BUDGET: <n>       # max [blocking] findings per review (APEX_ADVERSARY_BUDGET, default 3)
+#   ADVERSARY_BUDGET: <n>       # max [blocking] findings per review (APEX_ADVERSARY_BUDGET, else the
+#                 knobs file review.adversary_budget, default 3)
+#   KNOBS: <sha12>|default      # the knobs file in force (<state-base>/knobs/scope-loop.json)
 #   BACKLOG: <n> open ...       # hardening backlog items for this plan (backlog.sh)
 #   REVIEW_CAP / REVIEW_DIRECTIVE / FROZEN / THREATS: the task's review cap
 #                 (blocking rounds), Review: directive, freeze and Threats: list
@@ -113,6 +115,15 @@ if ! PLAN_ERRORS="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" validate "$PLAN_A
   echo "STATUS: ERROR plan is invalid — fix the PLAN_ERROR lines (planlib.py validate) and re-run"
   exit 1
 fi
+
+# The knobs file (knobslib.py): an invalid one is fatal (fail closed), before
+# anything is dispatched or locked.
+if ! KNOBS_JSON="$(python3 "$APEX_EXECUTE_SCRIPTS/knobslib.py" effective --state-base "$STATE_BASE" 2>/dev/null)"; then
+  echo "STATE: $STATE_DIR"
+  echo "STATUS: ERROR $(apex_knobs_problem)"
+  exit 1
+fi
+KNOBS_SHA="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sha"])' "$KNOBS_JSON")"
 
 # Next unchecked, unblocked task (planlib.py is the one plan parser).
 SEL="$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" next "$PLAN_ABS")" \
@@ -298,10 +309,15 @@ if tier:
     for x in trec.get("reasons") or []:
         print("  - " + x)
 PY
-AB="${APEX_ADVERSARY_BUDGET:-3}"; [[ "$AB" =~ ^[1-9][0-9]{0,2}$ ]] || AB=3
+# Review-loop knobs: env > knobs file > default (an env value that is not a
+# whole number is ignored).
+AB="$(apex_knob review.adversary_budget APEX_ADVERSARY_BUDGET 3)" || exit 1
+[[ "$AB" =~ ^[0-9]{1,3}$ ]] || AB=3
+ENVCAP="$(apex_knob review.cap APEX_REVIEW_CAP 3)" || exit 1
 echo "ADVERSARY_BUDGET: $AB"
+echo "KNOBS: $KNOBS_SHA"
 # Review directive, cap and freeze (ADR-0004 addendum B, C).
-python3 - "$CHECKPOINT" "$LINE_NO" "$SEL" "${APEX_REVIEW_CAP:-3}" <<'PY' || true
+python3 - "$CHECKPOINT" "$LINE_NO" "$SEL" "$ENVCAP" <<'PY' || true
 import json, sys
 path, line_no, sel, envcap = sys.argv[1:]
 t = json.loads(sel)["task"]

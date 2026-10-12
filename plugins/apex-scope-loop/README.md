@@ -137,6 +137,25 @@ build swarm → commit → green-gate.sh check → risk-tier.sh → gibson-revie
 - **Carried findings, frozen heads, shared snapshots.** `findings.sh` keeps each task's findings (a defect counted once; non-blocking ones go to the backlog), `checkpoint.sh freeze` holds the head for a review round, `snapshot.sh` gives reviewers one read-only checkout per commit, and `status.sh --review-metrics` measures rounds and minutes. The review cap counts only rounds that requested changes; a task's `Review:` directive can set it.
 - **Calibrated tiers.** Content signals in tests, fixtures, smoke files, examples and docs no longer raise Tier C (their paths still do), and an explicit `[tier:a reason="…"]`/`[tier:b reason="…"]` override decides over size and content signals (the reason is recorded), never over Tier C paths or `[security]`/`[tier:c]`.
 
+### Knobs file (v0.5.0)
+
+The review-loop strictness and the risk-tier definitions can be set per repository in a **knobs file**, `<state-base>/knobs/scope-loop.json`. `<state-base>` is the `.dev-plan-state` directory beside the main checkout (or under `APEX_STATE_ROOT/.dev-plan-state/<repo-id>/` when that is set). The admin console (`apex-console`) edits this file; you can also write it by hand. It sits in the state directory on purpose: during a run, apex-dispatch's hooks refuse agent writes to `.dev-plan-state`, so an agent cannot loosen it mid-run. Never commit it.
+
+```json
+{"schema": 1,
+ "review": {"cap": 3, "ask_human_after": 2, "adversary_budget": 3, "escalate_after": 2, "error_budget": 3, "attempt_cap": 6},
+ "tiers": {"c_paths_extra": ["regex"], "c_terms_extra": ["regex"],
+           "exempt": [{"glob": "plugins/*/agents/*.md", "reason": "agent prompts name auth terms as prose"}],
+           "b_max_lines": 150, "b_max_files": 6, "b_shared_dirs": ["api", "route", "routes", "shared", "common", "core", "lib"]}}
+```
+
+- **All keys are optional.** The values above are the built-in defaults, so a missing file changes nothing. Limits: `review.cap` 1–10, `ask_human_after` 1–10, `adversary_budget` 0–20, `escalate_after` 1–10, `error_budget` 1–20, `attempt_cap` 1–50, `b_max_lines` 10–5000, `b_max_files` 1–500. `c_paths_extra` and `c_terms_extra` each take up to 50 Python regexes (200 characters at most, matched case-insensitively, none may match the empty string). They are added to the built-in Tier C path and content patterns with OR. `b_shared_dirs` takes up to 30 directory names. `exempt` takes up to 50 `{glob, reason}` entries. Unknown keys are errors, and `schema` must be 1.
+- **Exempt globs** are fnmatch patterns on the repo-relative path, where `*` also matches `/`. A matching path is not treated as a Tier C path, and its added lines are not scanned for Tier C terms. `risk-tier.sh` prints `REASON: exempted by knobs: <path> (<glob>: <reason>)` for each one. A catch-all glob is refused, and so is a reason shorter than 8 characters. Tags (`[security]`, `[tier:c]`), `--raise` and the decision layer still raise the tier.
+- **Precedence:** an environment variable that is set to a whole number wins (`APEX_REVIEW_CAP`, `APEX_ASK_HUMAN_AFTER`, `APEX_ADVERSARY_BUDGET`, `APEX_ESCALATE_AFTER`, `APEX_ERROR_BUDGET`, `APEX_ATTEMPT_CAP`). Otherwise the file wins over the default.
+- **Fail closed:** if the file is invalid, `risk-tier.sh`, `iterate.sh` and `checkpoint.sh review`/`fail` stop with an error that names the file and each problem. They never fall back to the defaults.
+- **Traceability:** `risk-tier.sh` and the brief print `KNOBS: <sha12>|default`, and the tier record stores it as `tiers[line].knobs`.
+- **Tooling:** `skills/apex-execute/scripts/knobslib.py validate FILE` checks a file. `knobslib.py get --state-base DIR KEY` prints one effective value. `knobslib.py effective --state-base DIR` prints the merged values, their sources, the built-in regexes, the limits and the env names as JSON. The console uses the same validator.
+
 Full mapping, and what was deliberately left out (cross-vendor routing, GitHub claims, CI templates): [skills/apex-execute/docs/GIBSON_HARNESS.md](skills/apex-execute/docs/GIBSON_HARNESS.md). For repo-level setup (CI gates, branch protection, labels), run The Gibson's own `gibson-setup` skill against the target repo.
 
 ## Compatibility
@@ -167,7 +186,7 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 61 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, and the review-loop calibration of ADR-0004). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 64 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, the review-loop calibration of ADR-0004, and the knobs file). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 
