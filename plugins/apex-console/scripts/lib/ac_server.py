@@ -437,6 +437,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        if u.path == "/favicon.ico":
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if u.path in STATIC and (self._authed() or u.path != "/" or "demo" in q):
             name, ctype = STATIC[u.path]
             try:

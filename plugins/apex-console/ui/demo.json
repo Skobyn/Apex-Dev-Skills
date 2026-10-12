@@ -1,0 +1,1337 @@
+{
+ "state": {
+  "version": "0.1.0",
+  "generated_at": "2026-10-12T14:03:00Z",
+  "config_dir": "~/.config/apex",
+  "repos": [
+   {
+    "id": "r1",
+    "name": "billing-service",
+    "path": "/Users/sk/src/billing-service",
+    "ok": true,
+    "error": null,
+    "state_base": "/Users/sk/src/billing-service/.dev-plan-state",
+    "plugins": {
+     "apex-scope-loop": "0.5.0",
+     "apex-dispatch": "0.6.1",
+     "apex-decision-layer": "0.6.0"
+    },
+    "active": true,
+    "halted": false
+   },
+   {
+    "id": "r2",
+    "name": "field-app",
+    "path": "/Users/sk/src/field-app",
+    "ok": true,
+    "error": null,
+    "state_base": "/Users/sk/src/field-app/.dev-plan-state",
+    "plugins": {
+     "apex-scope-loop": "0.5.0",
+     "apex-dispatch": "0.6.1",
+     "apex-decision-layer": "0.6.0"
+    },
+    "active": false,
+    "halted": true
+   }
+  ],
+  "targets": {
+   "cost_per_task": 2.5,
+   "cost_per_1k_requests": 300,
+   "cost_per_review": 0.6,
+   "cache_hit_rate": 0.6,
+   "weekly_requests": 30,
+   "autonomy_rate": 0.8,
+   "revert_rate": 0.05,
+   "finding_addressed_rate": 0.9,
+   "mttr_hours": 4,
+   "first_pass_yield": 0.7,
+   "review_rounds": 1.5,
+   "lead_time_p50_hours": 6,
+   "lead_time_p90_hours": 16,
+   "throughput_per_week": 4,
+   "escalation_rate": 0.15,
+   "unparsed_rate": 0.02,
+   "policy_violations": 0,
+   "chain_ok_rate": 1.0
+  },
+  "keys": {
+   "set": 4,
+   "missing_needed": [
+    "XAI_API_KEY"
+   ]
+  }
+ },
+ "metrics": {
+  "repo": "all",
+  "days": 28,
+  "window": {
+   "from": "2026-09-14T14:03:00Z",
+   "to": "2026-10-12T14:03:00Z"
+  },
+  "equation": {
+   "terms": [
+    {
+     "id": "operators",
+     "label": "Active repos",
+     "value": 2,
+     "prev": 1,
+     "unit": "repos",
+     "formula": "repositories with at least one route in the window",
+     "group": "adoption",
+     "factor": 1
+    },
+    {
+     "id": "sessions",
+     "label": "Tasks per repo",
+     "value": 11.5,
+     "prev": 9,
+     "unit": "tasks/repo",
+     "formula": "distinct tasks routed in the window / active repos",
+     "group": "adoption",
+     "factor": 1
+    },
+    {
+     "id": "turns",
+     "label": "Turns per task",
+     "value": 1.4,
+     "prev": 1.6,
+     "unit": "routes/task",
+     "formula": "routes / distinct tasks routed",
+     "group": "overhead",
+     "factor": 1
+    },
+    {
+     "id": "requests",
+     "label": "Requests per turn",
+     "value": 3.2,
+     "prev": 3.0,
+     "unit": "agent runs/route",
+     "formula": "agent runs (workers, reviewers, adversaries) / routes",
+     "group": "overhead",
+     "factor": 1
+    },
+    {
+     "id": "tokens",
+     "label": "Tokens per request",
+     "value": 182000,
+     "prev": 201000,
+     "unit": "tokens/run",
+     "formula": "input + output + cache tokens / priced agent runs",
+     "group": "overhead",
+     "factor": 1
+    },
+    {
+     "id": "price",
+     "label": "Price per million tokens",
+     "value": 1.9,
+     "prev": 2.4,
+     "unit": "USD/Mtok",
+     "formula": "spend / (tokens / 1,000,000), blended across providers",
+     "group": "price",
+     "factor": 1e-06
+    }
+   ],
+   "total_usd": 35.63,
+   "prev_total_usd": 20.84,
+   "unpriced_runs": 3,
+   "note": "value x factor of the six terms multiply to total_usd (Uber's software-factory cost equation)."
+  },
+  "scorecard": [
+   {
+    "id": "cost_per_task",
+    "label": "Cost per task",
+    "group": "cost",
+    "value": 2.1,
+    "prev": 3.47,
+    "unit": "USD",
+    "direction": "down",
+    "target": 2.5,
+    "status": "good",
+    "n": 17,
+    "formula": "spend / completed tasks",
+    "source": "uber"
+   },
+   {
+    "id": "cost_per_1k_requests",
+    "label": "Cost per 1k requests",
+    "group": "cost",
+    "value": 345.9,
+    "prev": 484.7,
+    "unit": "USD",
+    "direction": "down",
+    "target": 300,
+    "status": "off",
+    "n": 103,
+    "formula": "spend / agent runs x 1000",
+    "source": "uber"
+   },
+   {
+    "id": "cost_per_review",
+    "label": "Cost per review",
+    "group": "cost",
+    "value": null,
+    "prev": null,
+    "unit": "USD",
+    "direction": "down",
+    "target": 0.6,
+    "status": "none",
+    "n": 0,
+    "formula": "spend on reviewer runs / reviews (no reviewer run carried usage in this window)",
+    "source": "uber"
+   },
+   {
+    "id": "cache_hit_rate",
+    "label": "Cache hit rate",
+    "group": "cost",
+    "value": 0.65,
+    "prev": 0.57,
+    "unit": "ratio",
+    "direction": "up",
+    "target": 0.6,
+    "status": "good",
+    "n": 103,
+    "formula": "cache-read tokens / (input + cache-read tokens)",
+    "source": "uber"
+   },
+   {
+    "id": "weekly_requests",
+    "label": "Weekly agent requests",
+    "group": "adoption",
+    "value": 25.8,
+    "prev": 10.8,
+    "unit": "requests/week",
+    "direction": "up",
+    "target": 30,
+    "status": "watch",
+    "n": 103,
+    "formula": "agent runs / weeks in window",
+    "source": "uber"
+   },
+   {
+    "id": "autonomy_rate",
+    "label": "Autonomy rate",
+    "group": "adoption",
+    "value": 0.78,
+    "prev": 0.71,
+    "unit": "ratio",
+    "direction": "up",
+    "target": 0.8,
+    "status": "watch",
+    "n": 17,
+    "formula": "completed tasks with no human gate other than G12 / completed tasks",
+    "source": "uber"
+   },
+   {
+    "id": "revert_rate",
+    "label": "Revert rate",
+    "group": "quality",
+    "value": 0.0,
+    "prev": 0.07,
+    "unit": "ratio",
+    "direction": "down",
+    "target": 0.05,
+    "status": "good",
+    "n": 17,
+    "formula": "landed tasks later reverted / landed tasks",
+    "source": "uber"
+   },
+   {
+    "id": "finding_addressed_rate",
+    "label": "Findings addressed",
+    "group": "quality",
+    "value": 0.91,
+    "prev": 0.86,
+    "unit": "ratio",
+    "direction": "up",
+    "target": 0.9,
+    "status": "good",
+    "n": 34,
+    "formula": "review findings closed by a later round / findings raised",
+    "source": "uber"
+   },
+   {
+    "id": "mttr_hours",
+    "label": "Mean time to restore",
+    "group": "quality",
+    "value": null,
+    "prev": null,
+    "unit": "hours",
+    "direction": "down",
+    "target": 4,
+    "status": "none",
+    "n": 0,
+    "formula": "mean hours from a revert or failed gate to green again (nothing to restore in this window)",
+    "source": "uber"
+   },
+   {
+    "id": "first_pass_yield",
+    "label": "First-pass yield",
+    "group": "quality",
+    "value": 0.64,
+    "prev": 0.58,
+    "unit": "ratio",
+    "direction": "up",
+    "target": 0.7,
+    "status": "watch",
+    "n": 17,
+    "formula": "completed tasks approved in review round 1 of attempt 1 / completed tasks",
+    "source": "factory"
+   },
+   {
+    "id": "review_rounds",
+    "label": "Review rounds per task",
+    "group": "quality",
+    "value": 1.6,
+    "prev": 1.9,
+    "unit": "rounds",
+    "direction": "down",
+    "target": 1.5,
+    "status": "watch",
+    "n": 17,
+    "formula": "review rounds / completed tasks",
+    "source": "factory"
+   },
+   {
+    "id": "lead_time_p50_hours",
+    "label": "Lead time p50",
+    "group": "flow",
+    "value": 5.2,
+    "prev": 7.8,
+    "unit": "hours",
+    "direction": "down",
+    "target": 6,
+    "status": "good",
+    "n": 17,
+    "formula": "median hours from first route to green gate",
+    "source": "factory"
+   },
+   {
+    "id": "lead_time_p90_hours",
+    "label": "Lead time p90",
+    "group": "flow",
+    "value": 19.4,
+    "prev": 22.1,
+    "unit": "hours",
+    "direction": "down",
+    "target": 16,
+    "status": "off",
+    "n": 17,
+    "formula": "90th percentile hours from first route to green gate",
+    "source": "factory"
+   },
+   {
+    "id": "throughput_per_week",
+    "label": "Throughput",
+    "group": "flow",
+    "value": 4.25,
+    "prev": 1.5,
+    "unit": "tasks/week",
+    "direction": "up",
+    "target": 4,
+    "status": "good",
+    "n": 17,
+    "formula": "completed tasks / weeks in window",
+    "source": "factory"
+   },
+   {
+    "id": "escalation_rate",
+    "label": "Escalation rate",
+    "group": "flow",
+    "value": 0.17,
+    "prev": 0.22,
+    "unit": "ratio",
+    "direction": "down",
+    "target": 0.15,
+    "status": "watch",
+    "n": 17,
+    "formula": "tasks escalated to a stronger model / completed tasks",
+    "source": "factory"
+   },
+   {
+    "id": "human_touch_per_task",
+    "label": "Human touches per task",
+    "group": "flow",
+    "value": 0.4,
+    "prev": 0.5,
+    "unit": "touches/task",
+    "direction": "down",
+    "target": null,
+    "status": "none",
+    "n": 17,
+    "formula": "human gate prompts answered / completed tasks",
+    "source": "factory"
+   },
+   {
+    "id": "unparsed_rate",
+    "label": "Unparsed verdicts",
+    "group": "integrity",
+    "value": 0.03,
+    "prev": 0.05,
+    "unit": "ratio",
+    "direction": "down",
+    "target": 0.02,
+    "status": "off",
+    "n": 103,
+    "formula": "agent runs whose verdict could not be parsed / agent runs",
+    "source": "factory"
+   },
+   {
+    "id": "policy_violations",
+    "label": "Policy violations",
+    "group": "integrity",
+    "value": 1,
+    "prev": 0,
+    "unit": "count",
+    "direction": "down",
+    "target": 0,
+    "status": "off",
+    "n": 103,
+    "formula": "hook denials of an off-policy route or spawn",
+    "source": "factory"
+   },
+   {
+    "id": "chain_ok_rate",
+    "label": "Ledger chain intact",
+    "group": "integrity",
+    "value": 1.0,
+    "prev": 1.0,
+    "unit": "ratio",
+    "direction": "up",
+    "target": 1.0,
+    "status": "good",
+    "n": 2,
+    "formula": "ledgers whose hash chain verifies / ledgers",
+    "source": "factory"
+   }
+  ],
+  "series": {
+   "weeks": [
+    "2026-08-17",
+    "2026-08-24",
+    "2026-08-31",
+    "2026-09-07",
+    "2026-09-14",
+    "2026-09-21",
+    "2026-09-28",
+    "2026-10-05"
+   ],
+   "requests": [
+    9,
+    10,
+    11,
+    13,
+    22,
+    25,
+    27,
+    29
+   ],
+   "spend": [
+    4.4,
+    5.1,
+    5.0,
+    6.34,
+    6.77,
+    8.55,
+    9.62,
+    10.69
+   ],
+   "cost_per_1k_requests": [
+    488.9,
+    510.0,
+    454.5,
+    487.7,
+    307.7,
+    342.0,
+    356.3,
+    368.6
+   ],
+   "cost_per_task": [
+    4.4,
+    2.55,
+    5.0,
+    3.17,
+    2.26,
+    2.14,
+    1.6,
+    2.67
+   ],
+   "tasks_completed": [
+    1,
+    2,
+    1,
+    2,
+    3,
+    4,
+    6,
+    4
+   ],
+   "active_repos": [
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2
+   ],
+   "cache_hit_rate": [
+    0.48,
+    0.52,
+    0.55,
+    0.57,
+    0.61,
+    0.66,
+    0.64,
+    0.69
+   ]
+  },
+  "tier_mix": {
+   "A": 5,
+   "B": 6,
+   "C": 6
+  },
+  "events": [
+   {
+    "at": "2026-09-24T15:20:00Z",
+    "kind": "knobs",
+    "repo": "r1",
+    "id": "a-20260924-0001",
+    "summary": "scope-loop: tiers.c_paths_extra + payments/"
+   },
+   {
+    "at": "2026-10-09T16:05:00Z",
+    "kind": "knobs",
+    "repo": "r1",
+    "id": "a-20261009-0003",
+    "summary": "dispatch: providers.codex.min_acceptance 0.7 -> 0.8"
+   },
+   {
+    "at": "2026-10-10T09:12:00Z",
+    "kind": "halt",
+    "repo": "r2",
+    "id": "a-20261010-0002",
+    "summary": "HALT on in field-app: Pausing for review of auth changes"
+   }
+  ],
+  "notes": [
+   "3 agent runs carried no usage; they are in requests but not in spend.",
+   "Tokens per request counts cache reads; price is blended across providers."
+  ]
+ },
+ "progress": {
+  "repos": [
+   {
+    "id": "r1",
+    "name": "billing-service",
+    "halted": false,
+    "halt_reason": null,
+    "lock": {
+     "kind": "plan",
+     "id": "a1b2c3d4e5f6",
+     "line": 34,
+     "stage": "REVIEW",
+     "since": "2026-10-12T13:41:00Z"
+    },
+    "plans": [
+     {
+      "hash": "a1b2c3d4e5f6",
+      "path": ".claude/plans/billing-plan.md",
+      "name": "billing-plan",
+      "total": 12,
+      "done": 7,
+      "phase": "Phase 2",
+      "halted": false,
+      "halt_reason": null,
+      "landed": false,
+      "last_activity": "2026-10-12T13:58:00Z",
+      "usd": 17.0,
+      "open_findings": 2,
+      "enforced": true,
+      "tasks": [
+       {
+        "line": 12,
+        "title": "Add invoice model",
+        "status": "done",
+        "tier": "C",
+        "rounds": 2,
+        "attempts": 1,
+        "completed_at": "2026-09-16T10:12:00Z",
+        "usd": 3.1
+       },
+       {
+        "line": 15,
+        "title": "Migrate legacy invoice rows",
+        "status": "done",
+        "tier": "C",
+        "rounds": 3,
+        "attempts": 2,
+        "completed_at": "2026-09-18T15:40:00Z",
+        "usd": 4.2
+       },
+       {
+        "line": 18,
+        "title": "Invoice number sequence",
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-22T09:05:00Z",
+        "usd": 1.2
+       },
+       {
+        "line": 21,
+        "title": "Tax line calculation",
+        "status": "done",
+        "tier": "B",
+        "rounds": 2,
+        "attempts": 1,
+        "completed_at": "2026-09-24T13:30:00Z",
+        "usd": 1.9
+       },
+       {
+        "line": 24,
+        "title": "PDF render endpoint",
+        "status": "done",
+        "tier": "A",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-29T11:02:00Z",
+        "usd": 0.7
+       },
+       {
+        "line": 27,
+        "title": "Email delivery of invoices",
+        "status": "done",
+        "tier": "A",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-01T16:44:00Z",
+        "usd": 0.6
+       },
+       {
+        "line": 30,
+        "title": "Stripe webhook for paid status",
+        "status": "done",
+        "tier": "C",
+        "rounds": 2,
+        "attempts": 1,
+        "completed_at": "2026-10-06T10:20:00Z",
+        "usd": 2.8
+       },
+       {
+        "line": 34,
+        "title": "Refund flow and credit notes",
+        "status": "active",
+        "tier": "C",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": null,
+        "usd": 1.4
+       },
+       {
+        "line": 37,
+        "title": "Dunning schedule",
+        "status": "failed",
+        "tier": "B",
+        "rounds": 3,
+        "attempts": 2,
+        "completed_at": null,
+        "usd": 1.1
+       },
+       {
+        "line": 40,
+        "title": "Admin invoice search",
+        "status": "todo",
+        "tier": "A",
+        "rounds": 0,
+        "attempts": 0,
+        "completed_at": null,
+        "usd": null
+       },
+       {
+        "line": 43,
+        "title": "Invoice export CSV",
+        "status": "todo",
+        "tier": "A",
+        "rounds": 0,
+        "attempts": 0,
+        "completed_at": null,
+        "usd": null
+       },
+       {
+        "line": 46,
+        "title": "Billing settings page copy",
+        "status": "todo",
+        "tier": "A",
+        "rounds": 0,
+        "attempts": 0,
+        "completed_at": null,
+        "usd": null
+       }
+      ]
+     },
+     {
+      "hash": "b7c8d9e0f1a2",
+      "path": ".claude/plans/invoices-export.md",
+      "name": "invoices-export",
+      "total": 6,
+      "done": 5,
+      "phase": "Phase 3",
+      "halted": false,
+      "halt_reason": null,
+      "landed": false,
+      "last_activity": "2026-10-09T11:30:00Z",
+      "usd": 4.5,
+      "open_findings": 0,
+      "enforced": true,
+      "tasks": [
+       {
+        "line": 8,
+        "title": "Export job queue",
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-25T12:00:00Z",
+        "usd": 1.0
+       },
+       {
+        "line": 11,
+        "title": "S3 upload with signed URLs",
+        "status": "done",
+        "tier": "C",
+        "rounds": 2,
+        "attempts": 1,
+        "completed_at": "2026-09-30T14:10:00Z",
+        "usd": 1.6
+       },
+       {
+        "line": 14,
+        "title": "Export status API",
+        "status": "done",
+        "tier": "A",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-02T09:45:00Z",
+        "usd": 0.5
+       },
+       {
+        "line": 17,
+        "title": "Retry and backoff",
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-07T17:25:00Z",
+        "usd": 0.8
+       },
+       {
+        "line": 20,
+        "title": "Export audit trail",
+        "status": "done",
+        "tier": "A",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-09T11:30:00Z",
+        "usd": 0.6
+       },
+       {
+        "line": 23,
+        "title": "Docs for export API",
+        "status": "todo",
+        "tier": "A",
+        "rounds": 0,
+        "attempts": 0,
+        "completed_at": null,
+        "usd": null
+       }
+      ]
+     }
+    ],
+    "adhoc": [
+     {
+      "id": "x9",
+      "routes": 2,
+      "usd": 0.8,
+      "last_activity": "2026-10-11T18:20:00Z"
+     },
+     {
+      "id": "x12",
+      "routes": 1,
+      "usd": 0.3,
+      "last_activity": "2026-10-12T08:02:00Z"
+     }
+    ]
+   },
+   {
+    "id": "r2",
+    "name": "field-app",
+    "halted": true,
+    "halt_reason": "Pausing for review of auth changes",
+    "lock": null,
+    "plans": [
+     {
+      "hash": "c3d4e5f6a7b8",
+      "path": ".claude/plans/offline-sync.md",
+      "name": "offline-sync",
+      "total": 7,
+      "done": 5,
+      "phase": "Phase 2",
+      "halted": true,
+      "halt_reason": "Pausing for review of auth changes",
+      "landed": false,
+      "last_activity": "2026-10-10T09:12:00Z",
+      "usd": 10.6,
+      "open_findings": 1,
+      "enforced": false,
+      "tasks": [
+       {
+        "line": 5,
+        "title": "Local SQLite schema",
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-17T08:50:00Z",
+        "usd": 1.3
+       },
+       {
+        "line": 9,
+        "title": "Sync queue with conflict log",
+        "status": "done",
+        "tier": "C",
+        "rounds": 3,
+        "attempts": 1,
+        "completed_at": "2026-09-23T19:05:00Z",
+        "usd": 3.4
+       },
+       {
+        "line": 13,
+        "title": "Background sync worker",
+        "status": "done",
+        "tier": "B",
+        "rounds": 2,
+        "attempts": 1,
+        "completed_at": "2026-09-30T10:35:00Z",
+        "usd": 1.5
+       },
+       {
+        "line": 16,
+        "title": "Conflict resolution UI",
+        "status": "done",
+        "tier": "A",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-03T15:00:00Z",
+        "usd": 0.9
+       },
+       {
+        "line": 19,
+        "title": "Auth token refresh offline",
+        "status": "done",
+        "tier": "C",
+        "rounds": 2,
+        "attempts": 2,
+        "completed_at": "2026-10-08T12:15:00Z",
+        "usd": 2.6
+       },
+       {
+        "line": 22,
+        "title": "Sync telemetry",
+        "status": "failed",
+        "tier": "A",
+        "rounds": 2,
+        "attempts": 3,
+        "completed_at": null,
+        "usd": 0.9
+       },
+       {
+        "line": 25,
+        "title": "Field photo upload retry",
+        "status": "todo",
+        "tier": "B",
+        "rounds": 0,
+        "attempts": 0,
+        "completed_at": null,
+        "usd": null
+       }
+      ]
+     }
+    ],
+    "adhoc": []
+   }
+  ]
+ },
+ "knobs": {
+  "repo": "r1",
+  "active_lock": {
+   "kind": "plan",
+   "id": "a1b2c3d4e5f6",
+   "line": 34,
+   "stage": "REVIEW",
+   "since": "2026-10-12T13:41:00Z"
+  },
+  "scope_loop": {
+   "available": true,
+   "file": "/Users/sk/src/billing-service/.dev-plan-state/knobs/scope-loop.json",
+   "sha": "9f2c41e0",
+   "effective": {
+    "review": {
+     "cap": 3,
+     "ask_human_after": 2,
+     "adversary_budget": 3,
+     "escalate_after": 2,
+     "error_budget": 3,
+     "attempt_cap": 5
+    },
+    "tiers": {
+     "c_paths_extra": [
+      "payments/",
+      "ledger"
+     ],
+     "c_terms_extra": [
+      "stripe_secret"
+     ],
+     "exempt": [
+      {
+       "glob": "docs/**",
+       "reason": "Docs only; reviewed by humans in PR"
+      }
+     ],
+     "b_max_lines": 150,
+     "b_max_files": 6,
+     "b_shared_dirs": [
+      "api",
+      "routes",
+      "shared",
+      "common",
+      "core",
+      "lib"
+     ]
+    }
+   },
+   "sources": {
+    "review.cap": "default",
+    "review.ask_human_after": "default",
+    "review.adversary_budget": "default",
+    "review.escalate_after": "default",
+    "review.error_budget": "default",
+    "review.attempt_cap": "env",
+    "tiers.c_paths_extra": "file",
+    "tiers.c_terms_extra": "file",
+    "tiers.exempt": "file",
+    "tiers.b_max_lines": "default",
+    "tiers.b_max_files": "default",
+    "tiers.b_shared_dirs": "default"
+   },
+   "builtins": {
+    "c_paths": "(^|/)(auth|security|crypto|migrations?|secrets?|billing|payments?|infra|terraform|\\.github/workflows)(/|$)|(^|/)Dockerfile$|\\.(sql|tf|pem|key)$",
+    "c_terms": "\\b(password|secret|token|api[_-]?key|private[_-]?key|jwt|oauth|encrypt|decrypt|hash(ed)?_password|DROP\\s+TABLE|ALTER\\s+TABLE|sudo|chmod\\s+777|eval\\()\\b"
+   },
+   "limits": {
+    "review.cap": [
+     1,
+     10
+    ],
+    "review.ask_human_after": [
+     1,
+     10
+    ],
+    "review.adversary_budget": [
+     0,
+     20
+    ],
+    "review.escalate_after": [
+     1,
+     10
+    ],
+    "review.error_budget": [
+     1,
+     10
+    ],
+    "review.attempt_cap": [
+     1,
+     20
+    ],
+    "tiers.b_max_lines": [
+     10,
+     2000
+    ],
+    "tiers.b_max_files": [
+     1,
+     50
+    ]
+   }
+  },
+  "dispatch": {
+   "available": true,
+   "overlay_path": ".claude/apex-dispatch/policy.json",
+   "providers": [
+    {
+     "id": "claude-session",
+     "enabled": true,
+     "family": "anthropic",
+     "roles_allowed": [
+      "builder",
+      "reviewer"
+     ],
+     "roles_default": [
+      "builder",
+      "reviewer"
+     ],
+     "min_acceptance": 0.7,
+     "status": "verified",
+     "available": true,
+     "second_family": false,
+     "key_env": "CLAUDE_CODE_OAUTH_TOKEN"
+    },
+    {
+     "id": "claude-p",
+     "enabled": true,
+     "family": "anthropic",
+     "roles_allowed": [
+      "builder"
+     ],
+     "roles_default": [
+      "builder",
+      "reviewer"
+     ],
+     "min_acceptance": 0.7,
+     "status": "verified",
+     "available": true,
+     "second_family": false,
+     "key_env": "ANTHROPIC_API_KEY"
+    },
+    {
+     "id": "codex",
+     "enabled": true,
+     "family": "openai",
+     "roles_allowed": [
+      "builder",
+      "reviewer"
+     ],
+     "roles_default": [
+      "builder",
+      "reviewer"
+     ],
+     "min_acceptance": 0.7,
+     "status": "verified",
+     "available": true,
+     "second_family": true,
+     "key_env": "OPENAI_API_KEY"
+    },
+    {
+     "id": "grok",
+     "enabled": true,
+     "family": "xai",
+     "roles_allowed": [
+      "reviewer"
+     ],
+     "roles_default": [
+      "reviewer"
+     ],
+     "min_acceptance": 0.75,
+     "status": "unverified",
+     "available": false,
+     "second_family": true,
+     "key_env": "XAI_API_KEY"
+    },
+    {
+     "id": "opencode-ollama",
+     "enabled": false,
+     "family": "local",
+     "roles_allowed": [
+      "builder"
+     ],
+     "roles_default": [
+      "builder"
+     ],
+     "min_acceptance": 0.8,
+     "status": "experimental",
+     "available": true,
+     "second_family": false,
+     "key_env": null
+    },
+    {
+     "id": "openai-sdk",
+     "enabled": true,
+     "family": "openai",
+     "roles_allowed": [
+      "builder"
+     ],
+     "roles_default": [
+      "builder"
+     ],
+     "min_acceptance": 0.65,
+     "status": "verified",
+     "available": true,
+     "second_family": false,
+     "key_env": "OPENAI_API_KEY"
+    }
+   ],
+   "escalation": {
+    "max_review_rounds": 3
+   },
+   "second_families": [
+    "codex",
+    "grok"
+   ]
+  },
+  "decision": {
+   "available": true,
+   "path": ".claude/apex-decision-layer/config.json",
+   "config": {
+    "egress": "none",
+    "state_fields": "structured",
+    "primary": {
+     "default": "none",
+     "dispatch/task-class@1": "jev"
+    },
+    "shadow": {
+     "backend": "frontier",
+     "sample": 0.1
+    }
+   },
+   "rubrics": [
+    "dispatch/task-class@1",
+    "scope-loop/risk-tier@1"
+   ],
+   "backends": [
+    "none",
+    "jev",
+    "frontier"
+   ]
+  }
+ },
+ "keys": {
+  "path": "~/.config/apex/keys.env",
+  "exists": true,
+  "mode_ok": true,
+  "profile": {
+   "sourced_in": [
+    "~/.zshrc"
+   ],
+   "snippet": "[ -f ~/.config/apex/keys.env ] && . ~/.config/apex/keys.env"
+  },
+  "keys": [
+   {
+    "name": "ANTHROPIC_API_KEY",
+    "set": true,
+    "last4": "x7Qa",
+    "updated_at": "2026-09-30T08:12:00Z",
+    "in_console_env": true,
+    "used_by": [
+     "apex-dispatch: claude-p worker",
+     "apex-decision-layer: frontier backend"
+    ],
+    "needed": true
+   },
+   {
+    "name": "OPENAI_API_KEY",
+    "set": true,
+    "last4": "b2Rk",
+    "updated_at": "2026-10-02T17:45:00Z",
+    "in_console_env": true,
+    "used_by": [
+     "apex-dispatch: codex",
+     "apex-dispatch: openai-sdk"
+    ],
+    "needed": true
+   },
+   {
+    "name": "XAI_API_KEY",
+    "set": false,
+    "last4": null,
+    "updated_at": null,
+    "in_console_env": false,
+    "used_by": [
+     "apex-dispatch: grok reviewer"
+    ],
+    "needed": true
+   },
+   {
+    "name": "TYPESAFE_API_KEY",
+    "set": false,
+    "last4": null,
+    "updated_at": null,
+    "in_console_env": false,
+    "used_by": [
+     "apex-contracts-reliability: schema registry"
+    ],
+    "needed": false
+   },
+   {
+    "name": "JEV_API_KEY",
+    "set": true,
+    "last4": "91mZ",
+    "updated_at": "2026-10-11T21:30:00Z",
+    "in_console_env": false,
+    "used_by": [
+     "apex-decision-layer: jev backend"
+    ],
+    "needed": true
+   },
+   {
+    "name": "OPENROUTER_API_KEY",
+    "set": false,
+    "last4": null,
+    "updated_at": null,
+    "in_console_env": false,
+    "used_by": [
+     "apex-dispatch: opencode-ollama (remote fallback)"
+    ],
+    "needed": false
+   },
+   {
+    "name": "CLAUDE_CODE_OAUTH_TOKEN",
+    "set": true,
+    "last4": "Lw0c",
+    "updated_at": "2026-09-14T09:00:00Z",
+    "in_console_env": true,
+    "used_by": [
+     "apex-dispatch: claude-session"
+    ],
+    "needed": true
+   }
+  ]
+ },
+ "audit": {
+  "entries": [
+   {
+    "id": "a-20261012-0004",
+    "at": "2026-10-12T09:14:00Z",
+    "repo": "r1",
+    "kind": "knobs",
+    "summary": "review.adversary_budget 2 -> 3",
+    "changes": [
+     {
+      "key": "review.adversary_budget",
+      "from": 2,
+      "to": 3
+     }
+    ],
+    "undoable": true,
+    "undone_by": null
+   },
+   {
+    "id": "a-20261012-0003",
+    "at": "2026-10-12T08:40:00Z",
+    "repo": null,
+    "kind": "targets",
+    "summary": "first_pass_yield target 0.65 -> 0.7",
+    "changes": [
+     {
+      "key": "targets.first_pass_yield",
+      "from": 0.65,
+      "to": 0.7
+     }
+    ],
+    "undoable": true,
+    "undone_by": null
+   },
+   {
+    "id": "a-20261012-0002",
+    "at": "2026-10-11T21:30:00Z",
+    "repo": null,
+    "kind": "keys",
+    "summary": "JEV_API_KEY set",
+    "changes": [
+     {
+      "key": "JEV_API_KEY",
+      "from": "not set",
+      "to": "set"
+     }
+    ],
+    "undoable": false,
+    "undone_by": null
+   },
+   {
+    "id": "a-20261010-0002",
+    "at": "2026-10-10T09:12:00Z",
+    "repo": "r2",
+    "kind": "halt",
+    "summary": "HALT on: Pausing for review of auth changes",
+    "changes": [
+     {
+      "key": "halt",
+      "from": false,
+      "to": true
+     }
+    ],
+    "undoable": true,
+    "undone_by": null
+   },
+   {
+    "id": "a-20261009-0004",
+    "at": "2026-10-09T16:22:00Z",
+    "repo": "r1",
+    "kind": "knobs",
+    "summary": "Undo a-20261009-0003: providers.codex.min_acceptance 0.8 -> 0.7",
+    "changes": [
+     {
+      "key": "providers.codex.min_acceptance",
+      "from": 0.8,
+      "to": 0.7
+     }
+    ],
+    "undoable": false,
+    "undone_by": null
+   },
+   {
+    "id": "a-20261009-0003",
+    "at": "2026-10-09T16:05:00Z",
+    "repo": "r1",
+    "kind": "knobs",
+    "summary": "providers.codex.min_acceptance 0.7 -> 0.8",
+    "changes": [
+     {
+      "key": "providers.codex.min_acceptance",
+      "from": 0.7,
+      "to": 0.8
+     }
+    ],
+    "undoable": true,
+    "undone_by": "a-20261009-0004"
+   },
+   {
+    "id": "a-20260924-0001",
+    "at": "2026-09-24T15:20:00Z",
+    "repo": "r1",
+    "kind": "knobs",
+    "summary": "tiers.c_paths_extra + payments/",
+    "changes": [
+     {
+      "key": "tiers.c_paths_extra",
+      "from": [
+       "ledger"
+      ],
+      "to": [
+       "payments/",
+       "ledger"
+      ]
+     }
+    ],
+    "undoable": true,
+    "undone_by": null
+   },
+   {
+    "id": "a-20260914-0001",
+    "at": "2026-09-14T10:00:00Z",
+    "repo": "r2",
+    "kind": "repos",
+    "summary": "Registered /Users/sk/src/field-app as r2",
+    "changes": [
+     {
+      "key": "repos.r2",
+      "from": null,
+      "to": "/Users/sk/src/field-app"
+     }
+    ],
+    "undoable": true,
+    "undone_by": null
+   }
+  ]
+ }
+}
