@@ -146,6 +146,33 @@ route also writes it and records an audit entry.
  "audit_id": "a-20261012-0001"}
 ```
 
+## POST /api/tiers/simulate (tier simulator)
+
+Body `{"repo": "r1", "patch": {<the proposed tiers object, same shape as knobs.scope_loop.effective.tiers;
+partial is fine>}, "limit": 30}` (limit 1-60). Read-only: nothing is written. The proposal is validated by
+apex-scope-loop's knobslib (the same refusals as `POST /api/knobs`, HTTP 422). Each of the last `limit`
+completed tasks is replayed twice by apex-scope-loop's own `risk-tier.sh --no-record --since <base> --head
+<completed head>`, under the knobs in force and under the proposal. Takes seconds (about 1 s per task, 4 at
+a time): show progress.
+
+```json
+{"ok": true, "repo": "r1",
+ "changes": [{"key": "tiers.exempt", "from": [], "to": [{"glob": "plugins/*/agents/*.md", "reason": "..."}]}],
+ "summary": {"replayed": 23, "errors": 1, "changed": 6, "looser": 5, "stricter": 1, "moves": {"C→A": 4, "C→B": 1, "A→B": 1},
+             "mix_current": {"A": 9, "B": 6, "C": 8}, "mix_proposed": {"A": 13, "B": 6, "C": 4},
+             "note": "Replays risk-tier.sh's heuristic only: reviewer raises and the decision layer are not replayed, ..."},
+ "tasks": [{"plan": "a1b2c3d4e5f6", "plan_path": ".claude/plans/billing-plan.md", "line": 34, "title": "...",
+            "completed_at": "...", "recorded": "C", "current": "C", "proposed": "A", "move": "C→A", "error": null,
+            "added": ["exempted by knobs: plugins/x/agents/a.md (plugins/*/agents/*.md: ...)"],
+            "removed": ["tier-c path: plugins/x/agents/a.md"],
+            "reasons_current": ["..."], "reasons_proposed": ["..."]}]}
+```
+
+`recorded` is the tier in the checkpoint (it can include reviewer raises and the decision layer, which a
+replay does not); `current` is the replay under the knobs in force; `proposed` under the proposal; `move` is
+`"<current>→<proposed>"` or null. A task whose diff cannot be replayed (no recorded base, commits gone) has
+`error` and null tiers.
+
 ## GET /api/keys
 
 ```json

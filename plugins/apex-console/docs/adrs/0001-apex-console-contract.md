@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-12
-- **Plugin:** apex-console v0.1.0
+- **Plugin:** apex-console v0.2.0 (tier simulator in v0.2.0)
 
 ## Context
 
@@ -119,7 +119,7 @@ Also: cost per 1,000 runs, runs per week, prompt cache hit rate (cache_read / (i
 
 ## Compatibility
 
-- apex-scope-loop ≥ 0.5.0 for the knobs file (older versions: progress and metrics only; the scope-loop knobs show as unavailable).
+- apex-scope-loop ≥ 0.5.0 for the knobs file and ≥ 0.6.0 for the tier simulator (older versions: progress and metrics only; the scope-loop knobs show as unavailable).
 - apex-dispatch ≥ 0.6.0, whose `report.row_usd`, `ledger.verify` and `compile.py --print-merged --overlay` the console calls.
 - apex-decision-layer ≥ 0.6.0.
 - python3 ≥ 3.8 and git. bash only for apex-scope-loop's `apex_state_base`.
@@ -141,3 +141,4 @@ apex-console claims `<config-dir>/console.json`, `console-audit.jsonl`, `keys.en
 ## Status log
 
 - 2026-10-12 (v0.1.0): first release.
+- 2026-10-12 (v0.2.0) — **Tier simulator.** `POST /api/tiers/simulate` replays up to 60 completed tasks of a repository under a proposed tiers object. The proposal is the knobs file in force merged with the patch, validated by `knobslib.py`. Each task's committed diff (its tier record's `since` to its `completes` head) is classified twice by apex-scope-loop's own `risk-tier.sh --no-record --since --head` (0.6.0), once under the knobs in force and once with `--knobs <proposal>`. The result lists per task the recorded, current and proposed tiers, the move, and the reasons added and removed. It is read-only: it holds no write lock and writes nothing. Only the heuristic is replayed, never reviewer raises or the decision layer, and the page says so. Smoke check 11.

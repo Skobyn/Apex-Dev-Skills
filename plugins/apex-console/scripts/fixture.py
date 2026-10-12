@@ -20,9 +20,9 @@ git("config", "user.email", "fixture@example.com")
 git("config", "user.name", "fixture")
 os.makedirs(os.path.join(repo, ".claude", "plans"), exist_ok=True)
 plan = os.path.join(repo, ".claude", "plans", "demo-plan.md")
-open(plan, "w").write("# Demo plan\n\n## Phase 1\n\n- [x] Add the model [id:T1]\n  Acceptance: `true`\n"
-                      "- [x] Add the API route [id:T2]\n  Acceptance: `true`\n- [ ] Add billing [id:T3] [security]\n"
-                      "  Acceptance: `true`\n- [ ] Write docs [id:T4]\n  Acceptance: `true`\n")
+open(plan, "w").write("# Demo plan\n\n## Phase 1\n\n- [x] Add the model [id:T1]\n  - Acceptance: `true`\n"
+                      "- [x] Add the API route [id:T2]\n  - Acceptance: `true`\n- [ ] Add billing [id:T3] [security]\n"
+                      "  - Acceptance: `true`\n- [ ] Write docs [id:T4]\n  - Acceptance: `true`\n")
 open(os.path.join(repo, ".gitignore"), "w").write(".dev-plan-state/\n")
 git("add", "-A")
 git("commit", "-qm", "plan")
@@ -32,12 +32,15 @@ git("add", "-A")
 git("commit", "-qm", "T1")
 h1 = git("rev-parse", "HEAD")
 open(os.path.join(repo, "api.py"), "w").write("y = 2\n")
+os.makedirs(os.path.join(repo, "plugins", "x", "agents"), exist_ok=True)   # an agent prompt that names auth terms
+open(os.path.join(repo, "plugins", "x", "agents", "auth-guide.md"), "w").write("Store the stripe secret in the vault.\n")
 git("add", "-A")
 git("commit", "-qm", "T2")
 h2 = git("rev-parse", "HEAD")
 git("revert", "--no-edit", h2)            # T2's commit is later reverted
 
-phash = "abcdef123456"
+import hashlib  # noqa: E402
+phash = hashlib.sha256(b".claude/plans/demo-plan.md").hexdigest()[:12]   # apex-scope-loop's PLAN_HASH
 sd = os.path.join(repo, ".dev-plan-state", phash)
 os.makedirs(os.path.join(sd, "findings"), exist_ok=True)
 now = time.time()

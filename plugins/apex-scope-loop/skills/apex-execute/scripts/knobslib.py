@@ -18,8 +18,9 @@ CLI:
       exit 0 and "OK", or exit 1 and one "ERROR: <path.key>: <problem>" per problem
   knobslib.py get --state-base DIR KEY [--env VAR] [--default V]
       the effective value of KEY (e.g. review.cap): env > file > default
-  knobslib.py effective --state-base DIR
-      JSON: file, exists, sha, effective, sources, builtins, limits, env
+  knobslib.py effective --state-base DIR [--file FILE]
+      JSON: file, exists, sha, effective, sources, builtins, limits, env;
+      --file reads a proposed knobs file instead (risk-tier.sh --knobs, simulation only)
 
 Import: validate(obj) -> [errors]; load(state_base) -> (obj, sha) (raises
 KnobsError on an invalid file); effective(state_base, environ) -> dict.
@@ -185,9 +186,10 @@ def validate(obj):
     return errs
 
 
-def load(state_base):
-    """(obj, sha): ({}, "default") when the file is absent; KnobsError when invalid."""
-    path = knobs_path(state_base)
+def load(state_base, path=None):
+    """(obj, sha): ({}, "default") when the file is absent; KnobsError when invalid.
+    path: read this file instead of the state base's (a proposed file: simulation only)."""
+    path = path or knobs_path(state_base)
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -216,10 +218,12 @@ def _env_int(environ, var):
     return None, "%s=%r is not a whole number: ignored (knobs file or default used)" % (var, raw)
 
 
-def effective(state_base, environ=None):
+def effective(state_base, environ=None, path=None):
+    """path: a proposed knobs file read instead of the state base's one (risk-tier.sh
+    --knobs, a simulation that records nothing); validated the same way."""
     environ = os.environ if environ is None else environ
-    obj, sha = load(state_base)
-    path = knobs_path(state_base)
+    obj, sha = load(state_base, path)
+    path = path or knobs_path(state_base)
     eff = {"review": {}, "tiers": {}}
     sources, warnings = {}, []
     for k in REVIEW_KEYS:
@@ -287,7 +291,7 @@ def main(argv):
     opts, pos, i = {}, [], 0
     while i < len(rest):
         a = rest[i]
-        if a in ("--state-base", "--env", "--default"):
+        if a in ("--state-base", "--env", "--default", "--file"):
             if i + 1 >= len(rest):
                 _usage()
             opts[a], i = rest[i + 1], i + 2
@@ -301,7 +305,7 @@ def main(argv):
         if pos:
             _usage()
         try:
-            out = effective(sb)
+            out = effective(sb, path=opts.get("--file"))
         except KnobsError as e:
             _fail(e)
         print(json.dumps(out, indent=2, sort_keys=True))

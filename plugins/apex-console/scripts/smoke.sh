@@ -180,5 +180,26 @@ AID="$(printf '%s' "$O" | python3 -c 'import json,sys; print(json.load(sys.stdin
 POST audit/undo "{\"id\":\"$AID\"}" | grep -q '"ok": true' && [ ! -e "$REPO/.dev-plan-state/HALT" ] || fail "undoing the stop did not remove HALT"
 pass "kill switch: HALT needs a reason, shows in progress, and undo resumes"
 
+# 11. tier simulator: past tasks replayed by apex-scope-loop's own risk-tier.sh under a proposal; read-only
+SIMP='{"repo":"r1","patch":{"exempt":[{"glob":"plugins/*/agents/*.md","reason":"agent prompts name auth terms as prose"}]},"limit":10}'
+POST tiers/simulate "$SIMP" >"$WORK/sim.json"
+python3 - "$WORK/sim.json" <<'PY' || fail "the tier simulator result is wrong: $(head -c 600 "$WORK/sim.json")"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["ok"] and d["summary"]["replayed"] == 2 and d["summary"]["errors"] == 0, d["summary"]
+t = {x["line"]: x for x in d["tasks"]}
+assert t[7]["current"] == "C" and t[7]["proposed"] == "A" and t[7]["move"] == "C→A", t[7]       # the agent-prompt task
+assert any("exempted by knobs: plugins/x/agents/auth-guide.md" in r for r in t[7]["added"]), t[7]
+assert any(r.startswith("tier-c path: plugins/x/agents/auth-guide.md") for r in t[7]["removed"]), t[7]
+assert t[5]["current"] == t[5]["proposed"] == "A" and t[5]["move"] is None, t[5]
+assert d["summary"]["looser"] == 1 and d["summary"]["moves"] == {"C→A": 1}
+assert d["summary"]["mix_current"] == {"A": 1, "B": 0, "C": 1} and d["summary"]["mix_proposed"] == {"A": 2, "B": 0, "C": 0}
+PY
+[ ! -e "$REPO/.dev-plan-state/knobs/scope-loop.json" ] || python3 -c 'import json,sys; assert "exempt" not in json.load(open(sys.argv[1])).get("tiers", {})' "$REPO/.dev-plan-state/knobs/scope-loop.json" \
+  || fail "the simulator wrote the proposal"
+POST tiers/simulate '{"repo":"r1","patch":{"exempt":[{"glob":"*/*","reason":"almost everything is fine"}]}}' | grep -q 'names no directory' \
+  || fail "the simulator did not refuse an invalid proposal through knobslib"
+pass "tier simulator: risk-tier.sh replays past tasks under a proposed exemption (C→A with the reasons that change), writes nothing, and knobslib refuses a bad proposal"
+
 echo ""
 echo "smoke passed: $N/$N checks"
