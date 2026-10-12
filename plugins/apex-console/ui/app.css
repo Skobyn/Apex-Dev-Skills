@@ -524,3 +524,81 @@ dialog.drawer { margin-right: 0; margin-top: 0; height: 100vh; max-height: 100vh
 .task-title .chip { margin-left: 8px; }
 .ev-legend { flex-wrap: nowrap; align-items: flex-start; }
 .ev-legend .ev-key { margin-top: 1px; }
+
+/* ---------- tier simulator ---------- */
+.btn-ghost { border-color: transparent; color: var(--accent); }
+.btn-ghost:hover { background: var(--accent-bg); }
+.btn-ghost[aria-busy="true"] { opacity: 1; color: var(--ink-mid); cursor: progress; }
+.sim-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sim-limit { display: inline-flex; align-items: center; gap: 6px; }
+.sim-limit-select { min-height: 32px; padding: 4px 8px; font-size: 0.86rem; }
+.sim-section { display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--line); padding-top: 14px; }
+.sim-section > :empty { display: none; }
+.sim-busy { display: flex; align-items: center; gap: 10px; font-size: 0.88rem; color: var(--ink-mid); }
+.sim-secs { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--ink-faint); margin-left: auto; }
+.sim-spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line-hard); border-top-color: var(--accent); flex: none; animation: sim-spin .9s linear infinite; }
+@keyframes sim-spin { to { transform: rotate(360deg); } }
+.sim-results-body { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.sim-results-body.is-stale > :not(.sim-stale):not(.sim-head) { opacity: 0.55; }
+.sim-head h3 { margin-bottom: 2px; }
+.sim-summary { color: var(--ink); font-size: 1rem; max-width: 70ch; }
+.sim-mix { display: flex; flex-direction: column; gap: 10px; max-width: 640px; }
+.sim-mix-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; align-items: start; }
+.sim-mix-name { font-weight: 600; color: var(--ink); font-size: 0.9rem; line-height: 18px; }
+.sim-bar { display: flex; gap: 2px; height: 18px; border-radius: 5px; overflow: hidden; }
+.sim-seg { display: block; flex-basis: 0; min-width: 3px; }
+.sim-seg-empty { flex-grow: 1; background: var(--stage-deep); }
+.sim-mix-labels { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 5px; }
+.sim-mix-labels .mix-label { font-size: 0.86rem; gap: 5px; font-variant-numeric: tabular-nums; }
+.sim-delta { font-size: 0.8rem; color: var(--ink-faint); }
+.sim-moves { display: flex; flex-wrap: wrap; gap: 8px; }
+.move-chip { padding: 3px 10px; font-family: var(--f-body); }
+.move { gap: 6px; }
+.move-key { font-family: var(--f-mono); font-weight: 500; font-size: 0.8rem; color: var(--ink); }
+.move-label { font-weight: 600; }
+.sim-controls .switch { gap: 8px; }
+.sim-switch-text { font-size: 0.9rem; color: var(--ink); font-weight: 600; }
+.sim-table tr.moved > td { background: var(--accent-bg); }
+.sim-table tr.sim-row.moved + tr.sim-detail > td { border-top: 0; }
+.sim-table tr.sim-row:has(+ tr.sim-detail:not([hidden])) > td { border-bottom-color: transparent; }
+.sim-plan .mono { font-size: 0.78rem; color: var(--ink-mid); white-space: nowrap; }
+.sim-line-inline { display: none; font-size: 0.82rem; color: var(--ink-faint); }
+.sim-task { min-width: 200px; color: var(--ink); }
+.sim-title { display: inline-flex; align-items: baseline; gap: 6px; border: 0; background: none; padding: 0; text-align: left; font: 600 0.9rem/1.35 var(--f-body); color: var(--ink); cursor: pointer; }
+.sim-title:hover span:not(.chev) { text-decoration: underline; text-underline-offset: 3px; }
+.sim-title .chev { color: var(--ink-faint); width: 10px; flex: none; }
+.sim-title-text { font-weight: 600; color: var(--ink); padding-left: 16px; }
+.sim-error { font-size: 0.84rem; color: var(--alert); margin-top: 3px; padding-left: 16px; }
+.sim-move { white-space: nowrap; }
+.sim-detail > td { padding-top: 0; }
+.sim-reasons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 22px; padding: 4px 0 6px 16px; }
+.sim-reason-block h4 { font-family: var(--f-body); margin-bottom: 4px; font-size: 0.72rem; }
+.reason-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.reason-list code { font-size: 0.76rem; color: var(--ink); word-break: break-word; }
+.sim-note { font-size: 0.82rem; color: var(--ink-faint); max-width: 75ch; }
+.sim-err .notes { margin: 6px 0 0; padding-left: 18px; }
+@media (max-width: 760px) {
+  .panel-foot .sim-actions { margin-right: auto; }
+  .sim-mix-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .sim-table { overflow-x: visible; }
+  .sim-table table, .sim-table tbody { display: block; }
+  .sim-table thead { display: none; }
+  .sim-table tr.sim-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .sim-table tr.sim-row[hidden], .sim-table tr.sim-detail[hidden] { display: none; }
+  .sim-table tr.sim-row > td { display: block; padding: 0; border: 0; background: none; text-align: left; }
+  .sim-table tr.moved { background: var(--accent-bg); }
+  .sim-table tr.sim-row > td::before { content: attr(data-label); display: block; font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--ink-faint); margin-bottom: 2px; }
+  .sim-table tr.sim-row > td.sim-task, .sim-table tr.sim-row > td.sim-plan, .sim-table tr.sim-row > td.sim-move { align-self: center; }
+  .sim-table tr.sim-row > td.sim-task::before, .sim-table tr.sim-row > td.sim-plan::before, .sim-table tr.sim-row > td.sim-move::before { display: none; }
+  .sim-table tr.sim-row > td.sim-task { grid-column: 1 / -1; grid-row: 1; min-width: 0; }
+  .sim-table tr.sim-row > td.sim-plan { grid-column: 1 / 3; grid-row: 2; }
+  .sim-table tr.sim-row > td.sim-line { display: none; }
+  .sim-table tr.sim-row > td.sim-move { grid-column: 3; grid-row: 2; }
+  .sim-line-inline { display: inline; }
+  .sim-table tr.sim-detail { display: block; border-bottom: 1px solid var(--line); }
+  .sim-table tr.sim-detail > td { display: block; padding: 0 12px 10px; border: 0; background: none; }
+  .sim-table tr.sim-row:has(+ tr.sim-detail:not([hidden])) { border-bottom: 0; }
+  .sim-table tr:last-child { border-bottom: 0; }
+  .sim-reasons { grid-template-columns: minmax(0, 1fr); padding-left: 0; }
+  .sim-title-text, .sim-error { padding-left: 0; }
+}
