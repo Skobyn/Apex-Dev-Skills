@@ -1340,10 +1340,10 @@ touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
 ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head (submodules included) and allows ignored tool caches"
 
-# 42. Portability (ADR-0003): version 0.5.0, ADR-0003 and ADR-0004 present, reviewer cannot
+# 42. Portability (ADR-0003): version 0.6.0, ADR-0003 and ADR-0004 present, reviewer cannot
 #     edit, ruflo optional (no required ruflo/claude-flow reference outside
 #     docs/legacy/), apex-plan template profiles.
-grep -q '"version": "0.5.0"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.5.0"
+grep -q '"version": "0.6.0"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.6.0"
 ADR4="$PLUGIN_ROOT/docs/adrs/0004-review-loop-calibration.md"
 [ -f "$ADR4" ] && grep -qE "^- \*\*Status:\*\* Accepted" "$ADR4" && grep -q '^## What this loosens and why it is safe' "$ADR4" || fail "ADR-0004 missing, not Accepted, or without its loosening section"
 ADR3="$PLUGIN_ROOT/docs/adrs/0003-portability-and-dispatch-consumer.md"
@@ -1357,7 +1357,7 @@ for prof in generic apex; do for t in adr-template.md plan-template.md; do
   [ -f "$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles/$prof/$t" ] || fail "apex-plan profile $prof lacks $t"
 done; done
 ! grep -qi 'getapexinsights\|apex-app' "$PLUGIN_ROOT"/skills/apex-plan/resources/templates/profiles/generic/*.md || fail "the generic apex-plan profile carries Apex-specific vocabulary"
-ok "portability: version 0.5.0, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
+ok "portability: version 0.6.0, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
 
 # 43. apex-dispatch Phase 3.2 consumers: green-gate.sh check PASS moves the ACTIVE
 #     lock BUILD -> GATE (only from BUILD; a FAIL leaves it); checkpoint.sh review
@@ -2033,6 +2033,33 @@ expect_refusal "checkpoint fail with an invalid knobs file" "knobs file .* is in
 rm -f "$SB62/knobs/scope-loop.json"
 ok "knobs file: one validator (keys, ranges, regexes, catch-all globs, reasons, schema); env > file > default; invalid file refused by risk-tier, iterate and checkpoint; extra terms, exempt globs, B thresholds, review.cap reach the classifier and the loop; KNOBS recorded and printed"
 
+# 63. Replay (v0.6.0, apex-console's tier simulator): risk-tier.sh --no-record --since S --head H
+#     classifies a past task's committed diff S..H (not the current head, nothing uncommitted);
+#     --knobs FILE classifies it under a proposed knobs file; both refuse without --no-record;
+#     an invalid proposal exits 3; nothing is recorded and no knobs file is written.
+R63="$SMOKE_TMP/r63"; W63="$(cal_run "$R63" "- [ ] **Phase 1.1** [docs] a\n  - Acceptance: true\n")" || fail "init for check 63 failed"
+S63="$(git -C "$W63" rev-parse HEAD)"
+mkdir -p "$W63/plugins/x/agents" "$W63/src/auth"; printf 'Store the stripe secret\n' >"$W63/plugins/x/agents/a.md"
+git -C "$W63" add -A; git -C "$W63" commit -qm past; H63="$(git -C "$W63" rev-parse HEAD)"
+printf 'x\n' >"$W63/src/auth/s.py"; git -C "$W63" add -A; git -C "$W63" commit -qm later    # after the past task
+printf 'uncommitted\n' >"$W63/src/auth/u.py"
+CP63="$(dirname "$W63")/checkpoint.json"; SUM63="$(cksum <"$CP63")"; SB63="$(dirname "$(dirname "$W63")")"
+O63="$(cd "$R63" && "$EX/risk-tier.sh" plans/v-plan.md 1 --no-record --since "$S63" --head "$H63" 2>&1)" || fail "a replay failed: $O63"
+has '^TIER: C' "$O63" && has "^REASON: tier-c content signal in diff: 'stripe' (plugins/x/agents/a.md)" "$O63" && ! has 'src/auth' "$O63" && has "^HEAD: $H63" "$O63" \
+  || fail "a replay did not classify exactly the past diff S..H: $O63"
+printf '{"schema": 1, "tiers": {"exempt": [{"glob": "plugins/*/agents/*.md", "reason": "agent prompts name auth terms as prose"}]}}\n' >"$SMOKE_TMP/prop63.json"
+O63="$(cd "$R63" && "$EX/risk-tier.sh" plans/v-plan.md 1 --no-record --since "$S63" --head "$H63" --knobs "$SMOKE_TMP/prop63.json" 2>&1)" || fail "a replay under proposed knobs failed: $O63"
+has '^TIER: A' "$O63" && has '^REASON: exempted by knobs: plugins/x/agents/a.md' "$O63" && has '^KNOBS: [0-9a-f]\{12\}$' "$O63" \
+  || fail "a replay under a proposed exemption did not lower the tier: $O63"
+expect_refusal "--head without --no-record" "they need --no-record" bash -c 'cd "$1" && "$2/risk-tier.sh" plans/v-plan.md 1 --since "$3" --head "$4"' _ "$R63" "$EX" "$S63" "$H63"
+expect_refusal "--knobs without --no-record" "they need --no-record" bash -c 'cd "$1" && "$2/risk-tier.sh" plans/v-plan.md 1 --knobs "$3"' _ "$R63" "$EX" "$SMOKE_TMP/prop63.json"
+expect_refusal "--head without --since" "--head needs --since" bash -c 'cd "$1" && "$2/risk-tier.sh" plans/v-plan.md 1 --no-record --head "$3"' _ "$R63" "$EX" "$H63"
+printf '{"schema": 1, "tiers": {"exempt": [{"glob": "*/*", "reason": "almost everything is fine"}]}}\n' >"$SMOKE_TMP/bad63.json"
+RC63=0; O63="$(cd "$R63" && "$EX/risk-tier.sh" plans/v-plan.md 1 --no-record --since "$S63" --head "$H63" --knobs "$SMOKE_TMP/bad63.json" 2>&1)" || RC63=$?
+[ "$RC63" = 3 ] && has 'the proposed knobs file is invalid: .*names no directory' "$O63" || fail "an invalid proposed knobs file was not refused (rc=$RC63): $O63"
+[ "$(cksum <"$CP63")" = "$SUM63" ] && [ ! -e "$SB63/knobs/scope-loop.json" ] || fail "a replay recorded a tier or wrote a knobs file"
+ok "replay: --no-record --since S --head H classifies exactly a past diff; --knobs replays it under a proposal; both need --no-record; an invalid proposal exits 3; nothing recorded"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2092,4 +2119,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 64/64 checks"
+echo "smoke passed: 65/65 checks"

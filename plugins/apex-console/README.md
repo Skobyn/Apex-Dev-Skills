@@ -2,7 +2,7 @@
 
 **One desk for the suite.** A local admin page for apex-scope-loop, apex-dispatch and apex-decision-layer. On it you can put in your API keys, see where every plan stands, measure how well the factory runs, and turn the knobs each plugin already honours. It is an admin layer: it never starts or drives work. Every change is logged, and most can be undone.
 
-> **Status: 0.1.0.** Built: the server, the page, keys, progress, metrics, all four knob panels, the kill switch, and the audit log with undo. Not built: a tier simulator that replays past diffs under proposed tier definitions.
+> **Status: 0.2.0.** Built: the server, the page, keys, progress, metrics, all four knob panels, the tier simulator, the kill switch, and the audit log with undo.
 
 ## Start it
 
@@ -23,11 +23,17 @@ It prints `CONSOLE_URL: http://127.0.0.1:4747/?t=<token>`. Open that address onc
 - **Progress.** Per repository: the running task and its stage, each plan's done/total, cost, open findings, and every task's tier, rounds and attempts. **Stop all work** writes the HALT kill switch that apex-scope-loop obeys; **Resume** removes it.
 - **Knobs.**
   - *Review strictness:* the Lenient, Standard, Strict and Paranoid presets, or the six numbers directly (review cap, ask-human-after, adversary budget, escalate-after, error budget, attempt cap).
-  - *Tier definitions:* extra Tier C path and content triggers, reasoned exemptions, and the Tier B size thresholds and shared dirs.
+  - *Tier definitions:* extra Tier C path and content triggers, reasoned exemptions, and the Tier B size thresholds and shared dirs. **Simulate on past tasks** replays your completed tasks under the proposal before you apply it: which tasks would get a lower or higher tier, and the reasons that change.
   - *Reviewers and providers:* enable or disable a provider, let it review or not, raise its acceptance floor, lower max review rounds.
   - *Decision layer:* egress, state fields, the primary backend per rubric, shadow.
 - **Keys.** Set, replace or remove the keys the plugins read. The tab shows which ones your enabled providers need, and whether your shell profile sources the keys file.
 - **Audit.** Every change, with Undo.
+
+## Tier simulator
+
+Before you apply a tier change, replay it. **Simulate on past tasks** takes the proposal on the Tier definitions panel and classifies up to 60 of your most recently completed tasks twice: once under the definitions in force, once under the proposal. It uses apex-scope-loop's own `risk-tier.sh` (`--no-record --since <the task's base> --head <its completed head> [--knobs <proposal>]`), so what it shows is what the classifier would do. Nothing is recorded or written.
+
+You get the moves ("C→A ×4"), the tier mix before and after, and per task the reasons the proposal adds or removes. A lower tier is looser and a higher one stricter. The replay covers the heuristic only: reviewer raises and the decision layer are not replayed, so a recorded tier can sit above both. This is how to fix Tier C over-triggering on, say, plugin agent prompts that name auth terms as prose: try an exemption such as `plugins/*/agents/*.md`, see exactly which past tasks it would have moved, then apply it.
 
 ## Metrics
 
@@ -53,7 +59,7 @@ Never put keys in a repository or a `.env` file.
 
 | Component | Version |
 |---|---|
-| apex-scope-loop | ≥ 0.5.0 for the knobs file; older: progress and metrics only |
+| apex-scope-loop | ≥ 0.5.0 for the knobs file, ≥ 0.6.0 for the tier simulator; older: progress and metrics only |
 | apex-dispatch | ≥ 0.6.0 |
 | apex-decision-layer | ≥ 0.6.0 |
 | python3 | ≥ 3.8 (stdlib only) |
@@ -81,7 +87,8 @@ It builds a fixture repository with a real apex-dispatch ledger. It then checks:
 - the server's token, Host and header checks;
 - that no route returns a key value;
 - refusals by each plugin's validator;
-- audit and undo, and the kill switch.
+- audit and undo, and the kill switch;
+- the tier simulator: a proposed exemption moves the fixture's agent-prompt task from C to A, nothing is written, and a bad proposal is refused.
 
 ## Architecture Decisions
 

@@ -10,6 +10,7 @@
 #      approval (G12) before the task can be checked off
 #
 # Usage: ./risk-tier.sh PLAN.md LINE_NO [--since SHA] [--tags t1,t2] [--classify]
+#        ./risk-tier.sh PLAN.md LINE_NO --no-record --since SHA --head SHA [--knobs FILE]   (a replay)
 #   --classify  also ask the decision layer (${APEX_DECIDE_CMD}, else the sibling
 #               apex-decision-layer; rubric risk-tier@1) and combine as
 #               max(heuristic, decision): a decision can raise the tier, never
@@ -22,6 +23,13 @@
 #            only widens the diff.
 #   --no-record  print the classification of the diff without recording it
 #               (checkpoint.sh complete recomputes the tier this way).
+#   --head SHA   simulation (needs --no-record and --since): classify the committed
+#               diff SINCE..SHA of a past task, nothing uncommitted, and resolve the
+#               plan read-only (a landed run whose worktree is gone only warns).
+#   --knobs FILE simulation (needs --no-record): classify under a proposed knobs
+#               file instead of <state-base>/knobs/scope-loop.json, validated the
+#               same way (knobslib.py effective --file). apex-console's tier
+#               simulator replays past tasks with these two; nothing is recorded.
 #   --tags   extra tags; the task's own tags are always read from the plan.
 #            [security] or [tier:c] force Tier C. [tier:a] / [tier:b] are
 #            authoritative over the Tier B signals and the content signals,
@@ -52,7 +60,7 @@ set -euo pipefail
 PLAN="${1:?usage: risk-tier.sh PLAN.md LINE_NO [--since SHA] [--tags t1,t2]}"
 LINE_NO="${2:?line_no required}"
 shift 2
-SINCE=""; TAGS=""; CLASSIFY=0; NO_RECORD=0; RAISE=""; RAISE_REASON=""
+SINCE=""; TAGS=""; CLASSIFY=0; NO_RECORD=0; RAISE=""; RAISE_REASON=""; SIM_HEAD=""; SIM_KNOBS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --raise) RAISE="${2:?}"; shift 2 ;;
@@ -61,18 +69,28 @@ while [[ $# -gt 0 ]]; do
     --tags)  TAGS="${2-}"; shift 2 ;;
     --classify) CLASSIFY=1; shift ;;
     --no-record) NO_RECORD=1; shift ;;
+    --head) SIM_HEAD="${2:?}"; shift 2 ;;
+    --knobs) SIM_KNOBS="${2:?}"; shift 2 ;;
     *) echo "ERROR: unknown arg $1" >&2; exit 2 ;;
   esac
 done
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 [[ "$LINE_NO" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "ERROR: LINE_NO must be a plan line number, got '$LINE_NO'" >&2; exit 2; }
+# --head and --knobs only simulate: they can never change a recorded tier.
+if [[ -n "$SIM_HEAD$SIM_KNOBS" ]]; then
+  [[ "$NO_RECORD" == "1" ]] || { echo "ERROR: --head and --knobs simulate a classification: they need --no-record" >&2; exit 2; }
+  [[ -z "$RAISE" && "$CLASSIFY" == "0" ]] || { echo "ERROR: --head and --knobs cannot be combined with --raise or --classify" >&2; exit 2; }
+  [[ -z "$SIM_HEAD" || -n "$SINCE" ]] || { echo "ERROR: --head needs --since (the past task's diff base)" >&2; exit 2; }
+  [[ -z "$SIM_KNOBS" || -f "$SIM_KNOBS" ]] || { echo "ERROR: --knobs file not found: $SIM_KNOBS" >&2; exit 2; }
+fi
 if [[ -n "$RAISE" ]]; then
   [[ "$RAISE" =~ ^[ABC]$ ]] || { echo "ERROR: --raise takes A, B or C" >&2; exit 2; }
   [[ -n "${RAISE_REASON//[[:space:]]/}" ]] || { echo "ERROR: --raise needs --reason \"<why, e.g. the reviewer's finding>\"" >&2; exit 2; }
 fi
 
 APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never inherited from the env)
+[[ -n "$SIM_HEAD" ]] && APEX_RESOLVE_MODE=read   # a replay of a past diff reads only
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
@@ -83,7 +101,12 @@ python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN" "$LINE_NO" >/dev/null 2>
   || { echo "ERROR: line $LINE_NO is not a task in $PLAN" >&2; exit 2; }
 
 # The knobs file (fail closed: an invalid file stops the classification).
-KNOBS_JSON="$(apex_knobs_effective)" || exit 3
+if [[ -n "$SIM_KNOBS" ]]; then
+  KNOBS_JSON="$(python3 "$APEX_EXECUTE_SCRIPTS/knobslib.py" effective --state-base "$STATE_BASE" --file "$SIM_KNOBS" 2>/dev/null)" \
+    || { echo "ERROR: the proposed knobs file is invalid: $(python3 "$APEX_EXECUTE_SCRIPTS/knobslib.py" validate "$SIM_KNOBS" 2>&1 | tr '\n' ' ')" >&2; exit 3; }
+else
+  KNOBS_JSON="$(apex_knobs_effective)" || exit 3
+fi
 { IFS= read -r KNOBS_SHA; IFS= read -r B_MAX_LINES; IFS= read -r B_MAX_FILES; IFS= read -r B_SHARED_ERE; } < <(python3 -c '
 import json, sys
 k = json.loads(sys.argv[1]); t = k["effective"]["tiers"]
@@ -93,6 +116,7 @@ print("(^|/)(" + "|".join(d.replace(".", "[.]") for d in t["b_shared_dirs"]) + "
   || { echo "ERROR: could not read the effective knobs (knobslib.py effective)" >&2; exit 3; }
 
 WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
+[[ -n "$SIM_HEAD" && ! -d "$WT" ]] && WT="$REPO_ROOT"   # a replay after the worktree was removed
 BASE_BRANCH="$(read_field base_branch)"
 
 # The task's own tags always count (a caller cannot drop [tier:c]).
@@ -103,12 +127,23 @@ OVERRIDE="$(python3 -c 'import json,sys; o=json.loads(sys.argv[1]).get("tier_ove
 TAGS="${TAGS:+$TAGS,}$PLAN_TAGS"
 # The task's diff base is the chain floor (ADR-0003; apex_floor in _lib.sh).
 # --since may only widen the diff (an ancestor of the floor), never narrow it.
+if [[ -n "$SIM_HEAD" ]]; then
+  # A replay: the past task's own committed diff, SINCE..SIM_HEAD.
+  SINCE="$(apex_git "$WT" rev-parse -q --verify "${SINCE}^{commit}" 2>/dev/null)" \
+    || { echo "ERROR: --since is not a commit in $WT (was it garbage-collected?)" >&2; exit 2; }
+  HEAD_NOW="$(apex_git "$WT" rev-parse -q --verify "${SIM_HEAD}^{commit}" 2>/dev/null)" \
+    || { echo "ERROR: --head is not a commit in $WT (was it garbage-collected?)" >&2; exit 2; }
+  apex_git "$WT" merge-base --is-ancestor "$SINCE" "$HEAD_NOW" 2>/dev/null \
+    || { echo "ERROR: --since ${SINCE:0:12} is not an ancestor of --head ${HEAD_NOW:0:12}" >&2; exit 2; }
+  FLOOR="$SINCE"
+else
 FLOOR="$(apex_floor "$WT")" \
   || { echo "ERROR: no diff base (apex_floor reason above)" >&2; exit 2; }
 [[ -n "$SINCE" ]] || SINCE="$FLOOR"
 SINCE="$(apex_git "$WT" rev-parse -q --verify "${SINCE}^{commit}" 2>/dev/null)" \
   || { echo "ERROR: --since is not a commit in $WT" >&2; exit 2; }
 HEAD_NOW="$(apex_git "$WT" rev-parse HEAD)"
+fi
 if ! apex_git "$WT" merge-base --is-ancestor "$SINCE" "$FLOOR" 2>/dev/null; then
   echo "ERROR: --since ${SINCE:0:12} is later than this task's base ${FLOOR:0:12} — it would hide the task's own commits; use --since $FLOOR (TASK_BASE) or omit --since" >&2
   exit 2
@@ -138,12 +173,12 @@ PATHSPEC=(-- . ${EXCL[@]+"${EXCL[@]}"})   # bash 3.2 (macOS) + set -u: an empty 
 # Paths are read NUL-separated (git C-quotes control characters even with
 # quotepath off, and a quote escape can fuse with the next word); control
 # characters become "_" (a word break) before classification.
-FILES="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only -z "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only -z HEAD "${PATHSPEC[@]}"; \
-            "${GIT[@]}" ls-files -z --others --exclude-standard "${PATHSPEC[@]}"; } 2>/dev/null | python3 -c '
+FILES="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only -z "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; [[ -n "$SIM_HEAD" ]] || "${GIT[@]}" diff "${DIFF_OPTS[@]}" --name-only -z HEAD "${PATHSPEC[@]}"; \
+            [[ -n "$SIM_HEAD" ]] || "${GIT[@]}" ls-files -z --others --exclude-standard "${PATHSPEC[@]}"; } 2>/dev/null | python3 -c '
 import re, sys
 paths = {re.sub(r"[\x00-\x1f\x7f]", "_", p.decode("utf-8", "surrogateescape")) for p in sys.stdin.buffer.read().split(b"\0") if p}
 sys.stdout.buffer.write("".join(sorted(p + "\n" for p in paths)).encode("utf-8", "surrogateescape"))')"
-LINES="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --numstat "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --numstat HEAD "${PATHSPEC[@]}"; } 2>/dev/null \
+LINES="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --numstat "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; [[ -n "$SIM_HEAD" ]] || "${GIT[@]}" diff "${DIFF_OPTS[@]}" --numstat HEAD "${PATHSPEC[@]}"; } 2>/dev/null \
           | awk '$1 ~ /^[0-9]+$/ {s += $1 + $2} END {print s + 0}')"
 NFILES="$(printf '%s\n' "$FILES" | sed '/^$/d' | wc -l | tr -d ' ')"
 
@@ -217,7 +252,7 @@ done <<<"$PATH_OUT"
 # parses cleanly; anything unparsed is scanned (fail closed).
 # The content regex is knobslib.py's C_TERMS plus the knobs file's c_terms_extra;
 # a path exempted by a knobs glob is not scanned.
-CONTENT_OUT="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null \
+CONTENT_OUT="$( { "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 "$SINCE" "$HEAD_NOW" "${PATHSPEC[@]}"; [[ -n "$SIM_HEAD" ]] || "${GIT[@]}" diff "${DIFF_OPTS[@]}" --text --no-textconv -U0 HEAD "${PATHSPEC[@]}"; } 2>/dev/null \
   | python3 -c '
 import fnmatch, json, re, sys
 K = json.loads(sys.argv[1]); KT = K["effective"]["tiers"]

@@ -255,6 +255,25 @@ async function demoPost(path, body) {
       if (body.plugin === 'scope-loop' && body.patch.tiers && body.patch.tiers.exempt) warnings.push('Exemptions loosen Tier C: matching paths no longer trigger it by path or content.');
       return { ok: true, changes, warnings, audit_id: path === '/api/knobs' ? auditId : null };
     }
+    case '/api/tiers/simulate': {
+      const tiers = body.patch || {};
+      const knobs = await demoGet(`/api/knobs?repo=${encodeURIComponent(body.repo)}`);
+      const all = (tiers.exempt || []).find((e) => /^[*/]*$/.test(String(e.glob ?? '').trim()));
+      if (all) {
+        const e = new Error('The proposal was refused (HTTP 422).');
+        e.status = 422;
+        e.errors = [`tiers.exempt: "${all.glob}" matches every path, so it would turn off Tier C. Use a narrower glob.`];
+        throw e;
+      }
+      await new Promise((r) => setTimeout(r, 1800));
+      const sim = clone(d.tiersim);
+      const limit = Math.max(1, Math.min(60, Number(body.limit) || 30));
+      sim.repo = body.repo;
+      sim.tasks = sim.tasks.sort((a, b) => String(b.completed_at).localeCompare(String(a.completed_at))).slice(0, limit);
+      sim.summary = { ...summarizeSim(sim.tasks), note: sim.summary.note };
+      sim.changes = localDiff('scope-loop', { tiers }, knobs);
+      return sim;
+    }
     case '/api/audit/undo': return { ok: true, changes: [], warnings: [], audit_id: auditId };
     case '/api/keys': return { ok: true, audit_id: auditId };
     case '/api/keys/check': {
@@ -271,6 +290,23 @@ async function demoPost(path, body) {
     case '/api/repos': return clone(d.state);
     default: throw new Error(`Demo mode cannot simulate ${path}.`);
   }
+}
+
+function summarizeSim(tasks) {
+  const ok = tasks.filter((t) => !t.error);
+  const moves = {};
+  let looser = 0;
+  let stricter = 0;
+  for (const t of ok) {
+    if (!t.move) continue;
+    moves[t.move] = (moves[t.move] || 0) + 1;
+    if (TIER_RANK[t.proposed] < TIER_RANK[t.current]) looser++; else stricter++;
+  }
+  const mix = (k) => Object.fromEntries(['A', 'B', 'C'].map((x) => [x, ok.filter((t) => t[k] === x).length]));
+  return {
+    replayed: ok.length, errors: tasks.length - ok.length, changed: looser + stricter, looser, stricter,
+    moves, mix_current: mix('current'), mix_proposed: mix('proposed'),
+  };
 }
 
 async function undoAudit(id, after) {
@@ -1223,7 +1259,7 @@ function diffPatch(a, b) {
 }
 const isEmpty = (o) => !o || !Object.keys(o).length;
 
-function panelShell({ title, lede, plugin, repo, knobs, buildPatch, validate, onReset, body }) {
+function panelShell({ title, lede, plugin, repo, knobs, buildPatch, validate, onReset, body, actions, after, onRefresh }) {
   const reviewBtn = h('button', { class: 'btn', type: 'button', text: 'Review change', disabled: true });
   const resetBtn = h('button', { class: 'btn-link', type: 'button', text: 'Discard edits', hidden: true });
   const errEl = h('span', { class: 'field-error', 'aria-live': 'polite' });
@@ -1233,14 +1269,17 @@ function panelShell({ title, lede, plugin, repo, knobs, buildPatch, validate, on
     errEl.textContent = problems.join(' ');
     reviewBtn.disabled = isEmpty(patch) || problems.length > 0;
     resetBtn.hidden = isEmpty(patch);
+    if (onRefresh) onRefresh(patch, problems);
   };
-  reviewBtn.addEventListener('click', () => reviewChange({ title, plugin, repo, patch: buildPatch(), knobs }));
+  const review = (patch = buildPatch()) => reviewChange({ title, plugin, repo, patch, knobs });
+  reviewBtn.addEventListener('click', () => review());
   resetBtn.addEventListener('click', onReset);
   const panel = h('section', { class: 'card panel', 'aria-label': title },
     h('div', { class: 'panel-head' }, h('div', null, h('h2', { text: title }), lede ? h('p', { class: 'small', text: lede }) : null)),
     body,
-    h('div', { class: 'panel-foot' }, errEl, resetBtn, reviewBtn));
-  return { panel, refresh };
+    h('div', { class: 'panel-foot' }, errEl, resetBtn, actions || null, reviewBtn),
+    after || null);
+  return { panel, refresh, review };
 }
 function fmtVal(v) {
   if (v === null || v === undefined) return 'none';
@@ -1431,10 +1470,12 @@ function tiersPanel(k) {
     }
     return isEmpty(out) ? {} : { tiers: out };
   };
+  const sim = tierSimulator({ repo: k.repo, buildPatch, review: (patch) => shell.review(patch) });
   shell = panelShell({
     title: 'Tier definitions', plugin: 'scope-loop', repo: k.repo, knobs: k,
     lede: 'Which changes count as Tier C (full review and the human gate) or Tier B. Everything else is Tier A.',
     buildPatch, validate,
+    actions: sim.actions, after: sim.section, onRefresh: sim.onRefresh,
     onReset: () => renderView(),
     body: [
       h('div', { class: 'sub-block' },
@@ -1468,6 +1509,226 @@ function tiersPanel(k) {
   shell.refresh();
   return shell.panel;
 }
+// ------------------------------------------------------- tier simulator --
+// Replays completed tasks under the panel's proposed tier definitions (POST /api/tiers/simulate). Writes nothing.
+const TIER_RANK = { A: 0, B: 1, C: 2 };
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+function tierChip(t) {
+  return t ? h('span', { class: `tier tier-${t}`, text: t, 'aria-label': `Tier ${t}` }) : h('span', { class: 'muted', text: '—', 'aria-label': 'no tier' });
+}
+function isLooser(move) {
+  const [from, to] = move.split('→');
+  return TIER_RANK[to] < TIER_RANK[from];
+}
+function moveEl(move, count) {
+  const loose = isLooser(move);
+  return h('span', { class: ['status', 'move', loose ? 'st-watch' : 'st-good'] },
+    h('span', { class: 'g', 'aria-hidden': 'true', text: loose ? '◐' : '✓' }),
+    h('span', { class: 'move-key', text: count ? `${move} ×${count}` : move }),
+    h('span', { class: 'move-label', text: loose ? 'looser' : 'stricter' }));
+}
+function simSentence(sum) {
+  if (!sum.replayed && !sum.errors) return 'There are no completed tasks to replay yet.';
+  let txt = `Replayed ${plural(sum.replayed, 'task')}: `;
+  if (!sum.changed) txt += 'none would change tier.';
+  else {
+    const parts = [];
+    if (sum.looser) parts.push(`${sum.looser} would get a lower tier`);
+    if (sum.stricter) parts.push(sum.looser ? `${sum.stricter} a higher one` : `${sum.stricter} would get a higher tier`);
+    parts.push(`${sum.replayed - sum.changed} unchanged`);
+    txt += `${parts.join(', ')}.`;
+  }
+  if (sum.errors) txt += ` ${sum.errors} could not be replayed.`;
+  return txt;
+}
+function simMixRow(label, mix, ref) {
+  const tiers = ['A', 'B', 'C'];
+  const counts = tiers.map((t) => mix?.[t] ?? 0);
+  const total = counts.reduce((a, b) => a + b, 0);
+  const desc = tiers.map((t, i) => `Tier ${t} ${counts[i]}`).join(', ');
+  const bar = h('div', { class: 'sim-bar', role: 'img', 'aria-label': `${label}: ${desc}.` });
+  tiers.forEach((t, i) => {
+    if (!counts[i]) return;
+    const seg = h('span', { class: `sim-seg sw-s${i + 1}` });
+    seg.style.flexGrow = String(counts[i]);
+    bar.append(seg);
+  });
+  if (!total) bar.append(h('span', { class: 'sim-seg sim-seg-empty' }));
+  const labels = h('div', { class: 'sim-mix-labels', 'aria-hidden': 'true' }, tiers.map((t, i) => {
+    const d = ref ? counts[i] - (ref[t] ?? 0) : 0;
+    return h('span', { class: 'mix-label' },
+      h('span', { class: `mix-swatch sw-s${i + 1}` }),
+      h('b', { text: t }), String(counts[i]),
+      d ? h('span', { class: 'sim-delta', text: `${d > 0 ? '+' : '−'}${Math.abs(d)}` }) : null);
+  }));
+  return h('div', { class: 'sim-mix-row' }, h('span', { class: 'sim-mix-name', text: label }), h('div', { class: 'sim-mix-body' }, bar, labels));
+}
+function planLabel(t) {
+  const base = String(t.plan_path || t.plan || '').split('/').pop();
+  return base.replace(/-plan\.md$/, '').replace(/\.md$/, '') || t.plan || '—';
+}
+function reasonList(title, items) {
+  return h('div', { class: 'sim-reason-block' },
+    h('h4', { class: 'eyebrow', text: title }),
+    items?.length ? h('ul', { class: 'reason-list' }, items.map((x) => h('li', null, h('code', { text: x })))) : h('p', { class: 'small muted', text: 'None' }));
+}
+function simTable(tasks, onlyChanged) {
+  const sorted = [...tasks].sort((a, b) => (!!b.move - !!a.move) || String(b.completed_at || '').localeCompare(String(a.completed_at || '')));
+  const rows = [];
+  for (const t of sorted) {
+    const detailId = nextId('sim-row');
+    const label = `${planLabel(t)} line ${t.line}`;
+    let titleCell;
+    let detail = null;
+    if (t.error) {
+      titleCell = h('div', null, h('span', { class: 'sim-title-text', text: t.title }),
+        h('div', { class: 'sim-error' }, h('span', { 'aria-hidden': 'true', text: '✕ ' }), t.error));
+    } else {
+      const btn = h('button', { class: 'sim-title', type: 'button', 'aria-expanded': 'false', 'aria-controls': detailId },
+        h('span', { class: 'chev', 'aria-hidden': 'true', text: '▸' }), h('span', { text: t.title }),
+        h('span', { class: 'sr-only', text: `, show reasons for ${label}` }));
+      detail = h('tr', { class: ['sim-detail', t.move && 'moved'], id: detailId, hidden: true },
+        h('td', { colspan: '7' }, h('div', { class: 'sim-reasons' }, reasonList('Added reasons', t.added), reasonList('Removed reasons', t.removed))));
+      btn.addEventListener('click', () => {
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', String(open));
+        btn.querySelector('.chev').textContent = open ? '▾' : '▸';
+        detail.hidden = !open;
+      });
+      titleCell = btn;
+    }
+    const tr = h('tr', { class: ['sim-row', t.move && 'moved', t.error && 'errored'] },
+      h('td', { class: 'sim-plan', 'data-label': 'Plan' }, h('span', { class: 'mono', text: planLabel(t), title: t.plan_path || '' }),
+        h('span', { class: 'sim-line-inline', text: ` · line ${t.line ?? '—'}` })),
+      h('td', { class: 'num sim-line', 'data-label': 'Line', text: String(t.line ?? '—') }),
+      h('td', { class: 'sim-task', 'data-label': 'Task' }, titleCell),
+      h('td', { 'data-label': 'Recorded' }, tierChip(t.recorded)),
+      h('td', { 'data-label': 'Current' }, tierChip(t.current)),
+      h('td', { 'data-label': 'Proposed' }, tierChip(t.proposed)),
+      h('td', { class: 'sim-move', 'data-label': 'Move' }, t.move ? moveEl(t.move) : h('span', { class: 'muted', text: t.error ? '—' : 'same' })));
+    if (onlyChanged && !t.move) { tr.hidden = true; }
+    rows.push(tr);
+    if (detail) { detail.dataset.moved = t.move ? '1' : ''; rows.push(detail); }
+  }
+  const wrap = tableWrap(['Plan', { label: 'Line', num: true }, 'Task', 'Recorded', 'Current', 'Proposed', 'Move'], rows,
+    { class: 'sim-table', caption: 'Replayed tasks with recorded, current and proposed tiers' });
+  return wrap;
+}
+function tierSimulator({ repo, buildPatch, review }) {
+  const LIMITS = [10, 30, 60];
+  let limit = Number(store.get('simLimit', '30'));
+  if (!LIMITS.includes(limit)) limit = 30;
+  let running = false;
+  let canRun = false;
+  let lastKey = null;
+  let lastPatch = null;
+  const limitSel = h('select', { class: 'sim-limit-select', 'aria-label': 'How many past tasks to replay' },
+    LIMITS.map((n) => h('option', { value: String(n), text: `${n} tasks`, selected: n === limit })));
+  limitSel.addEventListener('change', () => { limit = Number(limitSel.value); store.set('simLimit', String(limit)); });
+  const btn = h('button', { class: 'btn btn-ghost', type: 'button', text: 'Simulate on past tasks', disabled: true });
+  const actions = h('div', { class: 'sim-actions' }, h('label', { class: 'sim-limit' }, h('span', { class: 'small muted', text: 'Last' }), limitSel), btn);
+  const errSlot = h('div', { class: 'sim-err', 'aria-live': 'polite' });
+  const busySlot = h('div', { class: 'sim-busy', role: 'status' });
+  const results = h('div', { class: 'sim-results-body' });
+  const section = h('div', { class: 'sim-section', hidden: true }, errSlot, busySlot, results);
+  const staleBanner = h('div', { class: 'banner warn sim-stale', hidden: true },
+    h('span', { class: 'glyph', 'aria-hidden': 'true', text: '◐' }),
+    h('span', { class: 'sim-stale-text' }, 'Proposal changed since this simulation. ',
+      h('button', { class: 'btn-link', type: 'button', text: 'Simulate again', onclick: () => run() })));
+  let reviewLink = null;
+  const syncBtn = () => { btn.disabled = running || !canRun; };
+  const markStale = (patch) => {
+    if (lastKey === null) return;
+    const stale = JSON.stringify(patch) !== lastKey;
+    staleBanner.hidden = !stale;
+    results.classList.toggle('is-stale', stale);
+    if (reviewLink) reviewLink.hidden = stale;
+  };
+  const onRefresh = (patch, problems) => {
+    canRun = !isEmpty(patch) && !problems.length;
+    syncBtn();
+    markStale(patch);
+  };
+  function draw(res) {
+    clear(results);
+    const sum = res.summary || summarizeSim(res.tasks || []);
+    const tasks = res.tasks || [];
+    const moved = tasks.some((t) => t.move);
+    let onlyChanged = moved;
+    reviewLink = h('button', { class: 'btn-link', type: 'button', text: 'Review this change', onclick: () => review(lastPatch) });
+    const tableSlot = h('div');
+    const countEl = h('span', { class: 'small muted' });
+    const drawTable = () => {
+      clear(tableSlot);
+      tableSlot.append(simTable(tasks, onlyChanged));
+      const shown = onlyChanged ? tasks.filter((t) => t.move).length : tasks.length;
+      countEl.textContent = `Showing ${shown} of ${plural(tasks.length, 'task')}`;
+    };
+    const sw = switchEl({ checked: onlyChanged, label: 'Show only changed', showText: false, onChange: (v) => { onlyChanged = v; drawTable(); } });
+    sw.append(h('span', { class: 'sim-switch-text', text: 'Show only changed' }));
+    const moves = Object.entries(sum.moves || {}).sort((a, b) => b[1] - a[1]);
+    append(results, [
+      h('div', { class: 'row-between sim-head' },
+        h('div', null,
+          h('h3', { text: 'Replay on past tasks' }),
+          h('p', { class: 'small muted' }, `${repoName(res.repo || repo)} · last ${plural(limit, 'completed task')} · `, timeEl(new Date().toISOString()))),
+        reviewLink),
+      staleBanner,
+      h('p', { class: 'sim-summary', text: simSentence(sum) }),
+      h('div', { class: 'sim-mix', role: 'group', 'aria-label': 'Tier mix before and after' },
+        simMixRow('Current', sum.mix_current),
+        simMixRow('Proposed', sum.mix_proposed, sum.mix_current)),
+      moves.length ? h('div', { class: 'sim-moves', role: 'list', 'aria-label': 'Moves' },
+        moves.map(([m, n]) => h('span', { class: 'chip move-chip', role: 'listitem' }, moveEl(m, n)))) : null,
+      tasks.length ? h('div', { class: 'row-between sim-controls' }, moved ? sw : h('span', { class: 'small muted', text: 'No task would move.' }), countEl) : null,
+      tasks.length ? tableSlot : null,
+      sum.note ? h('p', { class: 'sim-note', text: sum.note }) : null,
+    ]);
+    if (tasks.length) drawTable();
+    staleBanner.hidden = true;
+    results.classList.remove('is-stale');
+  }
+  async function run() {
+    if (running) return;
+    const full = buildPatch();
+    if (isEmpty(full)) return;
+    running = true;
+    syncBtn();
+    section.hidden = false;
+    clear(errSlot);
+    btn.textContent = `Replaying ${limit} tasks…`;
+    btn.setAttribute('aria-busy', 'true');
+    const started = Date.now();
+    const secs = h('span', { class: 'sim-secs', 'aria-hidden': 'true', text: '0 s' });
+    clear(busySlot);
+    busySlot.append(h('span', { class: 'sim-spinner', 'aria-hidden': 'true' }),
+      h('span', { text: `Replaying up to ${limit} tasks under the current and the proposed definitions. About 1 s per task, 4 at a time.` }), secs);
+    const timer = setInterval(() => {
+      if (!section.isConnected) { clearInterval(timer); return; }
+      secs.textContent = `${Math.round((Date.now() - started) / 1000)} s`;
+    }, 1000);
+    try {
+      const res = await apiPost('/api/tiers/simulate', { repo, patch: full.tiers || {}, limit });
+      lastKey = JSON.stringify(full);
+      lastPatch = clone(full);
+      draw(res);
+      markStale(buildPatch());
+    } catch (e) {
+      errSlot.append(h('div', { class: 'banner alert' }, h('span', { class: 'glyph', 'aria-hidden': 'true', text: '✕' }),
+        h('div', null, h('p', { text: e.message }), e.errors?.length ? h('ul', { class: 'notes' }, e.errors.map((x) => h('li', { text: x }))) : null)));
+    } finally {
+      clearInterval(timer);
+      clear(busySlot);
+      running = false;
+      btn.textContent = 'Simulate on past tasks';
+      btn.removeAttribute('aria-busy');
+      syncBtn();
+    }
+  }
+  btn.addEventListener('click', run);
+  return { actions, section, onRefresh };
+}
+
 function providersPanel(k) {
   const dp = k.dispatch;
   const draft = {};

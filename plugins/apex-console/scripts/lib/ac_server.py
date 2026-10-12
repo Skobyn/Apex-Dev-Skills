@@ -21,6 +21,7 @@ import ac_common as C
 import ac_keys
 import ac_knobs
 import ac_metrics
+import ac_tiersim
 
 UI = os.path.join(C.PLUGIN_ROOT, "ui")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -226,6 +227,16 @@ def api_knobs(q):
             "dispatch": ac_knobs.dispatch_get(s["top"], s["state_base"]), "decision": ac_knobs.decision_get(s["top"])}
 
 
+def post_tiersim(body):
+    rid = body.get("repo")
+    s = snapshots(rid)[0]
+    if s.get("error") or not s.get("state_base"):
+        raise LookupError("repo %s: %s" % (rid, s.get("error") or "no state base"))
+    out = ac_tiersim.simulate(s, body.get("patch") or {}, body.get("limit") or 30)
+    out["repo"] = rid
+    return out
+
+
 def _sha(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest() if text is not None else None
 
@@ -384,7 +395,9 @@ GET = {"/api/state": lambda q: api_state(), "/api/metrics": api_metrics, "/api/p
        "/api/knobs": api_knobs, "/api/keys": lambda q: ac_keys.summary(needed_keys(snapshots())), "/api/audit": api_audit}
 POST = {"/api/knobs/preview": lambda b: post_knobs(b, False), "/api/knobs": lambda b: post_knobs(b, True),
         "/api/keys": post_keys, "/api/keys/check": post_keys_check, "/api/halt": post_halt,
-        "/api/audit/undo": post_undo, "/api/repos": post_repos, "/api/targets": post_targets}
+        "/api/audit/undo": post_undo, "/api/repos": post_repos, "/api/targets": post_targets,
+        "/api/tiers/simulate": post_tiersim}
+READ_ONLY_POST = {"/api/tiers/simulate", "/api/knobs/preview"}   # no write lock: they change nothing
 
 
 # --- HTTP -------------------------------------------------------------------------------
@@ -482,6 +495,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             return self._err(400, "the request body must be a JSON object")
         try:
+            if urllib.parse.urlsplit(self.path).path in READ_ONLY_POST:
+                return self._send(200, fn(body))
             with WRITE_LOCK:
                 return self._send(200, fn(body))
         except ac_knobs.KnobError as e:
