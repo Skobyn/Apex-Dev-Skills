@@ -85,8 +85,14 @@ if [[ -n "${APEX_SNAPSHOT_SETUP:-}" ]]; then
     exit 1
   fi
 fi
-chmod -R a-w "$TMP/tree"
+# Make every entry read-only before the tree becomes visible at $DEST (symlinks
+# skipped: chmod would follow them out of the tree). The tree root stays
+# writable until after the rename: macOS refuses to rename a read-only directory
+# to another parent (it must update the directory's '..'). Reuse still needs the
+# .json marker, which is written last, so a crash before it leaves no reusable snapshot.
+find "$TMP/tree" -mindepth 1 ! -type l -exec chmod a-w {} +
 mv "$TMP/tree" "$DEST"
+chmod a-w "$DEST"
 python3 -c 'import json,sys; json.dump({"sha": sys.argv[1], "setup": sys.argv[2] or None, "setup_exit": int(sys.argv[3]) if sys.argv[3] else None, "at": sys.argv[4]}, open(sys.argv[5], "w"), indent=2)' \
   "$SHA" "${APEX_SNAPSHOT_SETUP:-}" "$SETUP_RC" "$(date -u +%FT%TZ)" "$DEST.json"
 echo "REVIEW_SNAPSHOT: $DEST"

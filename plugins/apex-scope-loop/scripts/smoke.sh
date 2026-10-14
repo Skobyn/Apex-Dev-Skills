@@ -121,7 +121,7 @@ for v in $(compgen -e | grep '^APEX_' || true); do unset "$v"; done
 # 29 turn it back on to cover the integration, and 33 builds dispatch state itself.
 export APEX_DISPATCH_MODE=off
 SMOKE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/apex-scope-loop-smoke.XXXXXX")"
-trap 'git -C "$SMOKE_TMP/repo" worktree prune >/dev/null 2>&1 || true; rm -rf "$SMOKE_TMP"' EXIT
+trap 'git -C "$SMOKE_TMP/repo" worktree prune >/dev/null 2>&1 || true; chmod -R u+w "$SMOKE_TMP" 2>/dev/null || true; rm -rf "$SMOKE_TMP"' EXIT
 [ -n "${SMOKE_KEEP:-}" ] && trap - EXIT
 export GIT_AUTHOR_NAME=smoke GIT_AUTHOR_EMAIL=smoke@example.invalid GIT_COMMITTER_NAME=smoke GIT_COMMITTER_EMAIL=smoke@example.invalid
 R="$SMOKE_TMP/repo"; mkdir -p "$R/.claude/tasks" "$R/.claude/plans"
@@ -1732,6 +1732,26 @@ expect_refusal "a snapshot whose setup fails" "APEX_SNAPSHOT_SETUP failed" indir
   && "$CP" plans/v-plan.md review 1 "$(git -C "$TW" rev-parse HEAD)" APPROVE >/dev/null && "$CP" plans/v-plan.md complete 1 ok >/dev/null 2>&1) || fail "complete failed in check 54"
 [ -z "$(ls -A "$(dirname "$SP")" 2>/dev/null | grep -v '^\.tmp' || true)" ] || fail "complete did not prune the review snapshots"
 ok "snapshot: read-tree + checkout-index (export-ignore kept), read-only, setup once, reused, failed setup leaves nothing, pruned at complete"
+
+# 54b. (D) snapshot-readonly-after-move: the tree is made read-only before it is
+#      renamed into <snapshots>/<sha> (macOS refuses to rename a read-only dir to
+#      another parent). The snapshot lands at its sha path with its .json marker,
+#      every file and directory in it is non-writable, and a second call reuses it.
+T54B="$SMOKE_TMP/t54b"; TW="$(cal_run "$T54B" "$TWO")" || fail "init for check 54b failed"
+echo a >"$TW/a.txt"; git -C "$TW" add -A; git -C "$TW" commit -qm a
+mkdir -p "$TW/sub/deep"; echo d >"$TW/sub/deep/f.txt"; git -C "$TW" add -A; git -C "$TW" commit -qm deep
+SHB="$(git -C "$TW" rev-parse HEAD)"
+OB54="$(cd "$T54B" && "$SN" plans/v-plan.md)" || fail "snapshot-readonly-after-move: the snapshot failed: $OB54"
+SB="$(sed -n 's/^REVIEW_SNAPSHOT: //p' <<<"$OB54")"
+[ "$(basename "$SB")" = "$SHB" ] && [ -f "$SB.json" ] && [ -f "$SB/sub/deep/f.txt" ] || fail "snapshot-readonly-after-move: the snapshot is not at <snapshots>/$SHB with its .json marker: $OB54"
+python3 -c 'import os,sys
+bad=[]
+for root,dirs,files in os.walk(sys.argv[1]):
+    for n in [root]+[os.path.join(root,x) for x in dirs+files]:
+        if not os.path.islink(n) and os.lstat(n).st_mode & 0o222: bad.append(n)
+sys.exit(1 if bad else 0)' "$SB" || fail "snapshot-readonly-after-move: a file or directory in the snapshot is writable"
+has 'SNAPSHOT: reused' "$(cd "$T54B" && "$SN" plans/v-plan.md)" || fail "snapshot-readonly-after-move: a second call did not reuse the snapshot"
+ok "snapshot-readonly-after-move: snapshot lands at its sha path with its .json, every file and directory is non-writable, a second call is reused"
 
 # 55. (E) Tier override needs its reason and records it; a reviewer raise needs a
 #     reason and is recorded; size alone is Tier B (one reviewer, no G12).
