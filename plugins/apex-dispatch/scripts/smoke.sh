@@ -84,7 +84,17 @@ pass "version is semver"
 COMPILE="$PLUGIN_ROOT/scripts/compile.sh"
 # $TMPDIR ends in "/" on macOS, so mktemp returns "T//name", and tools print the canonical path
 # (/private/var/.../T/name). Resolve once so every "$WORK/..." comparison matches tool output.
-WORK="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/apex-dispatch-smoke.XXXXXX")" && pwd -P)"
+# Two statements, not one nested substitution: if mktemp fails, set -e stops here, before the
+# trap exists. (A nested `cd "$(mktemp ...)"` with an empty result would cd nowhere and leave
+# WORK pointing at the current directory, which the EXIT trap would then delete.)
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/apex-dispatch-smoke.XXXXXX")"
+WORK="$(cd "$WORK" && pwd -P)"
+TMP_ROOT="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+# Refuse anything but a fresh apex-dispatch-smoke.* directory under the temp root before rm -rf.
+case "$WORK" in
+  "$TMP_ROOT"/apex-dispatch-smoke.*) [ -d "$WORK" ] || { echo "smoke: refusing WORK=$WORK (not a directory)" >&2; exit 2; } ;;
+  *) echo "smoke: refusing WORK=$WORK" >&2; exit 2 ;;
+esac
 trap 'rm -rf "$WORK"' EXIT
 
 # 11. policy inputs exist and every compiled artifact is current
