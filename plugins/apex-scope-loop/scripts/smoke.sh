@@ -1927,6 +1927,7 @@ has '^TIER: B' "$(rtc '[docs]' README.md 'stripe keys live here')" || fail "a Ma
 has '^TIER: C' "$(rtc '[docs]' src/smoke_helper.py 'import stripe')" || fail "content in src/smoke_helper.py was exempted"
 # (11) A run without a worktree keeps snapshots outside the work tree.
 T60K="$SMOKE_TMP/t60k"; mkdir -p "$T60K/plans"; git init -q -b main "$T60K"; printf '.dev-plan-state/\n' >"$T60K/.gitignore"
+T60K="$(cd "$T60K" && pwd -P)"   # git reports the resolved path on macOS (/var -> /private/var)
 printf -- "$TWO" >"$T60K/plans/v-plan.md"; git -C "$T60K" add -A; git -C "$T60K" commit -qm k
 ( cd "$T60K" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/v-plan.md >/dev/null 2>&1 ) || fail "no-worktree init failed in check 60"
 SPK="$(cd "$T60K" && "$EX/snapshot.sh" plans/v-plan.md | sed -n 's/^REVIEW_SNAPSHOT: //p')"
