@@ -1269,9 +1269,18 @@ has "lib/.git (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fai
 rm -rf "$SM/lib/.git"; echo 'gitdir: /nonexistent' >"$SM/lib/.Git"
 has "lib/.Git (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a .git file below the top"
 rm -f "$SM/lib/.Git"
-mkdir -p "$SM/.GIT"; echo x >"$SM/.GIT/conftest.py"
-has ".GIT (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a top-level directory named .GIT"
-rm -rf "$SM/.GIT"
+# On a case-insensitive filesystem $SM/.GIT is $SM/.git, the fixture's own git
+# dir: writing there and then rm -rf would destroy the repository. The probe
+# runs in a scratch directory; where it is insensitive the top-level .GIT
+# assertion is skipped (printed), and the rm -rf never runs.
+CIPROBE="$SMOKE_TMP/ci-probe"; mkdir -p "$CIPROBE"; : >"$CIPROBE/probe-lower"
+if [ -e "$CIPROBE/PROBE-LOWER" ]; then
+  echo "smoke SKIP: case-insensitive filesystem ($CIPROBE): \$SM/.GIT aliases the fixture's .git, so the top-level .GIT assertion is not run here (it still runs on case-sensitive filesystems)"
+else
+  mkdir -p "$SM/.GIT"; echo x >"$SM/.GIT/conftest.py"
+  has ".GIT (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a top-level directory named .GIT"
+  rm -rf "$SM/.GIT"
+fi
 # Run state never lives in a linked worktree: a .dev-plan-state there is checked.
 git -C "$SM" worktree add -q "$SMOKE_TMP/smwt" 2>/dev/null
 [ -z "$(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/smwt")" ] || fail "a clean linked worktree with submodules was reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/smwt")"
