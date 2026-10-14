@@ -284,7 +284,9 @@ val() { sed -n "s/^$1: //p" <<<"$2" | head -1; }
 pass "route.sh --version == plugin.json version"
 
 # Fixture: a plain git repo with one plan (no toolchain markers).
-FX="$WORK/fx"; mkdir -p "$FX/plans"; git init -q -b main "$FX"
+# macOS: $TMPDIR sits under /var, a symlink to /private/var. git and route.sh print the resolved
+# toplevel, so the fixture path is resolved here too or prefix comparisons against $FX never match.
+FX="$WORK/fx"; mkdir -p "$FX/plans"; git init -q -b main "$FX"; FX="$(cd "$FX" && pwd -P)"
 cat >"$FX/plans/p.md" <<'PLAN'
 # Fixture plan
 
