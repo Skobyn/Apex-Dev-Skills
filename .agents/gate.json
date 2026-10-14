@@ -1,0 +1,7 @@
+{
+  "generate": "",
+  "typecheck": "",
+  "lint": "",
+  "test": "bash plugins/apex-scope-loop/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-console/scripts/smoke.sh",
+  "build": ""
+}
