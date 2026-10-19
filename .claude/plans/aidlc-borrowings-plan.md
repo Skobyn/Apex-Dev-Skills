@@ -56,19 +56,25 @@ Trusted, non-malicious agents and a single trusted operator (solo). In scope: ac
 
 The three gate suites must exit 0 before any feature work. Two fail on main today for macOS reasons.
 
-- [ ] **Phase 0.1** [tests] Make apex-scope-loop's `.GIT` dirty-check fixture work on case-insensitive filesystems (detect case-insensitivity and test the `.GIT` rule on a path that cannot alias `.git`, or skip that one assertion with a printed reason)
-  - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh`
+- [x] **Phase 0.1** [tests] Make apex-scope-loop's `.GIT` dirty-check fixture work on case-insensitive filesystems (detect case-insensitivity and test the `.GIT` rule on a path that cannot alias `.git`, or skip that one assertion with a printed reason)
+  - Acceptance: `L="${TMPDIR:-/tmp}/p01-smoke.log"; { bash plugins/apex-scope-loop/scripts/smoke.sh >"$L" 2>&1 || grep -q 'smoke FAIL: snapshot failed' "$L"; } && ! grep -q 'missed a top-level directory named .GIT' "$L"` (the snapshot failure is Phase 0.3's; the full suite must pass at Gate 0→1)
   - Swarm: single [tester]
   - Paths: plugins/apex-scope-loop/scripts/smoke.sh, plugins/apex-scope-loop/skills/apex-execute/scripts/_lib.sh
 
-- [ ] **Phase 0.2** [tests] Fix apex-dispatch smoke's ad-hoc state check under macOS `/var` → `/private/var` (compare resolved paths; fix route.py too if it is the code, not the test, that mis-resolves)
+- [x] **Phase 0.2** [tests] Fix apex-dispatch smoke's ad-hoc state check under macOS `/var` → `/private/var` (compare resolved paths; fix route.py too if it is the code, not the test, that mis-resolves)
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh`
   - Swarm: single [tester]
   - Paths: plugins/apex-dispatch/scripts/smoke.sh, plugins/apex-dispatch/scripts/lib/route.py
 
+- [x] **Phase 0.3** [tests] Fix `snapshot.sh` on macOS: move the snapshot tree into place before making it read-only (a read-only directory cannot be renamed across parents on macOS), keeping the snapshot read-only afterwards
+  - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'snapshot-readonly-after-move' plugins/apex-scope-loop/scripts/smoke.sh` (smoke check `snapshot-readonly-after-move`: a snapshot is created on macOS, lands at its sha path, and every file and directory in it is non-writable)
+  - Swarm: single [tester]
+  - Paths: plugins/apex-scope-loop/skills/apex-execute/scripts/snapshot.sh, plugins/apex-scope-loop/scripts/smoke.sh
+  - Blocked-by: phase-0.1
+
 - [ ] **Gate 0→1** [gate:auto] All three gate suites green
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-console/scripts/smoke.sh`
-  - Blocked-by: phase-0.1, phase-0.2
+  - Blocked-by: phase-0.1, phase-0.2, phase-0.3
 
 ---
 
@@ -124,30 +130,46 @@ The three gate suites must exit 0 before any feature work. Two fail on main toda
 
 ---
 
-### Phase 3 — Operation (post-land)
+### Phase 3 — Operation (post-land, per-plan monitoring)
 
-- [ ] **Phase 3.1** [security][tier:c] Add ledger events `operate_deploy`/`operate_signal` (non-provenance, CLI-appendable) and protect `APEX_OPERATE_ACK`, `APEX_DEPLOY_CMD` and `APEX_MONITOR_CMD` in `pre-bash.sh`
-  - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/compile.sh --check && grep -q 'operate_signal' plugins/apex-dispatch/resources/ledger-events.json && grep -q 'APEX_OPERATE_ACK' plugins/apex-dispatch/scripts/lib/hooks.py` (new smoke checks: `ledger.sh append operate_signal` succeeds and `verify` passes; an operate event missing a required field is refused; `pre-bash.sh` denies `export APEX_OPERATE_ACK=…` under the ACTIVE lock)
+Per the ADR amendment of 2026-10-18 (R5–R5d): each plan declares its own monitor checks and watch window; one shared runner; signals carry their plan slug; windows close.
+
+- [ ] **Phase 3.1** [security][tier:c] Add ledger events `operate_deploy`, `operate_signal` and `operate_window_closed` (non-provenance, CLI-appendable) and protect `APEX_OPERATE_ACK`, `APEX_DEPLOY_CMD` and `APEX_MONITOR_CMD` in `pre-bash.sh`
+  - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/compile.sh --check && grep -q 'operate_window_closed' plugins/apex-dispatch/resources/ledger-events.json && grep -q 'APEX_OPERATE_ACK' plugins/apex-dispatch/scripts/lib/hooks.py && grep -q 'operate-ledger-events' plugins/apex-dispatch/scripts/smoke.sh` (smoke check `operate-ledger-events`: each of the three events appends and `verify` passes; an operate event missing a required field, or an `operate_signal` without `slug` or `repo`, is refused; `pre-bash.sh` denies `export APEX_OPERATE_ACK=…` under the ACTIVE lock)
   - Swarm: hierarchical 4 [builder, tester, reviewer, adversarial-reviewer]
   - Paths: plugins/apex-dispatch/resources/ledger-events.json, plugins/apex-dispatch/scripts/lib/ledger.py, plugins/apex-dispatch/scripts/lib/hooks.py, plugins/apex-dispatch/scripts/smoke.sh, plugins/apex-dispatch/docs/adrs/0001-apex-dispatch-contract.md
   - Blocked-by: gate-2-3
 
-- [ ] **Phase 3.2** [backend][tier:c] Implement `operate.sh PLAN deploy|monitor|ingest|status` and `backlog.sh --from operate` with plan-level line 0
-  - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'operate-loop' plugins/apex-scope-loop/scripts/smoke.sh` (smoke check `operate-loop` in a temp repo: on an unlanded plan → exit 3; with `APEX_DEPLOY_CMD` unset → exit 2 naming it; with HALT → exit 4; landed + stub deploy + `APEX_OPERATE_ACK={slug}@{sha}` → recorded deploy; a wrong-sha ack → refused; stub monitor emitting one high and one low over-threshold signal plus one malformed line → monitor fails closed on the malformed output; with valid output, ingest writes one LESSONS.md and one BACKLOG.md entry tagged `operate:{slug}`, two `operate_signal` rows, and `ledger.sh verify` exits 0)
-  - Threats: 1) an ack for one landed sha accepted for another; 2) monitor `note` text written unescaped into LESSONS.md headings; 3) ingest running after a failed deploy
-  - Swarm: hierarchical 4 [builder, tester, reviewer, adversarial-reviewer]
-  - Paths: plugins/apex-scope-loop/skills/apex-execute/scripts/operate.sh, plugins/apex-scope-loop/skills/apex-execute/scripts/backlog.sh, plugins/apex-scope-loop/skills/apex-execute/scripts/_lib.sh, plugins/apex-scope-loop/scripts/smoke.sh
+- [ ] **Phase 3.2** [backend] Define the plan `## Monitor` section: a shared validator (`monitorlib.py validate PLAN` and `validate-file FILE` for the repo-level `monitor.json`), `promote-to-loop.sh` validation when the section is present, a `{"window_days": 14, "checks": []}` stub in every plan template (lean and full, both profiles), and the PLAN-stage instruction in apex-plan SKILL.md to draft checks from the success criteria
+  - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'monitor-section' plugins/apex-scope-loop/scripts/smoke.sh && grep -q '## Monitor' plugins/apex-scope-loop/skills/apex-plan/resources/templates/profiles/generic/plan-template.md && grep -q '## Monitor' plugins/apex-scope-loop/skills/apex-plan/resources/templates/profiles/apex/plan-template.md && grep -q 'Monitor' plugins/apex-scope-loop/skills/apex-plan/SKILL.md` (smoke check `monitor-section`: a valid section passes; each of a missing `id`, an unknown `op`, an unknown `probe.kind`, `window_days` 0 or 91, an `http` probe with headers or a non-GET method, a duplicate check id, and two json blocks is refused with the problem named; a plan without the section and a plan with `checks: []` both promote; every existing plan in `.claude/plans/` still validates and promotes)
+  - Threats: 1) an invalid section silently treated as "not watched"; 2) the section's fenced block breaking planlib's task grammar
+  - Swarm: hierarchical 3 [builder, tester, reviewer]
+  - Paths: plugins/apex-scope-loop/skills/apex-execute/scripts/monitorlib.py, plugins/apex-scope-loop/skills/apex-plan/scripts/promote-to-loop.sh, plugins/apex-scope-loop/skills/apex-plan/resources/templates/**, plugins/apex-scope-loop/skills/apex-plan/SKILL.md, plugins/apex-scope-loop/scripts/smoke.sh
   - Blocked-by: phase-3.1
 
-- [ ] **Phase 3.3** [docs] Add `/apex-scope-loop:operate`, document operate in apex-execute SKILL.md, and claim `apex-scope-loop:operate/{slug}` in ADR-0001
-  - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q '^name: operate' plugins/apex-scope-loop/commands/operate.md && grep -q '^description:' plugins/apex-scope-loop/commands/operate.md && grep -q 'apex-scope-loop:operate/' plugins/apex-scope-loop/docs/adrs/0001-apex-scope-loop-contract.md && grep -q 'operate.sh' plugins/apex-scope-loop/skills/apex-execute/SKILL.md`
+- [ ] **Phase 3.3** [backend][tier:c] Implement `operate.sh PLAN deploy|status` and `operate.sh --all status`: the ack bound to `{slug}@{landed sha}`, deploy history, and the watch window opened on a successful deploy
+  - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'operate-deploy' plugins/apex-scope-loop/scripts/smoke.sh` (smoke check `operate-deploy` in a temp repo: an unlanded plan → exit 3; `APEX_DEPLOY_CMD` unset → exit 2 naming it; HALT → exit 4; landed + stub deploy + correct ack → deploy recorded with ts, sha and exit, window opened for the plan's `window_days`; a wrong-sha or wrong-slug ack → refused; a failing deploy command → recorded, exit 1, no window opened; `status` and `--all status` show the window as day N of M; an `operate_deploy` ledger row is written when the dispatch dir exists)
+  - Threats: 1) an ack for one landed sha accepted for another; 2) a failed deploy opening a watch window
+  - Swarm: hierarchical 4 [builder, tester, reviewer, adversarial-reviewer]
+  - Paths: plugins/apex-scope-loop/skills/apex-execute/scripts/operate.sh, plugins/apex-scope-loop/skills/apex-execute/scripts/_lib.sh, plugins/apex-scope-loop/scripts/smoke.sh
+  - Blocked-by: phase-3.2
+
+- [ ] **Phase 3.4** [backend][tier:c] Implement `operate.sh PLAN monitor|ingest` and `--all monitor [--ingest]`: `http`, `cmd` and `runner` probes; signals carrying their slug or `repo`; first breach filed once (lessons for high, backlog otherwise) and repeats counted; repo-level `monitor.json` filed only under `operate:repo`; window close with `operated-clean` / `closed-with-breaches` and `open-at-close`; `backlog.sh --from operate` with plan-level line 0
+  - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'operate-loop' plugins/apex-scope-loop/scripts/smoke.sh` (smoke check `operate-loop`: a landed fixture plan declares one `http` check against a stub server on 127.0.0.1, one `cmd` check and one `runner` check; `--all monitor --ingest` run twice files the high breach once as a lesson tagged `operate:{slug},{metric}` and only counts the repeat; the low breach goes to the backlog; a probe that times out is `unmeasured`, never a pass; a malformed runner reply fails closed; every signal row carries the plan slug; a repo-level breach lands only in the backlog under `operate:repo`; a second landed plan's breach is credited to that plan; after the window is moved past its end the plan closes as `closed-with-breaches` with `open-at-close` listed, an `operate_window_closed` row is written and the plan is no longer measured; a plan with no Monitor section is skipped and `status` warns for a landed feature plan; `ledger.sh verify` exits 0)
+  - Threats: 1) a signal credited to the wrong plan; 2) a failed probe read as healthy or as 0; 3) runner or `note` text written unescaped into LESSONS.md headings; 4) an expired window still measured, or one with a live breach expiring silently
+  - Swarm: hierarchical 4 [builder, tester, reviewer, adversarial-reviewer]
+  - Paths: plugins/apex-scope-loop/skills/apex-execute/scripts/operate.sh, plugins/apex-scope-loop/skills/apex-execute/scripts/monitorlib.py, plugins/apex-scope-loop/skills/apex-execute/scripts/backlog.sh, plugins/apex-scope-loop/skills/apex-execute/scripts/_lib.sh, plugins/apex-scope-loop/scripts/smoke.sh
+  - Blocked-by: phase-3.3
+
+- [ ] **Phase 3.5** [docs] Add `/apex-scope-loop:operate`, document operate and the Monitor section (with metric-naming and tagging conventions, and the daily `/schedule` of `--all monitor --ingest`) in apex-execute SKILL.md, and claim `apex-scope-loop:operate/{slug}` in ADR-0001
+  - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q '^name: operate' plugins/apex-scope-loop/commands/operate.md && grep -q '^description:' plugins/apex-scope-loop/commands/operate.md && grep -q 'apex-scope-loop:operate/' plugins/apex-scope-loop/docs/adrs/0001-apex-scope-loop-contract.md && grep -q 'operate.sh' plugins/apex-scope-loop/skills/apex-execute/SKILL.md && grep -q 'window_days' plugins/apex-scope-loop/skills/apex-execute/SKILL.md && grep -q -- '--all monitor' plugins/apex-scope-loop/skills/apex-execute/SKILL.md`
   - Swarm: single [docs]
   - Paths: plugins/apex-scope-loop/commands/operate.md, plugins/apex-scope-loop/skills/apex-execute/SKILL.md, plugins/apex-scope-loop/docs/adrs/0001-apex-scope-loop-contract.md
-  - Blocked-by: phase-3.2
+  - Blocked-by: phase-3.4
 
 - [ ] **Gate 3→4** [gate:auto] Operation green in both plugins
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/compile.sh --check`
-  - Blocked-by: phase-3.3
+  - Blocked-by: phase-3.5
 
 ---
 
@@ -166,14 +188,14 @@ The three gate suites must exit 0 before any feature work. Two fail on main toda
   - Paths: plugins/apex-dispatch/scripts/report.sh, plugins/apex-dispatch/scripts/lib/report.py, plugins/apex-dispatch/scripts/smoke.sh, plugins/apex-dispatch/scripts/fixtures/**
   - Blocked-by: phase-4.1
 
-- [ ] **Phase 4.3** [backend] apex-console collects scope, intent, operate state and per-task cost (delegated / orchestrator / unattributed via report.py) into the plans API; update `docs/api.md`
-  - Acceptance: `bash plugins/apex-console/scripts/smoke.sh && grep -q '"scope"' plugins/apex-console/docs/api.md && grep -q '"operate"' plugins/apex-console/docs/api.md && grep -q 'orchestrator_usd' plugins/apex-console/docs/api.md && grep -q 'console-plans-payload' plugins/apex-console/scripts/smoke.sh` (smoke check `console-plans-payload`: on the per-task fixture, each task's `usd` equals `report.sh --per-task` delegated USD, `orchestrator_usd` matches or is null for `n/a`, a landed fixture plan carries its `operate` block, and a scope-less plan reports scope `feature`)
+- [ ] **Phase 4.3** [backend] apex-console collects scope, intent, operate state (deploys, watch window, per-check latest value, breach counts, unmeasured, outcome, open-at-close, repo-level checks) and per-task cost (delegated / orchestrator / unattributed via report.py) into the plans API; update `docs/api.md`
+  - Acceptance: `bash plugins/apex-console/scripts/smoke.sh && grep -q '"scope"' plugins/apex-console/docs/api.md && grep -q '"operate"' plugins/apex-console/docs/api.md && grep -q 'orchestrator_usd' plugins/apex-console/docs/api.md && grep -q 'console-plans-payload' plugins/apex-console/scripts/smoke.sh` (smoke check `console-plans-payload`: on the per-task fixture, each task's `usd` equals `report.sh --per-task` delegated USD, `orchestrator_usd` matches or is null for `n/a`, a landed fixture plan carries its `operate` block with `window` and `checks`, the payload lists watched plans and repo checks, and a scope-less plan reports scope `feature`)
   - Swarm: hierarchical 3 [builder, tester, reviewer]
   - Paths: plugins/apex-console/scripts/lib/ac_collect.py, plugins/apex-console/scripts/lib/ac_server.py, plugins/apex-console/docs/api.md, plugins/apex-console/scripts/smoke.sh
   - Blocked-by: phase-4.2
 
-- [ ] **Phase 4.4** [frontend] Console UI (read-only): scope badge and scope filter in the plans view, intent summary, an Operate panel per landed plan (deploy history, last monitor, signals, ingested lessons/backlog), and a per-task cost table with delegated / orchestrator / unattributed columns
-  - Acceptance: `bash plugins/apex-console/scripts/smoke.sh && grep -q 'console-ui-borrowings' plugins/apex-console/scripts/smoke.sh && ! grep -qiE "fetch\([^)]*operate[^)]*(deploy|monitor|ingest)" plugins/apex-console/ui/app.js` (smoke check `console-ui-borrowings`: the served page's app.js renders, from `demo.json`, a scope badge for each plan, a scope filter with bugfix/poc/feature, an Operate panel only for landed plans, a cost table whose orchestrator cell shows `n/a` when null, and aria labels on the new badge, filter and table; the UI calls no operate action endpoint)
+- [ ] **Phase 4.4** [frontend] Console UI (read-only): scope badge and scope filter in the plans view, intent summary, an Operate panel per landed plan (deploy history, watch window day N of M or its outcome, each check's latest value / threshold / breach count, `unmeasured` and `open-at-close` flags, ingested lessons/backlog), a Watched plans view (open windows plus repo-level checks), and a per-task cost table with delegated / orchestrator / unattributed columns
+  - Acceptance: `bash plugins/apex-console/scripts/smoke.sh && grep -q 'console-ui-borrowings' plugins/apex-console/scripts/smoke.sh && ! grep -qiE "fetch\([^)]*operate[^)]*(deploy|monitor|ingest)" plugins/apex-console/ui/app.js` (smoke check `console-ui-borrowings`: the served page's app.js renders, from `demo.json`, a scope badge for each plan, a scope filter with bugfix/poc/feature, an Operate panel only for landed plans, a Watched plans view listing open windows and repo checks, `unmeasured` rendered as such (never as a value), a cost table whose orchestrator cell shows `n/a` when null, and aria labels on the new badge, filter and table; the UI calls no operate action endpoint)
   - Threats: 1) `n/a` orchestrator cost rendered as $0.00; 2) monitor `note` text rendered as HTML instead of text
   - Swarm: hierarchical 4 [builder, tester, reviewer, docs]
   - Paths: plugins/apex-console/ui/app.js, plugins/apex-console/ui/app.css, plugins/apex-console/ui/index.html, plugins/apex-console/scripts/smoke.sh
@@ -216,7 +238,7 @@ The three gate suites must exit 0 before any feature work. Two fail on main toda
 - AI-DLC's nine scopes and silent auto-detection of scope from the request
 - Renaming SCOPE or adding a sixth authoring stage
 - Any new hook, in any plugin
-- Holding, rotating or reading deploy credentials; built-in deploy or monitor integrations (users supply the commands)
+- Holding, rotating or reading deploy credentials; built-in deploy integrations (users supply `APEX_DEPLOY_CMD`); probes beyond `http` GET, `cmd` and the user's runner; automatic rollback
 - Cross-vendor routing changes, codex mirror changes, decision-layer rubric changes
 - apex-decision-layer's failing smoke check (commit-hygiene shadow script), and every plugin not listed above
 - Console actions for operate: the console stays read-only for deploy, monitor and ingest
