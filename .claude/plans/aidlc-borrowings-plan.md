@@ -80,31 +80,31 @@ The three gate suites must exit 0 before any feature work. Two fail on main toda
 
 ### Phase 1 — Scope sizing
 
-- [ ] **Phase 1.1** [tests] Add baseline fixtures for the existing plans (validate + promote dry-run output recorded) and a smoke check that they keep validating
+- [x] **Phase 1.1** [tests] Add baseline fixtures for the existing plans (validate + promote dry-run output recorded) and a smoke check that they keep validating
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'existing-plans-baseline' plugins/apex-scope-loop/scripts/smoke.sh && python3 plugins/apex-scope-loop/skills/apex-execute/scripts/planlib.py validate .claude/plans/apex-dispatch-plan.md && python3 plugins/apex-scope-loop/skills/apex-execute/scripts/planlib.py validate .claude/plans/novel-plugins-suite-plan.md`
   - Swarm: single [tester]
   - Paths: plugins/apex-scope-loop/scripts/smoke.sh, plugins/apex-scope-loop/scripts/fixtures/**
   - Blocked-by: gate-0-1
 
-- [ ] **Phase 1.2** [backend] Add lean ADR/plan templates to both profiles and `start.sh --scope bugfix|poc|feature`
+- [x] **Phase 1.2** [backend] Add lean ADR/plan templates to both profiles and `start.sh --scope bugfix|poc|feature`
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q -- '--scope' plugins/apex-scope-loop/skills/apex-plan/scripts/start.sh && ls plugins/apex-scope-loop/skills/apex-plan/resources/templates/profiles/{generic,apex}/{adr,plan}-template-lean.md && grep -q 'scope-start' plugins/apex-scope-loop/scripts/smoke.sh` (smoke check `scope-start` scaffolds each scope in a temp repo, asserts the `**Scope**:` / `> **Scope**:` lines, defaults to feature with no flag, rejects an unknown scope, and diffs generic vs apex lean section headings)
   - Swarm: hierarchical 3 [builder, tester, reviewer]
   - Paths: plugins/apex-scope-loop/skills/apex-plan/scripts/start.sh, plugins/apex-scope-loop/skills/apex-plan/resources/templates/**, plugins/apex-scope-loop/scripts/smoke.sh
   - Blocked-by: phase-1.1
 
-- [ ] **Phase 1.3** [backend] Apply per-scope validation in `promote-to-loop.sh`
+- [x] **Phase 1.3** [backend] Apply per-scope validation in `promote-to-loop.sh`
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'scope-promote' plugins/apex-scope-loop/scripts/smoke.sh` (smoke check `scope-promote`: a 2-phase bugfix fixture promotes (exit 0); a 3-phase bugfix fixture exits 1 naming the phase limit; a 4-phase poc exits 1; a bugfix with `[tier:c]` promotes and prints a warning; a scope-less fixture promotes as before)
   - Swarm: hierarchical 3 [builder, tester, reviewer]
   - Paths: plugins/apex-scope-loop/skills/apex-plan/scripts/promote-to-loop.sh, plugins/apex-scope-loop/scripts/smoke.sh
   - Blocked-by: phase-1.2
 
-- [ ] **Phase 1.4** [docs] Document per-scope round sets in SKILL.md, `/apex-scope-loop:start` and both feedback-interview files
+- [x] **Phase 1.4** [docs] Document per-scope round sets in SKILL.md, `/apex-scope-loop:start` and both feedback-interview files
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'bugfix' plugins/apex-scope-loop/skills/apex-plan/SKILL.md && grep -q 'bugfix' plugins/apex-scope-loop/commands/start.md && grep -q 'bugfix' plugins/apex-scope-loop/skills/apex-plan/resources/templates/profiles/generic/feedback-interview.md && grep -q 'bugfix' plugins/apex-scope-loop/skills/apex-plan/resources/templates/profiles/apex/feedback-interview.md`
   - Swarm: single [docs]
   - Paths: plugins/apex-scope-loop/skills/apex-plan/SKILL.md, plugins/apex-scope-loop/commands/start.md, plugins/apex-scope-loop/skills/apex-plan/resources/templates/profiles/*/feedback-interview.md
   - Blocked-by: phase-1.3
 
-- [ ] **Gate 1→2** [gate:auto] Scope sizing green, existing plans unaffected
+- [x] **Gate 1→2** [gate:auto] Scope sizing green, existing plans unaffected
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && python3 plugins/apex-scope-loop/skills/apex-execute/scripts/planlib.py validate .claude/plans/apex-dispatch-plan.md && python3 plugins/apex-scope-loop/skills/apex-execute/scripts/planlib.py validate .claude/plans/novel-plugins-suite-plan.md`
   - Blocked-by: phase-1.4
 
@@ -112,19 +112,19 @@ The three gate suites must exit 0 before any feature work. Two fail on main toda
 
 ### Phase 2 — Ideation (round-0 intent)
 
-- [ ] **Phase 2.1** [backend] Add the intent round and `intent-template.md` to both profiles; `start.sh` writes `{slug}-intent.md` and seeds its Problem into the ADR's "Why this matters"
+- [x] **Phase 2.1** [backend] Add the intent round and `intent-template.md` to both profiles; `start.sh` writes `{slug}-intent.md` and seeds its Problem into the ADR's "Why this matters"
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'intent-seed' plugins/apex-scope-loop/scripts/smoke.sh` (smoke check `intent-seed`: with an intent file present, the scaffolded ADR's "Why this matters" contains its Problem text; with none and `--scope bugfix`, scaffolding succeeds; with none and `--scope feature`, start.sh prints a reminder and still succeeds)
   - Swarm: hierarchical 3 [builder, tester, reviewer]
   - Paths: plugins/apex-scope-loop/skills/apex-plan/scripts/start.sh, plugins/apex-scope-loop/skills/apex-plan/resources/templates/**, plugins/apex-scope-loop/skills/apex-plan/SKILL.md, plugins/apex-scope-loop/commands/start.md, plugins/apex-scope-loop/scripts/smoke.sh
   - Blocked-by: gate-1-2
 
-- [ ] **Phase 2.2** [backend] `status.sh` (apex-plan) prints Scope and whether an intent file exists
+- [x] **Phase 2.2** [backend] `status.sh` (apex-plan) prints Scope and whether an intent file exists
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'status-scope' plugins/apex-scope-loop/scripts/smoke.sh`
   - Swarm: single [builder]
   - Paths: plugins/apex-scope-loop/skills/apex-plan/scripts/status.sh, plugins/apex-scope-loop/scripts/smoke.sh
   - Blocked-by: phase-2.1
 
-- [ ] **Gate 2→3** [gate:auto] Ideation green
+- [x] **Gate 2→3** [gate:auto] Ideation green
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh`
   - Blocked-by: phase-2.2
 
@@ -147,9 +147,9 @@ Per the ADR amendment of 2026-10-18 (R5–R5d): each plan declares its own monit
   - Paths: plugins/apex-scope-loop/skills/apex-execute/scripts/monitorlib.py, plugins/apex-scope-loop/skills/apex-plan/scripts/promote-to-loop.sh, plugins/apex-scope-loop/skills/apex-plan/resources/templates/**, plugins/apex-scope-loop/skills/apex-plan/SKILL.md, plugins/apex-scope-loop/scripts/smoke.sh
   - Blocked-by: phase-3.1
 
-- [ ] **Phase 3.3** [backend][tier:c] Implement `operate.sh PLAN deploy|status` and `operate.sh --all status`: the ack bound to `{slug}@{landed sha}`, deploy history, and the watch window opened on a successful deploy
-  - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'operate-deploy' plugins/apex-scope-loop/scripts/smoke.sh` (smoke check `operate-deploy` in a temp repo: an unlanded plan → exit 3; `APEX_DEPLOY_CMD` unset → exit 2 naming it; HALT → exit 4; landed + stub deploy + correct ack → deploy recorded with ts, sha and exit, window opened for the plan's `window_days`; a wrong-sha or wrong-slug ack → refused; a failing deploy command → recorded, exit 1, no window opened; `status` and `--all status` show the window as day N of M; an `operate_deploy` ledger row is written when the dispatch dir exists)
-  - Threats: 1) an ack for one landed sha accepted for another; 2) a failed deploy opening a watch window
+- [ ] **Phase 3.3** [backend][tier:c] Implement `operate.sh PLAN deploy|status` and `operate.sh --all status`: the ack typed at the controlling terminal and bound to `{slug}@{landed sha}`, deploy history, and the watch window opened on a successful deploy
+  - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q 'operate-deploy' plugins/apex-scope-loop/scripts/smoke.sh` (smoke check `operate-deploy` in a temp repo: an unlanded plan → exit 3; `APEX_DEPLOY_CMD` unset → exit 2 naming it; HALT → exit 4; landed + stub deploy + correct ack → deploy recorded with ts, sha and exit, window opened for the plan's `window_days`; a wrong-sha or wrong-slug ack → refused; no controlling terminal → refused with a named reason even when `APEX_OPERATE_ACK` holds the correct `{slug}@{sha}`; the ack is read from a pseudo-terminal driven by `script`, with no env var or file test seam; a failing deploy command → recorded, exit 1, no window opened; `status` and `--all status` show the window as day N of M; an `operate_deploy` ledger row is written when the dispatch dir exists)
+  - Threats: 1) an ack for one landed sha accepted for another; 2) a failed deploy opening a watch window; 3) an agent acking its own deploy after land (no ACTIVE lock, so the Phase 3.1 env guard is inert): only a terminal ack counts
   - Swarm: hierarchical 4 [builder, tester, reviewer, adversarial-reviewer]
   - Paths: plugins/apex-scope-loop/skills/apex-execute/scripts/operate.sh, plugins/apex-scope-loop/skills/apex-execute/scripts/_lib.sh, plugins/apex-scope-loop/scripts/smoke.sh
   - Blocked-by: phase-3.2
