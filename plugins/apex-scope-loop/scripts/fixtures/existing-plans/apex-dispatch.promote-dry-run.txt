@@ -1,0 +1,1 @@
+VALIDATION FAILED: Plan has no unchecked tasks (- [ ] ...). Either all tasks are checked or the plan is empty.

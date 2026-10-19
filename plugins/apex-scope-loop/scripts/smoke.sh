@@ -2096,6 +2096,54 @@ RC63=0; O63="$(cd "$R63" && "$EX/risk-tier.sh" plans/v-plan.md 1 --no-record --s
 [ "$(cksum <"$CP63")" = "$SUM63" ] && [ ! -e "$SB63/knobs/scope-loop.json" ] || fail "a replay recorded a tier or wrote a knobs file"
 ok "replay: --no-record --since S --head H classifies exactly a past diff; --knobs replays it under a proposal; both need --no-record; an invalid proposal exits 3; nothing recorded"
 
+# 64. existing-plans-baseline (Phase 1.1): the two plans with no Scope line today,
+#     apex-dispatch-plan.md and novel-plugins-suite-plan.md, keep validating, counting
+#     and promoting exactly as recorded in scripts/fixtures/existing-plans/. Later
+#     phases add a Scope: line (bugfix/poc/feature); a change that alters these outputs
+#     turns this check red. "Promote dry-run" is defined here as: promote-to-loop.sh run
+#     for real inside a throwaway fixture repository under $SMOKE_TMP, built the way check
+#     29 builds its repository (git init, the fixture plan under .claude/plans/, a minimal
+#     ADR stub with **Status**: Accepted under .claude/tasks/). promote-to-loop.sh has no
+#     dry-run flag, so the throwaway repository is the sandbox; the real checkout's git
+#     status must be identical before and after. Output is normalised before comparison:
+#     temp and checkout paths, 12+ digit hex hashes, ISO timestamps, and the Route dry-run
+#     line (it depends on whether apex-dispatch is installed beside this plugin). Both
+#     plans are fully checked off today, so promote refuses them at the "no unchecked
+#     tasks" gate; that refusal (exit 1, recorded output) is the baseline.
+EB_EPD="$PLUGIN_ROOT/scripts/fixtures/existing-plans"
+EB_ROOT="$(git -C "$PLUGIN_ROOT" rev-parse --show-toplevel)"
+EB_STATUS="$(git -C "$EB_ROOT" status --porcelain)"
+# same_as_recorded FILE ACTUAL LABEL: ACTUAL must equal the recorded FILE byte for byte.
+same_as_recorded() {
+  local out
+  out="$(diff -u "$1" "$2" 2>&1)" || fail "existing-plans-baseline: $3 differs from $(basename "$1"): $(printf '%s' "$out" | head -30)"
+}
+for EB_NAME in apex-dispatch novel-plugins-suite; do
+  EB_PLAN="$EB_EPD/$EB_NAME-plan.md"; EB_REC="$EB_EPD/$EB_NAME"
+  [ -f "$EB_PLAN" ] || fail "existing-plans-baseline: fixture $EB_NAME-plan.md is missing"
+  EB_V="$(python3 "$EX/planlib.py" validate "$EB_PLAN" 2>&1)" || fail "existing-plans-baseline: $EB_NAME no longer validates: $EB_V"
+  [ -z "$EB_V" ] || fail "existing-plans-baseline: $EB_NAME validate printed output: $EB_V"
+  same_as_recorded "$EB_REC.validate.txt" /dev/null "validate output for $EB_NAME"
+  python3 "$EX/planlib.py" counts "$EB_PLAN" >"$SMOKE_TMP/$EB_NAME.counts" 2>&1 || fail "existing-plans-baseline: planlib counts failed on $EB_NAME"
+  same_as_recorded "$EB_REC.counts.txt" "$SMOKE_TMP/$EB_NAME.counts" "planlib counts for $EB_NAME"
+  python3 "$EX/planlib.py" remaining "$EB_PLAN" >"$SMOKE_TMP/$EB_NAME.remaining" 2>&1 || fail "existing-plans-baseline: planlib remaining failed on $EB_NAME"
+  same_as_recorded "$EB_REC.remaining.txt" "$SMOKE_TMP/$EB_NAME.remaining" "planlib remaining for $EB_NAME"
+  EB_PR="$SMOKE_TMP/existing-$EB_NAME"; mkdir -p "$EB_PR/.claude/tasks" "$EB_PR/.claude/plans"; git init -q -b main "$EB_PR"
+  printf '# ADR\n**Status**: Accepted\n' >"$EB_PR/.claude/tasks/$EB_NAME-adr.md"
+  cp "$EB_PLAN" "$EB_PR/.claude/plans/$EB_NAME-plan.md"
+  git -C "$EB_PR" add -A; git -C "$EB_PR" commit -qm "$EB_NAME baseline"
+  EB_RC=0; EB_OUT="$(cd "$EB_PR" && APEX_DISPATCH_MODE= APEX_GIBSON=0 APEX_MEMORY_CMD= "$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh" "$EB_NAME" 2>&1)" || EB_RC=$?
+  [ "$EB_RC" = 1 ] || fail "existing-plans-baseline: promote-to-loop.sh exited $EB_RC for $EB_NAME (baseline is 1): $EB_OUT"
+  EB_REAL_PR="$(cd "$EB_PR" && pwd -P)"
+  printf '%s\n' "$EB_OUT" | sed -e "s#$EB_REAL_PR#<FIXTURE>#g" -e "s#$EB_PR#<FIXTURE>#g" -e "s#$EB_ROOT#<CHECKOUT>#g" -e "s#$SMOKE_TMP#<SMOKE_TMP>#g" \
+    -e 's/[0-9a-f]\{12,\}/<HASH>/g' -e 's/[0-9]\{4\}-[0-9][0-9]-[0-9][0-9][T ][0-9:.]*Z\{0,1\}/<TIMESTAMP>/g' \
+    -e 's/^Route dry-run: .*/Route dry-run: <ROUTE>/' >"$SMOKE_TMP/$EB_NAME.promote-dry-run.txt"
+  same_as_recorded "$EB_REC.promote-dry-run.txt" "$SMOKE_TMP/$EB_NAME.promote-dry-run.txt" "promote dry-run output for $EB_NAME"
+  [ -z "$(git -C "$EB_PR" status --porcelain)" ] && [ ! -e "$EB_PR/.dev-plan-state" ] || fail "existing-plans-baseline: the promote dry-run wrote into its fixture repository ($EB_NAME)"
+done
+[ "$(git -C "$EB_ROOT" status --porcelain)" = "$EB_STATUS" ] || fail "existing-plans-baseline: the promote dry-runs changed the checkout's git status"
+ok "existing-plans-baseline: both plans without a Scope line validate, count and remain as recorded; promote-to-loop.sh refuses them today at the no-unchecked-tasks gate (exit 1, recorded output); the checkout is unchanged"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2155,4 +2203,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 65/65 checks"
+echo "smoke passed: 66/66 checks"
