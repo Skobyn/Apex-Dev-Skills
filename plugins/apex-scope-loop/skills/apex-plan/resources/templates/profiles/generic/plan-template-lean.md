@@ -48,7 +48,7 @@ Trusted, non-malicious agents and operators. Guard against accidents and realist
 ### Phase 2 — Complete
 
 - [ ] **Phase 2.1** [docs] Flip ADR status to `Implemented`
-  - Acceptance: `grep -q '^**Status**: Implemented' .claude/tasks/{{SLUG}}-adr.md`
+  - Acceptance: `grep -qF '**Status**: Implemented' .claude/tasks/{{SLUG}}-adr.md`
   - Swarm: single [coder]
   - Blocked-by: gate-1-2
 

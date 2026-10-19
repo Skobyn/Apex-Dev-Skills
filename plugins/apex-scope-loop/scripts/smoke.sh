@@ -2144,12 +2144,18 @@ done
 [ "$(git -C "$EB_ROOT" status --porcelain)" = "$EB_STATUS" ] || fail "existing-plans-baseline: the promote dry-runs changed the checkout's git status"
 ok "existing-plans-baseline: both plans without a Scope line validate, count and remain as recorded; promote-to-loop.sh refuses them today at the no-unchecked-tasks gate (exit 1, recorded output); the checkout is unchanged"
 
-# scope-start: start.sh --scope bugfix|poc|feature writes the Scope lines and picks the matching template.
+# 65. scope-start: start.sh --scope bugfix|poc|feature writes the Scope lines and picks the matching template.
 #     No flag means feature (written explicitly). An unknown scope is rejected and writes nothing, in
 #     several argument orders (the adversarial neighbour: a bad value next to --force). The generic and
-#     apex lean templates have the same section headings, and every scaffolded plan passes planlib validate.
+#     apex lean templates have the same section headings, and every scaffolded plan passes planlib validate
+#     and promote-to-loop.sh's gate-shape check for its human and partner gates (its check 8, extracted
+#     and run as is: a gate that promote would refuse is a scaffold nobody can promote).
 SS="$PLUGIN_ROOT/skills/apex-plan/scripts/start.sh"; SS_TMP="$SMOKE_TMP/scope-start"; SS_TPL="$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles"
 mkdir -p "$SS_TMP" || fail "scope-start: cannot create the temp dir"
+# promote-to-loop.sh check 8 is the python block between its "<<'PY'" line and the closing PY; run it unchanged
+SS_PROMOTE="$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh"
+SS_GATE_PY="$(sed -n "/<<'PY' || fail \"Gate task/,/^PY\$/p" "$SS_PROMOTE" | sed '1d;$d')"
+[[ "$SS_GATE_PY" == *"should require approval phrase"* ]] || fail "scope-start: cannot extract promote-to-loop.sh's gate-shape check"
 for SS_PROF in generic apex; do
   SS_R="$SS_TMP/$SS_PROF"; mkdir -p "$SS_R" && git -C "$SS_R" init -q -b main || fail "scope-start: cannot init the temp repo"
   for SS_SC in bugfix poc feature; do
@@ -2159,6 +2165,17 @@ for SS_PROF in generic apex; do
     # the full ADR template carries a literal {{algorithm_name}} sample today; only the known placeholders must be gone
     ! grep -qE '\{\{(SLUG|TITLE|SCOPE|DATE|NNNN|[A-Z_]*EMAIL|TARGET_DATE|GOAL_ONE_SENTENCE|BOUNDED_CONTEXTS)\}\}' "$SS_R/.claude/tasks/s-$SS_SC-adr.md" "$SS_R/.claude/plans/s-$SS_SC-plan.md" || fail "scope-start: $SS_PROF $SS_SC left an unsubstituted placeholder"
     python3 "$EX/planlib.py" validate "$SS_R/.claude/plans/s-$SS_SC-plan.md" >/dev/null 2>&1 || fail "scope-start: $SS_PROF $SS_SC plan does not pass planlib validate"
+    # [gate:auto] lines are left out: the lean "{test command}" and the full template's prose Gate 4->5 are
+    # placeholders the author replaces before promoting; the human and partner gates must pass untouched
+    SS_GOUT="$(python3 -c "$SS_GATE_PY" "$EX" "$SS_R/.claude/plans/s-$SS_SC-plan.md" 2>&1 || true)"
+    SS_GBAD="$(grep '^  line ' <<<"$SS_GOUT" | grep -v '\[gate:auto\]' || true)"
+    [ -z "$SS_GBAD" ] || fail "scope-start: $SS_PROF $SS_SC plan has a gate promote-to-loop.sh would refuse: $SS_GBAD"
+    # and the human ship gate itself, stated directly (here-string, not a pipe into grep -q: L-003)
+    SS_SHIP="$(grep -A1 '\[gate:human\]' "$SS_R/.claude/plans/s-$SS_SC-plan.md" | grep 'Acceptance:')"
+    [ -n "$SS_SHIP" ] || fail "scope-start: $SS_PROF $SS_SC plan has no [gate:human] Acceptance"
+    while IFS= read -r SS_LINE; do
+      grep -qiE 'approve|user types' <<<"$SS_LINE" || fail "scope-start: $SS_PROF $SS_SC [gate:human] Acceptance has neither 'approve' nor 'user types': $SS_LINE"
+    done <<<"$SS_SHIP"
   done
   # lean means lean: no Pseudocode, Architecture, Data Model or API sections; feature keeps them
   SS_L="$(cat "$SS_R/.claude/tasks/s-bugfix-adr.md" "$SS_R/.claude/tasks/s-poc-adr.md")"
@@ -2182,7 +2199,7 @@ done
 SS_G="$(grep -h '^#' "$SS_TPL/generic/adr-template-lean.md" "$SS_TPL/generic/plan-template-lean.md")"
 SS_A="$(grep -h '^#' "$SS_TPL/apex/adr-template-lean.md" "$SS_TPL/apex/plan-template-lean.md")"
 [ -n "$SS_G" ] && [ "$SS_G" = "$SS_A" ] || fail "scope-start: generic and apex lean templates have different section headings"
-ok "scope-start: --scope bugfix|poc|feature writes **Scope**: and > **Scope**: lines and picks the lean or full template in both profiles; no flag is feature; an unknown scope (alone, with --force, empty) is refused and writes nothing; lean headings match across profiles; every scaffolded plan validates"
+ok "scope-start: --scope bugfix|poc|feature writes **Scope**: and > **Scope**: lines and picks the lean or full template in both profiles; no flag is feature; an unknown scope (alone, with --force, empty) is refused and writes nothing; lean headings match across profiles; every scaffolded plan validates and its human and partner gates pass promote's gate-shape check"
 
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the

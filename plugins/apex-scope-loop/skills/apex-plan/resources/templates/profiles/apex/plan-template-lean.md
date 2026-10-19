@@ -48,12 +48,12 @@ Trusted, non-malicious agents and operators. Guard against accidents and realist
 ### Phase 2 — Complete
 
 - [ ] **Phase 2.1** [docs] Flip ADR status to `Implemented`
-  - Acceptance: `grep -q '^**Status**: Implemented' .claude/tasks/{{SLUG}}-adr.md`
+  - Acceptance: `grep -qF '**Status**: Implemented' .claude/tasks/{{SLUG}}-adr.md`
   - Swarm: single [coder]
   - Blocked-by: gate-1-2
 
 - [ ] **Gate 2→done** [gate:human] Ship sign-off
-  - Acceptance: inbox item `kind=phase-gate-approval gate=done` consumed by the owner
+  - Acceptance: user types `approve ship`
   - Blocked-by: phase-2.1
 
 ---

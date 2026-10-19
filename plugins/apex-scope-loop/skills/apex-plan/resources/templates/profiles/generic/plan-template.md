@@ -209,7 +209,7 @@ Integration, deployment, monitoring, docs. The "make it real" phase.
   - Blocked-by: phase-5.1
 
 - [ ] **Phase 5.4** [docs] Flip ADR status to `Implemented`
-  - Acceptance: `grep -q '^**Status**: Implemented' .claude/tasks/{{SLUG}}-adr.md`
+  - Acceptance: `grep -qF '**Status**: Implemented' .claude/tasks/{{SLUG}}-adr.md`
   - Swarm: single [coder]
   - Blocked-by: phase-5.1, phase-5.2, phase-5.3
 
