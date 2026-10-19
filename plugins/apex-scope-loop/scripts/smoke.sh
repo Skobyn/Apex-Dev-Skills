@@ -2144,6 +2144,46 @@ done
 [ "$(git -C "$EB_ROOT" status --porcelain)" = "$EB_STATUS" ] || fail "existing-plans-baseline: the promote dry-runs changed the checkout's git status"
 ok "existing-plans-baseline: both plans without a Scope line validate, count and remain as recorded; promote-to-loop.sh refuses them today at the no-unchecked-tasks gate (exit 1, recorded output); the checkout is unchanged"
 
+# scope-start: start.sh --scope bugfix|poc|feature writes the Scope lines and picks the matching template.
+#     No flag means feature (written explicitly). An unknown scope is rejected and writes nothing, in
+#     several argument orders (the adversarial neighbour: a bad value next to --force). The generic and
+#     apex lean templates have the same section headings, and every scaffolded plan passes planlib validate.
+SS="$PLUGIN_ROOT/skills/apex-plan/scripts/start.sh"; SS_TMP="$SMOKE_TMP/scope-start"; SS_TPL="$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles"
+mkdir -p "$SS_TMP" || fail "scope-start: cannot create the temp dir"
+for SS_PROF in generic apex; do
+  SS_R="$SS_TMP/$SS_PROF"; mkdir -p "$SS_R" && git -C "$SS_R" init -q -b main || fail "scope-start: cannot init the temp repo"
+  for SS_SC in bugfix poc feature; do
+    (cd "$SS_R" && APEX_PLAN_PROFILE="$SS_PROF" bash "$SS" "s-$SS_SC" "T" --scope "$SS_SC" >/dev/null) || fail "scope-start: $SS_PROF --scope $SS_SC failed"
+    grep -qx "\*\*Scope\*\*: $SS_SC" "$SS_R/.claude/tasks/s-$SS_SC-adr.md" || fail "scope-start: $SS_PROF $SS_SC ADR has no **Scope**: line"
+    grep -qx "> \*\*Scope\*\*: $SS_SC" "$SS_R/.claude/plans/s-$SS_SC-plan.md" || fail "scope-start: $SS_PROF $SS_SC plan has no > **Scope**: line"
+    # the full ADR template carries a literal {{algorithm_name}} sample today; only the known placeholders must be gone
+    ! grep -qE '\{\{(SLUG|TITLE|SCOPE|DATE|NNNN|[A-Z_]*EMAIL|TARGET_DATE|GOAL_ONE_SENTENCE|BOUNDED_CONTEXTS)\}\}' "$SS_R/.claude/tasks/s-$SS_SC-adr.md" "$SS_R/.claude/plans/s-$SS_SC-plan.md" || fail "scope-start: $SS_PROF $SS_SC left an unsubstituted placeholder"
+    python3 "$EX/planlib.py" validate "$SS_R/.claude/plans/s-$SS_SC-plan.md" >/dev/null 2>&1 || fail "scope-start: $SS_PROF $SS_SC plan does not pass planlib validate"
+  done
+  # lean means lean: no Pseudocode, Architecture, Data Model or API sections; feature keeps them
+  SS_L="$(cat "$SS_R/.claude/tasks/s-bugfix-adr.md" "$SS_R/.claude/tasks/s-poc-adr.md")"
+  ! grep -qE '^#+ (Pseudocode|Architecture|Data Model|API Surface)' <<<"$SS_L" || fail "scope-start: $SS_PROF lean ADR still has a full-template section"
+  grep -qE '^### Pseudocode' "$SS_R/.claude/tasks/s-feature-adr.md" || fail "scope-start: $SS_PROF feature ADR lost its Pseudocode section"
+  [ "$(grep -c '^- \[ \] \*\*Phase' "$SS_R/.claude/plans/s-bugfix-plan.md")" -le 2 ] || fail "scope-start: $SS_PROF lean plan scaffolds more than 2 phase tasks"
+  # no flag = feature: identical to --scope feature apart from the slug and the ADR number on line 1
+  (cd "$SS_R" && APEX_PLAN_PROFILE="$SS_PROF" bash "$SS" "s-none" "T" >/dev/null) || fail "scope-start: $SS_PROF start.sh without --scope failed"
+  [ "$(sed 's/s-none/s-feature/g;1d' "$SS_R/.claude/tasks/s-none-adr.md")" = "$(sed 1d "$SS_R/.claude/tasks/s-feature-adr.md")" ] || fail "scope-start: $SS_PROF no-flag ADR differs from --scope feature"
+  [ "$(sed 's/s-none/s-feature/g' "$SS_R/.claude/plans/s-none-plan.md")" = "$(cat "$SS_R/.claude/plans/s-feature-plan.md")" ] || fail "scope-start: $SS_PROF no-flag plan differs from --scope feature"
+  grep -qx '\*\*Scope\*\*: feature' "$SS_R/.claude/tasks/s-none-adr.md" && grep -qx '> \*\*Scope\*\*: feature' "$SS_R/.claude/plans/s-none-plan.md" || fail "scope-start: $SS_PROF no flag did not write Scope: feature"
+  # unknown scope: non-zero, a clear message, nothing written
+  for SS_BAD in "--scope epic" "--force --scope epic" "--scope epic --force" "--scope="; do
+    SS_B="$SS_TMP/bad-$SS_PROF"; rm -rf "${SS_B:?}"; mkdir -p "$SS_B" && git -C "$SS_B" init -q -b main || fail "scope-start: cannot init the bad-scope repo"
+    # shellcheck disable=SC2086
+    SS_OUT="$(cd "$SS_B" && APEX_PLAN_PROFILE="$SS_PROF" bash "$SS" s-bad "T" $SS_BAD 2>&1)" && fail "scope-start: '$SS_BAD' was accepted"
+    has 'unknown scope' "$SS_OUT" || fail "scope-start: '$SS_BAD' gave no clear message: $SS_OUT"
+    [ -z "$(find "$SS_B" -path "$SS_B/.git" -prune -o -type f -print)" ] || fail "scope-start: '$SS_BAD' wrote files"
+  done
+done
+SS_G="$(grep -h '^#' "$SS_TPL/generic/adr-template-lean.md" "$SS_TPL/generic/plan-template-lean.md")"
+SS_A="$(grep -h '^#' "$SS_TPL/apex/adr-template-lean.md" "$SS_TPL/apex/plan-template-lean.md")"
+[ -n "$SS_G" ] && [ "$SS_G" = "$SS_A" ] || fail "scope-start: generic and apex lean templates have different section headings"
+ok "scope-start: --scope bugfix|poc|feature writes **Scope**: and > **Scope**: lines and picks the lean or full template in both profiles; no flag is feature; an unknown scope (alone, with --force, empty) is refused and writes nothing; lean headings match across profiles; every scaffolded plan validates"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2203,4 +2243,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 66/66 checks"
+echo "smoke passed: 67/67 checks"

@@ -2,6 +2,7 @@
 
 > **ADR**: [`.claude/tasks/{{SLUG}}-adr.md`](../tasks/{{SLUG}}-adr.md)
 > **Goal**: {{GOAL_ONE_SENTENCE}}
+> **Scope**: {{SCOPE}}
 > **Owner**: {{AUTHOR_EMAIL}}
 > **Started**: {{DATE}}
 > **Target**: {{TARGET_DATE}}
