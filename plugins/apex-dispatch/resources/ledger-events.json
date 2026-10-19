@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "The apex-dispatch ledger event schema. ledger.sh append validates each row's caller-supplied fields against `required` (field -> type) and `enums`, then stamps the fields in `stamped`. Events marked `provenance` are written in-process only (route.py, hooks, shims importing scripts/lib/ledger.py); the ledger.sh CLI refuses them. Types: string, integer, number, boolean, object, array; a trailing '|null' allows null. Extra fields are kept as given.",
+  "description": "The apex-dispatch ledger event schema. ledger.sh append validates each row's caller-supplied fields against `required` (field -> type), `one_of` (a list of {field: type} groups: exactly one field of each group is present, with its type), `enums` (the allowed values of a field, when present) and `items` (the type of every element of an array field), then stamps the fields in `stamped`. An event declares no other key. Events marked `provenance` are written in-process only (route.py, hooks, shims importing scripts/lib/ledger.py); the ledger.sh CLI refuses them. Types: string, integer, number (finite), boolean, object, array, count (an integer >= 0), sha (a full 40- or 64-hex lowercase commit SHA), slug (kebab-case [a-z0-9]+(-[a-z0-9]+)*), id (1-128 of [A-Za-z0-9_.:-], starting with a letter or digit); a trailing '|null' allows null. Extra fields are kept as given.",
   "sources": ["hook", "shim", "cli"],
   "stamped": ["seq", "event", "ts", "source", "route_id", "head_sha", "route_mode", "doctor_profile", "prev_hash", "hash"],
   "route_modes": ["baseline", "table", "decision", "shadow", "escalated"],
@@ -75,6 +75,22 @@
     "decision_shadow": {
       "description": "An uncalibrated decision-layer answer logged beside the deterministic choice.",
       "required": {"rubric": "string", "deterministic_choice": "string", "decision_choice": "string|null"}
+    },
+    "operate_deploy": {
+      "description": "apex-scope-loop operate.sh deploy ran $APEX_DEPLOY_CMD for a landed plan after the human ack (APEX_OPERATE_ACK=<slug>@<landed sha>); exit_code is the command's exit status.",
+      "required": {"slug": "slug", "landed_sha": "sha", "exit_code": "integer"}
+    },
+    "operate_signal": {
+      "description": "apex-scope-loop operate.sh monitor/ingest: one validated measurement of a declared check, for exactly one of slug (a plan's check) or repo: true (a repo-level check). value is null when the probe was unmeasured (timeout, bad output): never 0 and never a string. sink: where ingest filed the breach (lessons, backlog), or counted (a repeat of a filed breach, or no breach).",
+      "required": {"check_id": "id", "metric": "id", "value": "number|null", "threshold": "number", "severity": "string", "breach_count": "count", "sink": "string"},
+      "one_of": [{"slug": "slug", "repo": "boolean"}],
+      "enums": {"severity": ["high", "medium", "low"], "sink": ["lessons", "backlog", "counted"], "repo": [true]}
+    },
+    "operate_window_closed": {
+      "description": "apex-scope-loop operate.sh: a plan's watch window ended and measurement of it stops. open_at_close lists the ids of the checks still breaching on the last run.",
+      "required": {"slug": "slug", "outcome": "string", "breaches": "count", "open_at_close": "array"},
+      "enums": {"outcome": ["operated-clean", "closed-with-breaches"]},
+      "items": {"open_at_close": "id"}
     }
   }
 }

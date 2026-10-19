@@ -73,6 +73,11 @@ TAMPER_ENV = {
     "APEX_DECIDE_JEV_BASE": None,
     "APEX_DECIDE_FRONTIER_BASE": None,                   # apex-decision-layer 0.2.0's frontier test override
     "APEX_DECISION_LAYER_ROOT": None,
+    # apex-scope-loop operate.sh (aidlc-borrowings ADR R5/R6): the human's deploy ack
+    # (<slug>@<landed sha>) and the user-owned deploy and monitor commands.
+    "APEX_OPERATE_ACK": None,
+    "APEX_DEPLOY_CMD": None,
+    "APEX_MONITOR_CMD": None,
 }
 # Layer A bypass families: denied anywhere in a command.
 BYPASS_PREFIXES = ("--dangerously-", "--yolo", "--always-approve", "--full-auto")

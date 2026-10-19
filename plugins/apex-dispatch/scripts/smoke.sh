@@ -2794,5 +2794,127 @@ RUNMD="$PLUGIN_ROOT/commands/run.md"
   || fail "a script still resolves apex-scope-loop by a first-match glob"
 pass "macOS field fixes: verdict parser (shared indent, 'APPROVE. nits', CommonMark fences, unclosed fence, trace on the record, transcript fallback incl. a hand-back tool call); sibling resolver takes the highest cached version (py and bash), env override, --min names the installs; no bash-3.2-breaking heredoc; run.md extracts the plan path"
 
+# 88. operate-ledger-events (aidlc-borrowings Phase 3.1): operate_deploy, operate_signal and operate_window_closed are
+#     non-provenance and append through the ledger.sh CLI, the chain then verifies; every required field, the
+#     slug|repo exactly-one rule, the enums and the types (exit_code/breach_count integers, landed_sha a full hex SHA,
+#     ids without spaces or newlines, finite numbers) are enforced; an unmeasured value is stored as null (never 0,
+#     never the string "n/a"); provenance events stay CLI-refused; a malformed ledger line fails verify and blocks
+#     appends instead of being skipped. pre-bash (the real hook, under an ACTIVE lock only, like every other switch)
+#     refuses setting, exporting or unsetting APEX_OPERATE_ACK, APEX_DEPLOY_CMD and APEX_MONITOR_CMD; a longer name
+#     that merely contains one, and a mention in echo/grep/printenv, are allowed
+LO="$WORK/lo"; mkdir -p "$LO"
+OPD='{"slug":"aidlc-borrowings","landed_sha":"'"$HEAD_FX"'","exit_code":0}'
+OPS='{"slug":"aidlc-borrowings","check_id":"api-latency","metric":"latency_ms","value":812.5,"threshold":500,"severity":"high","breach_count":1,"sink":"lessons"}'
+OPR='{"repo":true,"check_id":"disk-free","metric":"free_gb","value":null,"threshold":5,"severity":"low","breach_count":0,"sink":"counted"}'
+OPW='{"slug":"aidlc-borrowings","outcome":"closed-with-breaches","breaches":2,"open_at_close":["api-latency"]}'
+OPZ='{"slug":"aidlc-borrowings","check_id":"api-status","metric":"status","value":0,"threshold":200,"severity":"medium","breach_count":3,"sink":"counted"}'
+for ej in "operate_deploy|$OPD" "operate_signal|$OPS" "operate_signal|$OPR" "operate_window_closed|$OPW" "operate_signal|$OPZ"; do
+  ev="${ej%%|*}"; js="${ej#*|}"
+  O="$(lg append "$ev" "$js" --state "$LO" --source cli)" || fail "ledger.sh append refused a valid $ev row: $O"
+  has '^LEDGER_ROW: ' "$O" || fail "ledger.sh append $ev printed no LEDGER_ROW: $O"
+done
+O="$(lg verify --state "$LO")" || fail "ledger verify failed after the operate rows: $O"
+has '^ledger verify: OK — 5 rows, chain intact' "$O" || fail "ledger verify did not pass the 5 operate rows: $O"
+python3 - "$LO/dispatch-shadow/ledger.jsonl" "$LO/dispatch/ledger.jsonl" <<'PY' || fail "operate rows were not stored as given (an unmeasured value must be null, a measured 0 must stay 0)"
+import json, os, sys
+p = next(x for x in sys.argv[1:] if os.path.exists(x))
+rows = [json.loads(l) for l in open(p)]
+assert [r["event"] for r in rows] == ["operate_deploy", "operate_signal", "operate_signal", "operate_window_closed", "operate_signal"], rows
+assert all(r["source"] == "cli" for r in rows)
+assert rows[2]["repo"] is True and "slug" not in rows[2]
+assert "value" in rows[2] and rows[2]["value"] is None, rows[2]          # unmeasured: null, not 0, not "n/a"
+assert '"value":null' in open(p).read().split("\n")[2]
+assert rows[4]["value"] == 0 and type(rows[4]["value"]) is int           # a real 0 is a measurement, kept distinct
+assert rows[1]["value"] == 812.5 and rows[3]["open_at_close"] == ["api-latency"] and rows[0]["exit_code"] == 0
+PY
+# every required field of each event, taken from the schema itself, is refused when missing
+python3 - "$PLUGIN_ROOT/resources/ledger-events.json" "$OPD" "$OPS" "$OPW" >"$WORK/opmiss.txt" <<'PY' || fail "could not derive the operate missing-field cases"
+import json, sys
+s = json.load(open(sys.argv[1]))["events"]
+for ev, js in zip(("operate_deploy", "operate_signal", "operate_window_closed"), sys.argv[2:]):
+    assert not s[ev].get("provenance"), ev + " is provenance"
+    d = json.loads(js)
+    assert set(s[ev]["required"]) <= set(d), ev
+    for f in s[ev]["required"]:
+        print("%s\t%s\t%s" % (ev, f, json.dumps({k: v for k, v in d.items() if k != f})))
+PY
+[ "$(wc -l <"$WORK/opmiss.txt")" -ge 14 ] || fail "fewer than 14 operate required fields in the schema"
+while IFS=$'\t' read -r ev f js; do
+  if lg append "$ev" "$js" --state "$LO" --source cli >"$WORK/lg.out"; then fail "ledger.sh accepted $ev without $f"; fi
+  grep -q -- "missing required field $f" "$WORK/lg.out" || fail "$ev without $f refused without naming it: $(cat "$WORK/lg.out")"
+done <"$WORK/opmiss.txt"
+SIG='"check_id":"c1","metric":"m","threshold":2,"severity":"high","breach_count":0,"sink":"counted"'
+for bad in "operate_signal|{\"value\":1,$SIG}|exactly one of slug|repo is required (got none)" \
+           "operate_signal|{\"slug\":\"p\",\"repo\":true,\"value\":1,$SIG}|exactly one of slug|repo is required (got slug|repo)" \
+           "operate_signal|{\"repo\":false,\"value\":1,$SIG}|is not one of true" \
+           "operate_signal|{\"repo\":1,\"value\":1,$SIG}|operate_signal.repo: expected boolean" \
+           "operate_signal|{\"repo\":\"repo\",\"value\":1,$SIG}|operate_signal.repo: expected boolean" \
+           "operate_signal|{\"slug\":\"Bad Slug\",\"value\":1,$SIG}|operate_signal.slug: expected slug" \
+           "operate_signal|{\"slug\":\"p\",\"value\":\"n/a\",$SIG}|operate_signal.value: expected number|null" \
+           "operate_signal|{\"slug\":\"p\",\"value\":\"0\",$SIG}|operate_signal.value: expected number|null" \
+           "operate_signal|{\"slug\":\"p\",\"value\":true,$SIG}|operate_signal.value: expected number|null" \
+           "operate_signal|{\"slug\":\"p\",\"value\":NaN,$SIG}|operate_signal.value: expected number|null" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"m\",\"threshold\":Infinity,\"severity\":\"high\",\"breach_count\":0,\"sink\":\"counted\"}|operate_signal.threshold: expected number" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"m\",\"threshold\":2,\"severity\":\"critical\",\"breach_count\":0,\"sink\":\"counted\"}|operate_signal.severity: 'critical' is not one of high|medium|low" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"m\",\"threshold\":2,\"severity\":\"high\",\"breach_count\":0,\"sink\":\"LESSONS.md\"}|operate_signal.sink: 'LESSONS.md' is not one of lessons|backlog|counted" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"m\",\"threshold\":2,\"severity\":\"high\",\"breach_count\":1.0,\"sink\":\"counted\"}|operate_signal.breach_count: expected count" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"m\",\"threshold\":2,\"severity\":\"high\",\"breach_count\":-1,\"sink\":\"counted\"}|operate_signal.breach_count: expected count" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\\n## injected\",\"metric\":\"m\",\"threshold\":2,\"severity\":\"high\",\"breach_count\":0,\"sink\":\"counted\"}|operate_signal.check_id: expected id" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"a b\",\"threshold\":2,\"severity\":\"high\",\"breach_count\":0,\"sink\":\"counted\"}|operate_signal.metric: expected id" \
+           "operate_deploy|{\"slug\":\"p\",\"landed_sha\":\"${HEAD_FX:0:7}\",\"exit_code\":0}|operate_deploy.landed_sha: expected sha" \
+           "operate_deploy|{\"slug\":\"p\",\"landed_sha\":\"$(tr a-f A-F <<<"$HEAD_FX")\",\"exit_code\":0}|operate_deploy.landed_sha: expected sha" \
+           "operate_deploy|{\"slug\":\"p\",\"landed_sha\":\"${HEAD_FX}0\",\"exit_code\":0}|operate_deploy.landed_sha: expected sha" \
+           "operate_deploy|{\"slug\":\"p\",\"landed_sha\":\"$HEAD_FX\",\"exit_code\":\"0\"}|operate_deploy.exit_code: expected integer" \
+           "operate_deploy|{\"slug\":\"p\",\"landed_sha\":\"$HEAD_FX\",\"exit_code\":false}|operate_deploy.exit_code: expected integer" \
+           "operate_window_closed|{\"slug\":\"p\",\"outcome\":\"clean\",\"breaches\":0,\"open_at_close\":[]}|operate_window_closed.outcome: 'clean' is not one of operated-clean|closed-with-breaches" \
+           "operate_window_closed|{\"slug\":\"p\",\"outcome\":\"operated-clean\",\"breaches\":\"0\",\"open_at_close\":[]}|operate_window_closed.breaches: expected count" \
+           "operate_window_closed|{\"slug\":\"p\",\"outcome\":\"operated-clean\",\"breaches\":0,\"open_at_close\":\"c1\"}|operate_window_closed.open_at_close: expected array" \
+           "operate_window_closed|{\"slug\":\"p\",\"outcome\":\"closed-with-breaches\",\"breaches\":1,\"open_at_close\":[\"c1\",7]}|operate_window_closed.open_at_close[1]: expected id"; do
+  ev="${bad%%|*}"; rest="${bad#*|}"; want="${rest#*\}|}"; js="${rest%"|$want"}"
+  if lg append "$ev" "$js" --state "$LO" --source cli >"$WORK/lg.out"; then fail "ledger.sh accepted an invalid $ev row: $js"; fi
+  grep -qF -- "$want" "$WORK/lg.out" || fail "invalid $ev row refused without naming '$want': $(cat "$WORK/lg.out")"
+done
+for ev in route spawn_request spawn worker_run verdict worker_applied worker_rejected; do   # still CLI-refused
+  if lg append "$ev" '{"route_id":"r-0123456789ab-L5-1","status":"READY","origin":"plan","router":{},"role":"builder","model":"haiku","agent_id":"x","provider":"codex","exit_code":0,"verdict":"APPROVE","run_id":"r1","commit_sha":"'"$HEAD_FX"'","reason":"x"}' --state "$LO" --source cli >"$WORK/lg.out"; then
+    fail "ledger.sh append accepted provenance event $ev from the CLI"; fi
+  grep -q "$ev is a provenance event" "$WORK/lg.out" || fail "CLI refusal of $ev does not say why: $(cat "$WORK/lg.out")"
+done
+O="$(lg verify --state "$LO")" || fail "refused operate rows broke the chain: $O"
+has '^ledger verify: OK — 5 rows, chain intact' "$O" || fail "a refused row was written to the ledger: $O"
+# a malformed line is never skipped: verify fails naming it and the next append refuses
+LOJ="$(ls "$LO"/dispatch*/ledger.jsonl)"
+printf '{"event":"operate_signal","value":0\n' >>"$LOJ"
+if O="$(lg verify --state "$LO")"; then fail "verify passed a ledger with a malformed operate line"; fi
+has 'row 6: not JSON' "$O" || fail "verify did not name the malformed line: $O"
+if O="$(lg append operate_deploy "$OPD" --state "$LO" --source cli)"; then fail "append extended a ledger whose last line is malformed"; fi
+has 'not JSON' "$O" || fail "append on a malformed tail did not say why: $O"
+# pre-bash: the operate switches, through the real hook entry point; first without a lock (no-op), then under one
+OX="$WORK/ox"; mkdir -p "$OX/plans"; git init -q -b main "$OX"; OX="$(cd "$OX" && pwd -P)"
+printf '# Operate fixture\n\n- [ ] **Phase 1.1** [mechanical] one task\n  - Acceptance: `true`\n  - Paths: src/**\n' >"$OX/plans/p.md"
+git -C "$OX" add -A; git -C "$OX" commit -qm ox
+ohk() { (cd "$OX" && printf '%s' "$1" | bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null); }
+odec() { ohk "$1" | one; }
+[ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = "{}" ] || fail "pre-bash acted on APEX_OPERATE_ACK without an ACTIVE lock"
+O="$(cd "$OX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ -f "$OX/.dev-plan-state/ACTIVE/owner.json" ] || fail "operate fixture route took no ACTIVE lock: $O"
+for c in 'export APEX_OPERATE_ACK=x@y' 'APEX_DEPLOY_CMD=foo bash x' 'env APEX_MONITOR_CMD=./runner.sh bash operate.sh p monitor' \
+         'APEX_OPERATE_ACK=p@0123 bash operate.sh p deploy' 'export APEX_DEPLOY_CMD="make deploy"' 'APEX_MONITOR_CMD= bash x' \
+         'declare -x APEX_OPERATE_ACK=x@y' 'typeset APEX_DEPLOY_CMD=x' 'readonly APEX_MONITOR_CMD=x' \
+         'unset APEX_OPERATE_ACK' 'env -u APEX_DEPLOY_CMD bash x' 'env --unset=APEX_MONITOR_CMD bash x' \
+         'bash -c "export APEX_OPERATE_ACK=x@y"' 'eval "APEX_DEPLOY_CMD=x bash y"' 'echo $(APEX_MONITOR_CMD=x bash y)' \
+         'sudo APEX_OPERATE_ACK=x@y bash x' 'true && APEX_DEPLOY_CMD=x bash y' 'if true; then export APEX_MONITOR_CMD=x; fi'; do
+  [ "$(odec "$(pl bash "$OX" "$c")")" = deny ] || fail "pre-bash allowed under the ACTIVE lock: $c"
+done
+O="$(ohk "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")"
+has 'APEX_OPERATE_ACK=x@y would change what the harness enforces; it is set by the human, never by a command during a run' "$O" \
+  || fail "the APEX_OPERATE_ACK denial does not name the switch and why: $O"
+O="$(ohk "$(pl bash "$OX" 'unset APEX_MONITOR_CMD')")"
+has 'unsetting APEX_MONITOR_CMD would change what the harness enforces' "$O" || fail "the APEX_MONITOR_CMD unset denial does not say why: $O"
+for c in 'git status' 'bash operate.sh p status' 'MY_APEX_DEPLOY_CMD_X=1 bash x' 'APEX_OPERATE_ACK_HINT=1 bash x' 'export XAPEX_MONITOR_CMD=1' \
+         'echo APEX_OPERATE_ACK=x@y' 'grep -rn "APEX_DEPLOY_CMD=" .' 'printenv APEX_MONITOR_CMD' 'echo "$APEX_OPERATE_ACK"'; do
+  [ "$(odec "$(pl bash "$OX" "$c")")" = "{}" ] || fail "pre-bash denied under the ACTIVE lock: $c"
+done
+pass "operate-ledger-events: operate_deploy/operate_signal/operate_window_closed append via the CLI and verify; missing fields, slug|repo none/both, enums, types and short SHAs refused; unmeasured value stored null (0 kept distinct); provenance still CLI-refused; malformed lines fail verify; pre-bash denies setting/exporting/unsetting APEX_OPERATE_ACK/APEX_DEPLOY_CMD/APEX_MONITOR_CMD under the ACTIVE lock only; longer names and mentions allowed"
+
 echo ""
 echo "smoke passed: $N/$N checks"
