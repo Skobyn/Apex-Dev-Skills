@@ -82,7 +82,19 @@ pass "version is semver"
 
 # --- Phase 2.2: policy, overlay, compile ------------------------------------
 COMPILE="$PLUGIN_ROOT/scripts/compile.sh"
+# $TMPDIR ends in "/" on macOS, so mktemp returns "T//name", and tools print the canonical path
+# (/private/var/.../T/name). Resolve once so every "$WORK/..." comparison matches tool output.
+# Two statements, not one nested substitution: if mktemp fails, set -e stops here, before the
+# trap exists. (A nested `cd "$(mktemp ...)"` with an empty result would cd nowhere and leave
+# WORK pointing at the current directory, which the EXIT trap would then delete.)
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/apex-dispatch-smoke.XXXXXX")"
+WORK="$(cd "$WORK" && pwd -P)"
+TMP_ROOT="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+# Refuse anything but a fresh apex-dispatch-smoke.* directory under the temp root before rm -rf.
+case "$WORK" in
+  "$TMP_ROOT"/apex-dispatch-smoke.*) [ -d "$WORK" ] || { echo "smoke: refusing WORK=$WORK (not a directory)" >&2; exit 2; } ;;
+  *) echo "smoke: refusing WORK=$WORK" >&2; exit 2 ;;
+esac
 trap 'rm -rf "$WORK"' EXIT
 
 # 11. policy inputs exist and every compiled artifact is current
@@ -284,7 +296,9 @@ val() { sed -n "s/^$1: //p" <<<"$2" | head -1; }
 pass "route.sh --version == plugin.json version"
 
 # Fixture: a plain git repo with one plan (no toolchain markers).
-FX="$WORK/fx"; mkdir -p "$FX/plans"; git init -q -b main "$FX"
+# macOS: $TMPDIR sits under /var, a symlink to /private/var. git and route.sh print the resolved
+# toplevel, so the fixture path is resolved here too or prefix comparisons against $FX never match.
+FX="$WORK/fx"; mkdir -p "$FX/plans"; git init -q -b main "$FX"; FX="$(cd "$FX" && pwd -P)"
 cat >"$FX/plans/p.md" <<'PLAN'
 # Fixture plan
 
@@ -1729,7 +1743,7 @@ wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md" 
 [ "$WRC" = 1 ] && [ $((SECONDS - T0)) -lt 15 ] || fail "the timeout was not honoured (rc=$WRC, $((SECONDS - T0)) s)"
 WOT="$(val WORKER_OUT "$WOUT")"
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["timed_out"] and r["exit_code"] in (124, 137) and r["timeout_sec"] == 2 and not r["ok"] and r["verdict"] is None, r' "$WOT/result.json" || fail "a timed-out run's result.json is wrong"
-grep -q '^DISPATCH-DONE exit=12[4]$\|^DISPATCH-DONE exit=137$' <<<"$WOUT" || fail "a timed-out run did not print its sentinel with the exit"
+grep -qE '^DISPATCH-DONE exit=(124|137)$' <<<"$WOUT" || fail "a timed-out run did not print its sentinel with the exit"
 [ ! -e "$(jget "$WOT/worker.json" worktree)" ] || fail "a failed worker's worktree was kept"
 echo fail >"$STUB/mode"
 wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 1 ] || fail "a failing provider run was not exit 1"

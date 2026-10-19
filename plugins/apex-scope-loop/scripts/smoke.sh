@@ -121,7 +121,7 @@ for v in $(compgen -e | grep '^APEX_' || true); do unset "$v"; done
 # 29 turn it back on to cover the integration, and 33 builds dispatch state itself.
 export APEX_DISPATCH_MODE=off
 SMOKE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/apex-scope-loop-smoke.XXXXXX")"
-trap 'git -C "$SMOKE_TMP/repo" worktree prune >/dev/null 2>&1 || true; rm -rf "$SMOKE_TMP"' EXIT
+trap 'git -C "$SMOKE_TMP/repo" worktree prune >/dev/null 2>&1 || true; chmod -R u+w "$SMOKE_TMP" 2>/dev/null || true; rm -rf "$SMOKE_TMP"' EXIT
 [ -n "${SMOKE_KEEP:-}" ] && trap - EXIT
 export GIT_AUTHOR_NAME=smoke GIT_AUTHOR_EMAIL=smoke@example.invalid GIT_COMMITTER_NAME=smoke GIT_COMMITTER_EMAIL=smoke@example.invalid
 R="$SMOKE_TMP/repo"; mkdir -p "$R/.claude/tasks" "$R/.claude/plans"
@@ -1269,9 +1269,18 @@ has "lib/.git (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fai
 rm -rf "$SM/lib/.git"; echo 'gitdir: /nonexistent' >"$SM/lib/.Git"
 has "lib/.Git (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a .git file below the top"
 rm -f "$SM/lib/.Git"
-mkdir -p "$SM/.GIT"; echo x >"$SM/.GIT/conftest.py"
-has ".GIT (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a top-level directory named .GIT"
-rm -rf "$SM/.GIT"
+# On a case-insensitive filesystem $SM/.GIT is $SM/.git, the fixture's own git
+# dir: writing there and then rm -rf would destroy the repository. The probe
+# runs in a scratch directory; where it is insensitive the top-level .GIT
+# assertion is skipped (printed), and the rm -rf never runs.
+CIPROBE="$SMOKE_TMP/ci-probe"; mkdir -p "$CIPROBE"; : >"$CIPROBE/probe-lower"
+if [ -e "$CIPROBE/PROBE-LOWER" ]; then
+  echo "smoke SKIP: case-insensitive filesystem ($CIPROBE): \$SM/.GIT aliases the fixture's .git, so the top-level .GIT assertion is not run here (it still runs on case-sensitive filesystems)"
+else
+  mkdir -p "$SM/.GIT"; echo x >"$SM/.GIT/conftest.py"
+  has ".GIT (a .git entry)" "$(source "$EX/_lib.sh"; apex_dirty "$SM")" || fail "the gate missed a top-level directory named .GIT"
+  rm -rf "$SM/.GIT"
+fi
 # Run state never lives in a linked worktree: a .dev-plan-state there is checked.
 git -C "$SM" worktree add -q "$SMOKE_TMP/smwt" 2>/dev/null
 [ -z "$(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/smwt")" ] || fail "a clean linked worktree with submodules was reported dirty: $(source "$EX/_lib.sh"; apex_dirty "$SMOKE_TMP/smwt")"
@@ -1340,10 +1349,10 @@ touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
 ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head (submodules included) and allows ignored tool caches"
 
-# 42. Portability (ADR-0003): version 0.6.0, ADR-0003 and ADR-0004 present, reviewer cannot
+# 42. Portability (ADR-0003): version 0.6.1, ADR-0003 and ADR-0004 present, reviewer cannot
 #     edit, ruflo optional (no required ruflo/claude-flow reference outside
 #     docs/legacy/), apex-plan template profiles.
-grep -q '"version": "0.6.0"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.6.0"
+grep -q '"version": "0.6.1"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.6.1"
 ADR4="$PLUGIN_ROOT/docs/adrs/0004-review-loop-calibration.md"
 [ -f "$ADR4" ] && grep -qE "^- \*\*Status:\*\* Accepted" "$ADR4" && grep -q '^## What this loosens and why it is safe' "$ADR4" || fail "ADR-0004 missing, not Accepted, or without its loosening section"
 ADR3="$PLUGIN_ROOT/docs/adrs/0003-portability-and-dispatch-consumer.md"
@@ -1357,7 +1366,7 @@ for prof in generic apex; do for t in adr-template.md plan-template.md; do
   [ -f "$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles/$prof/$t" ] || fail "apex-plan profile $prof lacks $t"
 done; done
 ! grep -qi 'getapexinsights\|apex-app' "$PLUGIN_ROOT"/skills/apex-plan/resources/templates/profiles/generic/*.md || fail "the generic apex-plan profile carries Apex-specific vocabulary"
-ok "portability: version 0.6.0, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
+ok "portability: version 0.6.1, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
 
 # 43. apex-dispatch Phase 3.2 consumers: green-gate.sh check PASS moves the ACTIVE
 #     lock BUILD -> GATE (only from BUILD; a FAIL leaves it); checkpoint.sh review
@@ -1724,6 +1733,32 @@ expect_refusal "a snapshot whose setup fails" "APEX_SNAPSHOT_SETUP failed" indir
 [ -z "$(ls -A "$(dirname "$SP")" 2>/dev/null | grep -v '^\.tmp' || true)" ] || fail "complete did not prune the review snapshots"
 ok "snapshot: read-tree + checkout-index (export-ignore kept), read-only, setup once, reused, failed setup leaves nothing, pruned at complete"
 
+# 54b. (D) snapshot-readonly-after-move: the tree is made read-only before it is
+#      renamed into <snapshots>/<sha> (macOS refuses to rename a read-only dir to
+#      another parent). The snapshot lands at its sha path with its .json marker,
+#      every file and directory in it is non-writable, and a second call reuses it.
+T54B="$SMOKE_TMP/t54b"; TW="$(cal_run "$T54B" "$TWO")" || fail "init for check 54b failed"
+echo a >"$TW/a.txt"; git -C "$TW" add -A; git -C "$TW" commit -qm a
+mkdir -p "$TW/sub/deep"; echo d >"$TW/sub/deep/f.txt"; git -C "$TW" add -A; git -C "$TW" commit -qm deep
+SHB="$(git -C "$TW" rev-parse HEAD)"
+OB54="$(cd "$T54B" && "$SN" plans/v-plan.md)" || fail "snapshot-readonly-after-move: the snapshot failed: $OB54"
+SB="$(sed -n 's/^REVIEW_SNAPSHOT: //p' <<<"$OB54")"
+[ "$(basename "$SB")" = "$SHB" ] && [ -f "$SB.json" ] && [ -f "$SB/sub/deep/f.txt" ] || fail "snapshot-readonly-after-move: the snapshot is not at <snapshots>/$SHB with its .json marker: $OB54"
+python3 -c 'import os,sys
+bad=[]
+for root,dirs,files in os.walk(sys.argv[1]):
+    for n in [root]+[os.path.join(root,x) for x in dirs+files]:
+        if not os.path.islink(n) and os.lstat(n).st_mode & 0o222: bad.append(n)
+sys.exit(1 if bad else 0)' "$SB" || fail "snapshot-readonly-after-move: a file or directory in the snapshot is writable"
+has 'SNAPSHOT: reused' "$(cd "$T54B" && "$SN" plans/v-plan.md)" || fail "snapshot-readonly-after-move: a second call did not reuse the snapshot"
+# A leftover .tmp tree from a killed run (read-only subdirectory with a file) and
+# its .index must be removed by prune, as check 54 runs it.
+SNS54B="$(dirname "$SB")"; LEFT54B="$SNS54B/.tmp.abc123"
+mkdir -p "$LEFT54B/ro" && echo x >"$LEFT54B/ro/f.txt" && echo i >"$LEFT54B.index" && chmod a-w "$LEFT54B/ro/f.txt" "$LEFT54B/ro" || fail "snapshot-readonly-after-move: could not fake a leftover temp tree"
+(cd "$T54B" && "$SN" plans/v-plan.md prune >/dev/null) || fail "snapshot-readonly-after-move: prune failed"
+[ ! -e "$LEFT54B" ] && [ ! -e "$LEFT54B.index" ] || fail "snapshot-readonly-after-move: prune left a read-only leftover .tmp tree or its .index behind"
+ok "snapshot-readonly-after-move: snapshot lands at its sha path with its .json, every file and directory is non-writable, a second call is reused"
+
 # 55. (E) Tier override needs its reason and records it; a reviewer raise needs a
 #     reason and is recorded; size alone is Tier B (one reviewer, no G12).
 T55="$SMOKE_TMP/t55"; TW="$(cal_run "$T55" '- [ ] **Phase 1.1** [docs][tier:a reason="vendored generated code"] a\n  - Acceptance: true\n- [ ] **Phase 1.2** [docs] b\n  - Acceptance: true\n')" || fail "init for check 55 failed"
@@ -1898,6 +1933,7 @@ has '^TIER: B' "$(rtc '[docs]' README.md 'stripe keys live here')" || fail "a Ma
 has '^TIER: C' "$(rtc '[docs]' src/smoke_helper.py 'import stripe')" || fail "content in src/smoke_helper.py was exempted"
 # (11) A run without a worktree keeps snapshots outside the work tree.
 T60K="$SMOKE_TMP/t60k"; mkdir -p "$T60K/plans"; git init -q -b main "$T60K"; printf '.dev-plan-state/\n' >"$T60K/.gitignore"
+T60K="$(cd "$T60K" && pwd -P)"   # git reports the resolved path on macOS (/var -> /private/var)
 printf -- "$TWO" >"$T60K/plans/v-plan.md"; git -C "$T60K" add -A; git -C "$T60K" commit -qm k
 ( cd "$T60K" && APEX_NO_WORKTREE=1 "$EX/init.sh" plans/v-plan.md >/dev/null 2>&1 ) || fail "no-worktree init failed in check 60"
 SPK="$(cd "$T60K" && "$EX/snapshot.sh" plans/v-plan.md | sed -n 's/^REVIEW_SNAPSHOT: //p')"
