@@ -2408,6 +2408,54 @@ for IS_PROF in generic apex; do
 done
 ok "intent-seed: an intent file's Problem (with \$, backtick, {{ and two paragraphs) replaces 'Why this matters' in the lean and full ADR of both profiles and nothing else changes; bugfix with no intent file writes none and says nothing; poc/feature scaffold one from the template with a reminder and exit 0; a user-written intent file survives --force; a missing, empty or [ TODO ] Problem warns and keeps the placeholder"
 
+# 68. status-scope (Phase 2.2): status.sh prints Scope (header-region rule of promote-to-loop.sh 7b) and the intent
+#     file's state; a report only, so a disagreeing, partial or malformed Scope is reported and exit stays 0.
+ST="$PLUGIN_ROOT/skills/apex-plan/scripts/status.sh"; ST_TMP="$SMOKE_TMP/status-scope"
+rm -rf "${ST_TMP:?}"; mkdir -p "$ST_TMP" || fail "status-scope: cannot create the temp dir"
+git -C "$ST_TMP" init -q -b main || fail "status-scope: cannot init the temp repo"
+st_run() { ST_OUT="$(cd "$ST_TMP" && bash "$ST" "$1" 2>&1)" || fail "status-scope: status.sh $1 exited non-zero: $ST_OUT"; }
+st_line() { grep -E "^  $1:" <<<"$ST_OUT" | head -1 | sed -E 's/^  [A-Za-z]+: +//'; }
+st_new() { (cd "$ST_TMP" && bash "$SS" "$1" T --scope "$2" >/dev/null 2>&1) || fail "status-scope: start.sh $1 --scope $2 failed"; }
+ST_ADR() { echo "$ST_TMP/.claude/tasks/$1-adr.md"; }; ST_PLAN() { echo "$ST_TMP/.claude/plans/$1-plan.md"; }
+st_new sb bugfix; st_run sb
+[ "$(st_line Scope)" = "bugfix" ] || fail "status-scope: bugfix scaffold did not show Scope bugfix: $ST_OUT"
+[ "$(st_line Intent)" = "none" ] || fail "status-scope: bugfix scaffold did not show Intent none: $ST_OUT"
+st_new sf feature; st_run sf
+[ "$(st_line Scope)" = "feature" ] || fail "status-scope: feature scaffold did not show Scope feature: $ST_OUT"
+grep -qF -- "sf-intent.md (Problem not filled)" <<<"$ST_OUT" || fail "status-scope: scaffolded intent not shown as unfilled: $ST_OUT"
+printf '# Intent\n\n## Problem\n\nOrders are lost at checkout.\n\n## Non-goals\n\nnone\n' >"$ST_TMP/.claude/tasks/sf-intent.md"; st_run sf
+grep -qF -- "sf-intent.md (Problem filled)" <<<"$ST_OUT" || fail "status-scope: a filled Problem not shown as filled: $ST_OUT"
+printf '# Intent\n\n## Problem\n\n## Non-goals\n\nnone\n' >"$ST_TMP/.claude/tasks/sf-intent.md"; st_run sf
+grep -qF -- "(Problem not filled)" <<<"$ST_OUT" || fail "status-scope: an empty Problem not shown as unfilled: $ST_OUT"
+# scope-less pair
+st_new sn feature; sed -i.bak '/^\*\*Scope\*\*:/d' "$(ST_ADR sn)"; sed -i.bak '/^> \*\*Scope\*\*:/d' "$(ST_PLAN sn)"
+! grep -q 'Scope\*\*' "$(ST_ADR sn)" "$(ST_PLAN sn)" || fail "status-scope: fixture still has Scope lines"
+st_run sn; [ "$(st_line Scope)" = "feature (no Scope line)" ] || fail "status-scope: scope-less pair not shown as 'feature (no Scope line)': $ST_OUT"
+# a Scope line below the header (after a ## heading) does not count
+st_new sh feature; sed -i.bak '/^\*\*Scope\*\*:/d' "$(ST_ADR sh)"; sed -i.bak '/^> \*\*Scope\*\*:/d' "$(ST_PLAN sh)"
+printf '\n## Notes\n\n**Scope**: bugfix\n' >>"$(ST_ADR sh)"; st_run sh
+[ "$(st_line Scope)" = "feature (no Scope line)" ] || fail "status-scope: a body Scope line was read as the header Scope: $ST_OUT"
+# mismatch, and one-sided: reported, exit 0
+st_new sm bugfix; sed -i.bak 's/^> \*\*Scope\*\*: bugfix/> **Scope**: feature/' "$(ST_PLAN sm)"; st_run sm
+grep -qF 'mismatch' <<<"$(st_line Scope)" && grep -qF 'bugfix' <<<"$(st_line Scope)" && grep -qF 'feature' <<<"$(st_line Scope)" || fail "status-scope: disagreeing pair not reported as mismatch with both values: $ST_OUT"
+st_new so poc; sed -i.bak '/^> \*\*Scope\*\*:/d' "$(ST_PLAN so)"; st_run so
+grep -qF 'mismatch' <<<"$(st_line Scope)" && grep -qF 'poc' <<<"$(st_line Scope)" || fail "status-scope: a one-sided Scope not reported as mismatch: $ST_OUT"
+# malformed Scope lines are reported as malformed, never shown as feature (threat: silent skip)
+ST_N=0
+for ST_BAD in '**scope**: bugfix' '**Scope** bugfix' '**Scope**:' '**Scope**: {{SCOPE}}x' ; do
+  ST_N=$((ST_N + 1)); st_new sx$ST_N bugfix; sed -i.bak "s/^\*\*Scope\*\*: bugfix/$ST_BAD/" "$(ST_ADR sx$ST_N)"
+  grep -qF -- "$ST_BAD" "$(ST_ADR sx$ST_N)" || fail "status-scope: fixture lacks the malformed line '$ST_BAD'"
+  st_run sx$ST_N
+  case "$ST_BAD" in '**Scope**: {{SCOPE}}x') grep -qF 'ADR: {{SCOPE}}x' <<<"$ST_OUT" || fail "status-scope: '$ST_BAD' not reported verbatim: $ST_OUT";;
+    *) grep -qF 'malformed' <<<"$(st_line Scope)" || fail "status-scope: malformed '$ST_BAD' not reported as malformed: $ST_OUT";; esac
+  ! grep -qE '^feature' <<<"$(st_line Scope)" || fail "status-scope: malformed '$ST_BAD' shown as feature: $ST_OUT"
+done
+st_new sd bugfix; awk '{print} /^\*\*Scope\*\*: bugfix/{print "**Scope**: poc"}' "$(ST_ADR sd)" >"$(ST_ADR sd).new" && mv "$(ST_ADR sd).new" "$(ST_ADR sd)"; st_run sd
+grep -qF 'malformed' <<<"$(st_line Scope)" || fail "status-scope: a doubled Scope line not reported: $ST_OUT"
+# missing ADR and plan: still exit 0
+(cd "$ST_TMP" && bash "$ST" nothing >/dev/null 2>&1) || fail "status-scope: status.sh on a missing slug exited non-zero"
+ok "status-scope: status.sh prints Scope (bugfix, feature, 'feature (no Scope line)', mismatch for disagreeing or one-sided, malformed/doubled reported, body lines ignored) and Intent (none, not filled, filled), always exit 0"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2467,4 +2515,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 69/69 checks"
+echo "smoke passed: 70/70 checks"
