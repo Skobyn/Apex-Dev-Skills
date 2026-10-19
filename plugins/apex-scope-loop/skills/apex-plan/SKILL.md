@@ -12,7 +12,7 @@ This skill is the upstream bookend for [apex-execute](../apex-execute/SKILL.md).
 2. A phased **plan** at `.claude/plans/<slug>-plan.md` (the executable checklist, apex-execute compatible)
 3. **Approval gates** between phases (auto-verifiable or human-required)
 
-Both docs are co-authored with the user through 4–6 structured feedback rounds, so by the time the plan is ready to `/loop`, the user has signed off on every meaningful choice.
+Both docs are co-authored with the user through 2, 4 or 6 structured feedback rounds, by scope, so by the time the plan is ready to `/loop`, the user has signed off on every meaningful choice.
 
 ## When to use this skill
 
@@ -46,8 +46,8 @@ If a partner must sign off, prefer `architecture-decision-propose` first, then r
 ## The five-stage flow (SCOPE)
 
 ```
-1. SCOPE     — 4–6 AskUserQuestion rounds: scope, constraints, success criteria, partners,
-              swarm preferences, gate preferences
+1. SCOPE     — 2, 4 or 6 AskUserQuestion rounds, by scope: scope, constraints, success
+              criteria, partners, swarm preferences, gate preferences
    ↓
 2. COMPOSE   — Write ADR (SPARC sections) + plan stub from templates
    ↓
@@ -75,7 +75,7 @@ Every plan has a scope. It sets how much authoring the session asks for, not how
 
 - **Chosen explicitly.** The user passes `--scope bugfix|poc|feature` to `start.sh`, or the skill suggests a scope and the user confirms it. Nothing is auto-detected silently.
 - **No flag means `feature`.** A plan started without `--scope` behaves exactly as it did before this change.
-- **Lean ADRs** omit the Pseudocode, Architecture, Data Model and API sections. The rest of the SPARC shape (Context, Decision, Open Questions, Risks, Consequences) stays. Open Questions still need a `Decision:` before promoting.
+- **Lean ADRs** (`adr-template-lean.md`, for bugfix and poc) keep these sections: TL;DR, Context (Why this matters, Requirements, Constraints, Acceptance), Decision, Open Questions, Risks & Mitigations (with the Rollback story) and Status log. They omit Pseudocode, Architecture, Data Model, API Surface, Consequences and the Surface Matrix. Open Questions still need a `Decision:` before promoting. A lean ADR for user-facing work needs a short Surface Matrix added by hand (see Stage 3).
 - **Phase count** is the number of distinct major N among `**Phase N.M**` task ids in the plan. `promote-to-loop.sh` refuses a bugfix plan with more than 2 phases and a poc plan with more than 3, and names the limit. A `[tier:c]` task under bugfix or poc still promotes, but prints a warning.
 - **Both files declare the scope (B-019).** `start.sh --scope X` writes `**Scope**: X` into the ADR header and `> **Scope**: X` into the plan header. The two must agree. `promote-to-loop.sh` refuses a pair where only one file declares Scope, where the values differ, or where a Scope line is unknown, malformed or duplicated. The error names the fix (for example, "make them match"). A plan and ADR with no Scope line at all promote exactly as before.
 - **Scope changes authoring only.** The green gate, independent review, risk tier and G12, the ratchet, kill switches and ledger evidence apply the same way to every scope. A bugfix plan is not checked more loosely than a feature plan.
@@ -137,7 +137,7 @@ Walk the ADR section-by-section. For each section:
 
 **Every "Open Question" must resolve to a decision before promoting.** Default proposals are starting points, not endings. The user (or partner, if cross-boundary) signs off on each. Replace the `Default:` line with `Decision:` once resolved.
 
-**Surface parity check**: if the feature touches user-facing UI, explicitly enumerate every surface it lives on (for example web and mobile, each app or portal, each user role) in the ADR's Surface Matrix. Use the project's own list of surfaces when its `CLAUDE.md` defines one. Don't let this default to "obvious" — write it down.
+**Surface parity check**: if the feature touches user-facing UI, explicitly enumerate every surface it lives on (for example web and mobile, each app or portal, each user role) in the ADR's Surface Matrix. Use the project's own list of surfaces when its `CLAUDE.md` defines one. Don't let this default to "obvious" — write it down. This check applies to every scope. A `feature` ADR has the Surface Matrix from the full template. A lean ADR (bugfix or poc) has no Surface Matrix, so for user-facing work add a short Surface Matrix section to the ADR by hand before promoting.
 
 ## Stage 4: PLAN
 

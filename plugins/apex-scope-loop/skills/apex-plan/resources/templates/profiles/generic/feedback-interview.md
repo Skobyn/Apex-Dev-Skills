@@ -1,6 +1,6 @@
 # SCOPE interview — feedback prompt library
 
-Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (one per round) so the user can answer iteratively. Don't batch everything into one giant question — that loses signal.
+Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (one per round) so the user can answer iteratively. The one exception is bugfix, which asks Rounds 1 and 3 as one combined question. Don't batch everything into one giant question — that loses signal.
 
 ## Rounds per scope
 
@@ -123,7 +123,7 @@ If the user gives "Other" answers in their own words, paste their exact phrasing
 
 ## Anti-patterns
 
-- **Don't batch all 6 rounds into one question.** The user can't think clearly about scope and gates at the same time. One round per `AskUserQuestion` invocation.
+- **Don't batch all 6 rounds into one question.** The user can't think clearly about scope and gates at the same time. One round per `AskUserQuestion` invocation. The bugfix exception is the combined Rounds 1 and 3 question.
 - **Don't draft anything before round 6 completes.** Drafting too early signals "I've already decided" and disengages the user from the decision.
 - **Don't accept vague success criteria.** If they say "the feature works," push back with "what command would you run to prove that?" until you get a check.
 - **Don't skip round 4** even when the user is clearly solo. The act of saying "solo" out loud commits them to also being the reviewer, which informs gate-tag defaults.
