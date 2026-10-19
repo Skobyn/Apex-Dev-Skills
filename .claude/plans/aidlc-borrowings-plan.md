@@ -72,7 +72,7 @@ The three gate suites must exit 0 before any feature work. Two fail on main toda
   - Paths: plugins/apex-scope-loop/skills/apex-execute/scripts/snapshot.sh, plugins/apex-scope-loop/scripts/smoke.sh
   - Blocked-by: phase-0.1
 
-- [ ] **Gate 0→1** [gate:auto] All three gate suites green
+- [x] **Gate 0→1** [gate:auto] All three gate suites green
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-console/scripts/smoke.sh`
   - Blocked-by: phase-0.1, phase-0.2, phase-0.3
 
