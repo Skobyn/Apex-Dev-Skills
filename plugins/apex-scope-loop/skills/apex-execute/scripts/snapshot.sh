@@ -53,7 +53,13 @@ if [[ "${1:-}" == prune ]]; then
     [[ -n "$KEEP" && "$b" == "$KEEP" ]] && continue
     remove_snap "$d"; n=$((n + 1))
   done
-  rm -rf -- "$SNAPS"/.tmp.* 2>/dev/null || true
+  # Leftover temp trees (a run killed during the read-only step) and their
+  # index files: make them writable first, as remove_snap does, or rm -rf
+  # cannot empty their read-only subdirectories.
+  for t in "$SNAPS"/.tmp.*; do
+    [[ -e "$t" ]] || continue
+    remove_snap "$t"; rm -f -- "$t.index"
+  done
   echo "SNAPSHOTS_PRUNED: $n"
   exit 0
 fi

@@ -1751,6 +1751,12 @@ for root,dirs,files in os.walk(sys.argv[1]):
         if not os.path.islink(n) and os.lstat(n).st_mode & 0o222: bad.append(n)
 sys.exit(1 if bad else 0)' "$SB" || fail "snapshot-readonly-after-move: a file or directory in the snapshot is writable"
 has 'SNAPSHOT: reused' "$(cd "$T54B" && "$SN" plans/v-plan.md)" || fail "snapshot-readonly-after-move: a second call did not reuse the snapshot"
+# A leftover .tmp tree from a killed run (read-only subdirectory with a file) and
+# its .index must be removed by prune, as check 54 runs it.
+SNS54B="$(dirname "$SB")"; LEFT54B="$SNS54B/.tmp.abc123"
+mkdir -p "$LEFT54B/ro" && echo x >"$LEFT54B/ro/f.txt" && echo i >"$LEFT54B.index" && chmod a-w "$LEFT54B/ro/f.txt" "$LEFT54B/ro" || fail "snapshot-readonly-after-move: could not fake a leftover temp tree"
+(cd "$T54B" && "$SN" plans/v-plan.md prune >/dev/null) || fail "snapshot-readonly-after-move: prune failed"
+[ ! -e "$LEFT54B" ] && [ ! -e "$LEFT54B.index" ] || fail "snapshot-readonly-after-move: prune left a read-only leftover .tmp tree or its .index behind"
 ok "snapshot-readonly-after-move: snapshot lands at its sha path with its .json, every file and directory is non-writable, a second call is reused"
 
 # 55. (E) Tier override needs its reason and records it; a reviewer raise needs a
