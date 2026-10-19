@@ -63,9 +63,28 @@ If a partner must sign off, prefer `architecture-decision-propose` first, then r
 
 Stages 1–4 are interactive. Stage 5 hands off to apex-execute.
 
+## Scope: bugfix, poc or feature
+
+Every plan has a scope. It sets how much authoring the session asks for, not how strictly the work is checked.
+
+| Scope | Interview rounds | ADR / plan template | Max phases |
+|---|---|---|---|
+| `bugfix` | 2: scope+done (one combined question), then gate | lean (`adr-template-lean.md`, `plan-template-lean.md`) | 2 |
+| `poc` | 4: scope, constraints, done, gate | lean | 3 |
+| `feature` | 6: scope, constraints, done, ownership, swarm, gate | full | unlimited |
+
+- **Chosen explicitly.** The user passes `--scope bugfix|poc|feature` to `start.sh`, or the skill suggests a scope and the user confirms it. Nothing is auto-detected silently.
+- **No flag means `feature`.** A plan started without `--scope` behaves exactly as it did before this change.
+- **Lean ADRs** omit the Pseudocode, Architecture, Data Model and API sections. The rest of the SPARC shape (Context, Decision, Open Questions, Risks, Consequences) stays. Open Questions still need a `Decision:` before promoting.
+- **Phase count** is the number of distinct major N among `**Phase N.M**` task ids in the plan. `promote-to-loop.sh` refuses a bugfix plan with more than 2 phases and a poc plan with more than 3, and names the limit. A `[tier:c]` task under bugfix or poc still promotes, but prints a warning.
+- **Both files declare the scope (B-019).** `start.sh --scope X` writes `**Scope**: X` into the ADR header and `> **Scope**: X` into the plan header. The two must agree. `promote-to-loop.sh` refuses a pair where only one file declares Scope, where the values differ, or where a Scope line is unknown, malformed or duplicated. The error names the fix (for example, "make them match"). A plan and ADR with no Scope line at all promote exactly as before.
+- **Scope changes authoring only.** The green gate, independent review, risk tier and G12, the ratchet, kill switches and ledger evidence apply the same way to every scope. A bugfix plan is not checked more loosely than a feature plan.
+
+`start.sh` refuses an unknown scope and writes nothing. Per-round prompts for each scope are in the [generic](resources/templates/profiles/generic/feedback-interview.md) and [apex](resources/templates/profiles/apex/feedback-interview.md) feedback-interview files.
+
 ## Stage 1: SCOPE
 
-Use `AskUserQuestion` to surface scope and constraints **before drafting anything**. Round-by-round, ask:
+Use `AskUserQuestion` to surface scope and constraints **before drafting anything**. Ask only the rounds the chosen scope runs (see [Scope](#scope-bugfix-poc-or-feature)); `feature` runs all six. Round-by-round, ask:
 
 1. **Scope** — what's in, what's out, deadline if any
 2. **Constraints** — must-haves, non-negotiables (auth, perf budget, compliance, surface parity)
@@ -81,13 +100,14 @@ Capture answers in working memory; surface them back to the user in Stage 2 as t
 Create both docs from the templates:
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/start.sh <kebab-slug> "<Title>"
+${CLAUDE_SKILL_DIR}/scripts/start.sh <kebab-slug> "<Title>" [--scope bugfix|poc|feature]
 # Creates:
 #   .claude/tasks/<slug>-adr.md   (from resources/templates/profiles/<profile>/adr-template.md)
 #   .claude/plans/<slug>-plan.md  (from resources/templates/profiles/<profile>/plan-template.md)
+# --scope bugfix|poc use the lean templates (-lean.md); feature (the default) uses the full ones.
 ```
 
-`start.sh` substitutes slug, title, date, author email (from `git config user.email`), and seeds the ADR with the answers captured in Stage 1.
+`start.sh` substitutes slug, title, date, author email (from `git config user.email`), and seeds the ADR with the answers captured in Stage 1. `--scope=X` works too. It writes `**Scope**: X` into the ADR header and `> **Scope**: X` into the plan header.
 
 **Template profiles.** The templates live in two profiles under `resources/templates/profiles/`:
 
@@ -186,6 +206,7 @@ This:
 
 1. Validates ADR status is **Accepted** (not Proposed)
 2. Validates plan exists and has at least one unchecked task
+2a. Validates the Scope pair (B-019) and the phase limit for that scope (bugfix ≤ 2, poc ≤ 3, feature unlimited). Skipped when neither file declares a Scope
 3. Calls `${CLAUDE_PLUGIN_ROOT}/skills/apex-execute/scripts/init.sh .claude/plans/<slug>-plan.md` to seed state
 4. Prints the `/loop` command the user should run next, e.g.:
    ```
@@ -224,7 +245,7 @@ Before promoting, the skill verifies:
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/start.sh <slug> "<Title>"` | Bootstrap ADR + plan from the selected template profile (`APEX_PLAN_PROFILE`, else auto) with author/date/slug substitutions |
+| `scripts/start.sh <slug> "<Title>" [--scope bugfix\|poc\|feature]` | Bootstrap ADR + plan from the selected template profile (`APEX_PLAN_PROFILE`, else auto) and scope (lean for bugfix/poc, full for feature) with author/date/slug substitutions |
 | `scripts/promote-to-loop.sh <slug>` | Run validation checklist, hand off to apex-execute's init.sh |
 | `scripts/gate.sh <plan> <gate-id>` | Evaluate a single gate (auto/human/partner) outside the loop |
 | `scripts/status.sh <slug>` | Print ADR status, plan completion %, current gate, next phase |

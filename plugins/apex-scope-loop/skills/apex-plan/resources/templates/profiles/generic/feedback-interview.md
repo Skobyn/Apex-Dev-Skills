@@ -2,7 +2,21 @@
 
 Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (one per round) so the user can answer iteratively. Don't batch everything into one giant question — that loses signal.
 
+## Rounds per scope
+
+The plan's scope (`bugfix`, `poc` or `feature`, set with `start.sh --scope`) decides which rounds run. Each round heading below says which scopes run it.
+
+| Scope | Rounds asked |
+|---|---|
+| `bugfix` | 2 rounds: Round 1 (scope) and Round 3 (done means), asked as one combined question, then Round 6 (gate) |
+| `poc` | 4 rounds: Rounds 1, 2, 3 and 6 |
+| `feature` (default) | 6 rounds: Rounds 1 to 6 |
+
+Skip the rounds a scope doesn't run. Don't ask them to fill the gap.
+
 ## Round 1: Scope
+
+**Runs for**: bugfix, poc, feature
 
 **Question**: "What's the smallest version of this that's still useful? What's explicitly out-of-scope for v1?"
 
@@ -15,6 +29,8 @@ Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (o
 4. **Other** — user types their own framing
 
 ## Round 2: Constraints
+
+**Runs for**: poc, feature (not bugfix)
 
 **Question**: "What can't change? Things that are non-negotiable — existing data, partner contracts, auth boundaries, surface parity, perf budgets."
 
@@ -33,6 +49,8 @@ Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (o
 
 ## Round 3: Success criteria
 
+**Runs for**: bugfix (combined with Round 1), poc, feature
+
 **Question**: "How will we know this shipped correctly? Try to make each criterion runnable — a test, a metric, a curl command."
 
 **Header**: `Done means`
@@ -44,6 +62,8 @@ Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (o
 4. **All of the above** — combine the structured criteria
 
 ## Round 4: Ownership
+
+**Runs for**: feature only
 
 **Question**: "Who needs to sign off, and who's implementing? Affects how we wire approval gates."
 
@@ -59,6 +79,8 @@ Follow-up if option 2 or 3: ask for reviewer email address(es).
 
 ## Round 5: Execution preference
 
+**Runs for**: feature only
+
 **Question**: "When the plan runs, how should each phase dispatch work?"
 
 **Header**: `Swarm mode`
@@ -72,6 +94,8 @@ Follow-up if option 2 or 3: ask for reviewer email address(es).
 The default flows to the plan's `Execution Strategy` section as the "no-override" behavior; individual phases can still override via the `Swarm:` line.
 
 ## Round 6: Gate preference
+
+**Runs for**: bugfix, poc, feature
 
 **Question**: "Between phases, should the system advance automatically or wait for me?"
 
