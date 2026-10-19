@@ -2238,7 +2238,8 @@ sp_fx() {
   if [ "$2" = none ]; then sp_ed "$d/.claude/tasks/fx-adr.md" -e '/^\*\*Scope\*\*:/d'; sp_ed "$d/.claude/plans/fx-plan.md" -e '/^> \*\*Scope\*\*:/d'; fi
   if [ "$2" = feature ]; then sp_ed "$d/.claude/tasks/fx-adr.md" -e 's/^\*\*Scope\*\*: bugfix/**Scope**: feature/'; sp_ed "$d/.claude/plans/fx-plan.md" -e 's/^> \*\*Scope\*\*: bugfix/> **Scope**: feature/'; fi
   n=3; while [ "$n" -le $((2 + ${3:-0})) ]; do printf '\n- [ ] **Phase %s.1** [docs] extra phase %s\n  - Acceptance: true\n' "$n" "$n" >>"$d/.claude/plans/fx-plan.md"; n=$((n + 1)); done
-  git -C "$d" add -A && git -C "$d" commit -qm fx || fail "scope-promote: cannot commit $1"
+  # SP_DATE (optional) pins the commit's author and committer date, so a caller can give two otherwise identical fixtures different commit ids
+  ( [ -z "${SP_DATE:-}" ] || export GIT_AUTHOR_DATE="$SP_DATE" GIT_COMMITTER_DATE="$SP_DATE"; git -C "$d" add -A && git -C "$d" commit -qm fx ) || fail "scope-promote: cannot commit $1"
 }
 # sp_run SCRIPT DIR: run a promote in DIR; sets SP_RC and SP_OUT (stdout+stderr)
 sp_run() { SP_RC=0; SP_OUT="$(cd "$2" && APEX_EXECUTE_SCRIPTS="$EX" APEX_DISPATCH_MODE= APEX_GIBSON=0 APEX_MEMORY_CMD= bash "$1" fx 2>&1)" || SP_RC=$?; }
@@ -2279,18 +2280,30 @@ done
 sp_fx tc-ft feature; sp_edc tc-ft "$SP_PLAN" 's/^- \[ \] \*\*Phase 1\.1\*\* /&[tier:c] /'
 sp_promoted "a feature plan with a [tier:c] task" "$SP_TMP/tc-ft"; ! grep -qF "WARNING" <<<"$SP_OUT" || fail "scope-promote: feature printed a [tier:c] warning: $SP_OUT"
 # (e) no Scope line anywhere: identical to the previous script, on success and on refusal
-sp_norm() { local d; d="$(cd "$1" && pwd -P)"; sed -e "s#$d#<F>#g" -e "s#$1#<F>#g" -e "s#$SMOKE_TMP#<T>#g" -e 's/[0-9a-f]\{12,\}/<H>/g' -e 's/[0-9]\{4\}-[0-9][0-9]-[0-9][0-9][T ][0-9:.]*Z\{0,1\}/<TS>/g'; }
-sp_fx old-a none 4; sp_fx new-a none 4
+# sp_norm DIR: hide what legitimately differs between two fixtures: paths, timestamps, 12+ hex runs, and the short commit id git
+# prints (7+ hex) in "HEAD is now at <sha> fx" (init.sh's worktree) and in "[branch <sha>] msg"; anchored on those git phrases so
+# that ordinary words and numbers are never blanked. (BSD sed: no \b, no \|.)
+sp_norm() { local d; d="$(cd "$1" && pwd -P)"; sed -e "s#$d#<F>#g" -e "s#$1#<F>#g" -e "s#$SMOKE_TMP#<T>#g" \
+  -e 's/\(HEAD is now at \)[0-9a-f]\{7,\}/\1<H>/' -e 's/^\(\[[^]]* \)[0-9a-f]\{7,\}\]/\1<H>]/' \
+  -e 's/[0-9a-f]\{12,\}/<H>/g' -e 's/[0-9]\{4\}-[0-9][0-9]-[0-9][0-9][T ][0-9:.]*Z\{0,1\}/<TS>/g'; }
+# The two fixtures have the same tree, author and committer, so their commit ids are equal only when both commits land in the same
+# second; init.sh prints a short id ("HEAD is now at <sha> fx"), so without a pinned date this comparison would pass or fail by
+# timing. Pin different dates so the ids always differ: sp_norm must then hide them, every run, or this check goes red.
+SP_DATE="2001-01-01T00:00:00Z" sp_fx old-a none 4; SP_DATE="2002-02-02T00:00:00Z" sp_fx new-a none 4
+[ "$(git -C "$SP_TMP/old-a" rev-parse --short HEAD)" != "$(git -C "$SP_TMP/new-a" rev-parse --short HEAD)" ] || fail "scope-promote: the old-a and new-a fixtures have the same commit id; the pinned dates did not take"
 sp_run "$SP_OLD" "$SP_TMP/old-a"; SP_O_RC="$SP_RC"; SP_O_OUT="$(printf '%s\n' "$SP_OUT" | sp_norm "$SP_TMP/old-a")"
 sp_run "$SP_PROMOTE" "$SP_TMP/new-a"; SP_N_RC="$SP_RC"; SP_N_OUT="$(printf '%s\n' "$SP_OUT" | sp_norm "$SP_TMP/new-a")"
+# sp_norm hides a short commit id in git's phrases and nothing else: ordinary words and numbers of 7 or more hex-looking characters survive
+[ "$(printf 'HEAD is now at 4027dca fx\n[main (root-commit) 10e081c] fx\n' | sp_norm "$SP_TMP/old-a")" = "$(printf 'HEAD is now at <H> fx\n[main (root-commit) <H>] fx\n')" ] \
+  && [ "$(printf 'a decade ago, acceded 1234567 times at 2024\n' | sp_norm "$SP_TMP/old-a")" = 'a decade ago, acceded 1234567 times at 2024' ] || fail "scope-promote: sp_norm does not hide exactly the short commit ids"
 [ "$SP_O_RC" = 0 ] && [ "$SP_N_RC" = 0 ] || fail "scope-promote: a 6-phase scope-less plan did not promote (old rc=$SP_O_RC, new rc=$SP_N_RC): $SP_N_OUT"
 [ "$SP_O_OUT" = "$SP_N_OUT" ] || fail "scope-promote: a scope-less plan's promote output changed since 210da67: $(diff <(printf '%s\n' "$SP_O_OUT") <(printf '%s\n' "$SP_N_OUT") | head -20)"
 grep -qF "Validation passed." <<<"$SP_N_OUT" && ! grep -qF "Scope:" <<<"$SP_N_OUT" || fail "scope-promote: a scope-less promote printed scope output: $SP_N_OUT"
 # ... and the refusal of a scope-less plan (Proposed ADR) is word for word what 210da67 printed
-sp_fx old-b none; sp_fx new-b none
+SP_DATE="2001-01-01T00:00:00Z" sp_fx old-b none; SP_DATE="2002-02-02T00:00:00Z" sp_fx new-b none
 sp_edc old-b "$SP_ADR" 's/^\*\*Status\*\*: Accepted/**Status**: Proposed/'; sp_edc new-b "$SP_ADR" 's/^\*\*Status\*\*: Accepted/**Status**: Proposed/'
-sp_run "$SP_OLD" "$SP_TMP/old-b"; SP_O_RC="$SP_RC"; SP_O_OUT="$SP_OUT"; sp_run "$SP_PROMOTE" "$SP_TMP/new-b"
-[ "$SP_O_RC" = 1 ] && [ "$SP_RC" = 1 ] && [ "$SP_O_OUT" = "$SP_OUT" ] && grep -qF "ADR status is not 'Accepted'" <<<"$SP_OUT" || fail "scope-promote: the scope-less refusal differs from 210da67 (old rc=$SP_O_RC new rc=$SP_RC): $SP_OUT"
+sp_run "$SP_OLD" "$SP_TMP/old-b"; SP_O_RC="$SP_RC"; SP_O_OUT="$(printf '%s\n' "$SP_OUT" | sp_norm "$SP_TMP/old-b")"; sp_run "$SP_PROMOTE" "$SP_TMP/new-b"; SP_N_OUT="$(printf '%s\n' "$SP_OUT" | sp_norm "$SP_TMP/new-b")"
+[ "$SP_O_RC" = 1 ] && [ "$SP_RC" = 1 ] && [ "$SP_O_OUT" = "$SP_N_OUT" ] && grep -qF "ADR status is not 'Accepted'" <<<"$SP_OUT" || fail "scope-promote: the scope-less refusal differs from 210da67 (old rc=$SP_O_RC new rc=$SP_RC): $SP_OUT"
 # (f) adversarial neighbours: each refused with a clear message, nothing initialised
 sp_fx n-plan-only bugfix; sp_edc n-plan-only "$SP_ADR" '/^\*\*Scope\*\*:/d'
 sp_refused "Scope in the plan only" "$SP_TMP/n-plan-only" "Scope is declared in the plan but not in the ADR"
