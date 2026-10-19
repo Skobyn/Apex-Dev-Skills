@@ -2201,6 +2201,133 @@ SS_A="$(grep -h '^#' "$SS_TPL/apex/adr-template-lean.md" "$SS_TPL/apex/plan-temp
 [ -n "$SS_G" ] && [ "$SS_G" = "$SS_A" ] || fail "scope-start: generic and apex lean templates have different section headings"
 ok "scope-start: --scope bugfix|poc|feature writes **Scope**: and > **Scope**: lines and picks the lean or full template in both profiles; no flag is feature; an unknown scope (alone, with --force, empty) is refused and writes nothing; lean headings match across profiles; every scaffolded plan validates and its human and partner gates pass promote's gate-shape check"
 
+# 66. scope-promote (Phase 1.3): promote-to-loop.sh applies per-scope validation (ADR R2).
+#     Fixtures are built with start.sh --scope in throwaway repositories under $SMOKE_TMP (as checks 29
+#     and 64 do) with the ADR's TODOs filled and its status Accepted; a promote that succeeds runs
+#     init.sh inside the fixture, so its worktree and state stay under $SMOKE_TMP (asserted below).
+#     Definition of phase: a distinct major N among the plan's "Phase N.M" task ids. Expectations:
+#       2-phase bugfix -> promotes (exit 0, "Scope: bugfix")         3-phase bugfix -> exit 1, "bugfix allows at most 2 phases; this plan has 3"
+#       3-phase poc -> promotes; 4-phase poc -> exit 1               bugfix with a [tier:c] task -> promotes AND prints a WARNING that scope does not loosen enforcement
+#       no Scope line anywhere -> byte-identical to the previous promote-to-loop.sh (git show 210da67), success and refusal
+#     Adversarial neighbours, each exit 1 naming the problem, nothing initialised:
+#       Scope only in the plan, or only in the ADR -> "declared in the ... but not in the ..."
+#       ADR bugfix / plan poc -> "Scope disagrees"            unknown value, empty value, leftover {{SCOPE}}, wrong case -> unknown/malformed (never silently feature)
+#       Scope declared twice -> refused
+#     A bugfix ADR that still has Pseudocode/Architecture/Data Model/API sections promotes (promote never required them,
+#     so no scope forbids them); a feature plan with 5 phases promotes (no limit).
+#     Enforcement is not loosened: a bugfix plan with an ambiguous gate Acceptance, a Proposed ADR, a leftover TODO
+#     and a task with no Acceptance are refused exactly as for feature.
+SP_START="$PLUGIN_ROOT/skills/apex-plan/scripts/start.sh"; SP_PROMOTE="$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh"
+SP_TMP="$SMOKE_TMP/scope-promote"; mkdir -p "$SP_TMP" || fail "scope-promote: cannot create the temp dir"
+SP_OLD="$SP_TMP/promote-to-loop.210da67.sh"
+git -C "$EB_ROOT" show "210da67:plugins/apex-scope-loop/skills/apex-plan/scripts/promote-to-loop.sh" >"$SP_OLD" || fail "scope-promote: cannot read promote-to-loop.sh at 210da67"
+[ -s "$SP_OLD" ] || fail "scope-promote: the 210da67 promote-to-loop.sh is empty"
+# sp_ed FILE SED-ARGS...: edit a fixture file in place (portable -i) and fail if the file is not there
+sp_ed() { local f="$1"; shift; [ -f "$f" ] || fail "scope-promote: no such fixture file $f"; sed -i.bak "$@" "$f" && rm -f "$f.bak"; }
+# sp_fx NAME SCOPE [EXTRA_PHASES]: a committed repo with a filled-in, Accepted ADR and a plan from start.sh --scope SCOPE
+# (SCOPE "none" = no Scope line in either file, like a plan from before Phase 1.2); EXTRA_PHASES adds Phase 3.1, 4.1, ...
+sp_fx() {
+  local d="$SP_TMP/$1" n
+  [ -n "$1" ] && rm -rf "${d:?}"; mkdir -p "$d" && git -C "$d" init -q -b main || fail "scope-promote: cannot init $1"
+  # feature and none are built from the lean (bugfix) scaffold and then re-labelled: the full feature template carries
+  # placeholder Acceptance lines that promote's gate check rightly refuses, which is not what this check is about
+  local lean="$2"; case "$2" in feature|none) lean=bugfix;; esac
+  (cd "$d" && bash "$SP_START" fx T --scope "$lean" >/dev/null) || fail "scope-promote: start.sh failed for $1"
+  sp_ed "$d/.claude/tasks/fx-adr.md" -e 's/\[ TODO[^]]*\]/filled/g' -e 's/_(filled in during refinement)_/keep it small/' -e 's/^\*\*Status\*\*: Proposed/**Status**: Accepted/'
+  sp_ed "$d/.claude/plans/fx-plan.md" -e 's/{test command}/bash -c true/g'
+  if [ "$2" = none ]; then sp_ed "$d/.claude/tasks/fx-adr.md" -e '/^\*\*Scope\*\*:/d'; sp_ed "$d/.claude/plans/fx-plan.md" -e '/^> \*\*Scope\*\*:/d'; fi
+  if [ "$2" = feature ]; then sp_ed "$d/.claude/tasks/fx-adr.md" -e 's/^\*\*Scope\*\*: bugfix/**Scope**: feature/'; sp_ed "$d/.claude/plans/fx-plan.md" -e 's/^> \*\*Scope\*\*: bugfix/> **Scope**: feature/'; fi
+  n=3; while [ "$n" -le $((2 + ${3:-0})) ]; do printf '\n- [ ] **Phase %s.1** [docs] extra phase %s\n  - Acceptance: true\n' "$n" "$n" >>"$d/.claude/plans/fx-plan.md"; n=$((n + 1)); done
+  git -C "$d" add -A && git -C "$d" commit -qm fx || fail "scope-promote: cannot commit $1"
+}
+# sp_run SCRIPT DIR: run a promote in DIR; sets SP_RC and SP_OUT (stdout+stderr)
+sp_run() { SP_RC=0; SP_OUT="$(cd "$2" && APEX_EXECUTE_SCRIPTS="$EX" APEX_DISPATCH_MODE= APEX_GIBSON=0 APEX_MEMORY_CMD= bash "$1" fx 2>&1)" || SP_RC=$?; }
+# sp_refused NAME DIR PATTERN: exit 1, output matches PATTERN, no state or worktree was created
+sp_refused() {
+  sp_run "$SP_PROMOTE" "$2"
+  [ "$SP_RC" = 1 ] || fail "scope-promote: $1 exited $SP_RC, expected 1: $SP_OUT"
+  grep -qE -- "$3" <<<"$SP_OUT" || fail "scope-promote: $1 did not say '$3': $SP_OUT"
+  [ ! -e "$2/.dev-plan-state" ] || fail "scope-promote: $1 left state behind"
+}
+sp_promoted() {
+  sp_run "$SP_PROMOTE" "$2"
+  [ "$SP_RC" = 0 ] || fail "scope-promote: $1 exited $SP_RC, expected 0: $SP_OUT"
+  grep -qF -- "Validation passed." <<<"$SP_OUT" || fail "scope-promote: $1 did not report 'Validation passed.': $SP_OUT"
+  [ -d "$2/.dev-plan-state" ] || fail "scope-promote: $1 promoted but wrote no state in its fixture"
+}
+# sp_edc NAME FILE SED-ARGS...: edit one fixture file of NAME and commit it
+sp_edc() { local n="$1" f="$2"; shift 2; sp_ed "$SP_TMP/$n/$f" "$@"; git -C "$SP_TMP/$n" commit -qam edit || fail "scope-promote: cannot commit the edit to $n"; }
+SP_ADR=.claude/tasks/fx-adr.md; SP_PLAN=.claude/plans/fx-plan.md
+# (a) 2-phase bugfix promotes; poc with 3 phases promotes
+sp_fx bf2 bugfix; sp_promoted "a 2-phase bugfix" "$SP_TMP/bf2"
+grep -qF -- "Scope: bugfix (2 of at most 2 phases)" <<<"$SP_OUT" || fail "scope-promote: the 2-phase bugfix did not report its scope: $SP_OUT"
+! grep -qF -- "WARNING" <<<"$SP_OUT" || fail "scope-promote: a bugfix without a [tier:c] task printed a warning: $SP_OUT"
+sp_fx poc3 poc 1; sp_promoted "a 3-phase poc" "$SP_TMP/poc3"
+# (b) 3-phase bugfix: exit 1, names the limit
+sp_fx bf3 bugfix 1; sp_refused "a 3-phase bugfix" "$SP_TMP/bf3" "bugfix allows at most 2 phases; this plan has 3"
+# (c) 4-phase poc
+sp_fx poc4 poc 2; sp_refused "a 4-phase poc" "$SP_TMP/poc4" "poc allows at most 3 phases; this plan has 4"
+# feature has no limit
+sp_fx ft5 feature 3; sp_promoted "a 5-phase feature" "$SP_TMP/ft5"
+# (d) [tier:c] under bugfix and poc still promotes and warns; under feature there is no warning
+for SP_SC in bugfix poc; do
+  sp_fx "tc-$SP_SC" "$SP_SC"; sp_edc "tc-$SP_SC" "$SP_PLAN" 's/^- \[ \] \*\*Phase 1\.1\*\* /&[tier:c] /'
+  grep -qF '[tier:c]' "$SP_TMP/tc-$SP_SC/$SP_PLAN" || fail "scope-promote: could not tag the $SP_SC fixture [tier:c]"
+  sp_promoted "a $SP_SC plan with a [tier:c] task" "$SP_TMP/tc-$SP_SC"
+  grep -qF "WARNING: line" <<<"$SP_OUT" && grep -qF "does not loosen enforcement" <<<"$SP_OUT" || fail "scope-promote: $SP_SC with [tier:c] printed no warning that scope does not loosen enforcement: $SP_OUT"
+done
+sp_fx tc-ft feature; sp_edc tc-ft "$SP_PLAN" 's/^- \[ \] \*\*Phase 1\.1\*\* /&[tier:c] /'
+sp_promoted "a feature plan with a [tier:c] task" "$SP_TMP/tc-ft"; ! grep -qF "WARNING" <<<"$SP_OUT" || fail "scope-promote: feature printed a [tier:c] warning: $SP_OUT"
+# (e) no Scope line anywhere: identical to the previous script, on success and on refusal
+sp_norm() { local d; d="$(cd "$1" && pwd -P)"; sed -e "s#$d#<F>#g" -e "s#$1#<F>#g" -e "s#$SMOKE_TMP#<T>#g" -e 's/[0-9a-f]\{12,\}/<H>/g' -e 's/[0-9]\{4\}-[0-9][0-9]-[0-9][0-9][T ][0-9:.]*Z\{0,1\}/<TS>/g'; }
+sp_fx old-a none 4; sp_fx new-a none 4
+sp_run "$SP_OLD" "$SP_TMP/old-a"; SP_O_RC="$SP_RC"; SP_O_OUT="$(printf '%s\n' "$SP_OUT" | sp_norm "$SP_TMP/old-a")"
+sp_run "$SP_PROMOTE" "$SP_TMP/new-a"; SP_N_RC="$SP_RC"; SP_N_OUT="$(printf '%s\n' "$SP_OUT" | sp_norm "$SP_TMP/new-a")"
+[ "$SP_O_RC" = 0 ] && [ "$SP_N_RC" = 0 ] || fail "scope-promote: a 6-phase scope-less plan did not promote (old rc=$SP_O_RC, new rc=$SP_N_RC): $SP_N_OUT"
+[ "$SP_O_OUT" = "$SP_N_OUT" ] || fail "scope-promote: a scope-less plan's promote output changed since 210da67: $(diff <(printf '%s\n' "$SP_O_OUT") <(printf '%s\n' "$SP_N_OUT") | head -20)"
+grep -qF "Validation passed." <<<"$SP_N_OUT" && ! grep -qF "Scope:" <<<"$SP_N_OUT" || fail "scope-promote: a scope-less promote printed scope output: $SP_N_OUT"
+# ... and the refusal of a scope-less plan (Proposed ADR) is word for word what 210da67 printed
+sp_fx old-b none; sp_fx new-b none
+sp_edc old-b "$SP_ADR" 's/^\*\*Status\*\*: Accepted/**Status**: Proposed/'; sp_edc new-b "$SP_ADR" 's/^\*\*Status\*\*: Accepted/**Status**: Proposed/'
+sp_run "$SP_OLD" "$SP_TMP/old-b"; SP_O_RC="$SP_RC"; SP_O_OUT="$SP_OUT"; sp_run "$SP_PROMOTE" "$SP_TMP/new-b"
+[ "$SP_O_RC" = 1 ] && [ "$SP_RC" = 1 ] && [ "$SP_O_OUT" = "$SP_OUT" ] && grep -qF "ADR status is not 'Accepted'" <<<"$SP_OUT" || fail "scope-promote: the scope-less refusal differs from 210da67 (old rc=$SP_O_RC new rc=$SP_RC): $SP_OUT"
+# (f) adversarial neighbours: each refused with a clear message, nothing initialised
+sp_fx n-plan-only bugfix; sp_edc n-plan-only "$SP_ADR" '/^\*\*Scope\*\*:/d'
+sp_refused "Scope in the plan only" "$SP_TMP/n-plan-only" "Scope is declared in the plan but not in the ADR"
+sp_fx n-adr-only bugfix; sp_edc n-adr-only "$SP_PLAN" '/^> \*\*Scope\*\*:/d'
+sp_refused "Scope in the ADR only" "$SP_TMP/n-adr-only" "Scope is declared in the ADR but not in the plan"
+sp_fx n-disagree bugfix; sp_edc n-disagree "$SP_PLAN" 's/^> \*\*Scope\*\*: bugfix/> **Scope**: poc/'
+sp_refused "ADR bugfix with plan poc" "$SP_TMP/n-disagree" "Scope disagrees: ADR says 'bugfix', plan says 'poc'"
+for SP_BAD in "huge:unknown Scope 'huge'" ":unknown Scope ''" "{{SCOPE}}:unknown Scope '.*SCOPE.*'" "Bugfix:unknown Scope 'Bugfix'" "bugfix extra:unknown Scope 'bugfix extra'"; do
+  SP_VAL="${SP_BAD%%:*}"; SP_MSG="${SP_BAD#*:}"; SP_N="n-bad-$(printf '%s' "$SP_VAL" | tr -c 'a-z' '_')"
+  sp_fx "$SP_N" bugfix
+  sp_ed "$SP_TMP/$SP_N/$SP_ADR" "s/^\*\*Scope\*\*: bugfix/**Scope**: $SP_VAL/"
+  sp_edc "$SP_N" "$SP_PLAN" "s/^> \*\*Scope\*\*: bugfix/> **Scope**: $SP_VAL/"
+  sp_refused "an unknown Scope value '$SP_VAL'" "$SP_TMP/$SP_N" "$SP_MSG"
+done
+for SP_BAD in "**scope**: bugfix" "**Scope** bugfix" "**Scope**:bugfix-ish"; do
+  sp_fx n-mal bugfix; sp_edc n-mal "$SP_ADR" "s/^\*\*Scope\*\*: bugfix/$SP_BAD/"
+  sp_refused "a malformed Scope line '$SP_BAD'" "$SP_TMP/n-mal" "malformed Scope line in ADR|unknown Scope|Scope disagrees"
+done
+sp_fx n-twice bugfix; sp_edc n-twice "$SP_ADR" 's/^\*\*Scope\*\*: bugfix/&\
+**Scope**: feature/'
+sp_refused "a Scope declared twice" "$SP_TMP/n-twice" "ADR declares Scope more than once"
+# a bugfix ADR that keeps the optional sections still promotes
+sp_fx opt bugfix; printf '\n## Pseudocode\n\nx\n\n## Architecture\n\nx\n\n## Data Model\n\nx\n\n## API Surface\n\nx\n' >>"$SP_TMP/opt/$SP_ADR"; git -C "$SP_TMP/opt" commit -qam opt
+sp_promoted "a bugfix ADR that keeps the optional sections" "$SP_TMP/opt"
+# enforcement is not loosened: every other refusal is unchanged under bugfix
+sp_fx e-gate bugfix; sp_edc e-gate "$SP_PLAN" 's/^  - Acceptance: user types `approve ship`/  - Acceptance: looks fine/'
+sp_refused "a bugfix plan with a gate Acceptance that has no approval phrase" "$SP_TMP/e-gate" "Gate task has ambiguous Acceptance|should require approval phrase"
+sp_fx e-status bugfix; sp_edc e-status "$SP_ADR" 's/^\*\*Status\*\*: Accepted/**Status**: Proposed/'
+sp_refused "a bugfix with a Proposed ADR" "$SP_TMP/e-status" "ADR status is not 'Accepted'"
+sp_fx e-todo bugfix; printf '\n[ TODO left over ]\n' >>"$SP_TMP/e-todo/$SP_ADR"; git -C "$SP_TMP/e-todo" commit -qam t
+sp_refused "a bugfix ADR with a leftover TODO" "$SP_TMP/e-todo" "unresolved \[ TODO \]"
+sp_fx e-acc bugfix; sp_edc e-acc "$SP_PLAN" '/Implement the change/{n;d;}'
+sp_refused "a bugfix plan with a task that has no Acceptance" "$SP_TMP/e-acc" "plan is invalid"
+# nothing escaped the fixtures: no worktree, branch or state outside $SMOKE_TMP, and the checkout is unchanged
+[ "$(git -C "$EB_ROOT" status --porcelain)" = "$EB_STATUS" ] || fail "scope-promote: the checkout's git status changed"
+ok "scope-promote: 2-phase bugfix and 3-phase poc promote; 3-phase bugfix and 4-phase poc are refused naming the limit; [tier:c] under bugfix/poc promotes with a warning; a scope-less plan's output is byte-identical to 210da67 (promote and refusal); Scope in one file only, disagreeing, unknown, empty, placeholder, wrong-case, malformed and doubled values are refused; a bugfix ADR with the optional sections promotes; gate, status, TODO and Acceptance checks are unchanged under bugfix"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2260,4 +2387,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 67/67 checks"
+echo "smoke passed: 68/68 checks"
