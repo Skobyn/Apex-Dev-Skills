@@ -1,18 +1,36 @@
 # SCOPE interview — feedback prompt library
 
-Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (one per round) so the user can answer iteratively. The one exception is bugfix, which asks Rounds 1 and 3 as one combined question. Don't batch everything into one giant question — that loses signal.
+Use `AskUserQuestion` for each round. Send Round 0 (intent) and rounds 1–6 as separate questions (one per round) so the user can answer iteratively. The one exception is bugfix, which asks Rounds 1 and 3 as one combined question. Don't batch everything into one giant question — that loses signal.
 
 ## Rounds per scope
 
-The plan's scope (`bugfix`, `poc` or `feature`, set with `start.sh --scope`) decides which rounds run. Each round heading below says which scopes run it.
+The plan's scope (`bugfix`, `poc` or `feature`, set with `start.sh --scope`) decides which rounds run. Each round heading below says which scopes run it. Round 0 (Intent) runs first and is not one of the numbered SCOPE rounds, so the counts below do not include it.
 
-| Scope | Rounds asked |
-|---|---|
-| `bugfix` | 2 rounds: Round 1 (scope) and Round 3 (done means), asked as one combined question, then Round 6 (gate) |
-| `poc` | 4 rounds: Rounds 1, 2, 3 and 6 |
-| `feature` (default) | 6 rounds: Rounds 1 to 6 |
+| Scope | Round 0 (Intent, not counted) | Rounds asked |
+|---|---|---|
+| `bugfix` | only if the user asks | 2 rounds: Round 1 (scope) and Round 3 (done means), asked as one combined question, then Round 6 (gate) |
+| `poc` | yes | 4 rounds: Rounds 1, 2, 3 and 6 |
+| `feature` (default) | yes | 6 rounds: Rounds 1 to 6 |
 
 Skip the rounds a scope doesn't run. Don't ask them to fill the gap.
+
+## Round 0: Intent
+
+**Runs for**: poc, feature. Bugfix only if the user asks for it.
+
+**Counts toward the 2/4/6 rounds?** No. Intent is a round-0 step before Round 1; the round counts above are the SCOPE rounds only.
+
+**Question**: "In your own words: what is the problem, who is it for, why now, and what is this explicitly not trying to solve?"
+
+**Header**: `Intent`
+
+**Options** (free text; use "Other" for every answer, or one `AskUserQuestion` per heading below if the user prefers):
+1. **Problem** — "What hurts today? One or two short paragraphs, no solution yet."
+2. **Who it's for** — "Who feels it, and what do they do instead?"
+3. **Why now** — "What changed, or what breaks if this waits?"
+4. **Non-goals** — "What is out of bounds?"
+
+**After the answer**: write the answers to `.claude/tasks/<slug>-intent.md`, following [intent-template.md](intent-template.md) (headings `## Problem`, `## Who it's for`, `## Why now`, `## Non-goals`). Do this *before* running `start.sh`. `start.sh` copies the `## Problem` text into the ADR's "Why this matters" section and never overwrites an existing intent file.
 
 ## Round 1: Scope
 

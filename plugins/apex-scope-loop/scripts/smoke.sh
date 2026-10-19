@@ -2328,6 +2328,86 @@ sp_refused "a bugfix plan with a task that has no Acceptance" "$SP_TMP/e-acc" "p
 [ "$(git -C "$EB_ROOT" status --porcelain)" = "$EB_STATUS" ] || fail "scope-promote: the checkout's git status changed"
 ok "scope-promote: 2-phase bugfix and 3-phase poc promote; 3-phase bugfix and 4-phase poc are refused naming the limit; [tier:c] under bugfix/poc promotes with a warning; a scope-less plan's output is byte-identical to 210da67 (promote and refusal); Scope in one file only, disagreeing, unknown, empty, placeholder, wrong-case, malformed and doubled values are refused; a bugfix ADR with the optional sections promotes; gate, status, TODO and Acceptance checks are unchanged under bugfix"
 
+# 67. intent-seed (Phase 2.1): start.sh seeds an intent file's Problem into the ADR's "Why this matters"
+#     (full and lean ADR, both profiles); never overwrites the intent file; scaffolds one for poc/feature only.
+IS_TMP="$SMOKE_TMP/intent-seed"; mkdir -p "$IS_TMP" || fail "intent-seed: cannot create the temp dir"
+IS_PROBLEM_FILE="$IS_TMP/problem.txt"
+printf '%s\n' 'Checkout costs $HOME users a `retry` and {{SLUG}} loses orders.' '' 'Second paragraph: still the problem.' >"$IS_PROBLEM_FILE"
+is_repo() { local d="$IS_TMP/$1"; rm -rf "${d:?}"; mkdir -p "$d/.claude/tasks" && git -C "$d" init -q -b main || fail "intent-seed: cannot init $1"; }
+is_why() { sed -n '/^### Why this matters$/,/^### Requirements$/p' "$1"; }  # the section, ending at the next heading
+is_intent() { { printf '# Intent\n\n## Problem\n\n'; cat "$IS_PROBLEM_FILE"; printf '\n## Who it'"'"'s for\n\nops\n\n## Non-goals\n\nnone\n'; } >"$1"; }
+for IS_PROF in generic apex; do
+  IS_RUN() { (cd "$IS_D" && APEX_PLAN_PROFILE="$IS_PROF" bash "$SS" "$@" 2>&1); }
+  # (a) an intent file present: Problem seeded in the lean and the full ADR; other sections unchanged
+  for IS_SC in bugfix poc feature; do
+    is_repo "a-$IS_PROF-$IS_SC"; IS_D="$IS_TMP/a-$IS_PROF-$IS_SC"
+    is_intent "$IS_D/.claude/tasks/x-intent.md"; cp "$IS_D/.claude/tasks/x-intent.md" "$IS_D/before.md"
+    IS_OUT="$(IS_RUN x T --scope "$IS_SC")" || fail "intent-seed: $IS_PROF $IS_SC with an intent file failed: $IS_OUT"
+    IS_W="$(is_why "$IS_D/.claude/tasks/x-adr.md")"
+    grep -qF -- 'Checkout costs $HOME users a `retry` and {{SLUG}} loses orders.' <<<"$IS_W" || fail "intent-seed: $IS_PROF $IS_SC ADR 'Why this matters' lacks the Problem text: $IS_W"
+    grep -qF -- 'Second paragraph: still the problem.' <<<"$IS_W" || fail "intent-seed: $IS_PROF $IS_SC lost the second paragraph: $IS_W"
+    ! grep -qF -- '[ TODO ]' <<<"$IS_W" || fail "intent-seed: $IS_PROF $IS_SC kept the placeholder after seeding: $IS_W"
+    ! grep -qF -- 'Concrete pain points' <<<"$IS_W" && ! grep -qF -- 'One paragraph.' <<<"$IS_W" || fail "intent-seed: $IS_PROF $IS_SC kept the placeholder guidance: $IS_W"
+    [ "$(grep -c '^### Why this matters$' "$IS_D/.claude/tasks/x-adr.md")" = 1 ] || fail "intent-seed: $IS_PROF $IS_SC ADR does not have exactly one 'Why this matters' heading"
+    grep -qF '### Requirements' "$IS_D/.claude/tasks/x-adr.md" && grep -qF '### Constraints' "$IS_D/.claude/tasks/x-adr.md" || fail "intent-seed: $IS_PROF $IS_SC seeding damaged the next sections"
+    cmp -s "$IS_D/before.md" "$IS_D/.claude/tasks/x-intent.md" || fail "intent-seed: $IS_PROF $IS_SC changed the intent file"
+    python3 "$EX/planlib.py" validate "$IS_D/.claude/plans/x-plan.md" >/dev/null 2>&1 || fail "intent-seed: $IS_PROF $IS_SC plan no longer validates"
+    # the seeded ADR equals an unseeded one everywhere outside that section
+    is_repo "n-$IS_PROF-$IS_SC"; IS_N="$IS_TMP/n-$IS_PROF-$IS_SC"
+    (cd "$IS_N" && APEX_PLAN_PROFILE="$IS_PROF" bash "$SS" x T --scope "$IS_SC" >/dev/null 2>&1) || fail "intent-seed: $IS_PROF $IS_SC control run failed"
+    diff <(sed '/^### Why this matters$/,/^### Requirements$/d' "$IS_D/.claude/tasks/x-adr.md") <(sed '/^### Why this matters$/,/^### Requirements$/d' "$IS_N/.claude/tasks/x-adr.md") >/dev/null || fail "intent-seed: $IS_PROF $IS_SC seeding changed a section other than 'Why this matters'"
+  done
+  # (b) none + bugfix: succeeds, no intent file, nothing printed about intent
+  is_repo "b-$IS_PROF"; IS_D="$IS_TMP/b-$IS_PROF"
+  IS_OUT="$(IS_RUN x T --scope bugfix)" || fail "intent-seed: $IS_PROF bugfix without an intent file failed: $IS_OUT"
+  [ ! -e "$IS_D/.claude/tasks/x-intent.md" ] || fail "intent-seed: $IS_PROF bugfix created an intent file"
+  ! grep -qE '^Intent|WARNING' <<<"$IS_OUT" || fail "intent-seed: $IS_PROF bugfix printed about intent: $IS_OUT"
+  grep -qF -- '[ TODO ]' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF bugfix lost the placeholder"
+  # (c) none + poc|feature: reminder, exit 0, intent file from the template with all four headings
+  for IS_SC in poc feature; do
+    is_repo "c-$IS_PROF-$IS_SC"; IS_D="$IS_TMP/c-$IS_PROF-$IS_SC"
+    IS_OUT="$(IS_RUN x T --scope "$IS_SC")" || fail "intent-seed: $IS_PROF $IS_SC without an intent file did not exit 0: $IS_OUT"
+    grep -qF -- 'Intent: scaffolded' <<<"$IS_OUT" && grep -qF -- 'Fill in its Problem section' <<<"$IS_OUT" || fail "intent-seed: $IS_PROF $IS_SC printed no intent reminder: $IS_OUT"
+    [ -s "$IS_D/.claude/tasks/x-intent.md" ] || fail "intent-seed: $IS_PROF $IS_SC created no intent file"
+    for IS_H in '## Problem' '## Who it'"'"'s for' '## Why now' '## Non-goals'; do
+      grep -qxF -- "$IS_H" "$IS_D/.claude/tasks/x-intent.md" || fail "intent-seed: $IS_PROF $IS_SC intent file lacks '$IS_H'"
+      grep -qxF -- "$IS_H" "$SS_TPL/$IS_PROF/intent-template.md" || fail "intent-seed: $IS_PROF intent-template.md lacks '$IS_H'"
+    done
+    grep -qF -- '[ TODO ]' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF $IS_SC seeded an unfilled template into the ADR"
+    # re-running with --force while the scaffold is still unfilled warns and keeps the placeholder
+    IS_OUT="$(IS_RUN x T --scope "$IS_SC" --force)" || fail "intent-seed: $IS_PROF $IS_SC --force over an unfilled scaffold failed: $IS_OUT"
+    grep -qF -- 'WARNING' <<<"$IS_OUT" && grep -qF -- 'still [ TODO ]' <<<"$IS_OUT" || fail "intent-seed: $IS_PROF $IS_SC unfilled scaffold gave no warning: $IS_OUT"
+  done
+  # (d) a user-written intent file survives --force, and re-running after filling in the scaffold seeds it
+  is_repo "d-$IS_PROF"; IS_D="$IS_TMP/d-$IS_PROF"
+  (cd "$IS_D" && APEX_PLAN_PROFILE="$IS_PROF" bash "$SS" x T --scope feature >/dev/null 2>&1) || fail "intent-seed: $IS_PROF scaffold run failed"
+  is_intent "$IS_D/.claude/tasks/x-intent.md"; cp "$IS_D/.claude/tasks/x-intent.md" "$IS_D/before.md"
+  IS_OUT="$(IS_RUN x T --scope feature --force)" || fail "intent-seed: $IS_PROF --force over a user-written intent file failed: $IS_OUT"
+  cmp -s "$IS_D/before.md" "$IS_D/.claude/tasks/x-intent.md" || fail "intent-seed: $IS_PROF --force clobbered the user-written intent file"
+  grep -qF -- 'Second paragraph: still the problem.' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF --force did not seed the user-written Problem"
+  # (e) malformed intent files warn, keep the placeholder, still succeed
+  for IS_BAD in nosection empty todo; do
+    is_repo "e-$IS_PROF-$IS_BAD"; IS_D="$IS_TMP/e-$IS_PROF-$IS_BAD"
+    case "$IS_BAD" in
+      nosection) printf '# Intent\n\n## Who it'"'"'s for\n\nops\n' >"$IS_D/.claude/tasks/x-intent.md" ;;
+      empty)     printf '# Intent\n\n## Problem\n\n   \n## Why now\n\nnow\n' >"$IS_D/.claude/tasks/x-intent.md" ;;
+      todo)      printf '# Intent\n\n## Problem\n\n[ TODO ]\n\n## Why now\n\nnow\n' >"$IS_D/.claude/tasks/x-intent.md" ;;
+    esac
+    cp "$IS_D/.claude/tasks/x-intent.md" "$IS_D/before.md"
+    IS_OUT="$(IS_RUN x T --scope poc)" || fail "intent-seed: $IS_PROF $IS_BAD intent file made start.sh fail: $IS_OUT"
+    grep -qF -- 'WARNING: ' <<<"$IS_OUT" || fail "intent-seed: $IS_PROF $IS_BAD intent file gave no warning: $IS_OUT"
+    grep -qF -- '[ TODO ]' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF $IS_BAD intent file lost the placeholder"
+    cmp -s "$IS_D/before.md" "$IS_D/.claude/tasks/x-intent.md" || fail "intent-seed: $IS_PROF $IS_BAD intent file was modified"
+  done
+  # a Problem section followed by a heading inside a fenced block keeps the fence content
+  is_repo "f-$IS_PROF"; IS_D="$IS_TMP/f-$IS_PROF"
+  printf '# Intent\n\n## Problem\n\nSee:\n\n```\n## not a heading\n```\n\nafter fence\n\n## Why now\n\nnow\n' >"$IS_D/.claude/tasks/x-intent.md"
+  IS_RUN x T --scope poc >/dev/null || fail "intent-seed: $IS_PROF fenced intent file made start.sh fail"
+  grep -qF -- 'after fence' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF a fenced '## ' line cut the Problem short"
+  ! grep -qF -- 'now' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF the Why now body leaked into 'Why this matters'"
+done
+ok "intent-seed: an intent file's Problem (with \$, backtick, {{ and two paragraphs) replaces 'Why this matters' in the lean and full ADR of both profiles and nothing else changes; bugfix with no intent file writes none and says nothing; poc/feature scaffold one from the template with a reminder and exit 0; a user-written intent file survives --force; a missing, empty or [ TODO ] Problem warns and keeps the placeholder"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2387,4 +2467,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 68/68 checks"
+echo "smoke passed: 69/69 checks"

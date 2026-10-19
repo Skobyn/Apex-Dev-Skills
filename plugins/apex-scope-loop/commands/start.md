@@ -16,11 +16,13 @@ You are starting an `apex-plan` session for the slug given in `$ARGUMENTS`.
 | `poc` | 4: scope, constraints, done, gate | lean | 3 |
 | `feature` | 6: scope, constraints, done, ownership, swarm, gate | full | unlimited |
 
+**Round 0, intent.** Before the numbered rounds, `poc` and `feature` ask an intent question (problem, who it's for, why now, non-goals); `bugfix` asks it only if the user wants it. It is not one of the 2/4/6 rounds in the table. Write the answers to `.claude/tasks/<slug>-intent.md` (template: `intent-template.md` beside the feedback-interview file) before running `start.sh`. `start.sh` seeds the `## Problem` text into the ADR's "Why this matters" section and never overwrites the intent file; a bugfix with no intent file is scaffolded as before.
+
 Scope changes authoring only. The green gate, independent review, risk tier and G12, the ratchet, kill switches and ledger evidence apply the same way to every scope.
 
 Invoke the `apex-plan` skill and run its five-stage flow:
 
-1. **SCOPE** — Use AskUserQuestion for the feedback-interview rounds that the chosen scope runs, defined in `${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/resources/templates/profiles/<profile>/feedback-interview.md` (profile `apex` when `.claude/agent-coord-config.json` exists or `APEX_PLAN_PROFILE=apex`, else `generic`). `feature` runs all six: scope, constraints, success criteria, ownership, execution preference, gating preference. `poc` runs scope, constraints, success criteria and gating. `bugfix` runs one combined scope+success-criteria question, then gating. Capture each answer in working memory.
+1. **SCOPE** — Start with Round 0 (intent) when the scope runs it, and write `.claude/tasks/<slug>-intent.md`. Then use AskUserQuestion for the feedback-interview rounds that the chosen scope runs, defined in `${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/resources/templates/profiles/<profile>/feedback-interview.md` (profile `apex` when `.claude/agent-coord-config.json` exists or `APEX_PLAN_PROFILE=apex`, else `generic`). The numbered rounds do not include Round 0. `feature` runs all six: scope, constraints, success criteria, ownership, execution preference, gating preference. `poc` runs scope, constraints, success criteria and gating. `bugfix` runs one combined scope+success-criteria question, then gating. Capture each answer in working memory.
 
 2. **COMPOSE** — Run `${CLAUDE_PLUGIN_ROOT}/skills/apex-plan/scripts/start.sh <slug> "<Title>" --scope <scope>` to scaffold, where `<scope>` is the resolved scope (`bugfix`, `poc` or `feature`). `--scope` may be omitted for `feature`:
    - `.claude/tasks/<slug>-adr.md` (header: `**Scope**: <scope>`)

@@ -12,7 +12,7 @@ This skill is the upstream bookend for [apex-execute](../apex-execute/SKILL.md).
 2. A phased **plan** at `.claude/plans/<slug>-plan.md` (the executable checklist, apex-execute compatible)
 3. **Approval gates** between phases (auto-verifiable or human-required)
 
-Both docs are co-authored with the user through 2, 4 or 6 structured feedback rounds, by scope, so by the time the plan is ready to `/loop`, the user has signed off on every meaningful choice.
+Both docs are co-authored with the user through a round-0 intent step and then 2, 4 or 6 structured feedback rounds, by scope, so by the time the plan is ready to `/loop`, the user has signed off on every meaningful choice.
 
 ## When to use this skill
 
@@ -46,8 +46,9 @@ If a partner must sign off, prefer `architecture-decision-propose` first, then r
 ## The five-stage flow (SCOPE)
 
 ```
-1. SCOPE     — 2, 4 or 6 AskUserQuestion rounds, by scope: scope, constraints, success
-              criteria, partners, swarm preferences, gate preferences
+1. SCOPE     — round 0 (intent, optional for bugfix), then 2, 4 or 6 AskUserQuestion
+              rounds, by scope: scope, constraints, success criteria, partners, swarm
+              preferences, gate preferences
    ↓
 2. COMPOSE   — Write ADR (SPARC sections) + plan stub from templates
    ↓
@@ -80,11 +81,13 @@ Every plan has a scope. It sets how much authoring the session asks for, not how
 - **Both files declare the scope (B-019).** `start.sh --scope X` writes `**Scope**: X` into the ADR header and `> **Scope**: X` into the plan header. The two must agree. `promote-to-loop.sh` refuses a pair where only one file declares Scope, where the values differ, or where a Scope line is unknown, malformed or duplicated. The error names the fix (for example, "make them match"). A plan and ADR with no Scope line at all promote exactly as before.
 - **Scope changes authoring only.** The green gate, independent review, risk tier and G12, the ratchet, kill switches and ledger evidence apply the same way to every scope. A bugfix plan is not checked more loosely than a feature plan.
 
+- **Round 0 intent.** Before the numbered rounds, `poc` and `feature` run an intent step; `bugfix` runs it only if the user asks. It is not one of the 2/4/6 SCOPE rounds. The answers go in `.claude/tasks/<slug>-intent.md` (headings `## Problem`, `## Who it's for`, `## Why now`, `## Non-goals`, from `intent-template.md`). Write it before `start.sh`: `start.sh` copies the `## Problem` text into the ADR's "Why this matters" section and never overwrites the intent file. With no intent file, a `bugfix` start prints nothing about intent; a `poc` or `feature` start scaffolds `<slug>-intent.md` from the template and prints a reminder to fill it in and re-run `start.sh <slug> "<Title>" --scope <scope> --force` (before any hand edits to the ADR). A Problem section that is missing, empty or still `[ TODO ]` prints a warning and leaves the placeholder.
+
 `start.sh` refuses an unknown scope and writes nothing. Per-round prompts for each scope are in the [generic](resources/templates/profiles/generic/feedback-interview.md) and [apex](resources/templates/profiles/apex/feedback-interview.md) feedback-interview files.
 
 ## Stage 1: SCOPE
 
-Use `AskUserQuestion` to surface scope and constraints **before drafting anything**. Ask only the rounds the chosen scope runs (see [Scope](#scope-bugfix-poc-or-feature)); `feature` runs all six. Round-by-round, ask:
+Use `AskUserQuestion` to surface scope and constraints **before drafting anything**. Ask only the rounds the chosen scope runs (see [Scope](#scope-bugfix-poc-or-feature)); `feature` runs all six. Before Round 1, run **Round 0: Intent** (below). Round-by-round, ask:
 
 1. **Scope** — what's in, what's out, deadline if any
 2. **Constraints** — must-haves, non-negotiables (auth, perf budget, compliance, surface parity)
