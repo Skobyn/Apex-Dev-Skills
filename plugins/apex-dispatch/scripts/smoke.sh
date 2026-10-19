@@ -2801,7 +2801,8 @@ pass "macOS field fixes: verdict parser (shared indent, 'APPROVE. nits', CommonM
 #     never the string "n/a"); provenance events stay CLI-refused; a malformed ledger line fails verify and blocks
 #     appends instead of being skipped. pre-bash (the real hook, under an ACTIVE lock only, like every other switch)
 #     refuses setting, exporting or unsetting APEX_OPERATE_ACK, APEX_DEPLOY_CMD and APEX_MONITOR_CMD; a longer name
-#     that merely contains one, and a mention in echo/grep/printenv, are allowed
+#     that merely contains one, and a mention in echo/grep/printenv, are allowed. With no lock, or a DONE or landed
+#     owner, pre-bash is inert and allows them: by design (F-018), the deploy control is operate.sh's terminal ack
 LO="$WORK/lo"; mkdir -p "$LO"
 OPD='{"slug":"aidlc-borrowings","landed_sha":"'"$HEAD_FX"'","exit_code":0}'
 OPS='{"slug":"aidlc-borrowings","check_id":"api-latency","metric":"latency_ms","value":812.5,"threshold":500,"severity":"high","breach_count":1,"sink":"lessons"}'
@@ -2894,6 +2895,7 @@ printf '# Operate fixture\n\n- [ ] **Phase 1.1** [mechanical] one task\n  - Acce
 git -C "$OX" add -A; git -C "$OX" commit -qm ox
 ohk() { (cd "$OX" && printf '%s' "$1" | bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null); }
 odec() { ohk "$1" | one; }
+# No lock: inert by design (F-018). The guard is lock-scoped; the deploy control is operate.sh's terminal ack.
 [ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = "{}" ] || fail "pre-bash acted on APEX_OPERATE_ACK without an ACTIVE lock"
 O="$(cd "$OX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
 [ "$(val ROUTE_STATUS "$O")" = READY ] && [ -f "$OX/.dev-plan-state/ACTIVE/owner.json" ] || fail "operate fixture route took no ACTIVE lock: $O"
@@ -2914,7 +2916,22 @@ for c in 'git status' 'bash operate.sh p status' 'MY_APEX_DEPLOY_CMD_X=1 bash x'
          'echo APEX_OPERATE_ACK=x@y' 'grep -rn "APEX_DEPLOY_CMD=" .' 'printenv APEX_MONITOR_CMD' 'echo "$APEX_OPERATE_ACK"'; do
   [ "$(odec "$(pl bash "$OX" "$c")")" = "{}" ] || fail "pre-bash denied under the ACTIVE lock: $c"
 done
-pass "operate-ledger-events: operate_deploy/operate_signal/operate_window_closed append via the CLI and verify; missing fields, slug|repo none/both, enums, types and short SHAs refused; unmeasured value stored null (0 kept distinct); provenance still CLI-refused; malformed lines fail verify; pre-bash denies setting/exporting/unsetting APEX_OPERATE_ACK/APEX_DEPLOY_CMD/APEX_MONITOR_CMD under the ACTIVE lock only; longer names and mentions allowed"
+# After land the guard is inert, by design (F-018): a DONE owner, or a live-stage owner whose checkpoint is landed,
+# is stale (hooks.py Ctx.stale), so pre-bash prints {} and does not stop an agent acking a deploy. That is not a
+# gap this hook closes: the deploy control is apex-scope-loop operate.sh reading the ack from the controlling
+# terminal (/dev/tty) on every deploy (aidlc-borrowings ADR R5 / row 293), tested in Phase 3.3. Each inert case is
+# paired with the live lock denying again, so the {} is caused by the stale owner and not by a broken fixture.
+OOWN="$OX/.dev-plan-state/ACTIVE/owner.json"
+ost() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); o.update(stage=sys.argv[2]); json.dump(o, open(sys.argv[1], "w"))' "$OOWN" "$1"; }
+ost DONE
+[ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = "{}" ] || fail "pre-bash acted on APEX_OPERATE_ACK with a DONE owner (it is inert after the run by design, F-018)"
+ost BUILD
+[ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = deny ] || fail "restoring stage BUILD did not restore the APEX_OPERATE_ACK guard"
+OCP="$OX/.dev-plan-state/$(jget "$OOWN" id)/checkpoint.json"; mkdir -p "$(dirname "$OCP")"
+python3 -c 'import json, os, sys; p = sys.argv[1]; s = json.load(open(p)) if os.path.exists(p) else {}; s["landed"] = True; json.dump(s, open(p, "w"))' "$OCP"
+[ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = "{}" ] || fail "pre-bash acted on APEX_OPERATE_ACK with a landed owner (it is inert after land by design, F-018)"
+[ "$(odec "$(pl bash "$OX" 'APEX_OPERATE_ACK=p@0123 bash operate.sh p deploy')")" = "{}" ] || fail "pre-bash acted on an inline APEX_OPERATE_ACK deploy with a landed owner (inert by design, F-018)"
+pass "operate-ledger-events: operate_deploy/operate_signal/operate_window_closed append via the CLI and verify; missing fields, slug|repo none/both, enums, types and short SHAs refused; unmeasured value stored null (0 kept distinct); provenance still CLI-refused; malformed lines fail verify; pre-bash denies setting/exporting/unsetting APEX_OPERATE_ACK/APEX_DEPLOY_CMD/APEX_MONITOR_CMD under a live ACTIVE lock only and is inert with no lock or a DONE/landed owner (F-018: the deploy control is operate.sh's terminal ack); longer names and mentions allowed"
 
 echo ""
 echo "smoke passed: $N/$N checks"
