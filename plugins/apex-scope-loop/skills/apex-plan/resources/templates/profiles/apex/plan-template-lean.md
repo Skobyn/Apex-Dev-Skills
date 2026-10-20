@@ -28,8 +28,10 @@ Trusted, non-malicious agents and operators. Guard against accidents and realist
 
 > Optional. Draft checks here from the success criteria in the PLAN stage and agree them in OPTIMIZE.
 > One fenced json block, nothing else fenced. `checks: []` means this plan is not watched.
-> A check is `{"id", "metric", "op", "threshold", "severity", "probe"}`: `op` is one of `<` `<=` `>` `>=` `==` `!=`
-> (the check is breached when value op threshold holds), `severity` is high, medium or low, and `probe` is
+> A check is `{"id", "metric", "op", "threshold", "severity", "probe"}`: `op` is one of `<` `<=` `>` `>=` `==` and is the
+> expected (healthy) condition: the check passes while `value op threshold` holds and is breached when it does not.
+> "p99 must stay under 2000 ms" is `"op": "<", "threshold": 2000`. A success criterion is a pass condition, so it
+> maps directly onto a check. `severity` is high, medium or low, and `probe` is
 > `{"kind": "http", "url", "measure": "status" or "latency_ms"}` (GET only), `{"kind": "cmd", "command"}`
 > or `{"kind": "runner"}`. `window_days` is 1-90 (default 14). Ids and metrics match `[A-Za-z0-9][A-Za-z0-9_.:-]*`.
 

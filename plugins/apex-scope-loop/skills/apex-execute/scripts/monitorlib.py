@@ -7,12 +7,13 @@ Usage:
 
 Exit 0 = valid; 1 = invalid, one problem per line on stdout; 2 = usage error.
 Importable: validate_plan(path) / validate_file(path) return a list of problems
-(empty = valid); load_plan(path) returns (config_or_None, problems).
+(empty = valid); load_plan(path) returns (config_or_None, problems); see its
+docstring for the two meanings of a None config.
 
 The section (ADR R5b, R5d) holds exactly one fenced ```json block:
 
   {"window_days": 14, "checks": [
-     {"id": "p95", "metric": "latency.p95", "op": ">", "threshold": 800,
+     {"id": "p95", "metric": "latency.p95", "op": "<", "threshold": 800,
       "severity": "high",
       "probe": {"kind": "http", "url": "https://x.example/health", "measure": "latency_ms"}}]}
 
@@ -20,7 +21,11 @@ The section (ADR R5b, R5d) holds exactly one fenced ```json block:
   checks       list; [] (or no section at all) means "not watched"
   id, metric   match the apex-dispatch ledger grammar (ledger.py _ID_RE):
                ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$ ; ids are unique
-  op           one of < <= > >= == !=   (the breach condition: value OP threshold)
+  op           one of < <= > >= ==   (the ADR's set; no !=). op is the EXPECTED (healthy)
+               condition: a check passes while `value op threshold` holds, and it is
+               breached when NOT (value op threshold). "p99 must stay under 2000 ms"
+               is "op": "<", "threshold": 2000. A success criterion is a pass
+               condition, so it maps directly onto a check.
   threshold    a finite number
   severity     high | medium | low
   probe        http   {kind, url, measure: status|latency_ms, expect_status?, method?: "GET"}
@@ -45,14 +50,18 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import planlib  # noqa: E402
 
-OPS = ("<", "<=", ">", ">=", "==", "!=")
+# op is the expected (healthy) condition; breach = NOT (value op threshold) (ADR operate pseudocode).
+# The allow-list mirrors the ADR's op set exactly: there is no "!=".
+OPS = ("<", "<=", ">", ">=", "==")
 SEVERITIES = ("high", "medium", "low")
 MEASURES = ("status", "latency_ms")
 PROBE_TIMEOUT_S = 10          # fixed; a probe cannot set its own
 DEFAULT_WINDOW_DAYS = 14
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")   # = apex-dispatch ledger.py _ID_RE
 
-HEADING_LOOSE_RE = re.compile(r"^ {0,3}#{1,6}[ \t]*monitor\b", re.I)
+# any-level heading with the word "monitor", or a level-2 heading that merely starts with it
+# (## Monitoring, ## Monitors): both must be exactly "## Monitor" or they are refused, never ignored
+HEADING_LOOSE_RE = re.compile(r"^ {0,3}(?:#{1,6}[ \t]*monitor\b|##[ \t]*monitor)", re.I)
 HEADING_RE = re.compile(r"^## Monitor[ \t]*$")
 SETEXT_TITLE_RE = re.compile(r"^ {0,3}monitor[ \t]*$", re.I)
 SETEXT_LINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
@@ -158,6 +167,8 @@ def _probe(p, where, check_metric, probs):
                 probs.append(f"{where}: metrics must be a non-empty list of metric names matching {ID_RE.pattern}")
             elif len(set(m)) != len(m):
                 probs.append(f"{where}: metrics lists a name twice")
+            elif isinstance(check_metric, str) and check_metric not in m:
+                probs.append(f"{where}: the check's metric {check_metric!r} is not in the probe's metrics list")
     else:
         probs.append(f"{where}: unknown probe.kind {kind!r} (allowed: http, cmd, runner)")
 
@@ -217,7 +228,7 @@ def _section(lines, inside):
         if HEADING_LOOSE_RE.match(l):
             heads.append(i)
             if not HEADING_RE.match(l):
-                probs.append(f"line {i + 1}: the heading must be exactly '## Monitor'")
+                probs.append(f"line {i + 1}: the heading must be exactly '## Monitor' - use '## Monitor', not {l.strip()!r}")
         elif i + 1 < len(lines) and SETEXT_TITLE_RE.match(l) and SETEXT_LINE_RE.match(lines[i + 1]) and not inside[i + 1]:
             heads.append(i)
             probs.append(f"line {i + 1}: write the heading as '## Monitor', not an underlined title")
@@ -249,8 +260,11 @@ def _section(lines, inside):
 
 
 def load_plan(path):
-    """(config, problems). config is None when the plan has no Monitor section
-    (not watched) or when problems is non-empty."""
+    """(config, problems). A None config has two meanings, told apart by problems:
+      (None, [])        the plan has no ## Monitor section: not watched
+      (None, problems)  the section is refused (or the plan cannot be read)
+    Callers must test `problems`, never `cfg is None`. A valid section returns
+    (cfg, []), with cfg["checks"] == [] meaning the stub: also not watched."""
     try:
         lines = planlib.read_lines(path)
     except OSError as e:

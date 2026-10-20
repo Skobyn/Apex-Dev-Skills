@@ -2479,16 +2479,21 @@ ML="$EX/monitorlib.py"; MN_TMP="$SMOKE_TMP/monitor-section"; rm -rf "${MN_TMP:?}
 mn_plan() { printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n%s\n```\n' "$2" >"$MN_TMP/$1.md"; }
 MN_HTTP='{"kind": "http", "url": "https://x.example/health", "measure": "latency_ms"}'
 mn_chk() { printf '{"id": "%s", "metric": "%s", "op": "%s", "threshold": 800, "severity": "high", "probe": %s}' "$1" "$2" "$3" "$4"; }
-MN_OK="$(mn_chk p95 latency.p95 '>' "$MN_HTTP"), $(mn_chk exit0 job:exit '!=' '{"kind": "cmd", "command": "true"}'), $(mn_chk rn m-1 '>=' '{"kind": "runner", "metrics": ["m-1"]}')"
+MN_OK="$(mn_chk p95 latency.p95 '>' "$MN_HTTP"), $(mn_chk exit0 job:exit '==' '{"kind": "cmd", "command": "true"}'), $(mn_chk rn m-1 '>=' '{"kind": "runner", "metrics": ["m-1"]}')"
 # mn_ok NAME: valid. mn_bad NAME PATTERN: exit 1, the output names the problem.
 mn_ok() { local o rc=0; o="$(python3 "$ML" validate "$MN_TMP/$1.md" 2>&1)" || rc=$?; [ "$rc" = 0 ] && [ -z "$o" ] || fail "monitor-section: $1 should be valid (exit $rc): $o"; }
 mn_bad() { local o rc=0; o="$(python3 "$ML" validate "$MN_TMP/$1.md" 2>&1)" || rc=$?; [ "$rc" = 1 ] || fail "monitor-section: $1 exited $rc, expected 1: $o"; grep -qE -- "$2" <<<"$o" || fail "monitor-section: $1 did not say '$2': $o"; }
 mn_plan ok "{\"window_days\": 90, \"checks\": [$MN_OK]}"; mn_ok ok
 mn_plan ok1 "{\"window_days\": 1, \"checks\": []}"; mn_ok ok1
 mn_plan okdef "{\"checks\": [$(mn_chk a a '<=' "$MN_HTTP")]}"; mn_ok okdef
-for MN_OP in '<' '<=' '>' '>=' '==' '!='; do mn_plan op "{\"checks\": [$(mn_chk a a "$MN_OP" "$MN_HTTP")]}"; mn_ok op; done
+for MN_OP in '<' '<=' '>' '>=' '=='; do mn_plan op "{\"checks\": [$(mn_chk a a "$MN_OP" "$MN_HTTP")]}"; mn_ok op; done
+# op is the expected (healthy) condition and the allow-list is the ADR's set exactly: != is refused, with the problem named
+mn_plan opne "{\"checks\": [$(mn_chk c1 m '!=' "$MN_HTTP")]}"; mn_bad opne "c1.*unknown op \"!=\" \(allowed: < <= > >= ==\)"
 mn_plan s1 '{"window_days": 14, "checks": [{"metric": "m", "op": ">", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "true"}}]}'; mn_bad s1 "checks\[0\].*missing 'id'"
 mn_plan s2 "{\"checks\": [$(mn_chk c1 m '=>' "$MN_HTTP")]}"; mn_bad s2 "c1.*unknown op"
+# a runner probe with a metrics list must list the check's own metric
+mn_plan rm1 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "runner", "metrics": ["other"]}')]}"; mn_bad rm1 "c1.*check's metric 'm' is not in the probe's metrics"
+mn_plan rm2 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "runner", "metrics": ["other", "m"]}'), $(mn_chk c2 m '>' '{"kind": "runner"}')]}"; mn_ok rm2
 mn_plan s3 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "ping", "host": "x"}')]}"; mn_bad s3 "c1.*unknown probe.kind 'ping'"
 mn_plan s4 '{"window_days": 0, "checks": []}'; mn_bad s4 "window_days must be an integer 1-90"
 mn_plan s5 '{"window_days": 91, "checks": []}'; mn_bad s5 "window_days must be an integer 1-90"
@@ -2547,6 +2552,10 @@ MN_RC=0; python3 "$ML" >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 2 ] || fail "mo
 MN_RC=0; python3 "$ML" validate >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 2 ] || fail "monitor-section: validate with no plan exited $MN_RC, expected 2"
 MN_RC=0; python3 "$ML" frobnicate x >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 2 ] || fail "monitor-section: an unknown subcommand exited $MN_RC, expected 2"
 MN_RC=0; python3 "$ML" validate "$MN_TMP/absent.md" >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 1 ] || fail "monitor-section: a missing plan exited $MN_RC, expected 1"
+# a near-miss level-2 heading is refused, never ignored as "not watched"
+for MN_H in 'Monitoring' 'Monitors' 'monitor checks' 'MONITOR' 'Monitor:'; do
+  printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## %s\n\n```json\n{"checks": []}\n```\n' "$MN_H" >"$MN_TMP/near.md"; mn_bad near "use '## Monitor'"
+done
 # no section = not watched = valid
 printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n' >"$MN_TMP/none.md"; mn_ok none
 # every plan in this checkout, and every scaffold of every template, validates under planlib and monitorlib
@@ -2589,7 +2598,15 @@ sp_fx mntwo bugfix; sp_edc mntwo .claude/plans/fx-plan.md 's|^{"window_days": 14
 ```json\
 {"checks": []}|'
 sp_refused "monitor-section: two json blocks" "$SP_TMP/mntwo" '2 fenced blocks'
-ok "monitor-section: monitorlib validates the plan's ## Monitor section as an allow-list (ledger id grammar, six ops, http/cmd/runner probes; a missing id, unknown op or probe.kind, window_days 0 and 91, headers, a non-GET method, a duplicate id, two blocks, invalid JSON, a heading with no block, a bad id, unknown keys are each refused by name); validate-file takes a repo-level file and refuses window_days; no section and checks: [] promote, bad sections stop promote; $MN_N plan(s) here and all six scaffolds of both profiles validate"
+# the op wording cannot drift back: op is the expected condition, a criterion maps onto a check, no "breached when value op threshold", no !=
+for MN_T in "$SS_TPL"/generic/plan-template.md "$SS_TPL"/generic/plan-template-lean.md "$SS_TPL"/apex/plan-template.md "$SS_TPL"/apex/plan-template-lean.md "$PLUGIN_ROOT/skills/apex-plan/SKILL.md"; do
+  grep -qF 'expected (healthy) condition' "$MN_T" || fail "monitor-section: $MN_T does not say op is the expected (healthy) condition"
+  grep -qF 'maps directly onto a check' "$MN_T" || fail "monitor-section: $MN_T does not say a success criterion maps directly onto a check"
+  grep -qF '"op": "<", "threshold": 2000' "$MN_T" || fail "monitor-section: $MN_T lost the p99 worked example"
+  ! grep -qiE 'breached when (the )?value op threshold|breach condition|`==` `!=`' "$MN_T" || fail "monitor-section: $MN_T has the inverted op wording or lists !="
+done
+grep -qF 'NOT (value op threshold)' "$ML" || fail "monitor-section: monitorlib.py does not state breach = NOT (value op threshold)"
+ok "monitor-section: monitorlib validates the plan's ## Monitor section as an allow-list (ledger id grammar, the ADR's five ops with op the expected condition and != refused, http/cmd/runner probes; a runner metrics list without the check's metric and a near-miss heading such as ## Monitoring are refused; the templates and SKILL.md carry the expected-condition wording; a missing id, unknown op or probe.kind, window_days 0 and 91, headers, a non-GET method, a duplicate id, two blocks, invalid JSON, a heading with no block, a bad id, unknown keys are each refused by name); validate-file takes a repo-level file and refuses window_days; no section and checks: [] promote, bad sections stop promote; $MN_N plan(s) here and all six scaffolds of both profiles validate"
 
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
