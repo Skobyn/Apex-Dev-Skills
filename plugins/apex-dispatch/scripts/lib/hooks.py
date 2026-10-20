@@ -73,8 +73,9 @@ TAMPER_ENV = {
     "APEX_DECIDE_JEV_BASE": None,
     "APEX_DECIDE_FRONTIER_BASE": None,                   # apex-decision-layer 0.2.0's frontier test override
     "APEX_DECISION_LAYER_ROOT": None,
-    # apex-scope-loop operate.sh (aidlc-borrowings ADR R5/R6): the human's deploy ack
-    # (<slug>@<landed sha>) and the user-owned deploy and monitor commands.
+    # apex-scope-loop operate.sh (aidlc-borrowings ADR R5/R6): APEX_OPERATE_ACK is never read (operate.sh
+    # takes the ack from the controlling terminal only), so it is protected only as defence in depth; and the
+    # user-owned deploy and monitor commands.
     "APEX_OPERATE_ACK": None,
     "APEX_DEPLOY_CMD": None,
     "APEX_MONITOR_CMD": None,
@@ -767,11 +768,13 @@ QPAREN_TOK = {"__APEX_QLP__": "\x00(", "__APEX_QRP__": "\x00)"}
 WORD_PARENS = {"\x00(": "(", "\x00)": ")"}
 
 
-def tokens(cmd):
+def tokens(cmd, comments=True):
     for ph, rx in QPAREN_RE.items():
         cmd = rx.sub(" %s " % ph, cmd)
     lex = shlex.shlex(cmd.replace("`", " "), posix=True, punctuation_chars=";&|()<>\n")
     lex.whitespace = " \t\r"
+    if not comments:
+        lex.commenters = ""                              # shlex's '#' also eats the newline (the next command)
     lex.whitespace_split = True
     try:
         raw = list(lex)
@@ -783,9 +786,11 @@ def tokens(cmd):
     return out
 
 
-def segments(cmd):
-    """[(words, [(redir_op, target)])] for each simple command."""
-    toks, segs, words, redirs, i = tokens(strip_heredocs(cmd)), [], [], [], 0
+def segments(cmd, prepared=False):
+    """[(words, [(redir_op, target)])] for each simple command. prepared: cmd is _operate_text's output
+    (comments, continuations and heredoc bodies already removed), tokenised with no shlex commenter."""
+    toks = tokens(cmd, comments=False) if prepared else tokens(strip_heredocs(cmd))
+    segs, words, redirs, i = [], [], [], 0
     while i < len(toks):
         t = toks[i]
         if t in SEPARATORS:
@@ -1272,13 +1277,15 @@ def engine_entry(ctx, c, cwd, prefix):
 # with or without an ACTIVE lock, a DONE or landed owner included (hook-common.bash runs this before the lock
 # test, hooks.py main before Ctx.stale). operate.sh's own /dev/tty ack is the second layer: a terminal read alone
 # is agent-satisfiable through a self-made pty. Allow-list: an operate.sh invocation passes only with a literal
-# step that needs no ack (status; monitor/ingest are Phase 3.4); every other step, a missing one or a `$…`
-# word is denied. Wrappers (env, sudo, nohup, nice, timeout, unbuffer, script, expect's spawn, bash -c, eval,
+# step that needs no ack (PLAN status|monitor|ingest, --all status|monitor, --all monitor --ingest; monitor and
+# ingest are Phase 3.4); every other step or a `$…` word is denied, and so is a missing one when the command also
+# says deploy (the arguments may arrive by a line continuation or xargs). The command is read as bash reads it
+# (_operate_text: `#` comments end at the newline, backslash-newline joins, heredoc bodies dropped). Wrappers (env, sudo, nohup, nice, timeout, unbuffer, script, expect's spawn, bash -c, eval,
 # $( ), backticks) are peeled by Cmd and nested(); code run by an interpreter (python -c with a pty, perl -e,
 # expect -c, …) that names operate.sh passes only when it names a no-ack step and never the word deploy. Any
 # other mention of operate.sh in a command that also says deploy is denied unless every mention is data to a
 # text tool (echo, grep, cat, …) and nothing in the command runs code read from stdin (`| bash`, `bash <<EOF`).
-# A program word pre-bash cannot resolve (`$S`, `$'…'`, `$(…)`, a backtick, a glob such as op*.sh) with deploy
+# A program word pre-bash cannot resolve (`$S`, `$'…'`, `$(…)`, a backtick, a glob such as op*.sh; not [ or [[) with deploy
 # among its arguments is denied too (fail closed), whether or not operate.sh is named.
 # Residual (out of model, ADR-0001): a script file written to disk that calls operate.sh.
 OPERATE_SCRIPT = "operate.sh"
@@ -1317,6 +1324,73 @@ def _operate_script_args(c):
 
 
 UNRESOLVED = re.compile(r"[$`*?\[]")
+
+
+def _unresolved_word(w):
+    """A program word pre-bash cannot resolve: an expansion ($, `) or a glob (*, ?, or a [ inside a longer word,
+    op[e]rate.sh). The test builtins [ and [[ are program words pre-bash knows, not globs."""
+    if w in ("[", "[["):
+        return False
+    return bool(re.search(r"[$`*?]", w)) or ("[" in w and len(w) > 1)
+
+
+OPERATE_HEREDOC = re.compile(r"""<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([^\s;&|()<>'"]+))""")
+
+
+def _operate_text(cmd):
+    """cmd as bash reads it, for the operate rule only (other pre-bash rules keep segments()' own reading):
+    an unquoted `#` at a word start drops the rest of its line but keeps the newline (shlex's commenter would
+    swallow it, joining the next command to the comment's), a backslash-newline is removed (a line continuation),
+    and heredoc bodies are dropped (their `<<WORD` stays, so `bash <<EOF` still reads as code on stdin). Quotes,
+    $'…' and backticks are tracked, so none of this applies inside them. One linear pass."""
+    out, i, n, q, start, pending = [], 0, len(cmd), None, True, []
+    while i < n:
+        ch = cmd[i]
+        if q in ("'",):
+            out.append(ch); i += 1
+            if ch == "'":
+                q = None
+            continue
+        if ch == "\\" and i + 1 < n:
+            if cmd[i + 1] == "\n" and q != "$'":
+                i += 2                                    # a line continuation: bash removes both
+                continue
+            out.append(cmd[i:i + 2]); i += 2; start = False
+            continue
+        if q is not None:                                 # inside "…", $'…' or `…`
+            out.append(ch); i += 1
+            if (q == '"' and ch == '"') or (q == "$'" and ch == "'") or (q == "`" and ch == "`"):
+                q = None
+            continue
+        if ch == "'":
+            q = "$'" if out and out[-1] == "$" else "'"
+        elif ch in '"`':
+            q = ch
+        elif ch == "#" and start:
+            j = cmd.find("\n", i)
+            i = n if j < 0 else j                         # keep the newline: it ends the command
+            continue
+        elif ch == "<" and cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+            m = OPERATE_HEREDOC.match(cmd, i)
+            if m:
+                pending.append((m.group(2) if m.group(2) is not None else m.group(3) if m.group(3) is not None
+                                else m.group(4), m.group(1) == "-"))
+                out.append(m.group(0)); i = m.end(); start = False
+                continue
+        elif ch == "\n" and pending:
+            out.append(ch); i += 1
+            for delim, tabs in pending:                   # each body, in order, up to its delimiter line
+                while i < n:
+                    j = cmd.find("\n", i)
+                    line = cmd[i:] if j < 0 else cmd[i:j]
+                    i = n if j < 0 else j + 1
+                    if (line.lstrip("\t") if tabs else line).strip() == delim:
+                        break
+            pending, start = [], True
+            continue
+        out.append(ch); i += 1
+        start = ch in " \t\n;&|()<>"
+    return "".join(out)
 
 
 def _script_word(c):
@@ -1363,9 +1437,13 @@ def _operate_code(c):
     return None
 
 
-def _operate_step_ok(args):
-    if not args or args in (["-h"], ["--help"]):
+def _operate_step_ok(args, deployish):
+    if args in (["-h"], ["--help"]):
         return True                                   # usage: operate.sh prints it and exits 2
+    if not args:                                      # usage too, unless the arguments may come from elsewhere:
+        return not deployish                          # `operate.sh \<newline> p deploy`, `… | xargs bash operate.sh`
+    if args[0] == "--all":
+        return args[1:] in (["status"], ["monitor"], ["monitor", "--ingest"])
     return len(args) == 2 and args[1] in OPERATE_OK_STEPS
 
 
@@ -1376,7 +1454,7 @@ def _operate_scan(cmd, deployish, depth):
         r = _operate_scan(inner, deployish, depth + 1)
         if r:
             return r
-    cmds = [Cmd(w, r) for w, r in segments(re.sub(r"`[^`]*`", " ", cmd))]
+    cmds = [Cmd(w, r) for w, r in segments(re.sub(r"`[^`]*`", " ", _operate_text(cmd)), prepared=True)]
     stdin_code = any(_reads_code_from_stdin(c) for c in cmds)
     if stdin_code and deployish:                      # `… | bash`, `bash <<EOF` (heredoc bodies are not segments)
         return OPERATE_REASON + " (this command feeds code to a shell or interpreter on stdin and names operate.sh and deploy)"
@@ -1384,10 +1462,10 @@ def _operate_scan(cmd, deployish, depth):
         args = _operate_script_args(c)
         code = _operate_code(c)
         sw = _script_word(c)
-        if sw is not None and UNRESOLVED.search(sw) and any("deploy" in _flat(a) for a in c.args):
+        if sw is not None and _unresolved_word(sw) and any("deploy" in _flat(a) for a in c.args):
             return OPERATE_REASON + " (the program word %s is an expansion or glob pre-bash cannot resolve, and deploy is an argument)" % sw
         if args is not None:
-            if not _operate_step_ok(args):
+            if not _operate_step_ok(args, deployish):
                 return OPERATE_REASON
         elif code is not None and OPERATE_SCRIPT in _flat(code):
             if "deploy" in _flat(code) or not any(re.search(r"\b%s\b" % st, code) for st in OPERATE_OK_STEPS):

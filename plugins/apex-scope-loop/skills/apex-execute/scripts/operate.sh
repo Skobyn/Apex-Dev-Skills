@@ -27,10 +27,12 @@
 #   with PLAN_SLUG and LANDED_SHA in its environment (APEX_OPERATE_ACK removed);
 #   its output goes to the terminal and is never captured, logged or stored, and
 #   operate.sh never reads its environment. Each run is recorded in
-#   checkpoint.json `operate.deploys` ({ts, sha, exit, ack_source: "tty"}); exit 0
-#   opens the watch window (operate.window {start, end, days}, days = the plan's
-#   Monitor window_days, default 14); a non-zero exit is recorded, opens no
-#   window and exits 1. With <state>/dispatch/ present an `operate_deploy` ledger
+#   checkpoint.json `operate.deploys` ({ts, sha, head, exit, ack_source: "tty"}; head
+#   is the caller's checkout HEAD); exit 0 opens the watch window (operate.window
+#   {start, end, days}, days = the plan's Monitor window_days, default 14); a
+#   non-zero exit is recorded, opens no window and exits 1. An interrupted deploy
+#   (INT, TERM or HUP) is recorded with exit 128+n and operate.sh exits 128+n; a
+#   deploy that cannot be recorded exits 6 and opens no window. With <state>/dispatch/ present an `operate_deploy` ledger
 #   row is appended (ledger.sh append; route_id and route_mode explicitly null, never a stale
 #   active-route.json's).
 #
@@ -45,6 +47,8 @@
 #   3  the plan is not landed (or not initialized), or its repository does not match
 #   4  a kill switch is set (HALT file or APEX_HALT=1)
 #   5  the deploy ack was refused (no human terminal, wrong or missing ack)
+#   6  the deploy ran but could not be recorded in checkpoint.json (no window opened)
+#   128+n  the deploy was interrupted by signal n (INT 130, TERM 143, HUP 129); recorded
 set -euo pipefail
 
 usage() {
@@ -109,7 +113,7 @@ if mode == "window-days":
     print((cfg or {}).get("window_days", 14))
 
 elif mode == "record":
-    cp, lock, sha, code, days = sys.argv[3], sys.argv[4], sys.argv[5], int(sys.argv[6]), int(sys.argv[7])
+    cp, lock, sha, code, days, head = sys.argv[3], sys.argv[4], sys.argv[5], int(sys.argv[6]), int(sys.argv[7]), sys.argv[8]
     fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
     fcntl.flock(fd, fcntl.LOCK_EX)          # checkpoint.sh's state lock
     with open(cp) as f:
@@ -117,7 +121,7 @@ elif mode == "record":
     op = s.get("operate") if isinstance(s.get("operate"), dict) else {}
     deploys = op.get("deploys") if isinstance(op.get("deploys"), list) else []
     t = now()
-    deploys.append({"ts": iso(t), "sha": sha, "exit": code, "ack_source": "tty"})
+    deploys.append({"ts": iso(t), "sha": sha, "head": head or None, "exit": code, "ack_source": "tty"})
     op["deploys"] = deploys
     if code == 0:                           # only a successful deploy opens (restarts) the window
         op["window"] = {"start": iso(t), "end": iso(t + datetime.timedelta(days=days)), "days": days}
@@ -294,12 +298,18 @@ if [[ "$ACK" != "$EXPECT" ]]; then
   refuse_ack "the ack's sha is not this plan's landed sha $LANDED_SHA (the full sha, exactly)."
 fi
 
+HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
 echo "[operate] deploying $SLUG at ${LANDED_SHA:0:12} ..."
-DEPLOY_RC=0
+DEPLOY_RC=0; DEPLOY_SIG=0
+# An interrupt (^C, a kill, the terminal closing) must still leave a record: bash runs these traps once the
+# deploy command returns, and the run is then recorded with exit 128+n before operate.sh exits 128+n.
+trap 'DEPLOY_SIG=2' INT; trap 'DEPLOY_SIG=15' TERM; trap 'DEPLOY_SIG=1' HUP
 (cd "$REPO_ROOT" && env -u APEX_OPERATE_ACK PLAN_SLUG="$SLUG" LANDED_SHA="$LANDED_SHA" bash -c "$APEX_DEPLOY_CMD") || DEPLOY_RC=$?
+[[ "$DEPLOY_SIG" -eq 0 ]] || DEPLOY_RC=$((128 + DEPLOY_SIG))
+trap '' INT TERM HUP                                 # recording is not interruptible
 
-op_py record "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" "$LANDED_SHA" "$DEPLOY_RC" "$WINDOW_DAYS" \
-  || echo "[operate] WARNING: the deploy ran (exit $DEPLOY_RC) but could not be recorded in $CHECKPOINT" >&2
+RECORDED=1
+op_py record "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" "$LANDED_SHA" "$DEPLOY_RC" "$WINDOW_DAYS" "$HEAD_SHA" || RECORDED=0
 
 if [[ -d "$STATE_DIR/dispatch" ]]; then
   DISPATCH="$(apex_dispatch_root)"
@@ -312,6 +322,15 @@ if [[ -d "$STATE_DIR/dispatch" ]]; then
   fi
 fi
 
+if [[ "$RECORDED" -ne 1 ]]; then
+  echo "[operate] ERROR: the deploy ran (exit $DEPLOY_RC) but could not be recorded in $CHECKPOINT — no watch window was opened; record the deploy by hand before relying on status or monitor." >&2
+  [[ "$DEPLOY_SIG" -eq 0 ]] || exit "$DEPLOY_RC"
+  exit 6
+fi
+if [[ "$DEPLOY_SIG" -ne 0 ]]; then
+  echo "[operate] deploy INTERRUPTED (signal $DEPLOY_SIG, exit $DEPLOY_RC) — recorded; no watch window opened." >&2
+  exit "$DEPLOY_RC"
+fi
 if [[ "$DEPLOY_RC" -ne 0 ]]; then
   echo "[operate] deploy FAILED (exit $DEPLOY_RC) — recorded; no watch window opened." >&2
   exit 1

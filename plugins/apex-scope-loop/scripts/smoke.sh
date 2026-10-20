@@ -2801,7 +2801,20 @@ OD_L="$OD_STATE/dispatch/ledger.jsonl"; [ -f "$OD_L" ] || fail "operate-deploy: 
   || fail "operate-deploy: the operate_deploy rows are wrong (route_id and route_mode must be null, never the stale active route: B-046): $(cat "$OD_L")"
 OD_V="$("$LG" verify --state "$OD_STATE" 2>&1)" || fail "operate-deploy: ledger.sh verify failed: $OD_V"
 [ -n "$OD_FEAT_STATE" ] && [ ! -d "$OD_FEAT_STATE/dispatch" ] || fail "operate-deploy: a dispatch dir appeared for a plan that never had one"
-ok "operate-deploy: operate.sh refuses an unlanded plan (3), an unset APEX_DEPLOY_CMD by name (2), HALT/APEX_HALT (4) and an invalid Monitor section (2); prints an Ask Contract and reads the ack only from the controlling terminal: detached (setsid) it refuses even with APEX_OPERATE_ACK set and says a human must type od@<sha> at their own terminal; an older landed sha, a short sha, a wrong slug or an empty ack are refused (threat 1); a failing deploy is recorded with ts/sha/exit/ack_source, exits 1 and opens no window or moves an open one (threat 2); the pty-typed ack deploys with PLAN_SLUG/LANDED_SHA and no APEX_OPERATE_ACK, opening the plan's 7-day window; status and --all status show day N of M, closed, the declared checks and the R5b warning; operate_deploy rows carry route_id null and ack_source tty and the ledger verifies"
+# the deploy row records the caller's checkout HEAD (head), beside the landed sha
+[ "$(od_cp 'o["deploys"][1].get("head")')" = "$(git -C "$OD" rev-parse HEAD)" ] || fail "operate-deploy: the deploy row does not record the checkout HEAD: $(od_cp 'o["deploys"][1]')"
+# an interrupted deploy (TERM to operate.sh's process group, as a closed terminal or ^C would) is still recorded with
+# exit 128+15 and operate.sh exits 143 with no window change. Mutant "no INT/TERM/HUP trap around the deploy" leaves no row.
+OD_N="$(od_cp 'len(o["deploys"])')"; OD_WS="$(od_cp 'o["window"]["start"]')"
+odp "an interrupted deploy" 143 "$OD_GOOD" "APEX_DEPLOY_CMD=kill -TERM 0; sleep 5" -- plans/od-plan.md deploy
+grep -q 'deploy INTERRUPTED (signal 15, exit 143) — recorded' "$OD_TMP/pty.out" || fail "operate-deploy: the interrupted deploy did not say it was recorded: $(cat "$OD_TMP/pty.out")"
+[ "$(od_cp '(len(o["deploys"]), o["deploys"][-1]["exit"], o["window"]["start"])')" = "($((OD_N + 1)), 143, '$OD_WS')" ] || fail "operate-deploy: an interrupted deploy was not recorded with exit 143 (or it moved the window): $(od_cp 'o')"
+# a deploy that cannot be recorded (here the deploy command moves checkpoint.json away) says so, exits 6 and never
+# reports an open watch window. Mutant "warn and carry on" prints "watch window open" and exits 0.
+odp "an unrecordable deploy" 6 "$OD_GOOD" "APEX_DEPLOY_CMD=mv '$OD_CP' '$OD_CP.away'" -- plans/od-plan.md deploy
+mv "$OD_CP.away" "$OD_CP" || fail "operate-deploy: the unrecordable deploy fixture did not move the checkpoint"
+grep -q 'the deploy ran (exit 0) but could not be recorded' "$OD_TMP/pty.out" && ! grep -q 'watch window open' "$OD_TMP/pty.out" || fail "operate-deploy: an unrecorded deploy did not fail clearly, or claimed an open window: $(cat "$OD_TMP/pty.out")"
+ok "operate-deploy: operate.sh refuses an unlanded plan (3), an unset APEX_DEPLOY_CMD by name (2), HALT/APEX_HALT (4) and an invalid Monitor section (2); prints an Ask Contract and reads the ack only from the controlling terminal: detached (setsid) it refuses even with APEX_OPERATE_ACK set and says a human must type od@<sha> at their own terminal; an older landed sha, a short sha, a wrong slug or an empty ack are refused (threat 1); a failing deploy is recorded with ts/sha/exit/ack_source, exits 1 and opens no window or moves an open one (threat 2); the pty-typed ack deploys with PLAN_SLUG/LANDED_SHA and no APEX_OPERATE_ACK, opening the plan's 7-day window; status and --all status show day N of M, closed, the declared checks and the R5b warning; operate_deploy rows carry route_id null and ack_source tty and the ledger verifies; a deploy row records the checkout HEAD; an interrupted deploy is recorded with exit 143 and exits 143; an unrecordable deploy exits 6 and claims no window"
 
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the

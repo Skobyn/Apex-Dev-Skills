@@ -13,8 +13,10 @@
 #     by apex-scope-loop's own _lib.sh (apex_state_base: `git rev-parse
 #     --path-format=absolute --git-common-dir`, APEX_STATE_ROOT first), so the
 #     base checkout, the plan worktree and shim worktrees see one lock;
-#   - the no-op path is bash only (one git call); python3 (scripts/lib/hooks.py)
-#     starts only while a lock exists, to parse the JSON payload and decide;
+#   - the no-op path is bash only (one git call and one tr); python3
+#     (scripts/lib/hooks.py) starts while a lock exists, to parse the JSON payload
+#     and decide, and, lock or not, for pre-bash's operate deploy pre-check when
+#     the command names operate.sh or pairs deploy with an expansion or glob;
 #   - fails open ({} plus a stderr advisory) when python3, the sibling
 #     apex-scope-loop or the payload is unusable; hooks.py also writes a
 #     hook_error ledger row when the run's ledger is writable.
@@ -33,19 +35,27 @@ apex_hook_scope_loop_scripts() {
 }
 
 # apex_hook_operate_gate ROOT INPUT — the deploy control (aidlc-borrowings Phase 3.3).
-# Bash only, no state needed: a command whose text (shell quotes and backslashes
-# removed) never names operate.sh, and does not pair the word deploy with an
-# expansion or glob ($ ` * ? [), returns 1 at once, so ordinary calls with no lock
-# stay bash-only. A command that names it is judged by hooks.py operate-gate (the
-# allow-list: operate.sh … status, plain mentions); a deny is printed and 0
-# returned. This rule fails closed: without python3, or when the engine fails, a
-# command naming operate.sh with the word deploy is denied.
+# No state needed. Only the payload from its first "command" key on is read (the
+# command and the tool_input fields after it; cwd, transcript_path and session_id
+# come before it). A command whose text (shell quotes and backslashes removed)
+# never names operate.sh, and does not pair the word deploy with an expansion or
+# glob ($ ` * ? [), returns 1 at once, so ordinary calls with no lock start no
+# python. A command that does is judged by hooks.py operate-gate (the allow-list:
+# operate.sh … status, plain mentions); a deny is printed and 0 returned. This rule
+# fails closed: without python3, or when the engine fails, a command naming
+# operate.sh with the word deploy is denied.
+# Every operation on the payload is linear: ${x%%"literal"*} and *literal* tests
+# scan once, and the quotes are removed by one tr. A bash pattern substitution
+# (${x//[…]/}) is quadratic in bash 3.2 (macOS /bin/bash: 32 KB took 125 s) and
+# the hook's 10 s timeout fails open, so none is used here (smoke check 89 times it).
 apex_hook_operate_gate() {
-  local root="$1" input="$2" flat out rc=0 reason expand='*[$`*?[]*'
-  flat="${input//[\"\'\\]/}"
+  local root="$1" input="$2" pre cmd flat out rc=0 reason expand='*[$`*?[]*'
+  [[ "$input" == *'"command"'* ]] || return 1
+  pre="${input%%\"command\"*}"; cmd="${input:${#pre}}"
+  flat="$(printf '%s' "$cmd" | tr -d "\"'\\\\")"
   # Not named: still judged when deploy appears beside an expansion or glob that could hide the name.
   if [[ "$flat" != *operate.sh* ]]; then
-    [[ "$flat" == *deploy* && "$input" == $expand ]] || return 1
+    [[ "$flat" == *deploy* && "$cmd" == $expand ]] || return 1
   fi
   reason="apex-dispatch: operate.sh deploy must be run by a human in their own terminal; pre-bash could not judge this command"
   if command -v python3 >/dev/null 2>&1; then
