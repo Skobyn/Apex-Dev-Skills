@@ -24,6 +24,21 @@ Trusted, non-malicious agents and operators. Guard against accidents and realist
 
 ---
 
+## Monitor
+
+> Optional. Draft checks here from the success criteria in the PLAN stage and agree them in OPTIMIZE.
+> One fenced json block, nothing else fenced. `checks: []` means this plan is not watched.
+> A check is `{"id", "metric", "op", "threshold", "severity", "probe"}`: `op` is one of `<` `<=` `>` `>=` `==` `!=`
+> (the check is breached when value op threshold holds), `severity` is high, medium or low, and `probe` is
+> `{"kind": "http", "url", "measure": "status" or "latency_ms"}` (GET only), `{"kind": "cmd", "command"}`
+> or `{"kind": "runner"}`. `window_days` is 1-90 (default 14). Ids and metrics match `[A-Za-z0-9][A-Za-z0-9_.:-]*`.
+
+```json
+{"window_days": 14, "checks": []}
+```
+
+---
+
 ## Phases
 
 > Lean plan: two phases are scaffolded. A `bugfix` allows at most 2 phases, a `poc` at most 3.

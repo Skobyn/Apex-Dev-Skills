@@ -18,6 +18,7 @@
 #   5. ADR status is "Accepted"
 #   6. Plan has >= 1 unchecked phase task
 #   7. Every plan task has an Acceptance line
+#   6b. A `## Monitor` section, when present, is valid (monitorlib.py validate)
 #   8. Every gate task has a runnable Acceptance OR human-ack phrase
 #   9. apex-execute's init.sh exists and is executable
 #   Scope (7b, only when the ADR/plan declare `Scope: bugfix|poc|feature`): phase
@@ -86,6 +87,16 @@ if ! PLAN_ERRORS="$(python3 "$EXEC_SCRIPTS/planlib.py" validate "$PLAN_PATH" 2>&
 fi
 REMAINING="$(python3 "$EXEC_SCRIPTS/planlib.py" remaining "$PLAN_PATH")"
 [[ "$REMAINING" -gt 0 ]] || fail "Plan has no unchecked tasks (- [ ] ...). Either all tasks are checked or the plan is empty."
+
+# 6b. The optional `## Monitor` section (ADR R5b): monitorlib.py validates it
+#     (allow-list schema; a heading with a missing, doubled or malformed block is
+#     refused, never read as "not watched"). A plan with no such heading prints
+#     nothing and promotes exactly as before.
+if ! MON_ERRORS="$(python3 "$EXEC_SCRIPTS/monitorlib.py" validate "$PLAN_PATH" 2>&1)"; then
+  echo "Monitor section problems (monitorlib.py validate):" >&2
+  printf '%s\n' "$MON_ERRORS" | sed 's/^/  /' >&2
+  fail "the plan's ## Monitor section is invalid — fix the lines above"
+fi
 
 # 7b. Per-scope validation (ADR R2). Scope is read from the ADR header line
 #     `**Scope**: X` and the plan header line `> **Scope**: X` (start.sh --scope

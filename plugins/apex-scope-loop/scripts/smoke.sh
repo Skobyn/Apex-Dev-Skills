@@ -2469,6 +2469,128 @@ grep -qF 'malformed' <<<"$(st_line Scope)" || fail "status-scope: a doubled Scop
 (cd "$ST_TMP" && bash "$ST" nothing >/dev/null 2>&1) || fail "status-scope: status.sh on a missing slug exited non-zero"
 ok "status-scope: status.sh prints Scope (bugfix, feature, 'feature (no Scope line)', mismatch for disagreeing or one-sided, malformed/doubled reported, body lines ignored) and Intent (none, not filled, filled), always exit 0"
 
+# 69. monitor-section (Phase 3.2): the plan `## Monitor` section and monitorlib.py (ADR R5b, R5d).
+#     A valid section passes; each malformed one is refused with the problem named (allow-list schema, fail closed:
+#     a heading whose block is missing, doubled or not JSON is refused, never "not watched"); validate-file accepts a
+#     repo-level file and refuses window_days there; no section and `checks: []` both promote; a bad section stops
+#     promote; every plan in this checkout and every scaffold passes planlib and monitorlib; the fence handling is planlib's.
+ML="$EX/monitorlib.py"; MN_TMP="$SMOKE_TMP/monitor-section"; rm -rf "${MN_TMP:?}"; mkdir -p "$MN_TMP" || fail "monitor-section: cannot create the temp dir"
+# mn_plan NAME JSON: a plan with a ## Monitor section holding JSON in one json fence
+mn_plan() { printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n%s\n```\n' "$2" >"$MN_TMP/$1.md"; }
+MN_HTTP='{"kind": "http", "url": "https://x.example/health", "measure": "latency_ms"}'
+mn_chk() { printf '{"id": "%s", "metric": "%s", "op": "%s", "threshold": 800, "severity": "high", "probe": %s}' "$1" "$2" "$3" "$4"; }
+MN_OK="$(mn_chk p95 latency.p95 '>' "$MN_HTTP"), $(mn_chk exit0 job:exit '!=' '{"kind": "cmd", "command": "true"}'), $(mn_chk rn m-1 '>=' '{"kind": "runner", "metrics": ["m-1"]}')"
+# mn_ok NAME: valid. mn_bad NAME PATTERN: exit 1, the output names the problem.
+mn_ok() { local o rc=0; o="$(python3 "$ML" validate "$MN_TMP/$1.md" 2>&1)" || rc=$?; [ "$rc" = 0 ] && [ -z "$o" ] || fail "monitor-section: $1 should be valid (exit $rc): $o"; }
+mn_bad() { local o rc=0; o="$(python3 "$ML" validate "$MN_TMP/$1.md" 2>&1)" || rc=$?; [ "$rc" = 1 ] || fail "monitor-section: $1 exited $rc, expected 1: $o"; grep -qE -- "$2" <<<"$o" || fail "monitor-section: $1 did not say '$2': $o"; }
+mn_plan ok "{\"window_days\": 90, \"checks\": [$MN_OK]}"; mn_ok ok
+mn_plan ok1 "{\"window_days\": 1, \"checks\": []}"; mn_ok ok1
+mn_plan okdef "{\"checks\": [$(mn_chk a a '<=' "$MN_HTTP")]}"; mn_ok okdef
+for MN_OP in '<' '<=' '>' '>=' '==' '!='; do mn_plan op "{\"checks\": [$(mn_chk a a "$MN_OP" "$MN_HTTP")]}"; mn_ok op; done
+mn_plan s1 '{"window_days": 14, "checks": [{"metric": "m", "op": ">", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "true"}}]}'; mn_bad s1 "checks\[0\].*missing 'id'"
+mn_plan s2 "{\"checks\": [$(mn_chk c1 m '=>' "$MN_HTTP")]}"; mn_bad s2 "c1.*unknown op"
+mn_plan s3 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "ping", "host": "x"}')]}"; mn_bad s3 "c1.*unknown probe.kind 'ping'"
+mn_plan s4 '{"window_days": 0, "checks": []}'; mn_bad s4 "window_days must be an integer 1-90"
+mn_plan s5 '{"window_days": 91, "checks": []}'; mn_bad s5 "window_days must be an integer 1-90"
+mn_plan s5b '{"window_days": 14.5, "checks": []}'; mn_bad s5b "window_days must be an integer"
+mn_plan s5c '{"window_days": true, "checks": []}'; mn_bad s5c "window_days must be an integer"
+mn_plan s6 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "http", "url": "https://x.example/", "measure": "status", "headers": {}}')]}"; mn_bad s6 "c1.*unknown key 'headers'"
+mn_plan s6b "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "http", "url": "https://x.example/", "measure": "status", "headers": {"Authorization": "x"}}')]}"; mn_bad s6b "unknown key 'headers'"
+mn_plan s7 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "http", "url": "https://x.example/", "measure": "status", "method": "POST"}')]}"; mn_bad s7 "c1.*GET only"
+mn_plan s7b "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "http", "url": "https://x.example/", "measure": "status", "method": "get"}')]}"; mn_bad s7b "GET only"
+mn_plan s7c "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "http", "url": "https://x.example/", "measure": "status", "timeout": 600}')]}"; mn_bad s7c "unknown key 'timeout'.*fixed at 10"
+mn_plan s8 "{\"checks\": [$(mn_chk dup m1 '>' "$MN_HTTP"), $(mn_chk dup m2 '>' "$MN_HTTP")]}"; mn_bad s8 "duplicate check id 'dup'"
+mn_plan s11 "{\"checks\": [$(mn_chk 'bad id' m '>' "$MN_HTTP")]}"; mn_bad s11 "id must match"
+mn_plan s11b "{\"checks\": [$(mn_chk _lead m '>' "$MN_HTTP")]}"; mn_bad s11b "id must match"
+mn_plan s11c "{\"checks\": [$(mn_chk a 'm/x' '>' "$MN_HTTP")]}"; mn_bad s11c "metric must match"
+mn_plan s11d "{\"checks\": [$(mn_chk "$(printf 'a%.0s' $(seq 129))" m '>' "$MN_HTTP")]}"; mn_bad s11d "id must match"
+mn_plan s12 "{\"checks\": [], \"extra\": 1}"; mn_bad s12 "unknown key 'extra'"
+mn_plan s12b '{"checks": [{"id": "a", "metric": "m", "op": ">", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "true", "shell": "sh"}, "note": "x"}]}'; mn_bad s12b "unknown key 'note'"; mn_bad s12b "unknown key 'shell'"
+mn_plan s13 "{\"checks\": [$(mn_chk a m '>' '{"kind": "http", "url": "file:///etc/passwd", "measure": "status"}')]}"; mn_bad s13 "http:// or https://"
+mn_plan s13b "{\"checks\": [$(mn_chk a m '>' '{"kind": "http", "url": "https://u:p@x.example/", "measure": "status"}')]}"; mn_bad s13b "credentials"
+mn_plan s14 '{"checks": [{"id": "a", "metric": "m", "op": ">", "threshold": NaN, "severity": "low", "probe": {"kind": "cmd", "command": "true"}}]}'; mn_bad s14 "invalid JSON"
+mn_plan s14b '{"checks": [{"id": "a", "metric": "m", "op": ">", "threshold": "5", "severity": "low", "probe": {"kind": "cmd", "command": "true"}}]}'; mn_bad s14b "threshold must be a finite number"
+mn_plan s14c '{"checks": [{"id": "a", "metric": "m", "op": ">", "threshold": 1e999, "severity": "low", "probe": {"kind": "cmd", "command": "true"}}]}'; mn_bad s14c "threshold must be a finite number"
+mn_plan s15 "{\"checks\": [$(mn_chk a m '>' "$MN_HTTP" | sed 's/high/urgent/')]}"; mn_bad s15 "severity must be one of"
+mn_plan s16 '{"checks": [], "checks": []}'; mn_bad s16 "duplicate key 'checks'"
+mn_plan s17 '{"checks": "none"}'; mn_bad s17 "checks must be a list"
+mn_plan s18 '{"window_days": 14}'; mn_bad s18 "missing 'checks'"
+mn_plan s19 '[]'; mn_bad s19 "must be an object"
+# two json blocks, invalid JSON, a heading with no block, a non-json fence, an unclosed fence, a doubled or malformed heading
+mn_plan twob '{"checks": []}'; printf '\n```json\n{"checks": []}\n```\n' >>"$MN_TMP/twob.md"; mn_bad twob "2 fenced blocks"
+mn_plan badj '{"checks": [}'; mn_bad badj "invalid JSON"
+mn_plan emptyj ''; mn_bad emptyj "invalid JSON"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\nWe will watch it.\n' >"$MN_TMP/nob.md"; mn_bad nob "no fenced json block"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n{"checks": []}\n' >"$MN_TMP/open.md"; mn_bad open "never closed"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```yaml\nchecks: []\n```\n' >"$MN_TMP/yaml.md"; mn_bad yaml "only a fenced json block"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n{"checks": []}\n```\n\n## Monitor\n\n```json\n{"checks": []}\n```\n' >"$MN_TMP/twoh.md"; mn_bad twoh "more than one Monitor heading"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## monitor\n\n```json\n{"checks": []}\n```\n' >"$MN_TMP/lower.md"; mn_bad lower "exactly '## Monitor'"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\nMonitor\n-------\n\n```json\n{"checks": []}\n```\n' >"$MN_TMP/setext.md"; mn_bad setext "not an underlined title"
+# the section ends at the next heading: a later section's fenced block is not Monitor's, and a fenced example of the heading is not a heading
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n{"checks": []}\n```\n\n## Notes\n\n```json\n{"x": 1}\n```\n' >"$MN_TMP/later.md"; mn_ok later
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n```markdown\n## Monitor\n```\n' >"$MN_TMP/fenced-head.md"; mn_ok fenced-head
+# threat 2: a json block under ## Monitor is accepted by planlib validate, and a task line inside it is still refused by planlib
+python3 "$EX/planlib.py" validate "$MN_TMP/ok.md" >/dev/null 2>&1 || fail "monitor-section: planlib validate refuses a plan with a ## Monitor json block"
+python3 "$EX/planlib.py" validate "$MN_TMP/ok1.md" >/dev/null 2>&1 || fail "monitor-section: planlib validate refuses the stub section"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n{"checks": []}\n- [ ] **Phase 9.9** [docs] hidden\n```\n' >"$MN_TMP/hide.md"
+! python3 "$EX/planlib.py" validate "$MN_TMP/hide.md" >/dev/null 2>&1 || fail "monitor-section: planlib accepts a task line hidden inside the Monitor block"
+mn_bad hide "task line sits inside the code fence"
+# validate-file: repo-level file, same shape, no window_days
+printf '{"checks": [%s]}\n' "$MN_OK" >"$MN_TMP/repo.json"; python3 "$ML" validate-file "$MN_TMP/repo.json" >/dev/null || fail "monitor-section: validate-file refuses a valid repo-level file"
+printf '{"checks": []}\n' >"$MN_TMP/repo-empty.json"; python3 "$ML" validate-file "$MN_TMP/repo-empty.json" >/dev/null || fail "monitor-section: validate-file refuses an empty repo-level file"
+printf '{"window_days": 14, "checks": []}\n' >"$MN_TMP/repo-w.json"; MN_O="$(python3 "$ML" validate-file "$MN_TMP/repo-w.json" 2>&1)" && fail "monitor-section: validate-file accepts window_days"
+grep -qF "unknown key 'window_days'" <<<"$MN_O" || fail "monitor-section: validate-file did not name window_days: $MN_O"
+printf '{nope' >"$MN_TMP/repo-bad.json"; ! python3 "$ML" validate-file "$MN_TMP/repo-bad.json" >/dev/null 2>&1 || fail "monitor-section: validate-file accepts invalid JSON"
+! python3 "$ML" validate-file "$MN_TMP/absent.json" >/dev/null 2>&1 || fail "monitor-section: validate-file accepts a missing file"
+# exit codes: usage errors are 2, a missing plan is 1
+MN_RC=0; python3 "$ML" >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 2 ] || fail "monitor-section: no arguments exited $MN_RC, expected 2"
+MN_RC=0; python3 "$ML" validate >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 2 ] || fail "monitor-section: validate with no plan exited $MN_RC, expected 2"
+MN_RC=0; python3 "$ML" frobnicate x >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 2 ] || fail "monitor-section: an unknown subcommand exited $MN_RC, expected 2"
+MN_RC=0; python3 "$ML" validate "$MN_TMP/absent.md" >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 1 ] || fail "monitor-section: a missing plan exited $MN_RC, expected 1"
+# no section = not watched = valid
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n' >"$MN_TMP/none.md"; mn_ok none
+# every plan in this checkout, and every scaffold of every template, validates under planlib and monitorlib
+MN_N=0
+for MN_F in "$EB_ROOT"/.claude/plans/*.md; do
+  [ -f "$MN_F" ] || continue; MN_N=$((MN_N + 1))
+  python3 "$EX/planlib.py" validate "$MN_F" >/dev/null 2>&1 || fail "monitor-section: planlib validate refuses $MN_F"
+  MN_O="$(python3 "$ML" validate "$MN_F" 2>&1)" || fail "monitor-section: monitorlib validate refuses $MN_F: $MN_O"
+done
+[ "$MN_N" -ge 1 ] || fail "monitor-section: no plans found under $EB_ROOT/.claude/plans"
+for MN_PROF in generic apex; do
+  MN_R="$MN_TMP/scaf-$MN_PROF"; mkdir -p "$MN_R" && git -C "$MN_R" init -q -b main || fail "monitor-section: cannot init the scaffold repo"
+  for MN_SC in bugfix poc feature; do
+    (cd "$MN_R" && APEX_PLAN_PROFILE="$MN_PROF" bash "$SS" "m-$MN_SC" "T" --scope "$MN_SC" >/dev/null) || fail "monitor-section: $MN_PROF --scope $MN_SC scaffold failed"
+    MN_F="$MN_R/.claude/plans/m-$MN_SC-plan.md"
+    grep -qx '## Monitor' "$MN_F" && grep -qxF '{"window_days": 14, "checks": []}' "$MN_F" || fail "monitor-section: $MN_PROF $MN_SC scaffold has no Monitor stub"
+    python3 "$EX/planlib.py" validate "$MN_F" >/dev/null 2>&1 || fail "monitor-section: $MN_PROF $MN_SC scaffold fails planlib validate"
+    MN_O="$(python3 "$ML" validate "$MN_F" 2>&1)" || fail "monitor-section: $MN_PROF $MN_SC scaffold fails monitorlib validate: $MN_O"
+  done
+done
+# promote: a plan with the stub (the scaffold), a plan with no section, and one with a real check all promote; bad sections stop it
+sp_fx mnstub bugfix;  sp_promoted "monitor-section: a plan with the stub (checks: [])" "$SP_TMP/mnstub"
+grep -q '^## Monitor$' "$SP_TMP/mnstub/.claude/plans/fx-plan.md" || fail "monitor-section: the promote fixture lost its Monitor stub"
+! grep -qi 'monitor' <<<"$SP_OUT" || fail "monitor-section: a valid Monitor section changed promote's output: $SP_OUT"
+sp_fx mnnone bugfix; sp_edc mnnone .claude/plans/fx-plan.md '/^## Monitor$/,/^## Phases$/{/^## Phases$/!d;}'
+! grep -q '^## Monitor' "$SP_TMP/mnnone/.claude/plans/fx-plan.md" || fail "monitor-section: could not remove the Monitor section from the fixture"
+sp_promoted "monitor-section: a plan with no Monitor section" "$SP_TMP/mnnone"
+! grep -qi 'monitor' <<<"$SP_OUT" || fail "monitor-section: a plan without a section prints about Monitor: $SP_OUT"
+sp_fx mnreal bugfix; sp_edc mnreal .claude/plans/fx-plan.md 's|^{"window_days": 14, "checks": \[\]}$|{"window_days": 30, "checks": [{"id": "c1", "metric": "m1", "op": ">", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "echo 0"}}]}|'
+grep -qF '"c1"' "$SP_TMP/mnreal/.claude/plans/fx-plan.md" || fail "monitor-section: could not put a check in the fixture"
+sp_promoted "monitor-section: a plan with a valid check" "$SP_TMP/mnreal"
+sp_fx mnbad bugfix; sp_edc mnbad .claude/plans/fx-plan.md 's|^{"window_days": 14, "checks": \[\]}$|{"window_days": 0, "checks": [{"id": "c1", "metric": "m1", "op": "~", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "echo 0"}}]}|'
+sp_refused "monitor-section: a Monitor section with a bad window and op" "$SP_TMP/mnbad" 'window_days must be an integer 1-90'
+grep -qF 'unknown op' <<<"$SP_OUT" && grep -qF 'c1' <<<"$SP_OUT" || fail "monitor-section: promote did not name the op problem and the check id: $SP_OUT"
+sp_fx mnnoblk bugfix; sp_edc mnnoblk .claude/plans/fx-plan.md '/^```json$/,/^```$/d'
+sp_refused "monitor-section: a Monitor heading with no block" "$SP_TMP/mnnoblk" 'no fenced json block'
+sp_fx mntwo bugfix; sp_edc mntwo .claude/plans/fx-plan.md 's|^{"window_days": 14, "checks": \[\]}$|{"checks": []}\
+```\
+\
+```json\
+{"checks": []}|'
+sp_refused "monitor-section: two json blocks" "$SP_TMP/mntwo" '2 fenced blocks'
+ok "monitor-section: monitorlib validates the plan's ## Monitor section as an allow-list (ledger id grammar, six ops, http/cmd/runner probes; a missing id, unknown op or probe.kind, window_days 0 and 91, headers, a non-GET method, a duplicate id, two blocks, invalid JSON, a heading with no block, a bad id, unknown keys are each refused by name); validate-file takes a repo-level file and refuses window_days; no section and checks: [] promote, bad sections stop promote; $MN_N plan(s) here and all six scaffolds of both profiles validate"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2528,4 +2650,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 70/70 checks"
+echo "smoke passed: 71/71 checks"
