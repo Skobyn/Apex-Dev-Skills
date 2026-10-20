@@ -9,17 +9,20 @@
 # (monitor and ingest are Phase 3.4: the step dispatch below is their seam.)
 #
 # Deploy (the human-only step). Two layers:
-#   1. apex-dispatch's pre-bash denies every agent Bash call that invokes
-#      `operate.sh … deploy`, at every stage (with or without a run lock,
-#      wrappers such as script/expect/unbuffer/python pty included). That is the
+#   1. apex-dispatch's pre-bash denies every agent Bash call whose text names
+#      operate.sh and the word deploy, at every stage (with or without a run
+#      lock, whatever the wrapper; a fail-closed text rule, so only the exact
+#      forms `operate.sh PLAN status|monitor|ingest` and `operate.sh --all
+#      status|monitor [--ingest]` pass when the text says deploy). That is the
 #      control: a terminal read alone is agent-satisfiable (a self-made pty).
 #   2. Here: an Ask Contract is printed, then the ack is read from /dev/tty and
 #      must equal `<slug>@<landed sha>` (the full 40-hex sha shown in the
 #      contract). APEX_OPERATE_ACK never authorizes a deploy, and a process with
 #      no controlling terminal is refused: a human must type the ack at their
 #      own terminal. A wrong slug or sha is refused.
-#   Residual: a script file written to disk that calls operate.sh defeats the
-#   hook's text match; that is deliberate circumvention, out of the threat model.
+#   Residual: a script file written to disk that calls operate.sh, a hidden
+#   script name or a deploy word built by expansion defeats the hook's text
+#   match; that is deliberate circumvention, out of the threat model.
 #   The landed sha is the checkpoint's `landed_sha` when recorded, else the
 #   commit land.sh made for this run on the base branch (the newest first-parent
 #   merge whose subject is land.sh's message for the run's branch); never the

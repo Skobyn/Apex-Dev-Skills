@@ -16,7 +16,7 @@
 #   - the no-op path is bash only (one git call and one tr); python3
 #     (scripts/lib/hooks.py) starts while a lock exists, to parse the JSON payload
 #     and decide, and, lock or not, for pre-bash's operate deploy pre-check when
-#     the command names operate.sh or pairs deploy with an expansion or glob;
+#     the command's flattened text names operate.sh;
 #   - fails open ({} plus a stderr advisory) when python3, the sibling
 #     apex-scope-loop or the payload is unusable; hooks.py also writes a
 #     hook_error ledger row when the run's ledger is writable.
@@ -35,28 +35,32 @@ apex_hook_scope_loop_scripts() {
 }
 
 # apex_hook_operate_gate ROOT INPUT — the deploy control (aidlc-borrowings Phase 3.3).
-# No state needed. Only the payload from its first "command" key on is read (the
-# command and the tool_input fields after it; cwd, transcript_path and session_id
-# come before it). A command whose text (shell quotes and backslashes removed)
-# never names operate.sh, and does not pair the word deploy with an expansion or
-# glob ($ ` * ? [), returns 1 at once, so ordinary calls with no lock start no
-# python. A command that does is judged by hooks.py operate-gate (the allow-list:
-# operate.sh … status, plain mentions); a deny is printed and 0 returned. This rule
-# fails closed: without python3, or when the engine fails, a command naming
-# operate.sh with the word deploy is denied.
+# A fail-closed text rule (ADR-0001, Amendments 2026-10-20), no parser: a command
+# whose text names operate.sh and the word deploy is denied, whatever its structure
+# (comments, heredoc bodies and quoted strings included), unless the whole command is
+# exactly one allow-listed form (operate.sh PLAN status|monitor|ingest, --all
+# status|monitor [--ingest]; hooks.py operate_allowed_form). No state needed. Only
+# the payload from its first "command" key on is read (the command and the
+# tool_input fields after it; cwd, transcript_path and session_id come before it).
+# One tr removes ", ', \ and n: the payload is JSON, so a backslash-newline arrives
+# as \\\n and a newline as \n, and neither operate.sh nor deploy has an n, so
+# oper\<newline>ate.sh still reads as operate.sh. A command whose flattened text
+# (either case) never names operate.sh returns 1 at once, so ordinary calls with no
+# lock start no python. One that does is judged by hooks.py operate-gate; a deny is
+# printed and 0 returned. Fail closed: without python3, or when the engine fails, a
+# command naming operate.sh with deploy (either case) is denied; the allow-list is
+# python's, so in that state an allow-listed form whose plan path contains deploy is
+# denied too.
 # Every operation on the payload is linear: ${x%%"literal"*} and *literal* tests
-# scan once, and the quotes are removed by one tr. A bash pattern substitution
+# scan once, and the characters are removed by one tr. A bash pattern substitution
 # (${x//[…]/}) is quadratic in bash 3.2 (macOS /bin/bash: 32 KB took 125 s) and
 # the hook's 10 s timeout fails open, so none is used here (smoke check 89 times it).
 apex_hook_operate_gate() {
-  local root="$1" input="$2" pre cmd flat out rc=0 reason expand='*[$`*?[]*'
+  local root="$1" input="$2" pre cmd flat out rc=0 reason
   [[ "$input" == *'"command"'* ]] || return 1
   pre="${input%%\"command\"*}"; cmd="${input:${#pre}}"
-  flat="$(printf '%s' "$cmd" | tr -d "\"'\\\\")"
-  # Not named: still judged when deploy appears beside an expansion or glob that could hide the name.
-  if [[ "$flat" != *operate.sh* ]]; then
-    [[ "$flat" == *deploy* && "$cmd" == $expand ]] || return 1
-  fi
+  flat="$(printf '%s' "$cmd" | tr -d "\"'\\\\n")"
+  [[ "$flat" == *[Oo][Pp][Ee][Rr][Aa][Tt][Ee].[Ss][Hh]* ]] || return 1
   reason="apex-dispatch: operate.sh deploy must be run by a human in their own terminal; pre-bash could not judge this command"
   if command -v python3 >/dev/null 2>&1; then
     out="$(printf '%s' "$input" | python3 -B "$root/scripts/lib/hooks.py" operate-gate 2>/dev/null)" || rc=$?
@@ -66,7 +70,7 @@ apex_hook_operate_gate() {
     out=""; reason="$reason (python3 not found)"
   fi
   if [[ -z "$out" ]]; then
-    [[ "$flat" == *deploy* ]] || return 1
+    [[ "$flat" == *[Dd][Ee][Pp][Ll][Oo][Yy]* ]] || return 1
     out="{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"$reason\"}}"
   fi
   [[ "$out" == "{}" ]] && return 1

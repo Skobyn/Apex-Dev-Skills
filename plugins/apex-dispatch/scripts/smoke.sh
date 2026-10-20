@@ -978,7 +978,7 @@ MS=$(( (T1 - T0) / 1000000 ))
 grep -q 'python3' "$PLUGIN_ROOT/scripts/lib/hook-common.bash" && \
   awk '/STATE_BASE\/ACTIVE/{lock=NR} /python3 -B/{py=NR} END{exit !(lock && py && lock < py)}' "$PLUGIN_ROOT/scripts/lib/hook-common.bash" \
   || fail "hook-common.bash does not check the ACTIVE lock before starting python3"
-pass "a governed pre-bash call took ${MS} ms (< 2000 ms; timeout 10 s); python3 starts only after the ACTIVE lock check, except pre-bash's operate deploy pre-check (a command naming operate.sh, or deploy beside an expansion or glob: check 89)"
+pass "a governed pre-bash call took ${MS} ms (< 2000 ms; timeout 10 s); python3 starts only after the ACTIVE lock check, except pre-bash's operate deploy pre-check (a command whose flattened text names operate.sh: check 89)"
 
 # 50. apex-scope-loop's real layout: the plan worktree lives at <state>/worktree inside .dev-plan-state/.
 #     Work inside it is allowed; the run state around it (checkpoint.json, gate/, ACTIVE, the worktree dir itself) is not.
@@ -2935,47 +2935,53 @@ python3 -c 'import json, os, sys; p = sys.argv[1]; s = json.load(open(p)) if os.
 pass "operate-ledger-events: operate_deploy/operate_signal/operate_window_closed append via the CLI and verify; missing fields, slug|repo none/both, enums, types and short SHAs refused; unmeasured value stored null (0 kept distinct); provenance still CLI-refused; malformed lines fail verify; pre-bash denies setting/exporting/unsetting APEX_OPERATE_ACK/APEX_DEPLOY_CMD/APEX_MONITOR_CMD under a live ACTIVE lock only and that guard is inert with no lock or a DONE/landed owner (F-018), while the deploy itself stays denied (check 89); longer names and mentions allowed"
 
 # 89. operate-deploy-deny (aidlc-borrowings Phase 3.3; ADR-0001 "pre-bash enforces", Amendments 2026-10-20): the deploy
-#     control. Through the real hooks/pre-bash.sh entry point, pre-bash denies every command that starts apex-scope-loop's
-#     operate.sh deploy in each state a deploy can happen in: no ACTIVE lock, a live lock, a DONE owner and a landed
-#     owner (the post-land state where every lock-scoped rule is inert: guard-dead-in-target-flow), wrapped in script,
-#     expect, unbuffer, a python pty, bash -c, eval, $( ), env, sudo, nohup, timeout, nice, after && and inside if,
-#     quoted apart, through a variable, a glob or $( ) program word beside deploy, piped or heredoc'd into a shell. It allows operate.sh … status and plain
-#     mentions (echo, grep, cat, a commit message). The gate is cheap: with no lock a command that never names
-#     operate.sh starts no python (a python3 spy on PATH), and it fails closed: a broken python3 still denies a deploy.
-#     Review round 2 (failing-first on d3ea95c): a `#` comment on line 1 hid a deploy on line 2 (shlex's commenter ate
-#     the newline); a backslash-newline after the script word, `| xargs bash operate.sh` and `xargs -a f bash
-#     operate.sh` passed as "no arguments"; `[ -f deploy.yaml ]`, `[[ $ENV == deploy ]]` and kin were denied as an
-#     unresolved `[` program word; the bash pre-check ran ${input//[…]/} over the payload (quadratic in bash 3.2:
-#     a 12 KB quote-dense payload took 8.4 s against the 10 s hook timeout, which fails open). Now a 64 KB
-#     quote- and backslash-heavy heredoc must clear /bin/bash in under 2 s, with and without a lock. APEX_DISPATCH_MODE=off
-#     does not lift the deny. The allowed set includes Phase 3.4's --all monitor [--ingest], PLAN monitor and PLAN ingest.
-#     Review round 3 (failing-first on 913d9b6): a here-string (`read -r a <<<"$x"`, `cat <<<'hi'`) or an arithmetic
-#     shift (`echo $((1<<2))`, `(( x <<= 1 ))`) was read as a heredoc and the deploy on the next line dropped as its
-#     body; so were `<<2`, `<<$x` (unquoted delimiters must start with a letter or _) and a part-quoted `<<E"OF"`
-#     (read as delimiter E). A real heredoc (`cat <<'EOF'` whose body mentions a deploy) still drops its body.
-#     Threat 3 (an agent acking its own deploy after land): mutant "drop apex_hook_operate_gate from the prelude"
-#     turns the no-lock/DONE/landed cases red; mutant "allow when the step is not literally deploy" turns the $S,
-#     missing-step and split-word cases red.
+#     control, a fail-closed text rule (lesson L-001: three review rounds of a hand-written bash parser each found a
+#     construct that hid a deploy line, so the parser is gone). Through the real hooks/pre-bash.sh entry point, pre-bash
+#     denies every command whose text (backslash-newline joined; ", ' and \ removed; every line, heredoc body, comment
+#     and quoted string) names operate.sh and the word deploy (case-insensitive), unless the whole command, trimmed, is
+#     exactly one allow-listed form with no shell metacharacter: [bash |sh ]PATH/operate.sh PLAN status|monitor|ingest
+#     or … --all status|monitor [--ingest]. It holds in each state a deploy can happen in: no ACTIVE lock, a live lock,
+#     APEX_DISPATCH_MODE=off, a DONE owner and a landed owner (the post-land state where every lock-scoped rule is inert:
+#     guard-dead-in-target-flow). The gate is cheap: with no lock a command that never names operate.sh starts no python
+#     (a python3 spy on PATH), and it fails closed: a broken python3 still denies a command naming both, the allow-listed
+#     forms included when their plan path contains deploy (the allow-list is python's).
+#     Attempt 2 (failing-first on f69110b, hooks.py operate-gate printed {}): `for((i=0;i<1<<n;i++)); do :; done` ⏎
+#     deploy, `if((m & 1<<b))` ⏎ deploy, `v=${line%% #*}; bash operate.sh p deploy`, and a heredoc body naming both.
+#     Accepted false denies (the cost of no parser): a mention that names both words, e.g. `echo operate.sh deploy`,
+#     `grep -n deploy operate.sh`, a heredoc body and a `git commit -m` message (use `git commit -F FILE`,
+#     `gh pr create --body-file FILE`). Residual, out of model (ADR-0001), so not asserted here: a script name hidden
+#     by a glob or expansion (`bash op*.sh p deploy`, `P=./op?rate.sh; "$P" p deploy`, `bash op[e]rate.sh p deploy`) and
+#     a deploy word built by expansion or string construction (`${X}loy`, an interpreter's "dep" + "loy"); those two
+#     families were parser cases before attempt 2. `bash operate.sh p` (no step) only prints usage and is allowed.
+#     Review rounds 2 and 3 found the 64 KB timing case: a ${x//[…]/} pre-check is quadratic in bash 3.2, so a 64 KB
+#     quote- and backslash-heavy command must clear /bin/bash in under 2 s, allowed (names operate.sh only) and denied
+#     (names both), with and without a lock.
 OY="$WORK/oy"; mkdir -p "$OY/plans"; git init -q -b main "$OY"; OY="$(cd "$OY" && pwd -P)"
 printf '# Operate deny fixture\n\n- [ ] **Phase 1.1** [mechanical] one task\n  - Acceptance: `true`\n  - Paths: src/**\n' >"$OY/plans/p.md"
+cp "$OY/plans/p.md" "$OY/plans/deploy-x-plan.md"   # a plan whose path contains "deploy": its status still runs
 git -C "$OY" add -A; git -C "$OY" commit -qm oy
 EXS="$(cd "$PLUGIN_ROOT/../apex-scope-loop/skills/apex-execute/scripts" && pwd -P)"; [ -x "$EXS/operate.sh" ] || fail "operate-deploy-deny: no sibling operate.sh at $EXS"
 ydec() { (cd "$OY" && printf '%s' "$(pl bash "$OY" "$1")" | env PATH="${YPATH:-$PATH}" ${YMODE:+APEX_DISPATCH_MODE="$YMODE"} bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null) | one; }
-# ytime STATE — one pre-bash run under /bin/bash (macOS: bash 3.2) on a 64 KB quote- and backslash-heavy heredoc
-# command that names operate.sh and deploy beside $ (so every pre-check and hooks.py run); must be {} in < 2000 ms.
+# ytime STATE — pre-bash under /bin/bash (macOS: bash 3.2) on a 64 KB quote- and backslash-heavy heredoc command, run
+# twice: its last line names operate.sh only (python judges the whole text: {}) and then operate.sh and deploy (deny).
+# Each run must finish in < 2000 ms.
 ytime() {
-  local sh=/bin/bash t0 t1 o; [ -x "$sh" ] || sh=bash
-  python3 -c 'import json, sys
+  local sh=/bin/bash t0 t1 o tail want
+  [ -x "$sh" ] || sh=bash
+  for tail in "echo operate.sh \$HOME|{}" "echo operate.sh deploy \$HOME|deny"; do
+    want="${tail##*|}"
+    python3 -c 'import json, sys
 body = ("\x27\"\\x\\\"\x27 $V `d` " * 6000)[:65536]
-c = "cat <<\x27EOF\x27\n" + body + "\nEOF\necho operate.sh deploy $HOME"
-print(json.dumps({"tool_name": "Bash", "tool_input": {"command": c}, "session_id": "smoke", "tool_use_id": "t1", "hook_event_name": "PreToolUse", "cwd": sys.argv[1]}))' "$OY" >"$WORK/y64.json"
-  [ "$(wc -c <"$WORK/y64.json")" -gt 65536 ] || fail "operate-deploy-deny: the timing payload is under 64 KB"
-  t0="$(python3 -c 'import time; print(int(time.time() * 1000))')"
-  o="$(cd "$OY" && "$sh" "$PLUGIN_ROOT/hooks/pre-bash.sh" <"$WORK/y64.json" 2>/dev/null | one)"
-  t1="$(python3 -c 'import time; print(int(time.time() * 1000))')"
-  [ "$o" = "{}" ] || fail "operate-deploy-deny: the 64 KB heredoc command was not allowed ($1): $o"
-  [ $((t1 - t0)) -lt 2000 ] || fail "operate-deploy-deny: pre-bash took $((t1 - t0)) ms on a 64 KB quote-heavy command under $sh ($1; budget 2000 ms, the hook times out at 10 s and fails open)"
-  YT="$YT $1:$((t1 - t0))ms"
+c = "cat <<\x27EOF\x27\n" + body + "\nEOF\n" + sys.argv[2]
+print(json.dumps({"tool_name": "Bash", "tool_input": {"command": c}, "session_id": "smoke", "tool_use_id": "t1", "hook_event_name": "PreToolUse", "cwd": sys.argv[1]}))' "$OY" "${tail%|*}" >"$WORK/y64.json"
+    [ "$(wc -c <"$WORK/y64.json")" -gt 65536 ] || fail "operate-deploy-deny: the timing payload is under 64 KB"
+    t0="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+    o="$(cd "$OY" && "$sh" "$PLUGIN_ROOT/hooks/pre-bash.sh" <"$WORK/y64.json" 2>/dev/null | one)"
+    t1="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+    [ "$o" = "$want" ] || fail "operate-deploy-deny: the 64 KB heredoc command gave $o, expected $want ($1)"
+    [ $((t1 - t0)) -lt 2000 ] || fail "operate-deploy-deny: pre-bash took $((t1 - t0)) ms on a 64 KB quote-heavy command under $sh ($1, $want; budget 2000 ms, the hook times out at 10 s and fails open)"
+    YT="$YT $1/$want:$((t1 - t0))ms"
+  done
 }
 NL='
 '
@@ -2988,52 +2994,69 @@ y_allowed() {
   for c in "$@"; do [ "$(ydec "$c")" = "{}" ] || fail "operate-deploy-deny: pre-bash denied ($stage): $c"; done
 }
 y_deploys() {
+  # every pre-attempt-2 deny case that names both words
   y_denied "$1" 'bash operate.sh p deploy' "bash $EXS/operate.sh plans/p.md deploy" "$EXS/operate.sh plans/p.md deploy" './operate.sh p deploy' \
     'script -q /dev/null bash operate.sh p deploy' 'script -q -c "bash operate.sh p deploy" /dev/null' "expect -c 'spawn bash operate.sh p deploy; interact'" \
     'unbuffer bash operate.sh p deploy' "python3 -c 'import pty; pty.spawn([\"bash\", \"operate.sh\", \"p\", \"deploy\"])'" \
-    "python3 -c 'import subprocess; subprocess.run([\"bash\", \"operate.sh\", \"p\", \"dep\" + \"loy\"])'" "perl -e 'system(\"bash operate.sh p deploy\")'" \
+    "perl -e 'system(\"bash operate.sh p deploy\")'" \
     'bash -c "bash operate.sh p deploy"' 'eval "bash operate.sh p deploy"' 'echo $(bash operate.sh p deploy)' 'echo `bash operate.sh p deploy`' \
     'env X=1 bash operate.sh p deploy' 'sudo bash operate.sh p deploy' 'nohup bash operate.sh p deploy' 'timeout 60 bash operate.sh p deploy' \
     'nice -n 5 bash operate.sh p deploy' 'true && bash operate.sh p deploy' 'if true; then bash operate.sh p deploy; fi' \
     'APEX_OPERATE_ACK=p@0123 bash operate.sh p deploy' 'source operate.sh p deploy' "bash op''erate.sh p dep''loy" 'S=deploy; bash operate.sh p $S' \
-    'bash operate.sh p' 'bash operate.sh p status deploy' 'OP=operate.sh; bash $OP p deploy' "echo 'bash operate.sh p deploy' | bash" \
+    'bash operate.sh p status deploy' 'OP=operate.sh; bash $OP p deploy' "echo 'bash operate.sh p deploy' | bash" \
     "bash <<'EOF'${NL}bash operate.sh p deploy${NL}EOF" 'git -c alias.d="!bash operate.sh p deploy" d' \
-    'bash op*.sh p deploy' "bash \$'operate.sh' p deploy" 'bash "$(echo operate.sh)" p deploy' 'P=./op?rate.sh; "$P" p deploy' \
+    "bash \$'operate.sh' p deploy" 'bash "$(echo operate.sh)" p deploy' \
     "git status --short   # note${NL}bash operate.sh p deploy" "git status # note${NL}bash operate.sh p deploy" "echo hi # x${NL}bash operate.sh p deploy" \
     "ls # y${NL}bash operate.sh p deploy" "true # z${NL}bash operate.sh p deploy" "true # <<X${NL}bash operate.sh p deploy" \
     "git status # note${NL}python3 -c 'import pty; pty.spawn([\"bash\", \"operate.sh\", \"p\", \"deploy\"])'" \
     "bash operate.sh \\${NL}  p-plan.md deploy" "bash operate.sh p-plan.md \\${NL}  deploy" "echo \\\\${NL}bash operate.sh p deploy" \
-    "printf 'p deploy' | xargs bash operate.sh" 'xargs -a deploy.args bash operate.sh' 'echo `true #`; bash operate.sh p deploy' 'bash op[e]rate.sh p deploy' \
+    "printf 'p deploy' | xargs bash operate.sh" 'xargs -a deploy.args bash operate.sh' 'echo `true #`; bash operate.sh p deploy' \
     "read -r a <<<\"\$x\"${NL}bash operate.sh p deploy" "cat <<<'hi'${NL}bash operate.sh p deploy" "cat <<< word${NL}bash operate.sh p deploy" \
     "echo \$((1<<2))${NL}bash operate.sh p deploy" "(( x <<= 1 ))${NL}bash operate.sh p deploy" "x=\$(( \$((1<<2)) << y ))${NL}bash operate.sh p deploy" \
     "cat <<E\"OF\"${NL}hi${NL}EOF${NL}bash operate.sh p deploy" "cat <<2${NL}bash operate.sh p deploy" "cat <<\$x${NL}bash operate.sh p deploy"
-}
-y_reads() {
-  y_allowed "$1" 'bash operate.sh p status' 'operate.sh plans/p.md status' 'bash operate.sh --all status' "$EXS/operate.sh --all status" \
-    'echo operate.sh deploy' 'grep -n deploy operate.sh' 'cat operate.sh' 'echo deploy' \
-    "python3 -c 'import subprocess; subprocess.run([\"bash\", \"operate.sh\", \"p\", \"status\"])'" \
-    'bash operate.sh --all monitor' 'bash operate.sh --all monitor --ingest' 'bash operate.sh p monitor' 'bash operate.sh p ingest' 'bash operate.sh' \
-    '[ -f deploy.yaml ]' '[ -d deployments ]' '[ "$1" = deploy ]' '[[ $ENV == deploy ]]' \
-    'if [ -f k8s/deployment.yaml ]; then kubectl diff -f k8s/deployment.yaml; fi' "ls *.sh # deploy notes${NL}git status" \
+  # attempt 2: the round-3 bypasses (allowed on f69110b), a heredoc body, a backslash-newline inside either word, either
+  # case, and an allow-listed form joined to anything else
+  y_denied "$1" "for((i=0;i<1<<n;i++)); do :; done${NL}bash operate.sh p deploy" "if((m & 1<<b)); then :; fi${NL}bash operate.sh p deploy" \
+    'v=${line%% #*}; bash operate.sh p deploy' "cat <<EOF${NL}see operate.sh deploy${NL}EOF" \
+    "bash oper\\${NL}ate.sh p deploy" "bash operate.sh p dep\\${NL}loy" 'bash operate.sh p DEPLOY' 'bash OPERATE.SH p deploy' \
+    'bash operate.sh p status; bash operate.sh p deploy' 'bash operate.sh plans/deploy-x-plan.md status # x' \
+    'bash operate.sh plans/deploy-x-plan.md status && true' 'env bash operate.sh plans/deploy-x-plan.md status'
+  # the accepted false-deny cost of a text rule (allowed before attempt 2): mentions that name both words
+  y_denied "$1" 'echo operate.sh deploy' 'grep -n deploy operate.sh' 'git commit -m "operate.sh deploy: docs"' \
     "cat <<'EOF'${NL}then run bash operate.sh p deploy by hand${NL}EOF${NL}git status" "cat <<EOF${NL}bash operate.sh p deploy${NL}EOF" \
     "cat <<E\"OF\"${NL}bash operate.sh p deploy${NL}EOF${NL}ls" "echo \$((1<<2)); cat <<-EOF${NL}	bash operate.sh p deploy${NL}	EOF${NL}ls"
+}
+y_reads() {
+  # the allow-listed forms (absolute, relative and bare paths; a plan path containing "deploy"), then commands that do
+  # not name both words, whatever their structure
+  y_allowed "$1" 'bash operate.sh p status' 'operate.sh plans/p.md status' 'bash operate.sh --all status' "$EXS/operate.sh --all status" \
+    'bash operate.sh --all monitor' 'bash operate.sh --all monitor --ingest' 'bash operate.sh p monitor' 'bash operate.sh p ingest' \
+    "bash $EXS/operate.sh plans/deploy-x-plan.md status" "$EXS/operate.sh .claude/plans/deploy-x-plan.md monitor" \
+    'operate.sh plans/deploy-x-plan.md ingest' 'sh operate.sh plans/deploy-x-plan.md status' "  bash $EXS/operate.sh plans/deploy-x-plan.md status  " \
+    'bash operate.sh' 'bash operate.sh p' 'echo operate.sh' 'operate.sh p status; ls' 'cat operate.sh' 'bash -n operate.sh' 'echo deploy' \
+    "python3 -c 'import subprocess; subprocess.run([\"bash\", \"operate.sh\", \"p\", \"status\"])'" \
+    '[ -f deploy.yaml ]' '[ -d deployments ]' '[ "$1" = deploy ]' '[[ $ENV == deploy ]]' 'make deploy ENV=$X' 'git status' \
+    'if [ -f k8s/deployment.yaml ]; then kubectl diff -f k8s/deployment.yaml; fi' "ls *.sh # deploy notes${NL}git status" \
+    'echo "$HOME" deploy' 'bash "$ROOT/scripts/deploy.sh"' 'bash operate.sh p redeploy-notes'
 }
 # no ACTIVE lock (the hook prelude's {} path)
 [ ! -d "$OY/.dev-plan-state/ACTIVE" ] || fail "operate-deploy-deny: the fixture already holds a lock"
 y_deploys "no ACTIVE lock"; y_reads "no ACTIVE lock"; YT=""; ytime "no lock"
-y_allowed "no ACTIVE lock" 'git commit -m "operate.sh deploy: docs"' 'bash -n operate.sh' 'git status' 'make deploy ENV=$X' 'echo "$HOME" deploy' 'ls *.sh # deploy notes'
 O="$( (cd "$OY" && printf '%s' "$(pl bash "$OY" 'bash operate.sh p deploy')" | bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null) )"
 has 'operate.sh deploy must be run by a human in their own terminal' "$O" || fail "operate-deploy-deny: the deny does not say a human must run it in their own terminal: $O"
-# cheap: with no lock, a command that never names operate.sh starts no python; one that names it does (and is judged)
+has 'git commit -F FILE' "$O" || fail "operate-deploy-deny: the deny does not name the file workaround for text that names both words: $O"
+# cheap: with no lock, a command that never names operate.sh starts no python; one that does is judged
 mkdir -p "$WORK/pyspy" "$WORK/pybroken"; YREAL="$(command -v python3)"
 printf '#!/bin/sh\necho x >>"%s/pyspy.log"\nexec "%s" "$@"\n' "$WORK" "$YREAL" >"$WORK/pyspy/python3"; printf '#!/bin/sh\nexit 1\n' >"$WORK/pybroken/python3"
 chmod +x "$WORK/pyspy/python3" "$WORK/pybroken/python3"; : >"$WORK/pyspy.log"
-YPATH="$WORK/pyspy:$PATH" y_allowed "no lock, python3 spy" 'git status' 'echo deploy' 'ls -la src'
+YPATH="$WORK/pyspy:$PATH" y_allowed "no lock, python3 spy" 'git status' 'echo deploy' 'ls -la src' 'make deploy ENV=$X' 'bash op*.sh --help' \
+  '[ -f deploy.yaml ]' 'bash "$ROOT/scripts/deploy.sh"'
 [ ! -s "$WORK/pyspy.log" ] || fail "operate-deploy-deny: with no lock an ordinary command started python ($(wc -l <"$WORK/pyspy.log") call(s)): the gate is not cheap"
 YPATH="$WORK/pyspy:$PATH" y_allowed "no lock, python3 spy" 'bash operate.sh p status'
 [ -s "$WORK/pyspy.log" ] || fail "operate-deploy-deny: a command naming operate.sh was not judged by hooks.py (the spy saw no python)"
-YPATH="$WORK/pybroken:$PATH" y_denied "no lock, a broken python3 (fail closed)" 'bash operate.sh p deploy'
-YPATH="$WORK/pybroken:$PATH" y_allowed "no lock, a broken python3" 'cat operate.sh' 'git status'
+YPATH="$WORK/pybroken:$PATH" y_denied "no lock, a broken python3 (fail closed)" 'bash operate.sh p deploy' "cat <<EOF${NL}see operate.sh deploy${NL}EOF" \
+  "bash oper\\${NL}ate.sh p deploy" 'bash operate.sh p DEPLOY' 'bash operate.sh plans/deploy-x-plan.md status'
+YPATH="$WORK/pybroken:$PATH" y_allowed "no lock, a broken python3" 'cat operate.sh' 'git status' 'bash operate.sh p status' 'echo operate.sh'
 # a live lock (BUILD): the deny still holds; the reads pass
 O="$(cd "$OY" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
 [ "$(val ROUTE_STATUS "$O")" = READY ] && [ -f "$OY/.dev-plan-state/ACTIVE/owner.json" ] || fail "operate-deploy-deny: the route took no ACTIVE lock: $O"
@@ -3055,7 +3078,7 @@ YCP="$OY/.dev-plan-state/$(jget "$YOWN" id)/checkpoint.json"; mkdir -p "$(dirnam
 python3 -c 'import json, os, sys; p = sys.argv[1]; s = json.load(open(p)) if os.path.exists(p) else {}; s["landed"] = True; json.dump(s, open(p, "w"))' "$YCP"
 [ "$(ydec 'export APEX_OPERATE_ACK=x@y')" = "{}" ] || fail "operate-deploy-deny: a landed owner is not stale (the fixture does not reach the post-land state)"
 y_deploys "landed owner"; y_reads "landed owner"
-pass "operate-deploy-deny: pre-bash denies operate.sh deploy (relative, absolute, ./, source; through script, expect, unbuffer, a python pty or subprocess, perl -e, bash -c, eval, \$( ), backticks, env, sudo, nohup, timeout, nice, && and if; quoted apart, a \$S step, a missing step, a variable path, a glob, \$'…' or \$( ) program word beside deploy, piped or heredoc'd into bash, a git ! alias) and behind a \`#\` comment line, a here-string or arithmetic \`<<\` line, a backslash-newline, \`| xargs\` or \`xargs -a\`, with no ACTIVE lock, under a live lock, with APEX_DISPATCH_MODE=off, with a DONE owner and with a landed owner; allows operate.sh … status, --all status|monitor [--ingest], PLAN monitor|ingest, plain mentions and [ / [[ tests naming deploy; with no lock an ordinary command starts no python, and a broken python3 still denies (fail closed); a 64 KB quote-heavy command took$YT under /bin/bash (< 2000 ms)"
+pass "operate-deploy-deny: pre-bash denies every command whose text names operate.sh and deploy (any line, heredoc body, comment or quoted string; either case; across a backslash-newline; wrapped in script, expect, unbuffer, a python pty, perl -e, bash -c, eval, \$( ), backticks, env, sudo, nohup, timeout, nice, && and if; piped or heredoc'd into bash; after an arithmetic for((…<<…)), if((…<<…)) or a \${v%% #*} line) unless the whole command is one allow-listed form (PLAN status|monitor|ingest, --all status|monitor [--ingest]; a plan path containing deploy passes), with no ACTIVE lock, under a live lock, with APEX_DISPATCH_MODE=off, with a DONE owner and with a landed owner; mentions naming both are denied (the accepted false-deny cost); commands that do not name both pass; with no lock an ordinary command starts no python, and a broken python3 still denies (fail closed); 64 KB quote-heavy commands took$YT under /bin/bash (< 2000 ms)"
 
 echo ""
 echo "smoke passed: $N/$N checks"
