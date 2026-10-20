@@ -2024,9 +2024,10 @@ def main(argv):
     if ctx.is_foreign(payload):
         ctx.foreign = True
         note_foreign(ctx, hook, payload)
-        if argv[1] not in ("edit", "bash"):
-            # agent/mcp/post-*/subagent-*/stop act on the owner's route, roster and
+        if argv[1] not in ("edit", "bash", "mcp"):
+            # agent/post-*/subagent-*/stop act on the owner's route, roster and
             # registrations; another session has none of them and must not add to them.
+            # pre-mcp reads only the merged policy's allowlist, not run state: it still applies.
             print("{}")
             return 0
     rc = 0
