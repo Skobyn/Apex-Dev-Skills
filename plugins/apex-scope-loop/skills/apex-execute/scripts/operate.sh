@@ -31,8 +31,9 @@
 #   is the caller's checkout HEAD); exit 0 opens the watch window (operate.window
 #   {start, end, days}, days = the plan's Monitor window_days, default 14); a
 #   non-zero exit is recorded, opens no window and exits 1. An interrupted deploy
-#   (INT, TERM or HUP) is recorded with exit 128+n and operate.sh exits 128+n; a
-#   deploy that cannot be recorded exits 6 and opens no window. With <state>/dispatch/ present an `operate_deploy` ledger
+#   (INT, TERM or HUP) is recorded with exit 128+n and operate.sh exits 128+n (also
+#   when it could not be recorded); any other deploy that cannot be recorded exits 6
+#   and opens no window. With <state>/dispatch/ present an `operate_deploy` ledger
 #   row is appended (ledger.sh append; route_id and route_mode explicitly null, never a stale
 #   active-route.json's).
 #
@@ -49,6 +50,7 @@
 #   5  the deploy ack was refused (no human terminal, wrong or missing ack)
 #   6  the deploy ran but could not be recorded in checkpoint.json (no window opened)
 #   128+n  the deploy was interrupted by signal n (INT 130, TERM 143, HUP 129); recorded
+#          when it can be (an interrupted deploy that could not be recorded still exits 128+n)
 set -euo pipefail
 
 usage() {

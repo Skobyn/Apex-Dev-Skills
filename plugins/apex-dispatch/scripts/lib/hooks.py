@@ -1292,7 +1292,8 @@ OPERATE_SCRIPT = "operate.sh"
 OPERATE_OK_STEPS = {"status", "monitor", "ingest"}
 OPERATE_REASON = ("operate.sh deploy must be run by a human in their own terminal (operate.sh asks them to type "
                   "<slug>@<landed sha> there); pre-bash denies it to every agent Bash call, at every stage. "
-                  "Agents may run `operate.sh PLAN status` or `operate.sh --all status`")
+                  "Agents may run `operate.sh PLAN status|monitor|ingest` or `operate.sh --all status|monitor "
+                  "[--ingest]`")
 CODE_INTERP = re.compile(r"^(python[0-9.]*|pypy[0-9.]*|perl[0-9.]*|ruby[0-9.]*|node|nodejs|deno|bun|php[0-9.]*|osascript|"
                          r"tclsh[0-9.]*|wish[0-9.]*|expect|lua[0-9.]*|Rscript)$")
 CODE_FLAGS = {"-c", "-e", "-E", "--eval", "-p", "--print", "-r", "eval", "-x"}
@@ -1334,7 +1335,29 @@ def _unresolved_word(w):
     return bool(re.search(r"[$`*?]", w)) or ("[" in w and len(w) > 1)
 
 
-OPERATE_HEREDOC = re.compile(r"""<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([^\s;&|()<>'"]+))""")
+def _heredoc_word(cmd, j):
+    """The heredoc delimiter word at cmd[j] (after `<<` or `<<-` and blanks) as bash reads it: unquoted text, '…',
+    "…" and backslash escapes concatenated with quotes removed. A word with no quoting must start with a letter or
+    `_` (so `<<$x`, `<<2` and `<<"$y"`'s unquoted kin are not read as heredocs; if bash did, the body is kept and
+    judged, which fails closed). Returns (delimiter, end) or None."""
+    n, parts, quoted, k = len(cmd), [], False, j
+    while k < n:
+        c = cmd[k]
+        if c == "'" or c == '"':
+            e = cmd.find(c, k + 1)
+            if e < 0 or "\n" in cmd[k + 1:e]:
+                return None
+            parts.append(cmd[k + 1:e]); quoted = True; k = e + 1
+        elif c == "\\" and k + 1 < n and cmd[k + 1] != "\n":
+            parts.append(cmd[k + 1]); quoted = True; k += 2
+        elif c in " \t\n;&|()<>":
+            break
+        else:
+            parts.append(c); k += 1
+    word = "".join(parts)
+    if k == j or not word and not quoted or not quoted and not re.match(r"[A-Za-z_]", word):
+        return None
+    return word, k
 
 
 def _operate_text(cmd):
@@ -1343,7 +1366,7 @@ def _operate_text(cmd):
     swallow it, joining the next command to the comment's), a backslash-newline is removed (a line continuation),
     and heredoc bodies are dropped (their `<<WORD` stays, so `bash <<EOF` still reads as code on stdin). Quotes,
     $'…' and backticks are tracked, so none of this applies inside them. One linear pass."""
-    out, i, n, q, start, pending = [], 0, len(cmd), None, True, []
+    out, i, n, q, start, pending, arith = [], 0, len(cmd), None, True, [], 0
     while i < n:
         ch = cmd[i]
         if q in ("'",):
@@ -1366,16 +1389,29 @@ def _operate_text(cmd):
             q = "$'" if out and out[-1] == "$" else "'"
         elif ch in '"`':
             q = ch
+        elif arith and ch in "()":                     # inside $(( … )) or (( … )): `<<` is a shift, `#` no comment
+            arith += 1 if ch == "(" else -1
+        elif cmd.startswith("$((", i) or ch == "(" and start and cmd.startswith("((", i) and not arith:
+            k = 3 if ch == "$" else 2
+            out.append(cmd[i:i + k]); i += k; arith += 2; start = False
+            continue
+        elif arith:
+            pass
         elif ch == "#" and start:
             j = cmd.find("\n", i)
             i = n if j < 0 else j                         # keep the newline: it ends the command
             continue
-        elif ch == "<" and cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
-            m = OPERATE_HEREDOC.match(cmd, i)
-            if m:
-                pending.append((m.group(2) if m.group(2) is not None else m.group(3) if m.group(3) is not None
-                                else m.group(4), m.group(1) == "-"))
-                out.append(m.group(0)); i = m.end(); start = False
+        elif cmd.startswith("<<<", i):                    # a here-string: no body; all three `<` taken together
+            out.append("<<<"); i += 3; start = False
+            continue
+        elif cmd.startswith("<<", i):
+            j = i + 2 + (cmd.startswith("-", i + 2))
+            while j < n and cmd[j] in " \t":
+                j += 1
+            w = _heredoc_word(cmd, j)
+            if w:
+                pending.append((w[0], cmd.startswith("-", i + 2)))
+                out.append(cmd[i:w[1]]); i = w[1]; start = False
                 continue
         elif ch == "\n" and pending:
             out.append(ch); i += 1
