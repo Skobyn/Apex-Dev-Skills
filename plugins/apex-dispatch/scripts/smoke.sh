@@ -2,6 +2,9 @@
 # apex-dispatch structural smoke test
 # Verifies the plugin contract from ADR-0001. Exits non-zero on first failure.
 set -euo pipefail
+# Fixture locks carry no session_id (the hooks treat that as "not foreign"); a smoke run inside a
+# Claude Code session would otherwise stamp its own id on them and make every "smoke" payload foreign.
+unset CLAUDE_CODE_SESSION_ID APEX_SESSION_ID
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MARKET_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
@@ -961,6 +964,29 @@ is_deny pre-edit "$(pl edit "$HX" src/a/x.py)" "pre-edit allowed a write during 
 stage BUILD
 pass "pre-edit: .dev-plan-state, .claude/apex-dispatch, .claude/apex-decision-layer, settings, .mcp.json, .git, plugin files, outside the worktree denied; lanes' Paths; read-only roles; REVIEW"
 
+# 47b. a foreign session (payload session_id != owner.json session_id) gets the run-independent rules only
+osid() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); o.pop("session_id", None) if sys.argv[2] == "-" else o.update(session_id=sys.argv[2]); json.dump(o, open(sys.argv[1], "w"))' "$OWNER" "$1"; }
+fsid() { python3 -c 'import json, sys; d = json.load(sys.stdin); d["session_id"] = sys.argv[1]; print(json.dumps(d))' "$1"; }
+FOREIGN_OUT="$WORK/foreign-scratch"; mkdir -p "$FOREIGN_OUT"
+osid smoke; stage REVIEW
+is_deny pre-edit "$(pl edit "$HX" src/a/x.py)" "same session, REVIEW: write was allowed"
+is_deny pre-edit "$(pl edit "$HX" src/a/x.py agent_id=r1 agent_type=apex-dispatch:reviewer)" "same session (in-process subagent), REVIEW: write was allowed"
+is_allow pre-edit "$(pl edit "$HX" "$FOREIGN_OUT/x.txt" | fsid other)" "foreign session, REVIEW: a write outside the plan worktree was denied"
+is_deny pre-edit "$(pl edit "$HX" .dev-plan-state/x | fsid other)" "foreign session: a write into run state was allowed"
+is_deny pre-edit "$(pl edit "$HX" .git/config | fsid other)" "foreign session: a write to .git/ was allowed"
+is_allow pre-agent "$(pl agent "$HX" Explore "" | fsid other)" "foreign session: a spawn was held to the owner's route roster"
+is_deny pre-agent "$(pl agent "$HX" Explore "")" "same session: an off-roster spawn was allowed"
+is_allow pre-bash "$(pl bash "$HX" 'touch '"$FOREIGN_OUT"'/b.txt' | fsid other)" "foreign session, REVIEW: a write outside the checkout was denied"
+is_deny pre-bash "$(pl bash "$HX" 'touch '"$HX"'/b.txt')" "same session, REVIEW: a checkout write was allowed"
+is_allow pre-bash "$(pl bash "$HX" 'touch '"$HX"'/b.txt' | fsid other)" "foreign session, REVIEW: a write in the checkout was denied"
+is_deny pre-bash "$(pl bash "$HX" 'touch .dev-plan-state/x' | fsid other)" "foreign session: a run-state write was allowed"
+is_deny pre-bash "$(pl bash "$HX" 'git config user.name x' | fsid other)" "foreign session: git config write was allowed"
+rm -f "$HX/b.txt"
+osid -
+is_deny pre-edit "$(pl edit "$HX" "$FOREIGN_OUT/x.txt" | fsid other)" "owner.json without a session_id: REVIEW did not fail closed"
+osid smoke; stage BUILD
+pass "pre-edit/pre-bash/pre-agent: a foreign session (session_id differs from owner.json) gets protected paths only; the owner's session and its in-process subagents stay gated; an owner.json without session_id fails closed"
+
 # 48. pre-mcp: a no-op unless the merged policy sets mcp.default_deny; then only allowlisted servers
 is_allow pre-mcp "$(pl mcp "$HX" mcp__other__tool)" "pre-mcp denied with mcp.default_deny false"
 mkdir -p "$HX/.claude/apex-dispatch"
@@ -1709,6 +1735,21 @@ ped() { (cd "$FWT" && env "$@" bash "$PLUGIN_ROOT/hooks/pre-edit.sh" <"$PJS/$n.j
 [ "$(ped APEX_DISPATCH_WORKER_WT="$WORK")" = deny ] || fail "pre-edit honoured an unregistered APEX_DISPATCH_WORKER_WT"
 python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["status"]="finished"; json.dump(d, open(p,"w"))' "$WD/workers/w-claude-p-fake01/worker.json"
 [ "$(ped APEX_DISPATCH_WORKER_WT="$FWT")" = deny ] || fail "pre-edit honoured a finished worker's worktree"
+# a write worker has its own session_id: registered, it stays confined to its worktree; unregistered, it is a
+# foreign session like any other
+python3 -c 'import json,sys; o=json.load(open(sys.argv[1])); o["session_id"]="owner-session"; json.dump(o, open(sys.argv[1],"w"))' "$WOWN"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["status"]="running"; json.dump(d, open(p,"w"))' "$WD/workers/w-claude-p-fake01/worker.json"
+for f in out in; do
+  if [ $f = out ]; then pl edit "$FWT" "$WX/docs/outside-worker.md" agent_type=apex-dispatch:builder >"$PJS/wf-$f.json"
+  else pl edit "$FWT" "$FWT/docs/a.md" agent_type=apex-dispatch:builder >"$PJS/wf-$f.json"; fi
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["session_id"]="worker-session"; json.dump(d, open(sys.argv[1],"w"))' "$PJS/wf-$f.json"
+done
+pedf() { local pf="$PJS/wf-$1.json"; shift; (cd "$FWT" && env "$@" bash "$PLUGIN_ROOT/hooks/pre-edit.sh" <"$pf" 2>/dev/null) | one; }
+[ "$(pedf out APEX_DISPATCH_WORKER_WT="$FWT")" = deny ] || fail "a registered write worker with its own session_id escaped worktree confinement"
+[ "$(pedf in APEX_DISPATCH_WORKER_WT="$FWT")" = "{}" ] || fail "a registered write worker with its own session_id was denied inside its worktree"
+[ "$(pedf out APEX_DISPATCH_WORKER_WT=)" = "{}" ] || fail "an unregistered session with its own session_id was held to the owner's run"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["status"]="finished"; json.dump(d, open(p,"w"))' "$WD/workers/w-claude-p-fake01/worker.json"
+python3 -c 'import json,sys; o=json.load(open(sys.argv[1])); o.pop("session_id",None); json.dump(o, open(sys.argv[1],"w"))' "$WOWN"
 wpe "$FWT/.dev-plan-state/x" agent_type=apex-dispatch:builder
 python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["status"]="running"; json.dump(d, open(p,"w"))' "$WD/workers/w-claude-p-fake01/worker.json"
 [ "$(ped APEX_DISPATCH_WORKER_WT="$FWT")" = deny ] || fail "pre-edit allowed run state nested in a worker worktree"
@@ -1874,17 +1915,17 @@ for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_cla
 done
 pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
 
-# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.6.1 everywhere
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.6.2 everywhere
 for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
   grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
   if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
   if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
 done
 V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
-[ "$V" = 0.6.1 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
-  || fail "the 0.6.1 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+[ "$V" = 0.6.2 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.6.2 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
 grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
-pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.6.1 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.6.2 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
 
 # --- Phase 4.2: flagged-off grok/opencode/aider shims, openai-sdk stub, compile --target codex,
 #     report --compare/--decision, carried hardening. Provider CLIs are stubs on a fixture PATH. ---
