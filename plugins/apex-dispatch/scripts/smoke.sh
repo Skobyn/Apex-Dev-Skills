@@ -2802,7 +2802,8 @@ pass "macOS field fixes: verdict parser (shared indent, 'APPROVE. nits', CommonM
 #     appends instead of being skipped. pre-bash (the real hook, under an ACTIVE lock only, like every other switch)
 #     refuses setting, exporting or unsetting APEX_OPERATE_ACK, APEX_DEPLOY_CMD and APEX_MONITOR_CMD; a longer name
 #     that merely contains one, and a mention in echo/grep/printenv, are allowed. With no lock, or a DONE or landed
-#     owner, pre-bash is inert and allows them: by design (F-018), the deploy control is operate.sh's terminal ack
+#     owner, that switch guard is inert and allows them: by design (F-018); the deploy itself stays denied at every
+#     stage by the operate deploy deny (check 89), the deploy control, with operate.sh's terminal ack the second layer
 LO="$WORK/lo"; mkdir -p "$LO"
 OPD='{"slug":"aidlc-borrowings","landed_sha":"'"$HEAD_FX"'","exit_code":0}'
 OPS='{"slug":"aidlc-borrowings","check_id":"api-latency","metric":"latency_ms","value":812.5,"threshold":500,"severity":"high","breach_count":1,"sink":"lessons"}'
@@ -2895,7 +2896,7 @@ printf '# Operate fixture\n\n- [ ] **Phase 1.1** [mechanical] one task\n  - Acce
 git -C "$OX" add -A; git -C "$OX" commit -qm ox
 ohk() { (cd "$OX" && printf '%s' "$1" | bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null); }
 odec() { ohk "$1" | one; }
-# No lock: inert by design (F-018). The guard is lock-scoped; the deploy control is operate.sh's terminal ack.
+# No lock: the switch guard is inert by design (F-018); it is lock-scoped. The deploy control is the operate deploy deny (check 89).
 [ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = "{}" ] || fail "pre-bash acted on APEX_OPERATE_ACK without an ACTIVE lock"
 O="$(cd "$OX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
 [ "$(val ROUTE_STATUS "$O")" = READY ] && [ -f "$OX/.dev-plan-state/ACTIVE/owner.json" ] || fail "operate fixture route took no ACTIVE lock: $O"
@@ -2916,11 +2917,11 @@ for c in 'git status' 'bash operate.sh p status' 'MY_APEX_DEPLOY_CMD_X=1 bash x'
          'echo APEX_OPERATE_ACK=x@y' 'grep -rn "APEX_DEPLOY_CMD=" .' 'printenv APEX_MONITOR_CMD' 'echo "$APEX_OPERATE_ACK"'; do
   [ "$(odec "$(pl bash "$OX" "$c")")" = "{}" ] || fail "pre-bash denied under the ACTIVE lock: $c"
 done
-# After land the guard is inert, by design (F-018): a DONE owner, or a live-stage owner whose checkpoint is landed,
-# is stale (hooks.py Ctx.stale), so pre-bash prints {} and does not stop an agent acking a deploy. That is not a
-# gap this hook closes: the deploy control is apex-scope-loop operate.sh reading the ack from the controlling
-# terminal (/dev/tty) on every deploy (aidlc-borrowings ADR R5 / row 293), tested in Phase 3.3. Each inert case is
-# paired with the live lock denying again, so the {} is caused by the stale owner and not by a broken fixture.
+# After land the switch guard is inert, by design (F-018): a DONE owner, or a live-stage owner whose checkpoint is
+# landed, is stale (hooks.py Ctx.stale), so the lock-scoped rules print {}. The deploy itself is still denied: the
+# deploy control is pre-bash's operate deploy deny, which is not lock-scoped (check 89, Phase 3.3); operate.sh's
+# terminal ack is the second layer. Each inert case is paired with the live lock denying again, so the {} is caused
+# by the stale owner and not by a broken fixture.
 OOWN="$OX/.dev-plan-state/ACTIVE/owner.json"
 ost() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); o.update(stage=sys.argv[2]); json.dump(o, open(sys.argv[1], "w"))' "$OOWN" "$1"; }
 ost DONE
@@ -2930,8 +2931,88 @@ ost BUILD
 OCP="$OX/.dev-plan-state/$(jget "$OOWN" id)/checkpoint.json"; mkdir -p "$(dirname "$OCP")"
 python3 -c 'import json, os, sys; p = sys.argv[1]; s = json.load(open(p)) if os.path.exists(p) else {}; s["landed"] = True; json.dump(s, open(p, "w"))' "$OCP"
 [ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = "{}" ] || fail "pre-bash acted on APEX_OPERATE_ACK with a landed owner (it is inert after land by design, F-018)"
-[ "$(odec "$(pl bash "$OX" 'APEX_OPERATE_ACK=p@0123 bash operate.sh p deploy')")" = "{}" ] || fail "pre-bash acted on an inline APEX_OPERATE_ACK deploy with a landed owner (inert by design, F-018)"
-pass "operate-ledger-events: operate_deploy/operate_signal/operate_window_closed append via the CLI and verify; missing fields, slug|repo none/both, enums, types and short SHAs refused; unmeasured value stored null (0 kept distinct); provenance still CLI-refused; malformed lines fail verify; pre-bash denies setting/exporting/unsetting APEX_OPERATE_ACK/APEX_DEPLOY_CMD/APEX_MONITOR_CMD under a live ACTIVE lock only and is inert with no lock or a DONE/landed owner (F-018: the deploy control is operate.sh's terminal ack); longer names and mentions allowed"
+[ "$(odec "$(pl bash "$OX" 'APEX_OPERATE_ACK=p@0123 bash operate.sh p deploy')")" = deny ] || fail "pre-bash allowed an inline APEX_OPERATE_ACK deploy with a landed owner (the operate deploy deny, check 89, is not lock-scoped)"
+pass "operate-ledger-events: operate_deploy/operate_signal/operate_window_closed append via the CLI and verify; missing fields, slug|repo none/both, enums, types and short SHAs refused; unmeasured value stored null (0 kept distinct); provenance still CLI-refused; malformed lines fail verify; pre-bash denies setting/exporting/unsetting APEX_OPERATE_ACK/APEX_DEPLOY_CMD/APEX_MONITOR_CMD under a live ACTIVE lock only and that guard is inert with no lock or a DONE/landed owner (F-018), while the deploy itself stays denied (check 89); longer names and mentions allowed"
+
+# 89. operate-deploy-deny (aidlc-borrowings Phase 3.3; ADR-0001 "pre-bash enforces", Amendments 2026-10-20): the deploy
+#     control. Through the real hooks/pre-bash.sh entry point, pre-bash denies every command that starts apex-scope-loop's
+#     operate.sh deploy in each state a deploy can happen in: no ACTIVE lock, a live lock, a DONE owner and a landed
+#     owner (the post-land state where every lock-scoped rule is inert: guard-dead-in-target-flow), wrapped in script,
+#     expect, unbuffer, a python pty, bash -c, eval, $( ), env, sudo, nohup, timeout, nice, after && and inside if,
+#     quoted apart, through a variable, a glob or $( ) program word beside deploy, piped or heredoc'd into a shell. It allows operate.sh … status and plain
+#     mentions (echo, grep, cat, a commit message). The gate is cheap: with no lock a command that never names
+#     operate.sh starts no python (a python3 spy on PATH), and it fails closed: a broken python3 still denies a deploy.
+#     Threat 3 (an agent acking its own deploy after land): mutant "drop apex_hook_operate_gate from the prelude"
+#     turns the no-lock/DONE/landed cases red; mutant "allow when the step is not literally deploy" turns the $S,
+#     missing-step and split-word cases red.
+OY="$WORK/oy"; mkdir -p "$OY/plans"; git init -q -b main "$OY"; OY="$(cd "$OY" && pwd -P)"
+printf '# Operate deny fixture\n\n- [ ] **Phase 1.1** [mechanical] one task\n  - Acceptance: `true`\n  - Paths: src/**\n' >"$OY/plans/p.md"
+git -C "$OY" add -A; git -C "$OY" commit -qm oy
+EXS="$(cd "$PLUGIN_ROOT/../apex-scope-loop/skills/apex-execute/scripts" && pwd -P)"; [ -x "$EXS/operate.sh" ] || fail "operate-deploy-deny: no sibling operate.sh at $EXS"
+ydec() { (cd "$OY" && printf '%s' "$(pl bash "$OY" "$1")" | env PATH="${YPATH:-$PATH}" bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null) | one; }
+NL='
+'
+y_denied() {  # y_denied STATE CMD... — each CMD is denied
+  local stage="$1" c; shift
+  for c in "$@"; do [ "$(ydec "$c")" = deny ] || fail "operate-deploy-deny: pre-bash allowed a deploy ($stage): $c"; done
+}
+y_allowed() {
+  local stage="$1" c; shift
+  for c in "$@"; do [ "$(ydec "$c")" = "{}" ] || fail "operate-deploy-deny: pre-bash denied ($stage): $c"; done
+}
+y_deploys() {
+  y_denied "$1" 'bash operate.sh p deploy' "bash $EXS/operate.sh plans/p.md deploy" "$EXS/operate.sh plans/p.md deploy" './operate.sh p deploy' \
+    'script -q /dev/null bash operate.sh p deploy' 'script -q -c "bash operate.sh p deploy" /dev/null' "expect -c 'spawn bash operate.sh p deploy; interact'" \
+    'unbuffer bash operate.sh p deploy' "python3 -c 'import pty; pty.spawn([\"bash\", \"operate.sh\", \"p\", \"deploy\"])'" \
+    "python3 -c 'import subprocess; subprocess.run([\"bash\", \"operate.sh\", \"p\", \"dep\" + \"loy\"])'" "perl -e 'system(\"bash operate.sh p deploy\")'" \
+    'bash -c "bash operate.sh p deploy"' 'eval "bash operate.sh p deploy"' 'echo $(bash operate.sh p deploy)' 'echo `bash operate.sh p deploy`' \
+    'env X=1 bash operate.sh p deploy' 'sudo bash operate.sh p deploy' 'nohup bash operate.sh p deploy' 'timeout 60 bash operate.sh p deploy' \
+    'nice -n 5 bash operate.sh p deploy' 'true && bash operate.sh p deploy' 'if true; then bash operate.sh p deploy; fi' \
+    'APEX_OPERATE_ACK=p@0123 bash operate.sh p deploy' 'source operate.sh p deploy' "bash op''erate.sh p dep''loy" 'S=deploy; bash operate.sh p $S' \
+    'bash operate.sh p' 'bash operate.sh p status deploy' 'OP=operate.sh; bash $OP p deploy' "echo 'bash operate.sh p deploy' | bash" \
+    "bash <<'EOF'${NL}bash operate.sh p deploy${NL}EOF" 'git -c alias.d="!bash operate.sh p deploy" d' \
+    'bash op*.sh p deploy' "bash \$'operate.sh' p deploy" 'bash "$(echo operate.sh)" p deploy' 'P=./op?rate.sh; "$P" p deploy'
+}
+y_reads() {
+  y_allowed "$1" 'bash operate.sh p status' 'operate.sh plans/p.md status' 'bash operate.sh --all status' "$EXS/operate.sh --all status" \
+    'echo operate.sh deploy' 'grep -n deploy operate.sh' 'cat operate.sh' 'echo deploy' \
+    "python3 -c 'import subprocess; subprocess.run([\"bash\", \"operate.sh\", \"p\", \"status\"])'"
+}
+# no ACTIVE lock (the hook prelude's {} path)
+[ ! -d "$OY/.dev-plan-state/ACTIVE" ] || fail "operate-deploy-deny: the fixture already holds a lock"
+y_deploys "no ACTIVE lock"; y_reads "no ACTIVE lock"
+y_allowed "no ACTIVE lock" 'git commit -m "operate.sh deploy: docs"' 'bash -n operate.sh' 'git status' 'make deploy ENV=$X' 'echo "$HOME" deploy' 'ls *.sh # deploy notes'
+O="$( (cd "$OY" && printf '%s' "$(pl bash "$OY" 'bash operate.sh p deploy')" | bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null) )"
+has 'operate.sh deploy must be run by a human in their own terminal' "$O" || fail "operate-deploy-deny: the deny does not say a human must run it in their own terminal: $O"
+# cheap: with no lock, a command that never names operate.sh starts no python; one that names it does (and is judged)
+mkdir -p "$WORK/pyspy" "$WORK/pybroken"; YREAL="$(command -v python3)"
+printf '#!/bin/sh\necho x >>"%s/pyspy.log"\nexec "%s" "$@"\n' "$WORK" "$YREAL" >"$WORK/pyspy/python3"; printf '#!/bin/sh\nexit 1\n' >"$WORK/pybroken/python3"
+chmod +x "$WORK/pyspy/python3" "$WORK/pybroken/python3"; : >"$WORK/pyspy.log"
+YPATH="$WORK/pyspy:$PATH" y_allowed "no lock, python3 spy" 'git status' 'echo deploy' 'ls -la src'
+[ ! -s "$WORK/pyspy.log" ] || fail "operate-deploy-deny: with no lock an ordinary command started python ($(wc -l <"$WORK/pyspy.log") call(s)): the gate is not cheap"
+YPATH="$WORK/pyspy:$PATH" y_allowed "no lock, python3 spy" 'bash operate.sh p status'
+[ -s "$WORK/pyspy.log" ] || fail "operate-deploy-deny: a command naming operate.sh was not judged by hooks.py (the spy saw no python)"
+YPATH="$WORK/pybroken:$PATH" y_denied "no lock, a broken python3 (fail closed)" 'bash operate.sh p deploy'
+YPATH="$WORK/pybroken:$PATH" y_allowed "no lock, a broken python3" 'cat operate.sh' 'git status'
+# a live lock (BUILD): the deny still holds; the reads pass
+O="$(cd "$OY" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ -f "$OY/.dev-plan-state/ACTIVE/owner.json" ] || fail "operate-deploy-deny: the route took no ACTIVE lock: $O"
+y_deploys "live lock"; y_reads "live lock"
+# a DONE owner, then a live-stage owner whose checkpoint is landed: hooks.py treats both as stale ({} for every
+# lock-scoped rule); the deploy deny must not be one of them. Each is paired with the live lock denying APEX_OPERATE_ACK
+# again, so the states are real and the deny is not an accident of the fixture.
+YOWN="$OY/.dev-plan-state/ACTIVE/owner.json"
+yst() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); o.update(stage=sys.argv[2]); json.dump(o, open(sys.argv[1], "w"))' "$YOWN" "$1"; }
+yst DONE
+[ "$(ydec 'export APEX_OPERATE_ACK=x@y')" = "{}" ] || fail "operate-deploy-deny: a DONE owner is not stale (the fixture does not reach the post-run state)"
+y_deploys "DONE owner"; y_reads "DONE owner"
+yst BUILD
+[ "$(ydec 'export APEX_OPERATE_ACK=x@y')" = deny ] || fail "operate-deploy-deny: restoring BUILD did not restore the lock-scoped guard"
+YCP="$OY/.dev-plan-state/$(jget "$YOWN" id)/checkpoint.json"; mkdir -p "$(dirname "$YCP")"
+python3 -c 'import json, os, sys; p = sys.argv[1]; s = json.load(open(p)) if os.path.exists(p) else {}; s["landed"] = True; json.dump(s, open(p, "w"))' "$YCP"
+[ "$(ydec 'export APEX_OPERATE_ACK=x@y')" = "{}" ] || fail "operate-deploy-deny: a landed owner is not stale (the fixture does not reach the post-land state)"
+y_deploys "landed owner"; y_reads "landed owner"
+pass "operate-deploy-deny: pre-bash denies operate.sh deploy (relative, absolute, ./, source; through script, expect, unbuffer, a python pty or subprocess, perl -e, bash -c, eval, \$( ), backticks, env, sudo, nohup, timeout, nice, && and if; quoted apart, a \$S step, a missing step, a variable path, a glob, \$'…' or \$( ) program word beside deploy, piped or heredoc'd into bash, a git ! alias) with no ACTIVE lock, under a live lock, with a DONE owner and with a landed owner; allows operate.sh … status, --all status and plain mentions; with no lock an ordinary command starts no python, and a broken python3 still denies (fail closed)"
 
 echo ""
 echo "smoke passed: $N/$N checks"

@@ -2608,6 +2608,201 @@ done
 grep -qF 'NOT (value op threshold)' "$ML" || fail "monitor-section: monitorlib.py does not state breach = NOT (value op threshold)"
 ok "monitor-section: monitorlib validates the plan's ## Monitor section as an allow-list (ledger id grammar, the ADR's five ops with op the expected condition and != refused, http/cmd/runner probes; a runner metrics list without the check's metric and a near-miss heading such as ## Monitoring are refused; the templates and SKILL.md carry the expected-condition wording; a missing id, unknown op or probe.kind, window_days 0 and 91, headers, a non-GET method, a duplicate id, two blocks, invalid JSON, a heading with no block, a bad id, unknown keys are each refused by name); validate-file takes a repo-level file and refuses window_days; no section and checks: [] promote, bad sections stop promote; $MN_N plan(s) here and all six scaffolds of both profiles validate"
 
+# 70. operate-deploy (aidlc-borrowings Phase 3.3, ADR R5, R5b, R6, R8): operate.sh PLAN deploy|status and --all status
+#     on a temp repo whose plans landed through the real init/land.sh. Refusals: unlanded → 3, APEX_DEPLOY_CMD unset
+#     → 2 naming it, HALT → 4; every deploy that is not fed through a pty runs fully detached (fork + setsid, stdin
+#     /dev/null, a timeout) so it can never read the operator's terminal. The ack is read from a pseudo-terminal
+#     driven by python's pty (no env var or file seam): a wrong sha (the previous landed commit, a short sha) or a
+#     wrong slug is refused and the stub never runs; no terminal is refused with the human-must-type wording even when
+#     APEX_OPERATE_ACK holds the right value. Threats (failing-first, mutant named in each fail message):
+#     1) an ack for one landed sha accepted for another  2) a failed deploy opening a watch window
+#     3) an agent acking its own deploy (here: no terminal / APEX_OPERATE_ACK; the hook deny is apex-dispatch check 89).
+OD_TMP="$SMOKE_TMP/operate"; rm -rf "${OD_TMP:?}"; mkdir -p "$OD_TMP" || fail "operate-deploy: cannot create the temp dir"
+OD="$OD_TMP/repo"; mkdir -p "$OD/plans" && git init -q -b main "$OD" || fail "operate-deploy: cannot init the repo"
+OD="$(cd "$OD" && pwd -P)"; OPS="$EX/operate.sh"
+[ -x "$OPS" ] || fail "operate-deploy: $OPS is missing or not executable"
+cat >"$OD_TMP/od-pty.py" <<'PY'
+# od-pty.py ACK TIMEOUT CMD... — run CMD on a fresh pseudo-terminal (its controlling terminal), type ACK once the
+# ack> prompt shows, print everything the terminal showed, exit with CMD's status (124 on timeout).
+import os, pty, select, signal, sys, time
+ack, limit, cmd = sys.argv[1], float(sys.argv[2]), sys.argv[3:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(cmd[0], cmd)
+out, sent, end = b"", False, time.time() + limit
+while True:
+    if time.time() > end:
+        os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+        sys.stdout.write(out.decode("utf-8", "replace") + "\n[od-pty.py: timeout]\n"); sys.exit(124)
+    r, _, _ = select.select([fd], [], [], 0.2)
+    if not r:
+        continue
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    out += data
+    if not sent and b"ack> " in out:
+        os.write(fd, ack.encode() + b"\n"); sent = True
+_, st = os.waitpid(pid, 0)
+sys.stdout.write(out.decode("utf-8", "replace"))
+sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 128 + os.WTERMSIG(st))
+PY
+cat >"$OD_TMP/od-detach.py" <<'PY'
+# od-detach.py OUT TIMEOUT CMD... — run CMD fully detached: a new session (os.setsid, so no controlling terminal),
+# stdin /dev/null, stdout+stderr to OUT; exit with CMD's status (124 on timeout). macOS has no setsid(1).
+import os, signal, sys, time
+out, limit, cmd = sys.argv[1], float(sys.argv[2]), sys.argv[3:]
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    nul = os.open(os.devnull, os.O_RDONLY); os.dup2(nul, 0)
+    o = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600); os.dup2(o, 1); os.dup2(o, 2)
+    os.execvp(cmd[0], cmd)
+end = time.time() + limit
+while True:
+    p, st = os.waitpid(pid, os.WNOHANG)
+    if p:
+        sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 128 + os.WTERMSIG(st))
+    if time.time() > end:
+        os.killpg(pid, signal.SIGKILL); os.waitpid(pid, 0); sys.exit(124)
+    time.sleep(0.05)
+PY
+printf '#!/usr/bin/env bash\nprintf "%%s %%s ack=%%s\\n" "$PLAN_SLUG" "$LANDED_SHA" "${APEX_OPERATE_ACK-unset}" >>"%s/deployed.log"\nexit "${1:-0}"\n' "$OD_TMP" >"$OD_TMP/deploy.sh"
+chmod +x "$OD_TMP/deploy.sh"; : >"$OD_TMP/deployed.log"
+OD_OK="bash '$OD_TMP/deploy.sh' 0"; OD_FAIL="bash '$OD_TMP/deploy.sh' 7"
+# od_land NAME BODY — commit plans/NAME-plan.md and land it through init → worktree commit → land.sh (APEX_GIBSON=0).
+od_land() {
+  printf '%b' "$2" >"$OD/plans/$1-plan.md"; git -C "$OD" add -A && git -C "$OD" commit -qm "plan $1" || fail "operate-deploy: cannot commit plan $1"
+  (cd "$OD" && APEX_GIBSON=0 "$EX/init.sh" "plans/$1-plan.md" >/dev/null 2>&1) || fail "operate-deploy: init of $1 failed"
+  local wt; wt="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worktree_path"])' "$(st "$OD" "plans/$1-plan.md")/checkpoint.json")"
+  echo "$1" >"$wt/$1.txt"; git -C "$wt" add -A && git -C "$wt" commit -qm "work $1" || fail "operate-deploy: cannot commit in the $1 worktree"
+  OD_LAST_STATE="$(st "$OD" "plans/$1-plan.md")"
+  (cd "$OD" && APEX_GIBSON=0 "$EX/land.sh" "plans/$1-plan.md" >"$OD_TMP/land-$1.log" 2>&1) || fail "operate-deploy: land.sh of $1 failed: $(tail -3 "$OD_TMP/land-$1.log")"
+}
+git -C "$OD" commit -q --allow-empty -m base
+OD_MON='## Monitor\n\n```json\n{"window_days": 7, "checks": [{"id": "c1", "metric": "m1", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "echo 3"}}]}\n```\n'
+od_land od "# OD\n\n- [x] **Phase 1.1** [docs] done\n  - Acceptance: true\n\n$OD_MON"
+OD_STATE="$OD_LAST_STATE"; OD_CP="$OD_STATE/checkpoint.json"
+OD_SHA="$(git -C "$OD" rev-parse main)"; OD_GOOD="od@$OD_SHA"     # od's landing commit
+git -C "$OD" log -1 --format=%s "$OD_SHA" | grep -q '^apex-scope-loop: merge apex-scope-loop/' || fail "operate-deploy: main is not od's landing commit"
+od_land feat "# Feat\n\n- [x] **Phase 1.1** [docs] done\n  - Acceptance: true\n"; OD_FEAT_STATE="$OD_LAST_STATE"
+OD_FEAT_SHA="$(git -C "$OD" rev-parse main)"                       # another plan's landing, newer than od's
+printf '# Un\n\n- [ ] **Phase 1.1** [docs] open\n  - Acceptance: true\n' >"$OD/plans/un-plan.md"; git -C "$OD" add -A; git -C "$OD" commit -qm un
+OD_TIP="$(git -C "$OD" rev-parse main)"; [ "$OD_TIP" != "$OD_FEAT_SHA" ] && [ "$OD_FEAT_SHA" != "$OD_SHA" ] || fail "operate-deploy: the fixture's commits did not move main"
+(cd "$OD" && APEX_GIBSON=0 "$EX/init.sh" plans/un-plan.md >/dev/null 2>&1) || fail "operate-deploy: init of the unlanded plan failed"
+printf '# Raw\n\n- [ ] **Phase 1.1** [docs] open\n  - Acceptance: true\n' >"$OD/plans/raw-plan.md"
+# od_split ARGS... — the index of the first "--" (the VAR=value words before it go to env, the rest to operate.sh).
+od_split() { local i=0; for a in "$@"; do [ "$a" = -- ] && { echo "$i"; return 0; }; i=$((i + 1)); done; fail "operate-deploy: no -- in $*"; }
+# odd LABEL WANT_RC PATTERN [ENV...] -- ARGS... — operate.sh ARGS run fully detached from $OD; exit WANT_RC, output has PATTERN.
+odd() {
+  local label="$1" want="$2" pat="$3" rc=0 k; shift 3
+  k="$(od_split "$@")"
+  (cd "$OD" && env "${@:1:$k}" python3 -I "$OD_TMP/od-detach.py" "$OD_TMP/det.out" 60 "$OPS" "${@:$((k + 2))}") || rc=$?
+  [ "$rc" = "$want" ] || fail "operate-deploy: $label exited $rc, expected $want: $(cat "$OD_TMP/det.out")"
+  grep -q -- "$pat" "$OD_TMP/det.out" || fail "operate-deploy: $label did not say '$pat': $(cat "$OD_TMP/det.out")"
+}
+# odp LABEL WANT_RC ACK [ENV...] -- ARGS... — operate.sh ARGS on a pty with ACK typed at the prompt; output in $OD_TMP/pty.out.
+odp() {
+  local label="$1" want="$2" ack="$3" rc=0 k; shift 3
+  k="$(od_split "$@")"
+  (cd "$OD" && env "${@:1:$k}" python3 -I "$OD_TMP/od-pty.py" "$ack" 60 "$OPS" "${@:$((k + 2))}" >"$OD_TMP/pty.out" 2>&1) || rc=$?
+  [ "$rc" = "$want" ] || fail "operate-deploy: $label exited $rc, expected $want: $(cat "$OD_TMP/pty.out")"
+}
+od_runs() { wc -l <"$OD_TMP/deployed.log" | tr -d ' '; }
+# od_cp EXPR — a smoke-written Python expression over od's checkpoint (s) and its operate key (o); fixture data only.
+od_cp() { python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"s": s, "o": s.get("operate") or {}}))' "$OD_CP" "$1"; }
+# R6 refusals, each before any terminal is touched
+odd "an unlanded plan" 3 "not landed" "APEX_DEPLOY_CMD=$OD_OK" -- plans/un-plan.md deploy
+odd "an unlanded plan's status" 3 "not landed" -- plans/un-plan.md status
+odd "a plan with no run state" 3 "not landed" "APEX_DEPLOY_CMD=$OD_OK" -- plans/raw-plan.md deploy
+odd "APEX_DEPLOY_CMD unset" 2 "APEX_DEPLOY_CMD is unset" -- plans/od-plan.md deploy
+odd "APEX_DEPLOY_CMD empty" 2 "APEX_DEPLOY_CMD is unset" "APEX_DEPLOY_CMD=" -- plans/od-plan.md deploy
+touch "$OD_STATE/HALT"; odd "HALT in the plan state" 4 "kill switch set" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odd "HALT on status" 4 "kill switch set" -- plans/od-plan.md status
+rm -f "$OD_STATE/HALT"; touch "$OD/.dev-plan-state/HALT"; odd "the shared HALT" 4 "kill switch set" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+rm -f "$OD/.dev-plan-state/HALT"; odd "APEX_HALT=1" 4 "APEX_HALT=1" "APEX_HALT=1" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odd "a bad step" 2 "usage" -- plans/od-plan.md frobnicate
+odd "--all deploy" 2 "status only" -- --all deploy
+odd "extra arguments" 2 "usage" -- plans/od-plan.md deploy now
+[ "$(od_runs)" = 0 ] || fail "operate-deploy: a refused precondition ran the deploy command: $(cat "$OD_TMP/deployed.log")"
+# An invalid Monitor section fails closed (status and deploy), the deploy command never runs
+cp "$OD/plans/od-plan.md" "$OD_TMP/od-plan.keep"
+sed 's/"window_days": 7/"window_days": 0/' "$OD_TMP/od-plan.keep" >"$OD/plans/od-plan.md"
+odd "an invalid Monitor section (deploy)" 2 "window_days must be an integer 1-90" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odd "an invalid Monitor section (status)" 2 "window_days must be an integer 1-90" -- plans/od-plan.md status
+cp "$OD_TMP/od-plan.keep" "$OD/plans/od-plan.md"
+# Threat 3 (operate.sh's layer): no terminal is refused even when APEX_OPERATE_ACK holds the right value; the refusal
+# says a human must type slug@sha at their own terminal and never mentions a tty (no pty workaround suggested).
+# Mutant "accept APEX_OPERATE_ACK when /dev/tty cannot be opened" turns this red.
+odd "no controlling terminal" 5 "type $OD_GOOD there" "APEX_DEPLOY_CMD=$OD_OK" "APEX_OPERATE_ACK=$OD_GOOD" -- plans/od-plan.md deploy
+grep -q 'A deploy needs a human: run operate.sh plans/od-plan.md deploy yourself, in your own terminal' "$OD_TMP/det.out" || fail "operate-deploy: the no-terminal refusal does not say a human must run it at their own terminal: $(cat "$OD_TMP/det.out")"
+! grep -qi 'tty' "$OD_TMP/det.out" || fail "operate-deploy: the no-terminal refusal mentions a tty (points at a pty workaround): $(cat "$OD_TMP/det.out")"
+grep -q '^== Ask Contract: deploy od ==$' "$OD_TMP/det.out" && grep -q '^What:' "$OD_TMP/det.out" && grep -q '^What it does:' "$OD_TMP/det.out" \
+  && grep -q '^Why:' "$OD_TMP/det.out" && grep -q '^Risks:' "$OD_TMP/det.out" || fail "operate-deploy: no Ask Contract (what / what it does / why / risks) before the ack: $(cat "$OD_TMP/det.out")"
+[ "$(od_runs)" = 0 ] || fail "operate-deploy: a deploy with no terminal ran the deploy command (mutant: APEX_OPERATE_ACK authorizes)"
+[ "$(od_cp 'len(o.get("deploys") or [])')" = 0 ] || fail "operate-deploy: a refused ack was recorded as a deploy"
+# Threat 1: an ack for another landed sha (feat's landing, main's tip), a short sha, a wrong slug, an empty line → refused.
+# Mutants "compare the slug only" / "accept a sha prefix" / "bind to the base tip" turn these red.
+odp "an ack with another plan's landed sha" 5 "od@$OD_FEAT_SHA" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+grep -q "not this plan's landed sha $OD_SHA" "$OD_TMP/pty.out" || fail "operate-deploy: the wrong-sha refusal is not named: $(cat "$OD_TMP/pty.out")"
+odp "an ack with the base tip" 5 "od@$OD_TIP" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+grep -q "not this plan's landed sha $OD_SHA" "$OD_TMP/pty.out" || fail "operate-deploy: the wrong-sha refusal is not named: $(cat "$OD_TMP/pty.out")"
+odp "an ack with a short sha" 5 "od@${OD_SHA:0:12}" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odp "an ack with the sha twice" 5 "od@$OD_SHA$OD_SHA" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odp "an ack naming another plan" 5 "feat@$OD_SHA" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+grep -q "names another plan ('feat')" "$OD_TMP/pty.out" || fail "operate-deploy: the wrong-slug refusal is not named: $(cat "$OD_TMP/pty.out")"
+odp "an empty ack" 5 "" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odp "od's ack for the other plan" 5 "$OD_GOOD" "APEX_DEPLOY_CMD=$OD_OK" -- plans/feat-plan.md deploy
+grep -q "To proceed, a human types exactly feat@$OD_FEAT_SHA at this terminal" "$OD_TMP/pty.out" || fail "operate-deploy: feat's Ask Contract does not bind feat's landing sha: $(cat "$OD_TMP/pty.out")"
+[ "$(od_runs)" = 0 ] || fail "operate-deploy: a refused ack ran the deploy command: $(cat "$OD_TMP/deployed.log")"
+# the ledger seam: with <state>/dispatch/ present, and a stale active-route.json there (B-046), every deploy appends
+# an operate_deploy row with route_id null
+LG="$PLUGIN_ROOT/../apex-dispatch/scripts/ledger.sh"; [ -x "$LG" ] || fail "operate-deploy: the sibling apex-dispatch ledger.sh is missing"
+mkdir -p "$OD_STATE/dispatch"; printf '{"route_id": "r-%s-L3-1", "route_mode": "baseline"}\n' "$(basename "$OD_STATE")" >"$OD_STATE/dispatch/active-route.json"
+# Threat 2: a failing deploy is recorded (ts, sha, exit, ack_source), exits 1 and opens no window.
+# Mutant "open the window whatever the exit" turns this red.
+odp "a failing deploy" 1 "$OD_GOOD" "APEX_DEPLOY_CMD=$OD_FAIL" -- plans/od-plan.md deploy
+grep -q 'deploy FAILED (exit 7)' "$OD_TMP/pty.out" || fail "operate-deploy: the failing deploy did not say so: $(cat "$OD_TMP/pty.out")"
+[ "$(od_runs)" = 1 ] || fail "operate-deploy: the failing deploy command did not run exactly once"
+[ "$(od_cp '[(d["sha"], d["exit"], d["ack_source"], bool(d.get("ts"))) for d in o["deploys"]]')" = "[('$OD_SHA', 7, 'tty', True)]" ] || fail "operate-deploy: the failing deploy was not recorded with ts, sha, exit and ack_source: $(od_cp 'o')"
+[ "$(od_cp '"window" in o')" = False ] || fail "operate-deploy: a failed deploy opened a watch window (threat 2): $(od_cp 'o')"
+odd "status after a failed deploy" 0 "window: not opened" -- plans/od-plan.md status
+# the positive ack, typed on the pty; APEX_OPERATE_ACK in the env neither helps nor reaches the deploy command
+odp "the correct ack" 0 "$OD_GOOD" "APEX_DEPLOY_CMD=$OD_OK" "APEX_OPERATE_ACK=$OD_GOOD" -- plans/od-plan.md deploy
+grep -q "deployed od at ${OD_SHA:0:12}; watch window open for 7 day(s)" "$OD_TMP/pty.out" || fail "operate-deploy: the deploy did not report success: $(cat "$OD_TMP/pty.out")"
+[ "$(tail -n 1 "$OD_TMP/deployed.log")" = "od $OD_SHA ack=unset" ] || fail "operate-deploy: the deploy command did not get PLAN_SLUG/LANDED_SHA, or saw APEX_OPERATE_ACK: $(tail -n 1 "$OD_TMP/deployed.log")"
+[ "$(od_cp '[(d["sha"], d["exit"], d["ack_source"]) for d in o["deploys"]]')" = "[('$OD_SHA', 7, 'tty'), ('$OD_SHA', 0, 'tty')]" ] || fail "operate-deploy: the deploy history is wrong: $(od_cp 'o')"
+OD_W="$(od_cp 'o["window"]["start"] + " " + str(o["window"]["days"]) + " " + str(o["window"]["start"] == o["deploys"][-1]["ts"])')"
+[ "$(od_cp '__import__("datetime").datetime.strptime(o["window"]["end"], "%Y-%m-%dT%H:%M:%SZ") - __import__("datetime").datetime.strptime(o["window"]["start"], "%Y-%m-%dT%H:%M:%SZ") == __import__("datetime").timedelta(days=7)')" = True ] \
+  && [ "${OD_W#* }" = "7 True" ] || fail "operate-deploy: the window is not the plan's 7 days from the deploy: $(od_cp 'o')"
+# a later failing deploy is recorded but leaves the open window alone (threat 2's neighbour)
+odp "a failing deploy after success" 1 "$OD_GOOD" "APEX_DEPLOY_CMD=$OD_FAIL" -- plans/od-plan.md deploy
+[ "$(od_cp 'o["window"]["start"] + " " + str(o["window"]["days"]) + " " + str(len(o["deploys"]))')" = "${OD_W% *} 3" ] || fail "operate-deploy: a failing deploy moved the open window: $(od_cp 'o')"
+# status and --all status: day N of M, the declared checks, the R5b warning for a landed feature plan with no section
+odd "status" 0 "window: day 1 of 7" -- plans/od-plan.md status
+grep -qF -- '- c1: m1 < 5 (severity high; probe cmd: echo 3)' "$OD_TMP/det.out" || fail "operate-deploy: status does not print the declared check: $(cat "$OD_TMP/det.out")"
+grep -qF "last deploy: " "$OD_TMP/det.out" && grep -q "exit 7 (ack: tty; 3 deploy(s))" "$OD_TMP/det.out" || fail "operate-deploy: status does not show the last deploy: $(cat "$OD_TMP/det.out")"
+odd "--all status" 0 "window: day 1 of 7" -- --all status
+grep -q '^plan od (' "$OD_TMP/det.out" && grep -q '^plan feat (' "$OD_TMP/det.out" && ! grep -q '^plan un (' "$OD_TMP/det.out" || fail "operate-deploy: --all status does not list exactly the landed plans: $(cat "$OD_TMP/det.out")"
+grep -q 'WARNING: feat is a landed feature plan with no ## Monitor section' "$OD_TMP/det.out" || fail "operate-deploy: --all status does not warn about the landed feature plan with no Monitor section: $(cat "$OD_TMP/det.out")"
+! grep -q 'WARNING: od ' "$OD_TMP/det.out" || fail "operate-deploy: --all status warns about a watched plan"
+python3 -c 'import datetime as d, json, sys; p = sys.argv[1]; s = json.load(open(p)); w = s["operate"]["window"]; f = "%Y-%m-%dT%H:%M:%SZ"; t = d.datetime.strptime(w["start"], f) - d.timedelta(days=3, hours=1); w["start"], w["end"] = t.strftime(f), (t + d.timedelta(days=7)).strftime(f); json.dump(s, open(p, "w"))' "$OD_CP"
+odd "status on day 4" 0 "window: day 4 of 7" -- plans/od-plan.md status
+python3 -c 'import datetime as d, json, sys; p = sys.argv[1]; s = json.load(open(p)); w = s["operate"]["window"]; f = "%Y-%m-%dT%H:%M:%SZ"; t = d.datetime.strptime(w["start"], f) - d.timedelta(days=5); w["start"], w["end"] = t.strftime(f), (t + d.timedelta(days=7)).strftime(f); json.dump(s, open(p, "w"))' "$OD_CP"
+odd "status after the window ended" 0 "window: closed (ended " -- plans/od-plan.md status
+odd "feat status (not opened)" 0 "window: not opened" -- plans/feat-plan.md status
+# the ledger: three operate_deploy rows, route_id and route_mode null despite the stale active route, ack_source tty; the chain verifies
+OD_L="$OD_STATE/dispatch/ledger.jsonl"; [ -f "$OD_L" ] || fail "operate-deploy: no ledger was written under $OD_STATE/dispatch"
+[ "$(python3 -c 'import json,sys; print([(r["event"], r["slug"], r["landed_sha"], r["exit_code"], r["ack_source"], r["route_id"], r["route_mode"]) for r in map(json.loads, open(sys.argv[1]))])' "$OD_L")" \
+  = "[('operate_deploy', 'od', '$OD_SHA', 7, 'tty', None, None), ('operate_deploy', 'od', '$OD_SHA', 0, 'tty', None, None), ('operate_deploy', 'od', '$OD_SHA', 7, 'tty', None, None)]" ] \
+  || fail "operate-deploy: the operate_deploy rows are wrong (route_id and route_mode must be null, never the stale active route: B-046): $(cat "$OD_L")"
+OD_V="$("$LG" verify --state "$OD_STATE" 2>&1)" || fail "operate-deploy: ledger.sh verify failed: $OD_V"
+[ -n "$OD_FEAT_STATE" ] && [ ! -d "$OD_FEAT_STATE/dispatch" ] || fail "operate-deploy: a dispatch dir appeared for a plan that never had one"
+ok "operate-deploy: operate.sh refuses an unlanded plan (3), an unset APEX_DEPLOY_CMD by name (2), HALT/APEX_HALT (4) and an invalid Monitor section (2); prints an Ask Contract and reads the ack only from the controlling terminal: detached (setsid) it refuses even with APEX_OPERATE_ACK set and says a human must type od@<sha> at their own terminal; an older landed sha, a short sha, a wrong slug or an empty ack are refused (threat 1); a failing deploy is recorded with ts/sha/exit/ack_source, exits 1 and opens no window or moves an open one (threat 2); the pty-typed ack deploys with PLAN_SLUG/LANDED_SHA and no APEX_OPERATE_ACK, opening the plan's 7-day window; status and --all status show day N of M, closed, the declared checks and the R5b warning; operate_deploy rows carry route_id null and ack_source tty and the ledger verifies"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2667,4 +2862,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 71/71 checks"
+echo "smoke passed: 72/72 checks"

@@ -87,7 +87,8 @@ RUNNER_NAME = "openai_sdk_runner.py"             # openai-sdk's runner (harnesse
 PROVIDER_PACKAGES = re.compile(r"(^|/|@)(claude-code|codex|grok|opencode(-ai)?|aider(-chat)?)(@|$)")
 INFO_ARGS = {"--version", "-V", "-v", "--help", "-h", "version", "help"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
-WRAPPERS = {"sudo", "doas", "command", "builtin", "exec", "nohup", "time", "nice", "ionice", "stdbuf", "chronic", "unbuffer"}
+WRAPPERS = {"sudo", "doas", "command", "builtin", "exec", "nohup", "time", "nice", "ionice", "stdbuf", "chronic", "unbuffer",
+            "spawn", "caffeinate"}
 ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
 
 # git: subcommands that never change the repository or the worktree.
@@ -833,7 +834,7 @@ class Cmd:
 
     def __init__(self, words, redirs):
         self.assigns, self.unsets, self.redirs = {}, set(), redirs
-        i, self.listed = 0, []
+        i, self.listed, self.wrapped = 0, [], []
         while i < len(words):
             t = words[i]
             if t in RESERVED:
@@ -870,6 +871,27 @@ class Cmd:
                 i += 1
                 while i < len(words) and words[i].startswith("-"):
                     i += 2 if words[i] in ("-n", "-u", "-g", "-o", "-i", "-e", "-c") and b in ("nice", "sudo", "stdbuf", "ionice") else 1
+                continue
+            if b == "script":                            # script(1): BSD `script [opts] [file [cmd ...]]`, util-linux `-c CMD`
+                i += 1
+                while i < len(words) and words[i].startswith("-") and words[i] != "-":
+                    w = words[i]
+                    if w in ("-c", "--command") and i + 1 < len(words):
+                        self.wrapped.append(words[i + 1])
+                        i += 2
+                        continue
+                    if w.startswith("--command="):
+                        self.wrapped.append(w.split("=", 1)[1])
+                    elif w.startswith("-c") and len(w) > 2 and not w.startswith("--"):
+                        self.wrapped.append(w[2:])
+                    elif (w in ("-T", "-I", "-O", "-B", "-E", "-o", "-m", "-F") or (w == "-t" and i + 1 < len(words)
+                                                                                    and words[i + 1].isdigit())) and i + 1 < len(words):
+                        i += 1
+                    i += 1
+                if self.wrapped:
+                    i = len(words)                        # util-linux: what follows is the typescript file
+                elif i < len(words):
+                    i += 1                                # BSD: the typescript file, then the command
                 continue
             if b == "timeout":
                 i += 1
@@ -908,6 +930,8 @@ class Cmd:
                     break
         elif b == "eval":
             out.append(" ".join(a))
+        elif b == "expect":                               # expect -c 'spawn CMD …': spawn is peeled like a wrapper
+            out += [a[k + 1] for k, w in enumerate(a) if w == "-c" and k + 1 < len(a)]
         elif b == "find":
             for k, w in enumerate(a):
                 if w in ("-exec", "-execdir", "-ok", "-okdir"):
@@ -921,6 +945,7 @@ class Cmd:
             g = GitCmd(self)
             if g.sub == "submodule" and g.args[:1] == ["foreach"]:
                 out.append(" ".join(x for x in g.args[1:] if not x.startswith("--")))
+        out += self.wrapped
         for w in self.words + self.listed:
             out += subst_strings(w)
         return out
@@ -1242,10 +1267,176 @@ def engine_entry(ctx, c, cwd, prefix):
     return None
 
 
+# --- operate deploy (aidlc-borrowings Phase 3.3; ADR-0001 "pre-bash enforces", Amendments 2026-10-20) ---
+# The deploy control: no agent Bash call may start apex-scope-loop's `operate.sh … deploy`, at any stage —
+# with or without an ACTIVE lock, a DONE or landed owner included (hook-common.bash runs this before the lock
+# test, hooks.py main before Ctx.stale). operate.sh's own /dev/tty ack is the second layer: a terminal read alone
+# is agent-satisfiable through a self-made pty. Allow-list: an operate.sh invocation passes only with a literal
+# step that needs no ack (status; monitor/ingest are Phase 3.4); every other step, a missing one or a `$…`
+# word is denied. Wrappers (env, sudo, nohup, nice, timeout, unbuffer, script, expect's spawn, bash -c, eval,
+# $( ), backticks) are peeled by Cmd and nested(); code run by an interpreter (python -c with a pty, perl -e,
+# expect -c, …) that names operate.sh passes only when it names a no-ack step and never the word deploy. Any
+# other mention of operate.sh in a command that also says deploy is denied unless every mention is data to a
+# text tool (echo, grep, cat, …) and nothing in the command runs code read from stdin (`| bash`, `bash <<EOF`).
+# A program word pre-bash cannot resolve (`$S`, `$'…'`, `$(…)`, a backtick, a glob such as op*.sh) with deploy
+# among its arguments is denied too (fail closed), whether or not operate.sh is named.
+# Residual (out of model, ADR-0001): a script file written to disk that calls operate.sh.
+OPERATE_SCRIPT = "operate.sh"
+OPERATE_OK_STEPS = {"status", "monitor", "ingest"}
+OPERATE_REASON = ("operate.sh deploy must be run by a human in their own terminal (operate.sh asks them to type "
+                  "<slug>@<landed sha> there); pre-bash denies it to every agent Bash call, at every stage. "
+                  "Agents may run `operate.sh PLAN status` or `operate.sh --all status`")
+CODE_INTERP = re.compile(r"^(python[0-9.]*|pypy[0-9.]*|perl[0-9.]*|ruby[0-9.]*|node|nodejs|deno|bun|php[0-9.]*|osascript|"
+                         r"tclsh[0-9.]*|wish[0-9.]*|expect|lua[0-9.]*|Rscript)$")
+CODE_FLAGS = {"-c", "-e", "-E", "--eval", "-p", "--print", "-r", "eval", "-x"}
+MENTION_TOOLS = {"echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "cat", "bat", "head", "tail", "less", "more",
+                 "wc", "nl", "ls", "stat", "file", "diff", "cmp", "shellcheck", "shfmt", "shasum", "sha256sum", "md5",
+                 "md5sum", "git", "chmod", "basename", "dirname", "realpath", "readlink", "test", "[", "[[", "true", ":"}
+
+
+def _flat(text):
+    """The text with shell quoting removed (op''erate.sh and op\erate.sh read as operate.sh)."""
+    return re.sub(r"[\"'\\]", "", text)
+
+
+def _operate_script_args(c):
+    """The arguments after operate.sh when c runs it (directly, through a shell or source), else None."""
+    if c.base == OPERATE_SCRIPT:
+        return list(c.args)
+    if c.base in SHELLS or c.base in ("source", "."):
+        a, k = c.args, 0
+        while k < len(a) and (a[k].startswith("-") or a[k].startswith("+")) and a[k] not in ("-", "--"):
+            if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", a[k]):
+                return None                           # sh -c STRING: judged as a nested command string
+            k += 2 if a[k] in ("-o", "+o", "-O", "+O") else 1
+        if k < len(a) and a[k] == "--":
+            k += 1
+        if k < len(a) and os.path.basename(_flat(a[k])) == OPERATE_SCRIPT:
+            return list(a[k + 1:])
+    return None
+
+
+UNRESOLVED = re.compile(r"[$`*?\[]")
+
+
+def _script_word(c):
+    """The word naming the program c runs: its command word, or a shell's / source's script argument."""
+    if not c.words:
+        return None
+    if c.base in SHELLS or c.base in ("source", "."):
+        a, k = c.args, 0
+        while k < len(a) and (a[k].startswith("-") or a[k].startswith("+")) and a[k] not in ("-", "--"):
+            if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", a[k]):
+                return None                           # sh -c STRING: judged as a nested command string
+            k += 2 if a[k] in ("-o", "+o", "-O", "+O") else 1
+        if k < len(a) and a[k] == "--":
+            k += 1
+        return a[k] if k < len(a) else None
+    return c.words[0]
+
+
+def _reads_code_from_stdin(c):
+    """A shell or interpreter that runs code from stdin: `bash`, `sh -s`, `python3 -`, `bash /dev/stdin`, `| bash`."""
+    if c.base not in SHELLS and not CODE_INTERP.match(c.base):
+        return False
+    a, k = c.args, 0
+    while k < len(a) and a[k].startswith("-") and a[k] != "-":
+        if a[k] in CODE_FLAGS or re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", a[k]) and c.base in SHELLS:
+            return False                              # code given inline: judged as a command string or code
+        if a[k] == "-s" and c.base in SHELLS:
+            return True
+        k += 2 if a[k] in ("-o", "+o", "-O", "+O", "-m", "-W", "-X", "-I", "-M") else 1
+    return k >= len(a) or a[k] == "-" or a[k] == "/dev/stdin" or a[k].startswith("/dev/fd/")
+
+
+def _operate_code(c):
+    """Inline code an interpreter runs (python -c, perl -e, expect -c, node -e, …), else None."""
+    if not CODE_INTERP.match(c.base):
+        return None
+    a = c.args
+    for k, w in enumerate(a):
+        if w in CODE_FLAGS and k + 1 < len(a):
+            return " ".join(a[k + 1:])
+        m = re.fullmatch(r"-[A-Za-z]*[cCeE](.+)", w)
+        if m:
+            return m.group(1) + " " + " ".join(a[k + 1:])
+    return None
+
+
+def _operate_step_ok(args):
+    if not args or args in (["-h"], ["--help"]):
+        return True                                   # usage: operate.sh prints it and exits 2
+    return len(args) == 2 and args[1] in OPERATE_OK_STEPS
+
+
+def _operate_scan(cmd, deployish, depth):
+    if depth > 6:
+        return OPERATE_REASON                         # too deeply nested to judge: fail closed
+    for inner in re.findall(r"`([^`]*)`", cmd):
+        r = _operate_scan(inner, deployish, depth + 1)
+        if r:
+            return r
+    cmds = [Cmd(w, r) for w, r in segments(re.sub(r"`[^`]*`", " ", cmd))]
+    stdin_code = any(_reads_code_from_stdin(c) for c in cmds)
+    if stdin_code and deployish:                      # `… | bash`, `bash <<EOF` (heredoc bodies are not segments)
+        return OPERATE_REASON + " (this command feeds code to a shell or interpreter on stdin and names operate.sh and deploy)"
+    for c in cmds:
+        args = _operate_script_args(c)
+        code = _operate_code(c)
+        sw = _script_word(c)
+        if sw is not None and UNRESOLVED.search(sw) and any("deploy" in _flat(a) for a in c.args):
+            return OPERATE_REASON + " (the program word %s is an expansion or glob pre-bash cannot resolve, and deploy is an argument)" % sw
+        if args is not None:
+            if not _operate_step_ok(args):
+                return OPERATE_REASON
+        elif code is not None and OPERATE_SCRIPT in _flat(code):
+            if "deploy" in _flat(code) or not any(re.search(r"\b%s\b" % st, code) for st in OPERATE_OK_STEPS):
+                return OPERATE_REASON
+        else:
+            words = c.words + c.listed + list(c.assigns.values()) + [t for _, t in c.redirs]
+            data_only = c.base in MENTION_TOOLS and not stdin_code and not (c.base == "git" and any(   # git aliases (!cmd), rebase -x
+                _flat(a).startswith("!") or "=!" in _flat(a) or a in ("-x", "--exec") or a.startswith("--exec=") for a in c.args))
+            if deployish and any(OPERATE_SCRIPT in _flat(w) for w in words) and not data_only:
+                return OPERATE_REASON + " (this command names operate.sh and deploy in a form pre-bash cannot tell from a deploy)"
+        for inner in c.nested():
+            r = _operate_scan(inner, deployish, depth + 1)
+            if r:
+                return r
+    return None
+
+
+def operate_deploy_reason(cmd):
+    """Why cmd may start operate.sh deploy (deny), or None. Cheap when operate.sh is not named."""
+    flat = _flat(cmd)
+    if OPERATE_SCRIPT not in flat and not ("deploy" in flat and UNRESOLVED.search(cmd)):
+        return None
+    return _operate_scan(cmd, "deploy" in flat, 0)
+
+
+def operate_gate(raw):
+    """hooks.py operate-gate: the lock-independent deploy deny (hook-common.bash calls it before the lock test)."""
+    try:
+        p = json.loads(raw)
+        ti = p.get("tool_input") if isinstance(p, dict) and isinstance(p.get("tool_input"), dict) else {}
+        if p.get("tool_name") != "Bash":
+            return {}
+        cmd = ti.get("command")
+        if not isinstance(cmd, str):
+            return {}
+        r = operate_deploy_reason(cmd)
+    except Exception as e:                             # the payload named operate.sh: fail closed
+        r = "%s (the command could not be judged: %s)" % (OPERATE_REASON, type(e).__name__)
+    return deny(r) if r else {}
+
+
 def bash_rules(ctx, p, cmd, depth=0, prefix=""):
     """Raise Deny on the first rule a command string breaks. Recurses into nested command strings."""
     if depth > 4:
         return
+    if depth == 0:                                        # 0. operate deploy: the human-only step (every stage)
+        r = operate_deploy_reason(cmd)
+        if r:
+            raise Deny(r)
     for inner in re.findall(r"`([^`]*)`", cmd):          # backtick bodies, quoted or not
         bash_rules(ctx, p, inner, depth + 1, prefix)
     cmd = re.sub(r"`[^`]*`", " ", cmd)
@@ -1977,6 +2168,9 @@ PRE_KINDS = {"agent", "bash", "edit", "mcp"}
 
 
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "operate-gate":     # no state needed: runs with or without a lock
+        print(json.dumps(operate_gate(sys.stdin.read()), separators=(",", ":")))
+        return 0
     if len(argv) < 6 or argv[1] not in HANDLERS:
         print("{}")
         print("usage: hooks.py %s PLUGIN_ROOT STATE_BASE EXEC_SCRIPTS REPO_ROOT" % "|".join(HANDLERS), file=sys.stderr)

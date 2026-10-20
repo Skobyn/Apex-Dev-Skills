@@ -206,6 +206,19 @@ apex_halt_files() {
     | awk '!seen[$0]++'
 }
 
+# apex_kill_switch — print the first kill switch that is set (a HALT file from
+# apex_halt_files, else APEX_HALT=1) and return 0; return 1 when none is set.
+# Needs REPO_ROOT, STATE_BASE and STATE_DIR (operate.sh; iterate.sh and
+# land.sh keep their own loops for their own messages).
+apex_kill_switch() {
+  local f
+  while IFS= read -r f; do
+    [[ -f "$f" ]] && { printf '%s\n' "$f"; return 0; }
+  done < <(apex_halt_files)
+  [[ "${APEX_HALT:-0}" == "1" ]] && { printf 'APEX_HALT=1\n'; return 0; }
+  return 1
+}
+
 # apex_floor DIR [REV] — the current task's diff base (ADR-0003, the chain):
 # the head the last harness-on `complete` verified, else the run's fork point
 # (fork_sha, written by init.sh). The fork point must be an ancestor of the

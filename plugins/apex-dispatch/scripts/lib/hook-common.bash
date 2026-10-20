@@ -8,7 +8,8 @@
 #     if nothing else was printed) and exits 0 — except subagent-stop (the
 #     transcript-audit refusal) and stop (the Stop gate), which exit 2 with the
 #     reason on stderr when hooks.py exits 2 (Phase 0 spike 10);
-#   - no-op ({}) unless the run's ACTIVE lock exists. The state root is resolved
+#   - no-op ({}) unless the run's ACTIVE lock exists — except pre-bash's operate
+#     deploy deny (apex_hook_operate_gate), which holds at every stage. The state root is resolved
 #     by apex-scope-loop's own _lib.sh (apex_state_base: `git rev-parse
 #     --path-format=absolute --git-common-dir`, APEX_STATE_ROOT first), so the
 #     base checkout, the plan worktree and shim worktrees see one lock;
@@ -31,6 +32,38 @@ apex_hook_scope_loop_scripts() {
   apex_scope_loop_scripts "$1"
 }
 
+# apex_hook_operate_gate ROOT INPUT — the deploy control (aidlc-borrowings Phase 3.3).
+# Bash only, no state needed: a command whose text (shell quotes and backslashes
+# removed) never names operate.sh, and does not pair the word deploy with an
+# expansion or glob ($ ` * ? [), returns 1 at once, so ordinary calls with no lock
+# stay bash-only. A command that names it is judged by hooks.py operate-gate (the
+# allow-list: operate.sh … status, plain mentions); a deny is printed and 0
+# returned. This rule fails closed: without python3, or when the engine fails, a
+# command naming operate.sh with the word deploy is denied.
+apex_hook_operate_gate() {
+  local root="$1" input="$2" flat out rc=0 reason expand='*[$`*?[]*'
+  flat="${input//[\"\'\\]/}"
+  # Not named: still judged when deploy appears beside an expansion or glob that could hide the name.
+  if [[ "$flat" != *operate.sh* ]]; then
+    [[ "$flat" == *deploy* && "$input" == $expand ]] || return 1
+  fi
+  reason="apex-dispatch: operate.sh deploy must be run by a human in their own terminal; pre-bash could not judge this command"
+  if command -v python3 >/dev/null 2>&1; then
+    out="$(printf '%s' "$input" | python3 -B "$root/scripts/lib/hooks.py" operate-gate 2>/dev/null)" || rc=$?
+    out="$(printf '%s' "$out" | tail -n 1)"
+    [[ "$rc" -eq 0 && "$out" == \{*\} ]] || out=""
+  else
+    out=""; reason="$reason (python3 not found)"
+  fi
+  if [[ -z "$out" ]]; then
+    [[ "$flat" == *deploy* ]] || return 1
+    out="{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"$reason\"}}"
+  fi
+  [[ "$out" == "{}" ]] && return 1
+  apex_hook_out "$out"
+  return 0
+}
+
 # apex_hook_run KIND — KIND is agent | bash | edit | mcp | post-agent | post-bash |
 # subagent-start | subagent-stop | stop.
 apex_hook_run() {
@@ -39,8 +72,12 @@ apex_hook_run() {
   APEX_HOOK_PRINTED=0; APEX_HOOK_RC=0
   trap 'apex_hook_out "{}"; exit "${APEX_HOOK_RC:-0}"' EXIT
   input="$(cat 2>/dev/null || true)"
-  [[ "${APEX_DISPATCH_MODE:-}" == off ]] && { apex_hook_out "{}"; return 0; }
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  # The one rule that is not lock-scoped (ADR-0001, Amendments 2026-10-20): before
+  # APEX_DISPATCH_MODE and before the ACTIVE lock test, pre-bash denies any command
+  # that starts apex-scope-loop's operate.sh deploy.
+  [[ "$kind" == bash ]] && apex_hook_operate_gate "$root" "$input" && return 0
+  [[ "${APEX_DISPATCH_MODE:-}" == off ]] && { apex_hook_out "{}"; return 0; }
   scripts="$(apex_hook_scope_loop_scripts "$root")"
   [[ -n "$scripts" ]] || { apex_hook_out "{}"; return 0; }   # no apex-scope-loop: no ACTIVE lock exists
   # The session's directory (the payload's cwd), else the hook's own.
