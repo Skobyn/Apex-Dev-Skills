@@ -451,7 +451,7 @@ const vm = require('vm'), fs = require('fs'), assert = require('assert');
 class Node_ {}
 class Text extends Node_ { constructor(t) { super(); this.data = String(t); this.parentNode = null; } get textContent() { return this.data; } remove() { if (this.parentNode) this.parentNode.childNodes = this.parentNode.childNodes.filter((c) => c !== this); } }
 class El extends Node_ {
-  constructor(tag) { super(); this.tag = tag; this.attrs = {}; this.childNodes = []; this.parentNode = null; this.hidden = false; this.listeners = {}; this.style = {}; }
+  constructor(tag) { super(); this.tag = tag; this.attrs = {}; this.childNodes = []; this.parentNode = null; this.hidden = false; this.listeners = {}; this.style = {}; this.scrollLeft = 0; }
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
   removeAttribute(k) { delete this.attrs[k]; }
@@ -461,7 +461,10 @@ class El extends Node_ {
   remove() { if (this.parentNode) this.parentNode.childNodes = this.parentNode.childNodes.filter((c) => c !== this); }
   set textContent(t) { this.childNodes = []; this.append(String(t)); }
   get textContent() { return this.childNodes.map((c) => c.textContent).join(''); }
-  focus() {} querySelector() { return null; }
+  focus() { ctx.document.activeElement = this; }
+  // only the selectors app.js's Progress redraw uses: [data-fkey] and [data-fkey="k"]
+  querySelectorAll(sel) { const m = /^\[data-fkey(?:="(.*)")?\]$/.exec(sel); if (!m) return []; return all(this, (n) => n !== this && 'data-fkey' in n.attrs && (m[1] === undefined || n.attrs['data-fkey'] === m[1])); }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
   get id() { return this.attrs.id; } set id(v) { this.attrs.id = v; }
 }
 const all = (n, f, out = []) => { if (n instanceof El) { if (f(n)) out.push(n); n.childNodes.forEach((c) => all(c, f, out)); } return out; };
@@ -469,6 +472,7 @@ const calls = [];
 const byId = {};
 const ctx = {
   console, Intl, Date, JSON, URLSearchParams, Promise, setInterval: () => 0, clearInterval() {}, CSS: { escape: (x) => x }, Number, String, Object, Array, Math, Set, Map,
+  setTimeout: () => 0, clearTimeout() {}, requestAnimationFrame: () => 0, cancelAnimationFrame() {}, ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
   Node: Node_, location: { search: '' }, localStorage: { getItem: () => null, setItem() {} },
   window: { scrollTo() {}, scrollY: 0 },
   document: {
@@ -540,7 +544,7 @@ vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx, { filename: 'app.
   assert.strictEqual(cells[4], 'unmeasured', cells.join('|'));
   assert.strictEqual(cells[5], 'unmeasured', cells.join('|'));
   assert.ok(!/\d/.test(cells[4] + cells[5]), 'unmeasured check shows a number');
-  assert.ok(all(never, (n) => /\bflag\b/.test(n.attrs.class || '') && txt(n) === 'unmeasured').length === 1, 'unmeasured flag chip');
+  assert.ok(all(never, (n) => /\bcheck-flag\b/.test(n.attrs.class || '') && txt(n) === 'unmeasured').length === 1, 'unmeasured flag chip');
   const p95 = rows.find((r) => txt(r).startsWith('p95'));
   assert.ok(txt(p95).includes('950') && txt(p95).includes('800'), 'latest value and threshold of a measured check');
   // untrusted text stays text: never parsed into elements
@@ -553,14 +557,90 @@ vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx, { filename: 'app.
   const costs = all(prog, (n) => /cost-table/.test(n.attrs.class || ''));
   assert.strictEqual(costs.length, 3);
   assert.strictEqual(costs[0].attrs['aria-label'], 'Cost per task in billing-plan');
-  assert.deepStrictEqual(all(costs[0], (n) => n.tag === 'th').map(txt), ['Task', 'Delegated', 'Orchestrator', 'Unattributed']);
+  assert.deepStrictEqual(all(costs[0], (n) => n.tag === 'th').map(txt), ['Task', 'Delegated', 'Orchestrator', 'Orchestrator, unattributed']);
   const crow = all(costs[0], (n) => n.tag === 'tr');
   assert.ok(txt(crow[1]).includes('$1.50') && txt(crow[1]).includes('$2.50'));
   const orchNa = all(crow[2], (n) => n.attrs.title === 'no usage recorded');
   assert.strictEqual(txt(crow[2].childNodes[2]), 'n/a'); assert.ok(orchNa.length === 1 && txt(orchNa[0]) === 'n/a');
   assert.strictEqual(txt(crow[2].childNodes[1]), 'n/a');                    // delegated n/a stays plain
-  assert.strictEqual(txt(crow[crow.length - 1].childNodes[3]), 'n/a');      // unattributed null
-  assert.ok(!/\$0\b|\b0\.00/.test(txt(costs[1])), 'n/a cost rendered as zero');
+  const tot = crow.find((r) => /total-row/.test(r.attrs.class || ''));
+  assert.strictEqual(txt(tot.childNodes[3]), 'n/a');                         // unattributed null
+  assert.ok(!/\$0(?![.\d])|\$0\.00\b/.test(txt(costs[1])), 'n/a cost rendered as zero: ' + txt(costs[1]));
+  assert.ok(/\$0(?![.\d])/.test('$0') && !/\$0(?![.\d])/.test('$0.50'), 'the zero regex itself');
+  // F-007: a total over the known figures says how many tasks it leaves out, Orchestrator as well as Delegated
+  assert.ok(txt(tot.childNodes[1]).includes('$1.50 (1 task n/a)'), 'delegated total: ' + txt(tot.childNodes[1]));
+  assert.ok(txt(tot.childNodes[2]).includes('$2.50 (1 task n/a)'), 'orchestrator total: ' + txt(tot.childNodes[2]));
+  // R9(d): tokens are visible text, not only a tooltip
+  assert.ok(txt(crow[1].childNodes[1]).includes('100 tokens') && txt(crow[1].childNodes[2]).includes('900 tokens'), 'tokens not shown: ' + txt(crow[1]));
+  const cp = { name: 'x-plan', tasks: [mkTask(1, '**Bold** `code` title', { usd: 0.0004, tokens: 1234567, orchestrator_usd: 1, orchestrator_tokens: 5000, orchestrator_na: null }),
+    mkTask(2, null, { status: 'todo', orchestrator_na: 'no routed task' })],
+    cost: { status: 'measured', delegated_usd: 0.0004, delegated_unknown_tasks: 1, orchestrator_usd: 1, orchestrator_unattributed_usd: null, orchestrator_unattributed_tokens: 2500000, usd_unrouted: null } };
+  const ct = html(run('costTableEl')(cp, 'r1:x')); const ctt = txt(ct); const crs = all(ct, (n) => n.tag === 'tr');
+  assert.ok(ctt.includes('1 Bold code title') && !/\*\*|`/.test(ctt), 'markdown emphasis shown: ' + ctt);
+  assert.ok(txt(crs[2].childNodes[0]).includes('2 n/a') && !/null/.test(ctt), 'a null title: ' + ctt);
+  assert.ok(ctt.includes('<$0.01') && ctt.includes('1.2M tokens') && ctt.includes('2.5M tokens'), 'sub-cent cost / compact tokens: ' + ctt);
+  const ctot = crs.find((r) => /total-row/.test(r.attrs.class || ''));
+  assert.ok(!txt(ctot.childNodes[2]).includes('task n/a'), 'a never-routed task counted as an n/a orchestrator figure');
+  const unr = crs.find((r) => /unrouted-row/.test(r.attrs.class || ''));
+  assert.ok(unr && txt(unr).includes('outside any task') && txt(unr.childNodes[1]) === 'n/a', 'usd_unrouted null not shown');
+  assert.ok(!crow.some((r) => /unrouted-row/.test(r.attrs.class || '')), 'usd_unrouted 0 shown');
+  const unr2 = all(html(run('costTableEl')({ ...cp, cost: { ...cp.cost, usd_unrouted: 0.75 } }, 'r1:x')), (n) => /unrouted-row/.test(n.attrs.class || ''))[0];
+  assert.ok(unr2 && txt(unr2).includes('$0.75') && txt(unr2).includes('outside any task') && !/tokens/.test(txt(unr2)), 'usd_unrouted row: ' + (unr2 && txt(unr2)));
+  // naVal keeps significant digits below 1
+  assert.strictEqual(run('naVal')(0.0004), '0.0004'); assert.strictEqual(run('naVal')(0.001), '0.001');
+  // Breaches: a measured check whose last probe failed keeps its count; "Never produced a reading" only when never measured
+  const flaky = html(run('checksTable')([check('flaky', { last_value: null, last_status: 'unmeasured', last_reason: 'timeout', breaches: 3, unmeasured: true })], 'x'));
+  const fcells = all(flaky, (n) => n.tag === 'tr')[1].childNodes.map((c) => txt(c));
+  assert.strictEqual(fcells[5], '3', fcells.join('|')); assert.strictEqual(fcells[4], 'unmeasured', fcells.join('|'));
+  assert.ok(!all(flaky, (n) => n.attrs.title === 'Never produced a reading').length, 'a measured check flagged as never measured');
+  // F-005: a window that ended but no monitor run closed has unknown at-close lists: never a definite "none"
+  const wnull = txt(html(run('windowEl')({ state: 'closed', outcome: null, closed_by: null, open_at_close: null, unmeasured_at_close: null, measured_runs: 1, breaches: 0, never_measured: false })));
+  assert.ok(!/\bnone\b/.test(wnull), 'unknown at-close shown as none: ' + wnull);
+  assert.strictEqual(run('atCloseList')(null), 'n/a'); assert.strictEqual(run('atCloseList')([]), 'none');
+  // operate.warning is shown; a non-array problems value does not throw
+  const wop = txt(html(run('operatePanel')({ name: 'w-plan', slug: 'w', operate: { state: 'ok', monitor: 'none', warning: 'No ## Monitor section in the plan', problems: 'bad', deploys: null, window: null, checks: null, ingested: null } }, 'r1:w')));
+  assert.ok(wop.includes('No ## Monitor section in the plan'), wop);
+  assert.ok(ot.includes('Open at close: p95') && ot.includes('Unmeasured at close: never'), 'last closed window at-close lists: ' + ot);
+  // F-002: an opened intent survives the poll re-render; its summary is a focus key
+  const isIntent = (n) => n.tag === 'details' && /intent/.test(n.attrs.class || '');
+  const isum = all(intent, (n) => n.tag === 'summary')[0];
+  assert.strictEqual(isum.attrs['data-fkey'], 'intent-r1:aaa111', 'intent summary data-fkey');
+  intent.open = true; (intent.listeners.toggle || []).forEach((f) => f({ type: 'toggle' }));
+  const reopened = all(html(run('progressNodes')(FIX)), isIntent)[0];
+  assert.strictEqual(reopened.open, true, 'an opened intent snapped shut on re-render');
+  reopened.open = false; (reopened.listeners.toggle || []).forEach((f) => f({ type: 'toggle' }));
+  assert.ok(!all(html(run('progressNodes')(FIX)), isIntent)[0].open, 'a closed intent reopened');
+  // F-003: every focusable region on the Progress view has its own focus key
+  const regions = all(prog, (n) => n.attrs.tabindex === '0');
+  const rkeys = regions.map((n) => n.attrs['data-fkey']);
+  assert.ok(regions.length >= 5 && rkeys.every(Boolean), 'a focusable region without data-fkey: ' + JSON.stringify(rkeys));
+  assert.strictEqual(new Set(rkeys).size, rkeys.length, 'duplicate data-fkey: ' + JSON.stringify(rkeys));
+  // ... and the poll gives the focused region back its focus and horizontal scroll
+  run('ui').tab = 'progress';
+  await run('refreshProgress')();
+  const view = ctx.document.getElementById('view');
+  const r0 = view.querySelector('[data-fkey="cost-r1:aaa111"]');
+  assert.ok(r0, 'cost region not rendered into #view');
+  r0.scrollLeft = 40; ctx.document.activeElement = r0;
+  await run('refreshProgress')();
+  const r1 = view.querySelector('[data-fkey="cost-r1:aaa111"]');
+  assert.ok(r1 && r1 !== r0, 'the poll did not rebuild the view');
+  assert.strictEqual(ctx.document.activeElement, r1, 'focus fell off the cost region');
+  assert.strictEqual(r1.scrollLeft, 40, 'scrollLeft reset by the poll');
+  ctx.document.activeElement = null;
+  // the expander controls both the tasks table and the cost table
+  const exp = all(prog, (n) => /expander/.test(n.attrs.class || ''))[0];
+  const ctl = exp.attrs['aria-controls'].split(' ');
+  assert.strictEqual(ctl.length, 2); assert.ok(ctl.every((id) => all(prog, (n) => n.attrs.id === id).length === 1), 'aria-controls ids');
+  // the tasks table carries no duplicate Delegated cost column
+  assert.ok(!all(prog, (n) => n.tag === 'th' && txt(n) === 'Delegated cost').length, 'duplicate Delegated cost column');
+  // scope filter buttons are focus keys (seg reused)
+  assert.deepStrictEqual(all(filt, (n) => n.tag === 'button').map((b) => b.attrs['data-fkey']), ['scope-all', 'scope-bugfix', 'scope-poc', 'scope-feature']);
+  // no skipped heading level, in the Progress and the Watched view
+  for (const root of [prog, html(run('watchedNodes')(FIX))]) {
+    let prev = 0;
+    for (const hd of all(root, (n) => /^h[1-6]$/.test(n.tag))) { const lv = Number(hd.tag[1]); assert.ok(lv <= prev + 1, `heading ${hd.tag} after h${prev}: ${txt(hd)}`); prev = lv; }
+  }
   // scope filter narrows the plan list
   run('ui').scope = 'poc';
   const only = html(run('progressNodes')(FIX));
@@ -585,14 +665,15 @@ OUT="$(node "$WORK/ui-render.js" "$UIJS" 2>&1)" || { echo "$OUT" >&2; fail "cons
 echo "  $OUT"
 UIMODE="rendered under node with a DOM shim"
 else
-UIMODE="static check (node not found)"
+echo "  WARNING: node not found: check 13 falls back to a static scan of app.js and does NOT render the UI (focus, n/a and cost assertions skipped). Install node to run them." >&2
+UIMODE="static check only, node not found: render assertions SKIPPED"
 fi
 python3 - "$PLUGIN_ROOT/ui" <<'PY' || fail "console-ui-borrowings: app.js/app.css/index.html lack a required surface"
 import os, re, sys
 js = open(os.path.join(sys.argv[1], "app.js")).read()
-for needle in ("scope-badge", "`Scope: ", "Filter plans by scope", "'bugfix', 'poc', 'feature'", "operatePanel(p)", "p.landed ? operatePanel",
+for needle in ("scope-badge", "`Scope: ", "Filter plans by scope", "'bugfix', 'poc', 'feature'", "operatePanel(p, key)", "p.landed ? operatePanel",
                "viewWatched", "Open watch windows", "Repo-level checks", "'unmeasured'", "open-at-close", "Cost per task in",
-               "'Delegated'", "'Orchestrator'", "'Unattributed'", "orchestrator_na", "aria-label"):
+               "'Delegated'", "'Orchestrator'", "'Orchestrator, unattributed'", "orchestrator_na", "aria-label"):
     assert needle in js, needle
 # read-only: no operate action endpoint is ever fetched or posted to
 assert not re.search(r"(apiPost|fetch)\([^)]*(operate|deploy|ingest|monitor)", js, re.I), "operate action endpoint"
