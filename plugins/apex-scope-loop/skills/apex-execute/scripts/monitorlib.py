@@ -15,7 +15,11 @@ The section (ADR R5b, R5d) holds exactly one fenced ```json block:
   {"window_days": 14, "checks": [
      {"id": "p95", "metric": "latency.p95", "op": "<", "threshold": 800,
       "severity": "high",
-      "probe": {"kind": "http", "url": "https://x.example/health", "measure": "latency_ms"}}]}
+      "probe": {"kind": "http", "url": "https://x.example/health", "measure": "latency_ms",
+                "expect_status": 200}},
+     {"id": "queue", "metric": "queue.depth", "op": "<", "threshold": 100, "severity": "medium",
+      "probe": {"kind": "cmd", "command": "curl -fsS https://x.example/stats | jq .queue",
+                "value": "stdout"}}]}
 
   window_days  integer 1-90, default 14 (plan only; refused in monitor.json)
   checks       list; [] (or no section at all) means "not watched"
@@ -30,10 +34,13 @@ The section (ADR R5b, R5d) holds exactly one fenced ```json block:
   severity     high | medium | low
   probe        http   {kind, url, measure: status|latency_ms, expect_status?, method?: "GET"}
                       http/https only, no credentials in the url, GET only, no headers,
-                      fixed 10 s timeout (not configurable)
-               cmd    {kind, command}   value: see "Measuring" below. A command that names
-                      operate.sh, the word deploy or APEX_DEPLOY_CMD (any case) is refused,
-                      so a drafted Monitor section cannot hide a deploy behind the monitor step.
+                      fixed 10 s timeout (not configurable). expect_status is REQUIRED with
+                      measure latency_ms (a fast 503 is not a healthy latency).
+               cmd    {kind, command, value?: stdout|exit}   value defaults to stdout (never to
+                      exit); see "Measuring" below. A command that names operate.sh, the word
+                      deploy or APEX_DEPLOY_CMD (any case, after removing every double quote,
+                      single quote and backslash, so de""ploy and de\\ploy count) is refused, so
+                      a drafted Monitor section cannot hide a deploy behind the monitor step.
                runner {kind, metrics?}  uses $APEX_MONITOR_CMD; metrics = list of metric names
   At most 50 checks per plan (or per monitor.json); one operate.sh run measures at most
   200 checks in all (MAX_PROBES_PER_RUN), and refuses, naming the cap, beyond that.
@@ -44,23 +51,27 @@ removed (so APEX_OPERATE_ACK and APEX_DEPLOY_CMD never reach a probe); a timed-o
 process group is killed. A probe that fails is `unmeasured` (value None, a reason): never 0
 and never a pass. breach = NOT (value op threshold).
   cmd     the plan's command text, verbatim, is the single argument of `/bin/sh -c` (nothing
-          is interpolated into it, no positional arguments). The value rule: when the command
-          prints nothing on stdout, the value is its exit code; when it prints, the last
-          non-empty stdout line must be a plain decimal number and the command must exit 0,
-          and that number is the value. Anything else (a non-number last line, output with a
-          non-zero exit, a signal, the timeout) is unmeasured.
+          is interpolated into it, no positional arguments). The value rule is the probe's
+          "value" key. "stdout" (the default): the command must exit 0 and its last non-empty
+          stdout line must be a plain decimal number, and that number is the value; empty
+          stdout (`curl ... | jq .p95` with the service down) or a non-zero exit is unmeasured,
+          never 0. "exit": the value is the exit code and stdout is ignored. In both modes a
+          signal or the timeout is unmeasured.
   http    one GET, no redirects followed (a 3xx is the measured status), no proxy, no
           credentials or extra headers, body read up to 1 MiB, 10 s in all. measure status: the
           HTTP code (4xx/5xx included); measure latency_ms: the milliseconds to the end of
-          the body, but unmeasured when expect_status is set and the status differs (a fast
-          error page is not a healthy latency). A connection error or timeout is unmeasured.
+          the body, but unmeasured when the status differs from expect_status (required with
+          latency_ms: a fast error page is not a healthy latency). A connection error or timeout is unmeasured.
   runner  $APEX_MONITOR_CMD is split with shlex (no shell) and run as `CMD METRIC...` (the
           probe's metrics, else the check's metric) once per runner check. Its stdout must be
-          one JSON object with exactly the requested metrics as keys, each a finite number or
-          null. Bad JSON, NaN/Infinity, a duplicate, missing or extra key, a non-number, a
-          non-zero exit or the timeout makes the check unmeasured with the reason recorded;
-          null is unmeasured ("the runner reported null"). The last stderr line, sanitised,
-          is kept as the signal's note.
+          one JSON object with exactly the requested metrics as keys. Each value is a finite
+          number, null, or an object {"value": number|null, "note": "..."} whose only keys are
+          value (required) and note (optional, a string): the note is opt-in data, sanitised
+          and capped at 120 characters. A metric named "note" is just a key like any other.
+          Bad JSON, NaN/Infinity, a duplicate, missing or extra key, a non-number, an object
+          with another key or a non-string note, a non-zero exit or the timeout makes the
+          check unmeasured with the reason recorded; null is unmeasured ("the runner reported
+          null"). The runner's stderr is never read into a reason or a note.
   sanitise(text) is the only door for probe-supplied text (reasons, notes): one line, an
   allow-list of characters (no backtick, #, *, >, [, ], <, |), no list marker at the start,
   at most 160 characters.
@@ -98,6 +109,15 @@ MAX_CHECKS = 50               # per plan section or monitor.json
 MAX_PROBES_PER_RUN = 200      # per operate.sh run (--all included)
 # a cmd probe may not name operate.sh, the word deploy or APEX_DEPLOY_CMD (any case)
 CMD_DENY_RE = re.compile(r"operate\.sh|deploy|apex_deploy_cmd", re.I)
+DENY_STRIP_RE = re.compile(r"[\"'\\]")   # apex-dispatch pre-bash: de""ploy and de\ploy are deploy
+CMD_VALUES = ("stdout", "exit")         # a cmd probe's value rule; the default is stdout, never exit
+RUNNER_NOTE_MAX = 120
+
+
+def deny_hit(cmd):
+    """The deny-listed word cmd names once quotes and backslashes are removed, else None."""
+    m = CMD_DENY_RE.search(DENY_STRIP_RE.sub("", cmd))
+    return m.group(0) if m else None
 DEFAULT_WINDOW_DAYS = 14
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")   # = apex-dispatch ledger.py _ID_RE
 
@@ -196,14 +216,19 @@ def _probe(p, where, check_metric, probs):
             probs.append(f"{where}: measure must be one of {', '.join(MEASURES)}")
         if "expect_status" in p and not (_is_int(p["expect_status"]) and 100 <= p["expect_status"] <= 599):
             probs.append(f"{where}: expect_status must be an integer 100-599")
+        if p.get("measure") == "latency_ms" and "expect_status" not in p:
+            probs.append(f"{where}: measure latency_ms needs expect_status (a fast error page is not a healthy latency)")
     elif kind == "cmd":
-        _keys(p, {"kind", "command"}, ("command",), where, probs)
+        _keys(p, {"kind", "command", "value"}, ("command",), where, probs)
         c = p.get("command")
         if "command" in p and (not isinstance(c, str) or not c.strip() or len(c) > 1024 or CTRL_RE.search(c)):
             probs.append(f"{where}: command must be a non-empty single-line string (max 1024)")
-        elif isinstance(c, str) and CMD_DENY_RE.search(c):
+        elif isinstance(c, str) and deny_hit(c):
             probs.append(f"{where}: command must not name operate.sh, the word deploy or APEX_DEPLOY_CMD "
-                         f"(found {CMD_DENY_RE.search(c).group(0)!r}): a monitor probe never deploys")
+                         f"(found {deny_hit(c)!r}): a monitor probe never deploys")
+        if "value" in p and p["value"] not in CMD_VALUES:
+            probs.append(f"{where}: value must be one of {', '.join(CMD_VALUES)} (got {json.dumps(p['value'])[:40]}; "
+                         "stdout is the default)")
     elif kind == "runner":
         _keys(p, {"kind", "metrics"}, (), where, probs)
         if "metrics" in p:
@@ -437,11 +462,13 @@ def measure_cmd(probe, cwd):
         return _unmeasured(f"the command timed out after {PROBE_TIMEOUT_S} s")
     if rc is None or rc < 0:
         return _unmeasured("the command could not run or was killed by a signal")
+    if probe.get("value", "stdout") == "exit":
+        return {"value": rc, "reason": None, "note": None}     # stdout ignored
     lines = [l for l in out.splitlines() if l.strip()]
-    if not lines:
-        return {"value": rc, "reason": None, "note": None}
     if rc != 0:
-        return _unmeasured(f"the command printed output and exited {rc}")
+        return _unmeasured(f"the command exited {rc} (value stdout needs exit 0)")
+    if not lines:
+        return _unmeasured('the command printed nothing on stdout (set "value": "exit" to measure the exit code)')
     v = parse_number(lines[-1])
     if v is None:
         return _unmeasured("the last stdout line is not a number: " + lines[-1][:60])
@@ -491,7 +518,7 @@ def measure_http(probe):
     if probe["measure"] == "status":
         return {"value": box["status"], "reason": None, "note": None}
     exp = probe.get("expect_status")
-    if exp is not None and box["status"] != exp:
+    if exp is None or box["status"] != exp:        # validated: latency_ms always has expect_status
         return _unmeasured(f"status {box['status']} is not the expected {exp}, so latency is not measured")
     return {"value": box["latency_ms"], "reason": None, "note": None}
 
@@ -500,7 +527,7 @@ def runner_cmd_problem(cmd):
     """None when $APEX_MONITOR_CMD is usable, else the problem."""
     if not cmd or not cmd.strip():
         return "APEX_MONITOR_CMD is unset: a runner check needs it (set it to your metrics command)"
-    if CMD_DENY_RE.search(cmd):
+    if deny_hit(cmd):
         return "APEX_MONITOR_CMD must not name operate.sh, the word deploy or APEX_DEPLOY_CMD"
     try:
         if not shlex.split(cmd):
@@ -510,39 +537,52 @@ def runner_cmd_problem(cmd):
     return None
 
 
+def runner_value(m, v):
+    """One metric of the runner reply: (value, note, None) or (None, None, problem).
+    v is a finite number, null, or {"value": number|null, "note"?: string} (nothing else)."""
+    note = None
+    if isinstance(v, dict):
+        extra = sorted(set(v) - {"value", "note"})[:3]
+        if extra or "value" not in v:
+            return None, None, f"the runner object for {m} must hold value and an optional note only (extra {extra})"
+        if "note" in v and not isinstance(v["note"], str):
+            return None, None, f"the runner note for {m} is not a string"
+        note = (sanitise(v["note"], RUNNER_NOTE_MAX) or None) if "note" in v else None
+        v = v["value"]
+    if v is None:
+        return None, note, "the runner reported null"
+    if not _is_num(v):
+        return None, note, f"the runner value for {m} is not a finite number"
+    return v, note, None
+
+
 def measure_runner(probe, check_metric, cwd, cmd):
-    """{metric: result} for the probe's metrics, every one failed closed together."""
+    """{metric: result} for the probe's metrics, every one failed closed together. The runner's
+    stderr is never read: a note comes only from the reply's per-metric object."""
     metrics = list(probe.get("metrics") or [check_metric])
-    def all_un(reason, note=None):
-        return {m: _unmeasured(reason, note) for m in metrics}
+    def all_un(reason):
+        return {m: _unmeasured(reason) for m in metrics}
     prob = runner_cmd_problem(cmd)
     if prob:
         return all_un(prob)
-    rc, out, err, timed_out = run_bounded(shlex.split(cmd) + metrics, cwd)
-    errl = [l for l in err.splitlines() if l.strip()]
-    note = sanitise(errl[-1], 120) if errl else None
+    rc, out, _err, timed_out = run_bounded(shlex.split(cmd) + metrics, cwd)
     if timed_out:
         return all_un(f"the runner timed out after {PROBE_TIMEOUT_S} s")
     if rc != 0:
-        return all_un(f"the runner exited {rc}", note)
+        return all_un(f"the runner exited {rc}")
     reply, perr = parse_json(out.strip() or "null")
     if perr:
-        return all_un("the runner reply is not valid JSON: " + out.strip()[:60], note)
+        return all_un("the runner reply is not valid JSON: " + out.strip()[:60])
     if not isinstance(reply, dict):
-        return all_un("the runner reply is not one JSON object", note)
+        return all_un("the runner reply is not one JSON object")
     if set(reply) != set(metrics):
         extra = sorted(set(reply) - set(metrics))[:3]
         missing = sorted(set(metrics) - set(reply))[:3]
-        return all_un(f"the runner reply keys differ from the requested metrics (extra {extra}, missing {missing})", note)
+        return all_un(f"the runner reply keys differ from the requested metrics (extra {extra}, missing {missing})")
     res = {}
     for m in metrics:
-        v = reply[m]
-        if v is None:
-            res[m] = _unmeasured("the runner reported null", note)
-        elif not _is_num(v):
-            res[m] = _unmeasured(f"the runner value for {m} is not a finite number", note)
-        else:
-            res[m] = {"value": v, "reason": None, "note": note}
+        v, note, problem = runner_value(m, reply[m])
+        res[m] = _unmeasured(problem, note) if problem else {"value": v, "reason": None, "note": note}
     return res
 
 

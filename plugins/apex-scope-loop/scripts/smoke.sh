@@ -2477,9 +2477,9 @@ ok "status-scope: status.sh prints Scope (bugfix, feature, 'feature (no Scope li
 ML="$EX/monitorlib.py"; MN_TMP="$SMOKE_TMP/monitor-section"; rm -rf "${MN_TMP:?}"; mkdir -p "$MN_TMP" || fail "monitor-section: cannot create the temp dir"
 # mn_plan NAME JSON: a plan with a ## Monitor section holding JSON in one json fence
 mn_plan() { printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n%s\n```\n' "$2" >"$MN_TMP/$1.md"; }
-MN_HTTP='{"kind": "http", "url": "https://x.example/health", "measure": "latency_ms"}'
+MN_HTTP='{"kind": "http", "url": "https://x.example/health", "measure": "latency_ms", "expect_status": 200}'
 mn_chk() { printf '{"id": "%s", "metric": "%s", "op": "%s", "threshold": 800, "severity": "high", "probe": %s}' "$1" "$2" "$3" "$4"; }
-MN_OK="$(mn_chk p95 latency.p95 '>' "$MN_HTTP"), $(mn_chk exit0 job:exit '==' '{"kind": "cmd", "command": "true"}'), $(mn_chk rn m-1 '>=' '{"kind": "runner", "metrics": ["m-1"]}')"
+MN_OK="$(mn_chk p95 latency.p95 '>' "$MN_HTTP"), $(mn_chk exit0 job:exit '==' '{"kind": "cmd", "command": "true", "value": "exit"}'), $(mn_chk rn m-1 '>=' '{"kind": "runner", "metrics": ["m-1"]}')"
 # mn_ok NAME: valid. mn_bad NAME PATTERN: exit 1, the output names the problem.
 mn_ok() { local o rc=0; o="$(python3 "$ML" validate "$MN_TMP/$1.md" 2>&1)" || rc=$?; [ "$rc" = 0 ] && [ -z "$o" ] || fail "monitor-section: $1 should be valid (exit $rc): $o"; }
 mn_bad() { local o rc=0; o="$(python3 "$ML" validate "$MN_TMP/$1.md" 2>&1)" || rc=$?; [ "$rc" = 1 ] || fail "monitor-section: $1 exited $rc, expected 1: $o"; grep -qE -- "$2" <<<"$o" || fail "monitor-section: $1 did not say '$2': $o"; }
@@ -2495,6 +2495,11 @@ mn_plan s2 "{\"checks\": [$(mn_chk c1 m '=>' "$MN_HTTP")]}"; mn_bad s2 "c1.*unkn
 mn_plan rm1 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "runner", "metrics": ["other"]}')]}"; mn_bad rm1 "c1.*check's metric 'm' is not in the probe's metrics"
 mn_plan rm2 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "runner", "metrics": ["other", "m"]}'), $(mn_chk c2 m '>' '{"kind": "runner"}')]}"; mn_ok rm2
 mn_plan s3 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "ping", "host": "x"}')]}"; mn_bad s3 "c1.*unknown probe.kind 'ping'"
+# F-019: latency_ms without expect_status is refused by name (a fast 503 would count as a healthy latency)
+mn_plan lat1 "{\"checks\": [$(mn_chk c1 m '<' '{"kind": "http", "url": "https://x.example/", "measure": "latency_ms"}')]}"; mn_bad lat1 "c1.*measure latency_ms needs expect_status"
+# F-017: a cmd probe's value rule is stdout (the default) or exit, nothing else
+mn_plan cv1 "{\"checks\": [$(mn_chk c1 m '<' '{"kind": "cmd", "command": "echo 1", "value": "stdout"}'), $(mn_chk c2 m '==' '{"kind": "cmd", "command": "true", "value": "exit"}')]}"; mn_ok cv1
+mn_plan cv2 "{\"checks\": [$(mn_chk c1 m '<' '{"kind": "cmd", "command": "true", "value": "rc"}')]}"; mn_bad cv2 "c1.*value must be one of stdout, exit"
 mn_plan s4 '{"window_days": 0, "checks": []}'; mn_bad s4 "window_days must be an integer 1-90"
 mn_plan s5 '{"window_days": 91, "checks": []}'; mn_bad s5 "window_days must be an integer 1-90"
 mn_plan s5b '{"window_days": 14.5, "checks": []}'; mn_bad s5b "window_days must be an integer"
@@ -2874,8 +2879,15 @@ with open(os.path.join(here, "runner-args.log"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
 ms = sys.argv[1:]
 if mode == "good":
-    sys.stderr.write("ok\n\n## L-999 `boom` <b>pwned</b> | [x](y)\n")
-    print(json.dumps({m: 0.5 for m in ms}))
+    # F-005: stderr is never a note; the opt-in note is the reply's per-metric {"value", "note"} object
+    sys.stderr.write("ok\n\ncontact ops@example.invalid token=hunter2-secret\n")
+    print(json.dumps({m: {"value": 0.5, "note": "## L-999 `boom` <b>pwned</b> | [x](y)"} for m in ms}))
+elif mode == "objx":
+    print('{"r_err": {"value": 0.001, "zz": 1}}')
+elif mode == "objnote":
+    print('{"r_err": {"value": 0.001, "note": 5}}')
+elif mode == "objnov":
+    print('{"r_err": {"note": "x"}}')
 elif mode == "bad":
     print("`## L-999` not json\n## L-998")
 elif mode == "nan":
@@ -2916,8 +2928,10 @@ u = "http://127.0.0.1:%s" % port
 print(json.dumps([
   {"id": "c-high", "metric": "m_high", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": argcmd}},
   {"id": "c-slow", "metric": "m_slow", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "sleep 30; echo 1"}},
-  {"id": "c-word", "metric": "m_word", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "echo hello"}},
-  {"id": "c-exit", "metric": "m_exit", "op": "==", "threshold": 3, "severity": "medium", "probe": {"kind": "cmd", "command": "exit 3"}},
+  {"id": "c-word", "metric": "m_word", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "echo hello", "value": "stdout"}},
+  {"id": "c-exit", "metric": "m_exit", "op": "==", "threshold": 3, "severity": "medium", "probe": {"kind": "cmd", "command": "echo 9; exit 3", "value": "exit"}},
+  {"id": "c-pipe", "metric": "m_pipe", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "false | cat"}},
+  {"id": "c-grep", "metric": "m_grep", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "grep -c x ./no-such.log"}},
   {"id": "h-status", "metric": "m_status", "op": "==", "threshold": 200, "severity": "low", "probe": {"kind": "http", "url": u + "/err", "measure": "status"}},
   {"id": "h-lat", "metric": "m_lat_err", "op": "<", "threshold": 5000, "severity": "high", "probe": {"kind": "http", "url": u + "/err", "measure": "latency_ms", "expect_status": 200}},
   {"id": "h-ok", "metric": "m_lat", "op": "<", "threshold": 5000, "severity": "high", "probe": {"kind": "http", "url": u + "/ok", "measure": "latency_ms", "expect_status": 200}},
@@ -2973,6 +2987,12 @@ olr "PLAN monitor --ingest" 2 -- plans/ol-plan.md monitor --ingest; grep -q usag
 olr "APEX_MONITOR_CMD unset" 2 APEX_MONITOR_CMD= -- --all monitor --ingest
 grep -q 'APEX_MONITOR_CMD is unset' "$OL_TMP/run.out" && [ "$(olq "$OL_CP" '"checks" in o')" = False ] || fail "operate-loop: an unset APEX_MONITOR_CMD was not refused before any probe (R6): $(cat "$OL_TMP/run.out")"
 olr "APEX_MONITOR_CMD naming operate.sh" 2 "APEX_MONITOR_CMD=sh $OL_OPS" -- plans/ol-plan.md monitor
+# the deny word is searched with quotes and backslashes removed (apex-dispatch pre-bash's normalisation)
+for OL_MC in "sh de''ploy.sh" 'sh de\ploy.sh' 'sh de""ploy.sh'; do
+  olr "APEX_MONITOR_CMD $OL_MC" 2 "APEX_MONITOR_CMD=$OL_MC" -- plans/ol-plan.md monitor
+  grep -q 'APEX_MONITOR_CMD must not name operate.sh' "$OL_TMP/run.out" && [ "$(olq "$OL_CP" '"checks" in o')" = False ] \
+    || fail "operate-loop: APEX_MONITOR_CMD '$OL_MC' was not refused before any probe (mutant: deny regex on the raw text): $(cat "$OL_TMP/run.out")"
+done
 # requirement 6: the per-run cap, in the real --all flow: four more landed plans (fabricated state) of 50 checks each,
 # open windows → 209 checks → refused naming the cap before any probe. Mutant "cap only in monitorlib" turns this red.
 python3 - "$OL_TMP" "$OL_BASE" <<'PY' || fail "operate-loop: cannot fabricate the cap plans"
@@ -3006,14 +3026,19 @@ grep -q 'plan nomon: no ## Monitor section; skipped' "$OL_TMP/run1.out" && grep 
   || fail "operate-loop: the plan with no Monitor section was not skipped with the R5b warning: $(cat "$OL_TMP/run1.out")"
 # threat 2: the timed-out probe, a non-number line, the failed GET and the expect_status mismatch are unmeasured (null,
 # never 0 and never a pass). Mutants "value 0 on timeout" / "unmeasured counts as ok" turn this red.
-OL_UN="$(olq "$OL_CP" '[(i, o["checks"][i]["last_value"], o["checks"][i]["last_status"]) for i in ("c-slow", "c-word", "h-lat", "h-dead")]')"
-[ "$OL_UN" = "[('c-slow', None, 'unmeasured'), ('c-word', None, 'unmeasured'), ('h-lat', None, 'unmeasured'), ('h-dead', None, 'unmeasured')]" ] \
+OL_UN="$(olq "$OL_CP" '[(i, o["checks"][i]["last_value"], o["checks"][i]["last_status"]) for i in ("c-slow", "c-word", "h-lat", "h-dead", "c-pipe", "c-grep")]')"
+[ "$OL_UN" = "[('c-slow', None, 'unmeasured'), ('c-word', None, 'unmeasured'), ('h-lat', None, 'unmeasured'), ('h-dead', None, 'unmeasured'), ('c-pipe', None, 'unmeasured'), ('c-grep', None, 'unmeasured')]" ] \
   || fail "operate-loop: a failed probe was read as a value or a pass (threat 2): $OL_UN"
+# F-017: in stdout mode (the default) an empty-stdout pipeline (false | cat exits 0) and grep -c on a missing log
+# (exit 2) are unmeasured, never their exit code. Mutant "exit code when stdout is empty" turns this red (0 ok, 2 ok).
+olq "$OL_CP" 'o["checks"]["c-pipe"]["last_reason"]' | grep -q 'printed nothing on stdout' && olq "$OL_CP" 'o["checks"]["c-grep"]["last_reason"]' | grep -q 'exited 2' \
+  || fail "operate-loop: F-017: the stdout-mode reasons are wrong: $(olq "$OL_CP" '(o["checks"]["c-pipe"], o["checks"]["c-grep"])')"
 olq "$OL_CP" 'o["checks"]["c-slow"]["last_reason"]' | grep -q 'timed out after 10 s' || fail "operate-loop: the timed-out probe has no timeout reason: $(olq "$OL_CP" 'o["checks"]["c-slow"]')"
 olq "$OL_CP" 'o["checks"]["h-lat"]["last_reason"]' | grep -q 'status 503 is not the expected 200' || fail "operate-loop: requirement 4: latency_ms under an expect_status mismatch is not unmeasured with its reason"
-# requirement 1 (cmd value rule): empty stdout → the exit code (exit 3 → 3, a pass of == 3); a number line → that number
+# requirement 1 (cmd value rule): value exit → the exit code, stdout ignored (echo 9; exit 3 → 3, a pass of == 3);
+# value stdout → the last number line
 [ "$(olq "$OL_CP" '(o["checks"]["c-exit"]["last_value"], o["checks"]["c-exit"]["last_status"], o["checks"]["c-high"]["last_value"], o["checks"]["c-high"]["last_status"])')" = "(3, 'ok', 7, 'breach')" ] \
-  || fail "operate-loop: the cmd value rule (exit code when silent, else the last number line) is wrong: $(olq "$OL_CP" 'o["checks"]')"
+  || fail "operate-loop: the cmd value rule (exit: the exit code, stdout ignored; stdout: the last number line) is wrong: $(olq "$OL_CP" 'o["checks"]')"
 # requirement 1: verbatim sh -c, no positional args, no slug/metric interpolation, cwd = the repo root, no APEX_* in env.
 # Mutants "str.format the command" / "pass the slug as \$1" / "inherit the environment" turn this red.
 [ "$(head -n 1 "$OL_TMP/probe-args.txt")" = "/bin/sh|0|unset|{slug}{metric}" ] && [ "$(sed -n 2p "$OL_TMP/probe-args.txt")" = "$OL" ] \
@@ -3035,8 +3060,12 @@ OL_HDR="$(awk '{print $1, $3}' "$OL_TMP/hits.log" | sort -u)"
 grep -qF '**Tags:** #operate:ol #m_high' "$OL_LES" && grep -qF '**Tags:** #operate:ol #r_err' "$OL_LES" || fail "operate-loop: the lessons are not tagged operate:{slug},{metric}: $(cat "$OL_LES")"
 # threat 3 / requirement 5: the runner's hostile stderr note reaches the lesson only sanitised: no ## L-999 heading,
 # no backtick, no HTML, one line. Mutant "pass the runner note to lessons.sh unsanitised" turns this red.
-grep -q 'runner note: ' "$OL_LES" && ! grep -q '^## L-99' "$OL_LES" && ! grep -q '`' "$OL_LES" && ! grep -q '<b>' "$OL_LES" \
-  || fail "operate-loop: threat 3: runner text reached LESSONS.md unescaped (or the note is missing): $(cat "$OL_LES")"
+grep -q 'runner note: L-999 _boom_' "$OL_LES" && ! grep -q '^## L-99' "$OL_LES" && ! grep -q '`' "$OL_LES" && ! grep -q '<b>' "$OL_LES" \
+  || fail "operate-loop: threat 3: runner text reached LESSONS.md unescaped (or the reply's note is missing): $(cat "$OL_LES")"
+# F-005: the runner's stderr (an email and a key=value) never becomes a note: no trace in LESSONS.md, BACKLOG.md, the
+# checkpoint or a signal file. Mutant "the last stderr line is the note" turns this red.
+! grep -rqE 'hunter2|example\.invalid' "$OL_LES" "$OL_BL" "$OL_CP" "$OL_ST/operate" \
+  || fail "operate-loop: F-005: the runner's stderr reached a note: $(grep -rE 'hunter2|example\.invalid' "$OL_LES" "$OL_BL" "$OL_CP" "$OL_ST/operate")"
 ! grep -qE 'disk_pct|operate:repo' "$OL_LES" || fail "operate-loop: R5d: a repo-level breach was filed as a lesson"
 python3 - "$OL_BL" <<'PY' || fail "operate-loop: the backlog sections are wrong (threat 1 / R5d): $(cat "$OL_BL")"
 import re, sys
@@ -3093,12 +3122,16 @@ case "$OL_RS" in *'not valid JSON'*) ;; *) fail "operate-loop: the malformed rep
 case "$OL_RS" in *'`'*|*'#'*) fail "operate-loop: requirement 5: the runner's reply text was stored unsanitised: $OL_RS" ;; esac
 (cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || true
 ! grep -q '^## L-99' "$OL_TMP/status.out" && ! grep -q '`' "$OL_TMP/status.out" || fail "operate-loop: status printed the runner's hostile text unsanitised: $(cat "$OL_TMP/status.out")"
-for m in nan extra missing string null twice exit; do
+for m in nan extra missing string null twice exit objx objnote objnov; do
   echo "$m" >"$OL_TMP/runner.mode"
   olr "runner reply $m" 0 -- plans/ol-plan.md monitor
   [ "$(olq "$OL_CP" '(o["checks"]["r-run"]["last_value"], o["checks"]["r-run"]["last_status"])')" = "(None, 'unmeasured')" ] \
     || fail "operate-loop: requirement 3: the runner reply '$m' did not fail closed: $(olq "$OL_CP" 'o["checks"]["r-run"]')"
 done
+# F-018(b): r-run breached on run 1 and is unmeasured on every run since: status names it as still breaching
+(cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || true
+grep -q 'still breaching at their last measurement (unmeasured since): .*r-run' "$OL_TMP/status.out" \
+  || fail "operate-loop: F-018: status does not show r-run as still breaching at its last measurement: $(cat "$OL_TMP/status.out")"
 olr "PLAN ingest" 0 -- plans/ol-plan.md ingest
 [ "$(olq "$OL_CP" 'len(o["pending"])')" = 0 ] && [ "$(grep -c '^## L-' "$OL_LES")" = 2 ] || fail "operate-loop: PLAN ingest left pending signals or re-filed"
 echo good >"$OL_TMP/runner.mode"
@@ -3111,6 +3144,10 @@ olr "the closing run" 0 -- --all monitor --ingest; cp "$OL_TMP/run.out" "$OL_TMP
 grep -q 'plan ol: watch window ended .*closed closed-with-breaches; open-at-close: .*c-high' "$OL_TMP/run3.out" || fail "operate-loop: threat 4: the ended window was not closed with open-at-close: $(cat "$OL_TMP/run3.out")"
 [ "$(olq "$OL_CP" '(o["window"]["outcome"], "c-high" in o["window"]["open_at_close"], "h-status" in o["window"]["open_at_close"], o["checks"]["c-high"]["last_ts"], len(o["windows_closed"]))')" = "('closed-with-breaches', True, True, '$OL_LT', 1)" ] \
   || fail "operate-loop: threat 4: the window close is wrong, or the expired plan was measured again (mutants: no end check / open_at_close = []): $(olq "$OL_CP" 'o["window"]')"
+# F-018(b): breach (run 1), then unmeasured (every run since), then close → r-run is open at close; c-word, never
+# measured, is not. Mutant "open_at_close = the last run's breaching list" turns this red.
+[ "$(olq "$OL_CP" '("r-run" in o["window"]["open_at_close"], "r-run" in o["window"]["breaching"], "c-word" in o["window"]["open_at_close"])')" = "(True, False, False)" ] \
+  || fail "operate-loop: F-018: a check whose last measured status was breach dropped out of open_at_close: $(olq "$OL_CP" 'o["window"]')"
 case "$(python3 -c 'import json,sys; print([(r["outcome"], r["open_at_close"], r["breaches"] > 0) for r in map(json.loads, open(sys.argv[1])) if r["event"] == "operate_window_closed"])' "$OL_ST/dispatch/ledger.jsonl")" in
   "[('closed-with-breaches', ["*"'c-high'"*"], True)]") ;; *) fail "operate-loop: threat 4: no operate_window_closed row with open_at_close: $(cat "$OL_ST/dispatch/ledger.jsonl")" ;; esac
 grep -q 'plan ol2: measured 1 check' "$OL_TMP/run3.out" || fail "operate-loop: the open plan ol2 was not measured beside the closing one"
@@ -3129,7 +3166,7 @@ ol_ship ol "$OL_SHA"; ol_ship ol2 "$OL2_SHA"
 grep -q 'last closed window: closed-with-breaches' "$OL_TMP/status.out" || fail "operate-loop: requirement 7: status does not show the last closed window: $(cat "$OL_TMP/status.out")"
 # requirement 2: monitorlib refuses a cmd probe naming operate.sh, deploy or APEX_DEPLOY_CMD (any case), by name.
 # Mutant "no deny pattern in _probe" turns this red; a neighbour without the words still validates.
-for c in "sh $OL_OPS x status" "make DEPLOY" "echo \$apex_deploy_cmd" "./Operate.SH status"; do
+for c in "sh $OL_OPS x status" "make DEPLOY" "echo \$apex_deploy_cmd" "./Operate.SH status" 'make de""ploy' 'make de\ploy' "./oper'a'te.sh x"; do
   python3 "$OL_TMP/mkplan.py" "$OL_TMP/deny-plan.md" D 7 "$(python3 -c 'import json,sys; print(json.dumps([{"id": "d", "metric": "d", "op": "<", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": sys.argv[1]}}]))' "$c")"
   OL_V="$(python3 "$EX/monitorlib.py" validate "$OL_TMP/deny-plan.md" 2>&1)" && fail "operate-loop: requirement 2: a cmd probe '$c' was accepted"
   case "$OL_V" in *"must not name operate.sh, the word deploy or APEX_DEPLOY_CMD"*) ;; *) fail "operate-loop: requirement 2: '$c' was not refused by name: $OL_V" ;; esac

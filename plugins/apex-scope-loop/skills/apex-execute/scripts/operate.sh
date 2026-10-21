@@ -153,12 +153,18 @@ def scope(plan):
     return "feature"
 
 def close_window(op, ts, by):
-    """Close op["window"]: outcome from the window's breach count, open_at_close = the checks
-    breaching on its last monitor run; the closed window is kept in op["windows_closed"]."""
+    """Close op["window"]: outcome from the window's breach count, open_at_close = every check
+    whose last MEASURED status in this window was breach (w["last_measured"]), whether or not
+    the last run measured it, plus the last run's breaching list (state written before
+    last_measured existed); the closed window is kept in op["windows_closed"]."""
     w = op["window"]
     b = w.get("breaches") if isinstance(w.get("breaches"), int) else 0
     outcome = "closed-with-breaches" if b > 0 else "operated-clean"
-    oac = [x for x in (w.get("breaching") or []) if isinstance(x, str)]
+    lm = w.get("last_measured") if isinstance(w.get("last_measured"), dict) else {}
+    oac = []
+    for x in [k for k, v in lm.items() if isinstance(v, dict) and v.get("status") == "breach"] + list(w.get("breaching") or []):
+        if isinstance(x, str) and x not in oac:
+            oac.append(x)
     w.update(outcome=outcome, open_at_close=oac, breaches=b, closed_at=ts, closed_by=by)
     wc = op.get("windows_closed") if isinstance(op.get("windows_closed"), list) else []
     wc.append(dict(w))
@@ -266,8 +272,12 @@ elif mode in ("status", "status-all", "run"):
             return None
         st = cs.get("last_status") or "?"
         why = (": " + cs["last_reason"]) if st == "unmeasured" and cs.get("last_reason") else ""
-        return "      last: %s (%s%s) at %s; breaches %s; unmeasured runs %s; filed %s" % (
-            fmt(cs.get("last_value")), st, why, cs.get("last_ts", "?"), cs.get("breaches", 0),
+        lm = ""
+        if st == "unmeasured" and cs.get("last_measured_status"):
+            lm = "; last measured: %s (%s) at %s" % (fmt(cs.get("last_measured_value")), cs["last_measured_status"],
+                                                      cs.get("last_measured_ts", "?"))
+        return "      last: %s (%s%s) at %s%s; breaches %s; unmeasured runs %s; filed %s" % (
+            fmt(cs.get("last_value")), st, why, cs.get("last_ts", "?"), lm, cs.get("breaches", 0),
             cs.get("unmeasured", 0), cs.get("filed") or "-")
 
     def status_one(cp, plan, slug):
@@ -303,6 +313,11 @@ elif mode in ("status", "status-all", "run"):
             if w.get("last_run"):
                 print("  last monitor run: %s; %s breach(es) in this window; breaching on the last run: %s"
                       % (w["last_run"], w.get("breaches", 0), ", ".join(w.get("breaching") or []) or "none"))
+                lm = w.get("last_measured") if isinstance(w.get("last_measured"), dict) else {}
+                held = [k for k, v in lm.items() if isinstance(v, dict) and v.get("status") == "breach"
+                        and k not in (w.get("breaching") or [])]
+                if held and not w.get("outcome"):
+                    print("  still breaching at their last measurement (unmeasured since): %s" % ", ".join(held))
             if w.get("last_run_all_unmeasured") and not w.get("outcome"):
                 print("  WARNING: every check of %s was unmeasured on the last run: nothing is known about its health" % slug)
         wc = [x for x in (op.get("windows_closed") or []) if isinstance(x, dict)]
@@ -563,6 +578,7 @@ elif mode in ("status", "status-all", "run"):
                         cs["unmeasured"] += 1
                     else:
                         all_un = False
+                        cs.update(last_measured_status=r["status"], last_measured_value=r["value"], last_measured_ts=ts)
                     cs.update(metric=c["metric"], last_value=r["value"], last_status=r["status"], last_ts=ts,
                               last_reason=r["reason"], note=r["note"])
                     cstate[c["id"]] = cs
@@ -575,6 +591,11 @@ elif mode in ("status", "status-all", "run"):
                 if t["kind"] == "plan":
                     w = st["window"]
                     w["last_run"], w["breaching"], w["last_run_all_unmeasured"] = ts, breaching, all_un
+                    lm = w.get("last_measured") if isinstance(w.get("last_measured"), dict) else {}
+                    for row in rows:              # window-scoped: a redeploy's new window starts empty
+                        if row["status"] != "unmeasured":
+                            lm[row["check_id"]] = {"status": row["status"], "value": row["value"], "ts": ts}
+                    w["last_measured"] = lm
                     w["breaches"] = (w.get("breaches") if isinstance(w.get("breaches"), int) else 0) + len(breaching)
                 else:
                     st["last_run"], st["breaching"] = ts, breaching
