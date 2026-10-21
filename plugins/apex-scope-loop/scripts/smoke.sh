@@ -2816,6 +2816,341 @@ mv "$OD_CP.away" "$OD_CP" || fail "operate-deploy: the unrecordable deploy fixtu
 grep -q 'the deploy ran (exit 0) but could not be recorded' "$OD_TMP/pty.out" && ! grep -q 'watch window open' "$OD_TMP/pty.out" || fail "operate-deploy: an unrecorded deploy did not fail clearly, or claimed an open window: $(cat "$OD_TMP/pty.out")"
 ok "operate-deploy: operate.sh refuses an unlanded plan (3), an unset APEX_DEPLOY_CMD by name (2), HALT/APEX_HALT (4) and an invalid Monitor section (2); prints an Ask Contract and reads the ack only from the controlling terminal: detached (setsid) it refuses even with APEX_OPERATE_ACK set and says a human must type od@<sha> at their own terminal; an older landed sha, a short sha, a wrong slug or an empty ack are refused (threat 1); a failing deploy is recorded with ts/sha/exit/ack_source, exits 1 and opens no window or moves an open one (threat 2); the pty-typed ack deploys with PLAN_SLUG/LANDED_SHA and no APEX_OPERATE_ACK, opening the plan's 7-day window; status and --all status show day N of M, closed, the declared checks and the R5b warning; operate_deploy rows carry route_id null and ack_source tty and the ledger verifies; a deploy row records the checkout HEAD; an interrupted deploy is recorded with exit 143 and exits 143; an unrecordable deploy exits 6 and claims no window"
 
+# 71. operate-loop (aidlc-borrowings Phase 3.4, ADR R5, R5b, R5c, R5d, R6, R8): operate.sh PLAN monitor|ingest and
+#     --all monitor [--ingest] on a temp repo whose plans landed through the real init/land.sh and were deployed through
+#     the pty ack of check 70. Plan ol declares http checks against a stub server on 127.0.0.1 (ThreadingHTTPServer on a
+#     free port, killed by the EXIT trap), cmd checks and a runner check; plan ol2 reuses ol's check id c-high (the
+#     adversarial neighbour of threat 1); plan nomon has no Monitor section; monitor.json holds one repo-level check.
+#     Threats (failing-first, the mutant that turns each red is named in its fail message):
+#     1) a signal credited to the wrong plan  2) a failed probe read as healthy or as 0
+#     3) runner or note text written unescaped into LESSONS.md  4) an expired window still measured, or a live breach
+#     expiring silently. Requirements 1-9 of the Phase 3.4 brief are asserted below, each named.
+OL_TMP="$SMOKE_TMP/oploop"; rm -rf "${OL_TMP:?}"; mkdir -p "$OL_TMP" || fail "operate-loop: cannot create the temp dir"
+OL="$OL_TMP/repo"; mkdir -p "$OL/plans" "$OL/.claude/apex-scope-loop" && git init -q -b main "$OL" || fail "operate-loop: cannot init the repo"
+OL="$(cd "$OL" && pwd -P)"; OL_OPS="$EX/operate.sh"; OL_PTY="$OD_TMP/od-pty.py"; OL_DET="$OD_TMP/od-detach.py"
+[ -f "$OL_PTY" ] && [ -f "$OL_DET" ] || fail "operate-loop: check 70's pty/detach helpers are missing"
+cat >"$OL_TMP/stub.py" <<'PY'
+# stub.py PORTFILE HITS — a threaded HTTP stub on 127.0.0.1 (free port written to PORTFILE); every request is logged.
+import http.server, socketserver, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def _any(self):
+        with open(sys.argv[2], "a") as f:
+            f.write("%s %s %s\n" % (self.command, self.path, "|".join(sorted(k.lower() for k in self.headers.keys()))))
+        code = {"/ok": 200, "/err": 503, "/redir": 302}.get(self.path, 404)
+        self.send_response(code)
+        if code == 302:
+            self.send_header("Location", "file:///etc/hosts")
+        self.end_headers()
+        self.wfile.write(b"stub")
+    do_GET = do_POST = do_HEAD = _any
+    def log_message(self, *a):
+        pass
+class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+s = S(("127.0.0.1", 0), H)
+with open(sys.argv[1] + ".tmp", "w") as f:
+    f.write(str(s.server_address[1]))
+import os; os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+s.serve_forever()
+PY
+: >"$OL_TMP/hits.log"
+python3 -I "$OL_TMP/stub.py" "$OL_TMP/port" "$OL_TMP/hits.log" >/dev/null 2>&1 &
+OL_PID=$!
+# the stub dies with the smoke whatever happens (guarded: OL_PID may be unset or the process already gone)
+if [ -n "${SMOKE_KEEP:-}" ]; then
+  trap '{ [ -z "${OL_PID:-}" ] || kill "$OL_PID"; } >/dev/null 2>&1 || true' EXIT
+else
+  trap '{ [ -z "${OL_PID:-}" ] || kill "$OL_PID"; } >/dev/null 2>&1 || true; git -C "$SMOKE_TMP/repo" worktree prune >/dev/null 2>&1 || true; chmod -R u+w "$SMOKE_TMP" 2>/dev/null || true; rm -rf "$SMOKE_TMP"' EXIT
+fi
+for _ in $(seq 1 100); do [ -s "$OL_TMP/port" ] && break; sleep 0.1; done
+OL_PORT="$(cat "$OL_TMP/port" 2>/dev/null || true)"; [[ "$OL_PORT" =~ ^[0-9]+$ ]] || fail "operate-loop: the stub HTTP server did not start"
+OL_DEAD_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+cat >"$OL_TMP/runner.py" <<'PY'
+# runner.py METRIC... — the APEX_MONITOR_CMD stub; its reply is chosen by runner.mode beside it.
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+mode = open(os.path.join(here, "runner.mode")).read().strip()
+with open(os.path.join(here, "runner-args.log"), "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+ms = sys.argv[1:]
+if mode == "good":
+    sys.stderr.write("ok\n\n## L-999 `boom` <b>pwned</b> | [x](y)\n")
+    print(json.dumps({m: 0.5 for m in ms}))
+elif mode == "bad":
+    print("`## L-999` not json\n## L-998")
+elif mode == "nan":
+    print('{"r_err": NaN}')
+elif mode == "extra":
+    print(json.dumps({"r_err": 0.001, "zz": 1}))
+elif mode == "missing":
+    print("{}")
+elif mode == "string":
+    print('{"r_err": "0.001"}')
+elif mode == "null":
+    print('{"r_err": null}')
+elif mode == "twice":
+    print('{"r_err": 0.001, "r_err": 0.002}')
+elif mode == "exit":
+    print('{"r_err": 0.001}'); sys.exit(3)
+PY
+echo good >"$OL_TMP/runner.mode"
+cat >"$OL_TMP/mkplan.py" <<'PY'
+# mkplan.py OUT TITLE WINDOW_DAYS|- CHECKS_JSON — a plan with one done task and (unless CHECKS_JSON is "-") a Monitor section.
+import json, sys
+out, title, wd, checks = sys.argv[1:5]
+body = "# %s\n\n- [x] **Phase 1.1** [docs] done\n  - Acceptance: true\n" % title
+if checks != "-":
+    cfg = {"checks": json.loads(checks)}
+    if wd != "-":
+        cfg["window_days"] = int(wd)
+    body += "\n## Monitor\n\n```json\n" + json.dumps(cfg) + "\n```\n"
+open(out, "w").write(body)
+PY
+# requirement 1's probe: the plan text verbatim as sh -c's only argument; it records $0, $#, PLAN_SLUG, a literal
+# {slug}{metric} (a str.format interpolation would replace it), the cwd and the whole environment
+OL_ARGCMD="printf '%s|%s|%s|%s\\n' \"\$0\" \"\$#\" \"\${PLAN_SLUG-unset}\" '{slug}{metric}' >'$OL_TMP/probe-args.txt'; pwd -P >>'$OL_TMP/probe-args.txt'; env >'$OL_TMP/probe-env.txt'; echo 7"
+OL_CHECKS="$(python3 - "$OL_PORT" "$OL_DEAD_PORT" "$OL_ARGCMD" <<'PY'
+import json, sys
+port, dead, argcmd = sys.argv[1:4]
+u = "http://127.0.0.1:%s" % port
+print(json.dumps([
+  {"id": "c-high", "metric": "m_high", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": argcmd}},
+  {"id": "c-slow", "metric": "m_slow", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "sleep 30; echo 1"}},
+  {"id": "c-word", "metric": "m_word", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "echo hello"}},
+  {"id": "c-exit", "metric": "m_exit", "op": "==", "threshold": 3, "severity": "medium", "probe": {"kind": "cmd", "command": "exit 3"}},
+  {"id": "h-status", "metric": "m_status", "op": "==", "threshold": 200, "severity": "low", "probe": {"kind": "http", "url": u + "/err", "measure": "status"}},
+  {"id": "h-lat", "metric": "m_lat_err", "op": "<", "threshold": 5000, "severity": "high", "probe": {"kind": "http", "url": u + "/err", "measure": "latency_ms", "expect_status": 200}},
+  {"id": "h-ok", "metric": "m_lat", "op": "<", "threshold": 5000, "severity": "high", "probe": {"kind": "http", "url": u + "/ok", "measure": "latency_ms", "expect_status": 200}},
+  {"id": "h-redir", "metric": "m_redir", "op": "==", "threshold": 302, "severity": "high", "probe": {"kind": "http", "url": u + "/redir", "measure": "status"}},
+  {"id": "h-dead", "metric": "m_dead", "op": "==", "threshold": 200, "severity": "high", "probe": {"kind": "http", "url": "http://127.0.0.1:%s/ok" % dead, "measure": "status"}},
+  {"id": "r-run", "metric": "r_err", "op": "<", "threshold": 0.01, "severity": "high", "probe": {"kind": "runner"}}]))
+PY
+)" || fail "operate-loop: cannot build the fixture checks"
+OL_FAST="$(python3 -c 'import json, sys; print(json.dumps([c for c in json.loads(sys.argv[1]) if c["id"] != "c-slow"]))' "$OL_CHECKS")"
+# ol_land NAME TITLE WINDOW CHECKS — commit plans/NAME-plan.md and land it through init → worktree commit → land.sh.
+ol_land() {
+  python3 "$OL_TMP/mkplan.py" "$OL/plans/$1-plan.md" "$2" "$3" "$4" || fail "operate-loop: cannot write plan $1"
+  git -C "$OL" add -A && git -C "$OL" commit -qm "plan $1" || fail "operate-loop: cannot commit plan $1"
+  (cd "$OL" && APEX_GIBSON=0 "$EX/init.sh" "plans/$1-plan.md" >/dev/null 2>&1) || fail "operate-loop: init of $1 failed"
+  local wt; wt="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worktree_path"])' "$(st "$OL" "plans/$1-plan.md")/checkpoint.json")"
+  echo "$1" >"$wt/$1.txt"; git -C "$wt" add -A && git -C "$wt" commit -qm "work $1" || fail "operate-loop: cannot commit in the $1 worktree"
+  OL_LAST_STATE="$(st "$OL" "plans/$1-plan.md")"
+  (cd "$OL" && APEX_GIBSON=0 "$EX/land.sh" "plans/$1-plan.md" >"$OL_TMP/land-$1.log" 2>&1) || fail "operate-loop: land.sh of $1 failed: $(tail -3 "$OL_TMP/land-$1.log")"
+  OL_LAST_SHA="$(git -C "$OL" rev-parse main)"
+}
+# ol_ship NAME SHA — the human step, on a pty with the right ack (check 70's helper), opening the plan's window
+ol_ship() {
+  (cd "$OL" && env APEX_DEPLOY_CMD="bash '$OD_TMP/deploy.sh' 0" python3 -I "$OL_PTY" "$1@$2" 60 "$OL_OPS" "plans/$1-plan.md" deploy >"$OL_TMP/pty.out" 2>&1) \
+    || fail "operate-loop: the deploy of $1 failed: $(cat "$OL_TMP/pty.out")"
+}
+git -C "$OL" commit -q --allow-empty -m base
+ol_land ol OL 7 "$OL_CHECKS"; OL_ST="$OL_LAST_STATE"; OL_SHA="$OL_LAST_SHA"
+ol_land ol2 OL2 7 '[{"id": "c-high", "metric": "m2", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 9"}}]'; OL2_ST="$OL_LAST_STATE"; OL2_SHA="$OL_LAST_SHA"
+ol_land nomon NOMON - -; OL_NM_ST="$OL_LAST_STATE"
+printf '{"checks": [{"id": "r-disk", "metric": "disk_pct", "op": "<", "threshold": 50, "severity": "high", "probe": {"kind": "cmd", "command": "echo 99"}}]}\n' >"$OL/.claude/apex-scope-loop/monitor.json"
+OL_BASE="$(dirname "$OL_ST")"; OL_RD="$OL_BASE/operate-repo"
+mkdir -p "$OL_ST/dispatch" "$OL2_ST/dispatch" "$OL_RD/dispatch"
+ol_ship ol "$OL_SHA"; ol_ship ol2 "$OL2_SHA"
+OL_LES="$OL/.claude/apex-scope-loop/LESSONS.md"; OL_BL="$OL/.claude/apex-scope-loop/BACKLOG.md"
+# olr LABEL WANT_RC [ENV...] -- ARGS... — operate.sh ARGS detached from $OL with the runner set and the deploy/ack
+# variables present (they must never reach a probe); output in $OL_TMP/run.out.
+olr() {
+  local label="$1" want="$2" rc=0 k; shift 2
+  k="$(od_split "$@")"
+  (cd "$OL" && env -u APEX_LESSONS_FILE -u APEX_BACKLOG_FILE APEX_MONITOR_CMD="python3 -I '$OL_TMP/runner.py'" \
+     APEX_OPERATE_ACK="ol@$OL_SHA" APEX_DEPLOY_CMD="bash '$OD_TMP/deploy.sh' 0" "${@:1:$k}" \
+     python3 -I "$OL_DET" "$OL_TMP/run.out" 120 "$OL_OPS" "${@:$((k + 2))}") || rc=$?
+  [ "$rc" = "$want" ] || fail "operate-loop: $label exited $rc, expected $want: $(cat "$OL_TMP/run.out")"
+}
+# olq FILE EXPR — a smoke-written Python expression over a JSON file (j) and its operate key (o); fixture data only.
+olq() { python3 -c 'import json,sys; j=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"j": j, "o": (j.get("operate") or {}) if isinstance(j, dict) else {}}))' "$1" "$2"; }
+# olrows DIR — the ledger rows under DIR/dispatch as (event, owner, check_id, value, breach_count, sink) tuples
+olrows() { python3 -c 'import json,sys; print([(r["event"], r.get("slug", "repo" if r.get("repo") is True else None), r.get("check_id"), r.get("value"), r.get("breach_count"), r.get("sink")) for r in map(json.loads, open(sys.argv[1]))])' "$1/dispatch/ledger.jsonl"; }
+OL_CP="$OL_ST/checkpoint.json"; OL2_CP="$OL2_ST/checkpoint.json"
+# refusals: --all ingest and PLAN monitor --ingest are not forms; APEX_MONITOR_CMD unset with a runner check (R6)
+olr "--all ingest" 2 -- --all ingest; grep -q 'status only' "$OL_TMP/run.out" || fail "operate-loop: --all ingest was not refused by name"
+olr "PLAN monitor --ingest" 2 -- plans/ol-plan.md monitor --ingest; grep -q usage "$OL_TMP/run.out" || fail "operate-loop: PLAN monitor --ingest was not refused"
+olr "APEX_MONITOR_CMD unset" 2 APEX_MONITOR_CMD= -- --all monitor --ingest
+grep -q 'APEX_MONITOR_CMD is unset' "$OL_TMP/run.out" && [ "$(olq "$OL_CP" '"checks" in o')" = False ] || fail "operate-loop: an unset APEX_MONITOR_CMD was not refused before any probe (R6): $(cat "$OL_TMP/run.out")"
+olr "APEX_MONITOR_CMD naming operate.sh" 2 "APEX_MONITOR_CMD=sh $OL_OPS" -- plans/ol-plan.md monitor
+# requirement 6: the per-run cap, in the real --all flow: four more landed plans (fabricated state) of 50 checks each,
+# open windows → 209 checks → refused naming the cap before any probe. Mutant "cap only in monitorlib" turns this red.
+python3 - "$OL_TMP" "$OL_BASE" <<'PY' || fail "operate-loop: cannot fabricate the cap plans"
+import datetime, json, os, sys
+tmp, base = sys.argv[1:3]
+f = "%Y-%m-%dT%H:%M:%SZ"; t = datetime.datetime.utcnow()
+checks = [{"id": "k%d" % i, "metric": "k", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}} for i in range(50)]
+for n in range(4):
+    p = os.path.join(tmp, "cap%d-plan.md" % n)
+    open(p, "w").write("# cap\n\n## Monitor\n\n```json\n" + json.dumps({"checks": checks}) + "\n```\n")
+    d = os.path.join(base, "cafe0000000%d" % n); os.makedirs(d)
+    json.dump({"landed": True, "plan_path": p, "operate": {"window": {"start": t.strftime(f), "end": (t + datetime.timedelta(days=3)).strftime(f), "days": 3}}}, open(os.path.join(d, "checkpoint.json"), "w"))
+PY
+olr "the probe cap" 2 -- --all monitor --ingest
+grep -q 'the probe cap is 200 per run' "$OL_TMP/run.out" && [ "$(olq "$OL_CP" '"checks" in o')" = False ] && [ ! -s "$OL_TMP/runner-args.log" ] \
+  || fail "operate-loop: 209 checks in one run were not refused before any probe (mutant: no per-run cap in the --all flow): $(cat "$OL_TMP/run.out")"
+rm -rf "$OL_BASE"/cafe0000000? "$OL_TMP"/cap?-plan.md
+# requirement 8: --all status and --all monitor walk the checkpoints in one python pass (a python3 shim counts -c starts)
+mkdir -p "$OL_TMP/shim"; OL_PY3="$(command -v python3)"
+printf '#!/bin/sh\n[ "$1" = -c ] && echo c >>"%s/py-starts.log"\nexec "%s" "$@"\n' "$OL_TMP" "$OL_PY3" >"$OL_TMP/shim/python3"; chmod +x "$OL_TMP/shim/python3"
+: >"$OL_TMP/py-starts.log"; (cd "$OL" && PATH="$OL_TMP/shim:$PATH" "$OL_OPS" --all status >"$OL_TMP/status.out" 2>&1) || fail "operate-loop: --all status failed: $(cat "$OL_TMP/status.out")"
+[ "$(wc -l <"$OL_TMP/py-starts.log" | tr -d ' ')" -le 1 ] || fail "operate-loop: --all status started python -c $(wc -l <"$OL_TMP/py-starts.log") times for 3 landed plans (requirement 8: one pass)"
+grep -q 'WARNING: nomon is a landed feature plan with no ## Monitor section' "$OL_TMP/status.out" || fail "operate-loop: status does not warn about the landed feature plan with no Monitor section: $(cat "$OL_TMP/status.out")"
+
+# --- run 1: --all monitor --ingest --------------------------------------------------------------------------------------
+OL_T0="$(date +%s)"
+olr "run 1" 0 -- --all monitor --ingest
+OL_T1="$(date +%s)"; cp "$OL_TMP/run.out" "$OL_TMP/run1.out"
+[ $((OL_T1 - OL_T0)) -lt 40 ] || fail "operate-loop: run 1 took $((OL_T1 - OL_T0)) s: the 10 s probe timeout did not kill the slow command's process group"
+grep -q 'plan nomon: no ## Monitor section; skipped' "$OL_TMP/run1.out" && grep -q 'WARNING: nomon is a landed feature plan' "$OL_TMP/run1.out" \
+  || fail "operate-loop: the plan with no Monitor section was not skipped with the R5b warning: $(cat "$OL_TMP/run1.out")"
+# threat 2: the timed-out probe, a non-number line, the failed GET and the expect_status mismatch are unmeasured (null,
+# never 0 and never a pass). Mutants "value 0 on timeout" / "unmeasured counts as ok" turn this red.
+OL_UN="$(olq "$OL_CP" '[(i, o["checks"][i]["last_value"], o["checks"][i]["last_status"]) for i in ("c-slow", "c-word", "h-lat", "h-dead")]')"
+[ "$OL_UN" = "[('c-slow', None, 'unmeasured'), ('c-word', None, 'unmeasured'), ('h-lat', None, 'unmeasured'), ('h-dead', None, 'unmeasured')]" ] \
+  || fail "operate-loop: a failed probe was read as a value or a pass (threat 2): $OL_UN"
+olq "$OL_CP" 'o["checks"]["c-slow"]["last_reason"]' | grep -q 'timed out after 10 s' || fail "operate-loop: the timed-out probe has no timeout reason: $(olq "$OL_CP" 'o["checks"]["c-slow"]')"
+olq "$OL_CP" 'o["checks"]["h-lat"]["last_reason"]' | grep -q 'status 503 is not the expected 200' || fail "operate-loop: requirement 4: latency_ms under an expect_status mismatch is not unmeasured with its reason"
+# requirement 1 (cmd value rule): empty stdout → the exit code (exit 3 → 3, a pass of == 3); a number line → that number
+[ "$(olq "$OL_CP" '(o["checks"]["c-exit"]["last_value"], o["checks"]["c-exit"]["last_status"], o["checks"]["c-high"]["last_value"], o["checks"]["c-high"]["last_status"])')" = "(3, 'ok', 7, 'breach')" ] \
+  || fail "operate-loop: the cmd value rule (exit code when silent, else the last number line) is wrong: $(olq "$OL_CP" 'o["checks"]')"
+# requirement 1: verbatim sh -c, no positional args, no slug/metric interpolation, cwd = the repo root, no APEX_* in env.
+# Mutants "str.format the command" / "pass the slug as \$1" / "inherit the environment" turn this red.
+[ "$(head -n 1 "$OL_TMP/probe-args.txt")" = "/bin/sh|0|unset|{slug}{metric}" ] && [ "$(sed -n 2p "$OL_TMP/probe-args.txt")" = "$OL" ] \
+  || fail "operate-loop: requirement 1: the cmd probe did not run verbatim as sh -c's only argument in the repo root: $(cat "$OL_TMP/probe-args.txt")"
+! grep -qE '^APEX_(OPERATE_ACK|DEPLOY_CMD|MONITOR_CMD)=' "$OL_TMP/probe-env.txt" && grep -q '^PATH=' "$OL_TMP/probe-env.txt" \
+  || fail "operate-loop: requirement 1: a probe saw APEX_OPERATE_ACK / APEX_DEPLOY_CMD / APEX_MONITOR_CMD"
+# requirement 4: http is GET only with no added headers or credentials, a 3xx is measured (never followed to file:)
+[ "$(olq "$OL_CP" '(o["checks"]["h-redir"]["last_value"], o["checks"]["h-status"]["last_value"], o["checks"]["h-ok"]["last_status"], type(o["checks"]["h-ok"]["last_value"]).__name__)')" = "(302, 503, 'ok', 'float')" ] \
+  || fail "operate-loop: requirement 4: http status/latency are wrong (302 measured, 503 measured, latency a number): $(olq "$OL_CP" 'o["checks"]')"
+OL_HDR="$(awk '{print $1, $3}' "$OL_TMP/hits.log" | sort -u)"
+[ "$OL_HDR" = "GET accept-encoding|connection|host" ] || fail "operate-loop: requirement 4: a probe sent a non-GET or an added header: $OL_HDR"
+[ "$(awk '{print $2}' "$OL_TMP/hits.log" | sort -u | tr '\n' ' ')" = "/err /ok /redir " ] || fail "operate-loop: the probes hit unexpected paths: $(cat "$OL_TMP/hits.log")"
+# requirement 3: the runner got the metric as its argv (no interpolation)
+[ "$(cat "$OL_TMP/runner-args.log")" = "r_err" ] || fail "operate-loop: the runner was not called as APEX_MONITOR_CMD r_err: $(cat "$OL_TMP/runner-args.log")"
+# ingest: the high breaches (c-high, r-run) are lessons tagged operate:{slug},{metric}; the low one (h-status) is a
+# plan-level backlog item; ol2's breach of its own c-high (same id, low) is credited to ol2; the repo breach (high!)
+# goes only to the backlog under operate:repo.
+[ "$(grep -c '^## L-' "$OL_LES")" = 2 ] || fail "operate-loop: run 1 did not file exactly the two high breaches as lessons: $(cat "$OL_LES")"
+grep -qF '**Tags:** #operate:ol #m_high' "$OL_LES" && grep -qF '**Tags:** #operate:ol #r_err' "$OL_LES" || fail "operate-loop: the lessons are not tagged operate:{slug},{metric}: $(cat "$OL_LES")"
+# threat 3 / requirement 5: the runner's hostile stderr note reaches the lesson only sanitised: no ## L-999 heading,
+# no backtick, no HTML, one line. Mutant "pass the runner note to lessons.sh unsanitised" turns this red.
+grep -q 'runner note: ' "$OL_LES" && ! grep -q '^## L-99' "$OL_LES" && ! grep -q '`' "$OL_LES" && ! grep -q '<b>' "$OL_LES" \
+  || fail "operate-loop: threat 3: runner text reached LESSONS.md unescaped (or the note is missing): $(cat "$OL_LES")"
+! grep -qE 'disk_pct|operate:repo' "$OL_LES" || fail "operate-loop: R5d: a repo-level breach was filed as a lesson"
+python3 - "$OL_BL" <<'PY' || fail "operate-loop: the backlog sections are wrong (threat 1 / R5d): $(cat "$OL_BL")"
+import re, sys
+secs, cur = {}, None
+for l in open(sys.argv[1]).read().split("\n"):
+    if l.startswith("## "):
+        cur = l; secs[cur] = []
+    elif cur and l.startswith("- [ ] B-"):
+        secs[cur].append(l)
+want = {"## Plan: plans/ol-plan.md": ["[operate:ol] m_status 503"], "## Plan: plans/ol2-plan.md": ["[operate:ol2] m2 9"],
+        "## Repo: operate checks (monitor.json)": ["[operate:repo] disk_pct 99"]}
+assert set(secs) == set(want), secs
+for k, ws in want.items():
+    assert len(secs[k]) == len(ws) and all(w in i and "from operate" in i for w, i in zip(ws, secs[k])), (k, secs[k])
+    assert all(("plan-level" if "Plan" in k else "repo-level") in i for i in secs[k]), (k, secs[k])
+PY
+# threat 1: every row carries its own plan's slug (ol2's c-high is ol2's, value 9; ol's is 7); repo rows carry repo: true
+[ "$(olq "$OL2_CP" '(sorted(o["checks"]), o["checks"]["c-high"]["last_value"], o["checks"]["c-high"]["filed"])')" = "(['c-high'], 9, 'backlog')" ] \
+  && [ "$(olq "$OL_CP" '(o["checks"]["c-high"]["last_value"], o["checks"]["c-high"]["filed"], o["checks"]["h-status"]["filed"], o["checks"]["r-run"]["filed"])')" = "(7, 'lessons', 'backlog', 'lessons')" ] \
+  || fail "operate-loop: threat 1: a signal was credited to the wrong plan (mutant: a stale target in the --all loop): ol=$(olq "$OL_CP" 'o["checks"]["c-high"]') ol2=$(olq "$OL2_CP" 'o["checks"]')"
+python3 - "$OL_ST" "$OL2_ST" "$OL_RD" <<'PY' || fail "operate-loop: threat 1: a signal row does not carry its own owner"
+import glob, json, sys
+for d, want in zip(sys.argv[1:4], ({"slug": "ol"}, {"slug": "ol2"}, {"repo": True})):
+    fs = glob.glob(d + "/operate/signals-*.json"); assert fs, d
+    for f in fs:
+        for r in json.load(open(f)):
+            assert {k: r[k] for k in ("slug", "repo") if k in r} == want, (f, r)
+    for r in map(json.loads, open(d + "/dispatch/ledger.jsonl")):
+        assert {k: r[k] for k in ("slug", "repo") if k in r} == want and r["route_id"] is None, (d, r)
+PY
+# requirement 9 / threat 2: unmeasured signals are null in the ledger (never 0); sinks as filed
+OL_R1="$(olrows "$OL_ST")"
+for want in "('operate_signal', 'ol', 'c-high', 7, 1, 'lessons')" "('operate_signal', 'ol', 'r-run', 0.5, 1, 'lessons')" "('operate_signal', 'ol', 'h-status', 503, 1, 'backlog')" \
+            "('operate_signal', 'ol', 'c-slow', None, 0, 'counted')" "('operate_signal', 'ol', 'h-lat', None, 0, 'counted')"; do
+  case "$OL_R1" in *"$want"*) ;; *) fail "operate-loop: the ol ledger lacks $want (requirement 9: null, never 0): $OL_R1" ;; esac
+done
+[ "$(olrows "$OL_RD")" = "[('operate_signal', 'repo', 'r-disk', 99, 1, 'backlog')]" ] || fail "operate-loop: the repo ledger row is wrong: $(olrows "$OL_RD")"
+(cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || fail "operate-loop: status failed: $(cat "$OL_TMP/status.out")"
+grep -q 'last: unmeasured (unmeasured: the command timed out after 10 s)' "$OL_TMP/status.out" && ! grep -qE 'c-slow.*last: 0' "$OL_TMP/status.out" \
+  || fail "operate-loop: requirement 9: status does not show the timed-out check as unmeasured: $(cat "$OL_TMP/status.out")"
+
+# --- run 2: the slow check removed (it cost 10 s), the runner reply malformed ------------------------------------------
+python3 "$OL_TMP/mkplan.py" "$OL/plans/ol-plan.md" OL 7 "$OL_FAST"
+echo bad >"$OL_TMP/runner.mode"
+olr "run 2" 0 -- --all monitor --ingest; cp "$OL_TMP/run.out" "$OL_TMP/run2.out"
+[ "$(grep -c '^## L-' "$OL_LES")" = 2 ] && [ "$(grep -c '^- \[ \] B-' "$OL_BL")" = 3 ] || fail "operate-loop: a repeat breach was re-filed instead of counted: $(cat "$OL_LES" "$OL_BL")"
+[ "$(olq "$OL_CP" '(o["checks"]["c-high"]["breaches"], o["checks"]["c-high"]["filed"], o["checks"]["c-high"].get("counted"))')" = "(2, 'lessons', 1)" ] \
+  || fail "operate-loop: the repeat of c-high was not counted: $(olq "$OL_CP" 'o["checks"]["c-high"]')"
+case "$(olrows "$OL_ST")" in *"('operate_signal', 'ol', 'c-high', 7, 2, 'counted')"*) ;; *) fail "operate-loop: the repeat's ledger row is not sink counted, breach_count 2: $(olrows "$OL_ST")" ;; esac
+# requirement 3 / threat 2: the malformed runner reply fails closed; requirement 5: its text is stored sanitised
+[ "$(olq "$OL_CP" '(o["checks"]["r-run"]["last_value"], o["checks"]["r-run"]["last_status"])')" = "(None, 'unmeasured')" ] || fail "operate-loop: a malformed runner reply was not unmeasured: $(olq "$OL_CP" 'o["checks"]["r-run"]')"
+OL_RS="$(olq "$OL_CP" 'o["checks"]["r-run"]["last_reason"]')"
+case "$OL_RS" in *'not valid JSON'*) ;; *) fail "operate-loop: the malformed reply's reason is not recorded: $OL_RS" ;; esac
+case "$OL_RS" in *'`'*|*'#'*) fail "operate-loop: requirement 5: the runner's reply text was stored unsanitised: $OL_RS" ;; esac
+(cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || true
+! grep -q '^## L-99' "$OL_TMP/status.out" && ! grep -q '`' "$OL_TMP/status.out" || fail "operate-loop: status printed the runner's hostile text unsanitised: $(cat "$OL_TMP/status.out")"
+for m in nan extra missing string null twice exit; do
+  echo "$m" >"$OL_TMP/runner.mode"
+  olr "runner reply $m" 0 -- plans/ol-plan.md monitor
+  [ "$(olq "$OL_CP" '(o["checks"]["r-run"]["last_value"], o["checks"]["r-run"]["last_status"])')" = "(None, 'unmeasured')" ] \
+    || fail "operate-loop: requirement 3: the runner reply '$m' did not fail closed: $(olq "$OL_CP" 'o["checks"]["r-run"]')"
+done
+olr "PLAN ingest" 0 -- plans/ol-plan.md ingest
+[ "$(olq "$OL_CP" 'len(o["pending"])')" = 0 ] && [ "$(grep -c '^## L-' "$OL_LES")" = 2 ] || fail "operate-loop: PLAN ingest left pending signals or re-filed"
+echo good >"$OL_TMP/runner.mode"
+
+# --- threat 4: ol's window moved past its end closes, with open-at-close, and is never measured again ------------------
+python3 -c 'import datetime as d, json, sys; p = sys.argv[1]; s = json.load(open(p)); w = s["operate"]["window"]; f = "%Y-%m-%dT%H:%M:%SZ"; t = d.datetime.strptime(w["start"], f) - d.timedelta(days=8); w["start"], w["end"] = t.strftime(f), (t + d.timedelta(days=7)).strftime(f); json.dump(s, open(p, "w"))' "$OL_CP"
+OL_LT="$(olq "$OL_CP" 'o["checks"]["c-high"]["last_ts"]')"; OL_NSIG="$(ls "$OL_ST/operate" | wc -l | tr -d ' ')"
+sleep 1
+olr "the closing run" 0 -- --all monitor --ingest; cp "$OL_TMP/run.out" "$OL_TMP/run3.out"
+grep -q 'plan ol: watch window ended .*closed closed-with-breaches; open-at-close: .*c-high' "$OL_TMP/run3.out" || fail "operate-loop: threat 4: the ended window was not closed with open-at-close: $(cat "$OL_TMP/run3.out")"
+[ "$(olq "$OL_CP" '(o["window"]["outcome"], "c-high" in o["window"]["open_at_close"], "h-status" in o["window"]["open_at_close"], o["checks"]["c-high"]["last_ts"], len(o["windows_closed"]))')" = "('closed-with-breaches', True, True, '$OL_LT', 1)" ] \
+  || fail "operate-loop: threat 4: the window close is wrong, or the expired plan was measured again (mutants: no end check / open_at_close = []): $(olq "$OL_CP" 'o["window"]')"
+case "$(python3 -c 'import json,sys; print([(r["outcome"], r["open_at_close"], r["breaches"] > 0) for r in map(json.loads, open(sys.argv[1])) if r["event"] == "operate_window_closed"])' "$OL_ST/dispatch/ledger.jsonl")" in
+  "[('closed-with-breaches', ["*"'c-high'"*"], True)]") ;; *) fail "operate-loop: threat 4: no operate_window_closed row with open_at_close: $(cat "$OL_ST/dispatch/ledger.jsonl")" ;; esac
+grep -q 'plan ol2: measured 1 check' "$OL_TMP/run3.out" || fail "operate-loop: the open plan ol2 was not measured beside the closing one"
+olr "after the close" 0 -- --all monitor --ingest
+grep -q 'plan ol: watch window closed (closed-with-breaches); not measured' "$OL_TMP/run.out" && [ "$(ls "$OL_ST/operate" | wc -l | tr -d ' ')" = "$OL_NSIG" ] \
+  && [ "$(olq "$OL_CP" 'o["checks"]["c-high"]["last_ts"]')" = "$OL_LT" ] || fail "operate-loop: threat 4: a closed window was measured again: $(cat "$OL_TMP/run.out")"
+(cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || true
+grep -q 'window: closed (ended .*, closed-with-breaches, open-at-close: .*c-high' "$OL_TMP/status.out" || fail "operate-loop: status does not flag open-at-close: $(cat "$OL_TMP/status.out")"
+# requirement 7: a redeploy keeps the closed window's outcome (windows_closed) and status shows it; a redeploy over an
+# open window (ol2) closes it first (closed_by redeploy). Mutant "record overwrites operate.window" turns this red.
+ol_ship ol "$OL_SHA"; ol_ship ol2 "$OL2_SHA"
+[ "$(olq "$OL_CP" '(len(o["windows_closed"]), o["windows_closed"][-1]["outcome"], "outcome" in o["window"])')" = "(1, 'closed-with-breaches', False)" ] \
+  && [ "$(olq "$OL2_CP" '(len(o["windows_closed"]), o["windows_closed"][-1]["outcome"], o["windows_closed"][-1]["closed_by"])')" = "(1, 'closed-with-breaches', 'redeploy')" ] \
+  || fail "operate-loop: requirement 7: a redeploy erased a window's outcome: ol=$(olq "$OL_CP" 'o.get("windows_closed")') ol2=$(olq "$OL2_CP" 'o.get("windows_closed")')"
+(cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || true
+grep -q 'last closed window: closed-with-breaches' "$OL_TMP/status.out" || fail "operate-loop: requirement 7: status does not show the last closed window: $(cat "$OL_TMP/status.out")"
+# requirement 2: monitorlib refuses a cmd probe naming operate.sh, deploy or APEX_DEPLOY_CMD (any case), by name.
+# Mutant "no deny pattern in _probe" turns this red; a neighbour without the words still validates.
+for c in "sh $OL_OPS x status" "make DEPLOY" "echo \$apex_deploy_cmd" "./Operate.SH status"; do
+  python3 "$OL_TMP/mkplan.py" "$OL_TMP/deny-plan.md" D 7 "$(python3 -c 'import json,sys; print(json.dumps([{"id": "d", "metric": "d", "op": "<", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": sys.argv[1]}}]))' "$c")"
+  OL_V="$(python3 "$EX/monitorlib.py" validate "$OL_TMP/deny-plan.md" 2>&1)" && fail "operate-loop: requirement 2: a cmd probe '$c' was accepted"
+  case "$OL_V" in *"must not name operate.sh, the word deploy or APEX_DEPLOY_CMD"*) ;; *) fail "operate-loop: requirement 2: '$c' was not refused by name: $OL_V" ;; esac
+done
+python3 "$OL_TMP/mkplan.py" "$OL_TMP/deny-plan.md" D 7 '[{"id": "d", "metric": "d", "op": "<", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "make status-check"}}]'
+python3 "$EX/monitorlib.py" validate "$OL_TMP/deny-plan.md" >/dev/null || fail "operate-loop: requirement 2: a harmless cmd probe was refused"
+# requirement 6: at most 50 checks per plan, refused by name
+python3 "$OL_TMP/mkplan.py" "$OL_TMP/deny-plan.md" D 7 "$(python3 -c 'import json; print(json.dumps([{"id": "k%d" % i, "metric": "k", "op": "<", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}} for i in range(51)]))')"
+OL_V="$(python3 "$EX/monitorlib.py" validate "$OL_TMP/deny-plan.md" 2>&1)" && fail "operate-loop: requirement 6: a 51-check plan was accepted"
+case "$OL_V" in *"at most 50 checks"*) ;; *) fail "operate-loop: requirement 6: the 51-check plan was not refused by name: $OL_V" ;; esac
+# backlog.sh: line 0 needs --from operate
+(cd "$OL" && "$EX/backlog.sh" plans/ol-plan.md add 0 "x" >"$OL_TMP/bl.out" 2>&1) && fail "operate-loop: backlog.sh accepted line 0 without --from operate"
+grep -q 'needs --from operate' "$OL_TMP/bl.out" || fail "operate-loop: backlog.sh line 0 refusal is not named: $(cat "$OL_TMP/bl.out")"
+# the ledger chains verify (ol, ol2, the repo state)
+for d in "$OL_ST" "$OL2_ST" "$OL_RD"; do
+  OL_V="$("$LG" verify --state "$d" 2>&1)" || fail "operate-loop: ledger.sh verify failed for $d: $OL_V"
+done
+[ ! -d "$OL_NM_ST/operate" ] || fail "operate-loop: the plan with no Monitor section was measured"
+{ kill "$OL_PID"; wait "$OL_PID"; } >/dev/null 2>&1 || true; OL_PID=""
+ok "operate-loop: --all monitor --ingest measures http (stub on 127.0.0.1), cmd and runner checks only in open windows; run twice it files each high breach once as a lesson tagged operate:{slug},{metric} and counts the repeat, files the low breach as a plan-level backlog item, and files the repo-level breach only under operate:repo; a timed-out probe, a non-number, a failed GET, an expect_status mismatch and every malformed runner reply are unmeasured (null, never 0 or a pass); every signal and ledger row carries its plan's slug (ol2's same-id check credited to ol2) or repo; a window past its end closes closed-with-breaches with open-at-close, writes operate_window_closed and is not measured again; a redeploy keeps windows_closed; the no-Monitor plan is skipped and warned; cmd probes run verbatim under sh -c in the repo root without APEX_*; deploy-naming probes and 51-check plans are refused; the 200-check run cap and APEX_MONITOR_CMD are enforced before any probe; hostile runner text is sanitised; --all walks in one python pass; the ledgers verify"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2875,4 +3210,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 72/72 checks"
+echo "smoke passed: 73/73 checks"
