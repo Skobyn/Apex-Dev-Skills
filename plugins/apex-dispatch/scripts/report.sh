@@ -6,6 +6,7 @@
 #   report.sh --plan PLAN [--json]        resolve the plan's state dir through apex-scope-loop
 #   report.sh ... --compare [baseline] [--baseline-state DIR]   routed vs baseline (spec §10)
 #   report.sh ... --decision                                    decision layer vs routing (spec §4)
+#   report.sh ... --per-task                                    delegated USD, tokens, spawns, rounds, outcome per task
 #
 # Prints REPORT_* lines (or one JSON object with --json): chain status, routes by
 # class/tier/provider/mode, spawns, verdicts, escalations, tokens, estimated USD
@@ -22,7 +23,7 @@ set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 command -v python3 >/dev/null 2>&1 || { echo "report: python3 is required" >&2; exit 1; }
-usage() { sed -n '4,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '4,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 STATE=""; PLAN=""; JSON=(); EXTRA=()
 while [[ $# -gt 0 ]]; do
@@ -32,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --json) JSON=(--json); shift ;;
     --compare) EXTRA+=(--compare); shift; if [[ "${1:-}" == baseline ]]; then shift; fi ;;
     --decision) EXTRA+=(--decision); shift ;;
+    --per-task) EXTRA+=(--per-task); shift ;;
     --baseline-state) EXTRA+=(--baseline-state "${2:?--baseline-state needs a value}"); shift 2 ;;
     -h|--help) usage ;;
     *) echo "report: unknown argument $1" >&2; usage ;;

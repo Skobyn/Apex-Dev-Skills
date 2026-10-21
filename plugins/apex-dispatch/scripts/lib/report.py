@@ -2,7 +2,7 @@
 """apex-dispatch report: summarise one state dir's ledger (python3 stdlib).
 
   report.py ROOT --state DIR [--plan PLAN] [--json]
-            [--compare [--baseline-state DIR]] [--decision]
+            [--compare [--baseline-state DIR]] [--decision] [--per-task]
 
 Counts routes by class, tier, provider and route_mode; spawn_request, spawn and
 worker_run rows; verdicts; escalations by rung. Estimated USD is real usage x
@@ -32,6 +32,12 @@ agreement rate overall, by calibration and by confidence bucket, how often the
 decision moved the route (route_mode decision), and the approval rate of the
 tasks where they agreed vs disagreed. No such rows: "no decision data".
 
+--per-task (ADR-0002 R7): one entry per routed task from tasks_of(): spawns, tokens,
+delegated USD (the same row_usd prices as the aggregate), review rounds and outcome
+(the last verdict). USD and tokens are null / n/a, never 0, when nothing was measured,
+a row could not be priced, or a ledger line did not parse. Orchestrator (main-session)
+tokens are a later column (R7b).
+
 Decision calls (decision-layer spec §11.2 item 7) are priced in their own bucket,
 never in REPORT_USD_ESTIMATED: the rows of apex-decision-layer's decision log
 (<state-base>/decisions/decisions.jsonl, beside this state dir) whose decision_id
@@ -56,6 +62,7 @@ MIN_N = 20                   # pre-registered minimum tasks per arm (ADR-0001, s
 ROUTED_MODES = ("table", "decision", "escalated")
 BASELINE_MODES = ("baseline", "shadow")
 P_BUCKETS = ((0.0, 0.5, "<0.5"), (0.5, 0.8, "0.5-0.8"), (0.8, 1.01, ">=0.8"))
+TOKEN_KEYS = ("input", "output", "cache_read", "cache_write")
 FAMILIES = ("haiku", "sonnet", "opus", "fable")
 DECISION_PRICE = {"jev": (0.042, 0.0)}   # $ per million input / output tokens (decision-layer spec §6.4)
 
@@ -127,7 +134,8 @@ def tasks_of(rows, price):
                               "class": tc.get("class") or router.get("class"), "tier": router.get("tier"),
                               "counterfactual": {"class": tc.get("class"), "tier": tc.get("tier")} if tc else None,
                               "routes": [], "agents": set(), "usd": 0.0, "unpriced_rows": 0, "verdicts": [],
-                              "escalations": 0, "modes": set(), "t0": _ts(r.get("ts")), "t1": _ts(r.get("ts"))}
+                              "escalations": 0, "modes": set(), "tokens": collections.Counter(), "token_rows": 0,
+                              "no_usage_runs": 0, "priced_rows": 0, "t0": _ts(r.get("ts")), "t1": _ts(r.get("ts"))}
         t["routes"].append(r.get("route_id"))
         t["modes"].add(r.get("route_mode"))
         if r.get("route_mode") in ROUTED_MODES:
@@ -156,6 +164,17 @@ def tasks_of(rows, price):
         usd, unv = row_usd(r, price)
         if usd is not None:
             t["usd"] += usd
+            t["priced_rows"] += 1
+        u = r.get("usage")
+        if isinstance(u, dict):
+            seen = False
+            for k in TOKEN_KEYS:
+                if isinstance(u.get(k), (int, float)) and not isinstance(u.get(k), bool):
+                    t["tokens"][k] += u[k]
+                    seen = True
+            t["token_rows"] += 1 if seen else 0
+        elif ev == "worker_run":
+            t["no_usage_runs"] += 1
         # Unpriced: usage without a priceable model (provider-default, ollama/...),
         # or a shim run that reported no usage at all (aider). Never counted as $0.
         if unv or (ev == "worker_run" and usd is None):
@@ -168,6 +187,7 @@ def tasks_of(rows, price):
                 heads.append(h)
         first = [v for h, v in t["verdicts"] if heads and h == heads[0]]
         approved = bool(t["verdicts"]) and t["verdicts"][-1][1] == "APPROVE"
+        t["last_verdict"] = t["verdicts"][-1][1] if t["verdicts"] else None
         arms = {"baseline" if m in BASELINE_MODES else "routed" for m in t["modes"] if m in BASELINE_MODES + ROUTED_MODES}
         t.update({"review_rounds": len(heads), "reviewed": bool(t["verdicts"]), "approved": approved,
                   "first_round_approved": bool(first) and all(v == "APPROVE" for v in first),
@@ -177,6 +197,81 @@ def tasks_of(rows, price):
         del t["verdicts"], t["t0"], t["t1"], t["agents"], t["modes"]
         out.append(t)
     return out
+
+
+def _micro(x):
+    return int(round(float(x) * 1e6))
+
+
+def malformed_rows(state_dir):
+    """Ledger lines that are not a JSON object: read_rows skips them silently, so a
+    cost view must count them rather than report a total that hides them."""
+    path = ledger.ledger_path(state_dir)
+    if not os.path.exists(path):
+        return 0
+    n = 0
+    for raw in ledger._iter_lines(path):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            ok = isinstance(json.loads(raw.decode("utf-8")), dict)
+        except ValueError:
+            ok = False
+        n += 0 if ok else 1
+    return n
+
+
+def per_task(root, state_dir, plan=None):
+    """One entry per routed task (tasks_of), delegated cost only. usd / tokens are
+    None (n/a, never 0) when nothing was measured, when a row of the task could not be
+    priced (usage without a priceable model, a shim run with no usage), or when the
+    ledger has lines that did not parse (they may be the missing usage rows)."""
+    ok, rows, msg = ledger.verify(state_dir)
+    if not ok:
+        rows = ledger.read_rows(state_dir)
+    bad = malformed_rows(state_dir)
+    rows = [r for r in rows if isinstance(r, dict)]
+    price = prices(root)
+    out = []
+    for t in tasks_of(rows, price):
+        usd_ok = not bad and not t["unpriced_rows"] and t["priced_rows"] > 0
+        tok_ok = not bad and not t["no_usage_runs"] and t["token_rows"] > 0
+        tokens = {k: t["tokens"].get(k, 0) for k in TOKEN_KEYS} if tok_ok else None
+        out.append({"task": t["task"], "class": t["class"], "tier": t["tier"], "route_mode": t["route_mode"],
+                    "routes": t["routes"], "spawns": t["spawns"],
+                    "tokens": tokens, "tokens_total": sum(tokens.values()) if tokens else None,
+                    "usd": t["usd"] if usd_ok else None, "usd_priced_partial": t["usd"],
+                    "unpriced_rows": t["unpriced_rows"], "review_rounds": t["review_rounds"],
+                    "escalations": t["escalations"], "approved": t["approved"],
+                    "outcome": t["last_verdict"] or "no-verdict"})
+    agg = summarise(root, state_dir, plan)
+    known = sum(_micro(x["usd"]) for x in out if x["usd"] is not None)
+    return {"state": state_dir, "plan": plan, "chain": {"ok": ok, "message": msg, "rows": len(rows)},
+            "malformed_rows": bad, "usd_estimated": agg["usd_estimated"], "tokens": agg["tokens"],
+            "unverified": agg["unverified"]["count"],
+            "tasks": out,
+            "totals": {"tasks": len(out), "usd": round(known / 1e6, 6) if known or any(x["usd"] is not None for x in out) else None,
+                       "usd_unknown_tasks": sum(1 for x in out if x["usd"] is None),
+                       # priced cost on rows that belong to no routed task (the aggregate minus the tasks')
+                       "usd_unrouted": round(agg["usd_estimated"] - sum(x["usd_priced_partial"] for x in out), 6)}}
+
+
+def print_per_task(p):
+    print("REPORT_STATE: %s" % p["state"])
+    if p["plan"]:
+        print("REPORT_PLAN: %s" % p["plan"])
+    print("REPORT_CHAIN: %s — %s" % ("OK" if p["chain"]["ok"] else "BROKEN", p["chain"]["message"]))
+    if p["malformed_rows"]:
+        print("REPORT_TASK_WARNING: %d ledger line(s) did not parse; per-task USD and tokens are n/a" % p["malformed_rows"])
+    for x in p["tasks"]:
+        tid = "L%d" % x["task"] if isinstance(x["task"], int) else x["task"]
+        print("REPORT_TASK: task=%s class=%s tier=%s spawns=%d tokens=%s usd=%s review_rounds=%d outcome=%s"
+              % (tid, x["class"], x["tier"], x["spawns"], "n/a" if x["tokens_total"] is None else x["tokens_total"],
+                 "n/a" if x["usd"] is None else "%.4f" % x["usd"], x["review_rounds"], x["outcome"]))
+    t = p["totals"]
+    print("REPORT_TASKS_TOTAL: %d task(s); usd=%s (%d n/a); aggregate REPORT_USD_ESTIMATED %.4f, of which %.4f on rows outside any task"
+          % (t["tasks"], "n/a" if t["usd"] is None else "%.4f" % t["usd"], t["usd_unknown_tasks"], p["usd_estimated"], t["usd_unrouted"]))
 
 
 def _median(xs):
@@ -522,7 +617,7 @@ def main(argv):
         return 2
     root, rest = os.path.abspath(argv[0]), argv[1:]
     state = plan = base_state = None
-    as_json = do_compare = do_decision = False
+    as_json = do_compare = do_decision = do_per_task = False
     i = 0
     while i < len(rest):
         a = rest[i]
@@ -543,6 +638,8 @@ def main(argv):
                 i += 1
         elif a == "--decision":
             do_decision = True
+        elif a == "--per-task":
+            do_per_task = True
         else:
             print("report: unknown argument %s" % a, file=sys.stderr)
             return 2
@@ -553,6 +650,16 @@ def main(argv):
     if base_state and not do_compare:
         print("report: --baseline-state needs --compare", file=sys.stderr)
         return 2
+    if do_per_task:
+        if do_compare or do_decision:
+            print("report: --per-task cannot be combined with --compare or --decision", file=sys.stderr)
+            return 2
+        p = per_task(root, state, plan)
+        if as_json:
+            print(json.dumps(p, indent=2, sort_keys=True))
+        else:
+            print_per_task(p)
+        return 0
     if do_compare or do_decision:
         out = {"state": state, "plan": plan}
         if do_compare:

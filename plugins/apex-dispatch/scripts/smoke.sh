@@ -3080,5 +3080,80 @@ python3 -c 'import json, os, sys; p = sys.argv[1]; s = json.load(open(p)) if os.
 y_deploys "landed owner"; y_reads "landed owner"
 pass "operate-deploy-deny: pre-bash denies every command whose text names operate.sh and deploy (any line, heredoc body, comment or quoted string; either case; across a backslash-newline; wrapped in script, expect, unbuffer, a python pty, perl -e, bash -c, eval, \$( ), backticks, env, sudo, nohup, timeout, nice, && and if; piped or heredoc'd into bash; after an arithmetic for((…<<…)), if((…<<…)) or a \${v%% #*} line) unless the whole command is one allow-listed form (PLAN status|monitor|ingest, --all status|monitor [--ingest]; a plan path containing deploy passes), with no ACTIVE lock, under a live lock, with APEX_DISPATCH_MODE=off, with a DONE owner and with a landed owner; mentions naming both are denied (the accepted false-deny cost); commands that do not name both pass; with no lock an ordinary command starts no python, and a broken python3 still denies (fail closed); 64 KB quote-heavy commands took$YT under /bin/bash (< 2000 ms)"
 
+# 90. per-task-listing (aidlc-borrowings Phase 4.1; ADR-0002 R7): report.sh --per-task lists one entry per routed task
+#     (task, class, tier, spawns, tokens, delegated USD, review rounds, outcome) built from tasks_of(); the per-task USD
+#     values sum to the aggregate usd_estimated; unknown cost/tokens are null / n/a, never 0; malformed ledger lines
+#     are counted and make the figures n/a rather than being skipped into a smaller total
+PT="$WORK/ptstate"; mkdir -p "$PT"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$PT" <<'PY' || fail "per-task-listing: could not build the fixture ledger"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+st = sys.argv[2]
+def route(line, cls, tier):
+    rid = "r-0123456789ab-L%d-1" % line
+    ledger.append(st, "route", {"route_id": rid, "status": "READY", "origin": "plan", "line": line, "router": {"class": cls, "tier": tier}},
+                  "cli", route_id=rid, route_mode="table")
+    return rid
+def run(rid, **kw):
+    d = {"route_id": rid, "provider": "claude-session", "role": "builder", "exit_code": 0}; d.update(kw)
+    ledger.append(st, "worker_run", d, "shim", route_id=rid, route_mode="table")
+def verdict(rid, v, head):
+    ledger.append(st, "verdict", {"route_id": rid, "role": "reviewer", "verdict": v}, "hook", route_id=rid, route_mode="table", head_sha=head)
+a = route(3, "docs", "cheap")        # priced from usage x the sonnet price, one review round
+run(a, run_id="w1", usage={"input": 1000000, "output": 100000}, resolved_model="claude-sonnet-5-5")
+verdict(a, "APPROVE", "a" * 40)
+b = route(4, "feature", "mid")       # reported usd, two rounds, a second run
+run(b, run_id="w2", usage={"input": 10, "output": 5}, usd=0.25)
+run(b, run_id="w3", usage={"input": 20, "output": 5}, usd=0.125)
+verdict(b, "REQUEST_CHANGES", "a" * 40); verdict(b, "APPROVE", "b" * 40)
+c = route(5, "docs", "cheap")        # provider-default usage: tokens known, cost unknown
+run(c, run_id="w4", usage={"input": 500, "output": 50}, resolved_model="provider-default", provider="codex")
+verdict(c, "REQUEST_CHANGES", "c" * 40)
+route(6, "docs", "cheap")            # routed, nothing run yet: nothing measured
+PY
+OT="$(bash "$REPORT" --state "$PT" --per-task 2>&1)" || fail "per-task-listing: report.sh --per-task failed: $OT"
+OJ="$(bash "$REPORT" --state "$PT" --per-task --json 2>&1)" || fail "per-task-listing: report.sh --per-task --json failed: $OJ"
+[ "$(printf '%s\n' "$OT" | grep -c '^REPORT_TASK: ')" = 4 ] || fail "per-task-listing: text mode is not one REPORT_TASK line per task: $OT"
+has '^REPORT_TASK: task=L3 class=docs tier=cheap spawns=1 tokens=1100000 usd=4.5000 review_rounds=1 outcome=APPROVE$' "$OT" \
+  && has '^REPORT_TASK: task=L4 class=feature tier=mid spawns=2 tokens=40 usd=0.3750 review_rounds=2 outcome=APPROVE$' "$OT" \
+  && has '^REPORT_TASK: task=L5 class=docs tier=cheap spawns=1 tokens=550 usd=n/a review_rounds=1 outcome=REQUEST_CHANGES$' "$OT" \
+  && has '^REPORT_TASK: task=L6 class=docs tier=cheap spawns=0 tokens=n/a usd=n/a review_rounds=0 outcome=no-verdict$' "$OT" \
+  && has '^REPORT_CHAIN: OK' "$OT" || fail "per-task-listing: REPORT_TASK lines are wrong (unknown must print n/a, never 0): $OT"
+printf '%s' "$OJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); ts = d["tasks"]
+assert len(ts) == 4 and [t["task"] for t in ts] == [3, 4, 5, 6], [t["task"] for t in ts]
+by = {t["task"]: t for t in ts}
+assert by[5]["usd"] is None and by[6]["usd"] is None and by[6]["tokens"] is None and by[6]["tokens_total"] is None, by
+assert by[5]["tokens"] == {"input": 500, "output": 50, "cache_read": 0, "cache_write": 0} and by[5]["unpriced_rows"] == 1, by[5]
+assert by[3]["tokens_total"] == 1100000 and by[4]["review_rounds"] == 2 and by[4]["outcome"] == "APPROVE", by
+for t in ts:
+    assert set(t) >= {"task", "class", "tier", "spawns", "tokens", "usd", "review_rounds", "outcome"}, t
+# the priced tasks sum to the aggregate, in integer micro-dollars; the n/a tasks add nothing and are not 0
+micro = lambda x: int(round(x * 1e6))
+known = sum(micro(t["usd"]) for t in ts if t["usd"] is not None)
+assert known == micro(d["usd_estimated"]) == micro(4.875), (known, d["usd_estimated"])
+assert d["totals"]["usd_unknown_tasks"] == 2 and d["totals"]["usd_unrouted"] == 0 and d["malformed_rows"] == 0, d["totals"]
+' || fail "per-task-listing: --per-task --json is wrong (one entry per task, USD sums to usd_estimated, unknown is null): $OJ"
+# the aggregate the tasks must match is the one report.sh prints without --per-task
+bash "$REPORT" --state "$PT" --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["usd_estimated"] == 4.875' || fail "per-task-listing: the aggregate usd_estimated moved"
+# text and JSON agree on the task count; --per-task cannot be combined with --compare
+[ "$(printf '%s' "$OJ" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["tasks"]))')" = "$(printf '%s\n' "$OT" | grep -c '^REPORT_TASK: ')" ] \
+  || fail "per-task-listing: text and --json disagree on the task count"
+[ "$(bash "$REPORT" --state "$PT" --per-task --compare >/dev/null 2>&1; echo $?)" = 2 ] || fail "per-task-listing: --per-task --compare is not a usage error"
+# a malformed ledger line must not shrink the total silently: it is counted, warned, and every task's USD/tokens are n/a
+PTB="$WORK/ptbad"; rm -rf "$PTB"; cp -R "$PT" "$PTB"
+PTL="$(find "$PTB" -name ledger.jsonl | head -1)"; [ -n "$PTL" ] || fail "per-task-listing: no ledger.jsonl in the fixture"
+printf '{"event":"worker_run","route_id":"r-0123456789ab-L3-1","usage":{"input":9\n' >>"$PTL"
+OB="$(bash "$REPORT" --state "$PTB" --per-task 2>&1)"
+has '^REPORT_TASK_WARNING: 1 ledger line' "$OB" && [ "$(printf '%s\n' "$OB" | grep -c '^REPORT_TASK: .* usd=n/a ')" = 4 ] \
+  || fail "per-task-listing: a malformed ledger line was skipped silently: $OB"
+bash "$REPORT" --state "$PTB" --per-task --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["malformed_rows"] == 1 and all(t["usd"] is None and t["tokens"] is None for t in d["tasks"]), d
+' || fail "per-task-listing: malformed-line JSON is wrong"
+pass "per-task-listing: report.sh --per-task prints one REPORT_TASK line and one tasks[] entry per routed task (task, class, tier, spawns, tokens, usd, review rounds, outcome) from tasks_of(); per-task USD sums to usd_estimated in integer micro-dollars; unpriced or unmeasured cost and tokens are n/a / null, never 0; a malformed ledger line is counted and makes every figure n/a; text and --json agree on the task count; not combinable with --compare"
+
 echo ""
 echo "smoke passed: $N/$N checks"
