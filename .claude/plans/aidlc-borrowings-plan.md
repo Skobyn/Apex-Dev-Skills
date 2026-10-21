@@ -181,7 +181,7 @@ Per the ADR amendment of 2026-10-18 (R5–R5d): each plan declares its own monit
   - Paths: plugins/apex-dispatch/scripts/report.sh, plugins/apex-dispatch/scripts/lib/report.py, plugins/apex-dispatch/scripts/smoke.sh, plugins/apex-dispatch/scripts/fixtures/**
   - Blocked-by: gate-3-4
 
-- [ ] **Phase 4.2** [backend] Attribute orchestrator (main-session) tokens and USD per task from session transcripts (`--transcript PATH`, auto-locate otherwise; `unattributed` bucket; `n/a` without a transcript)
+- [x] **Phase 4.2** [backend] Attribute orchestrator (main-session) tokens and USD per task from session transcripts (`--transcript PATH`, auto-locate otherwise; `unattributed` bucket; `n/a` without a transcript)
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh && grep -q 'orchestrator-cost' plugins/apex-dispatch/scripts/smoke.sh` (smoke check `orchestrator-cost`: fixture ledger with two task windows plus fixture transcript with three assistant turns (one in each window, one outside) and one unknown line → per-task orchestrator tokens match, `unattributed` holds the third, the unknown line is counted as skipped; without `--transcript` and no auto-located file, orchestrator is `n/a`, not 0)
   - Threats: 1) a missing transcript reported as $0; 2) a turn counted in two tasks
   - Swarm: hierarchical 3 [builder, tester, reviewer]
