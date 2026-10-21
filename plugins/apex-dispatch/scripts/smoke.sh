@@ -3224,13 +3224,16 @@ assert micro(T["usd"]) + micro(T["usd_partial_in_unknown_tasks"]) + micro(T["usd
 pass "per-task-listing: report.sh --per-task prints one REPORT_TASK line and one tasks[] entry per routed task (task, class, tier, spawns, tokens, usd, review rounds, outcome) from tasks_of(); per-task USD sums to usd_estimated in integer micro-dollars; unpriced or unmeasured cost and tokens are n/a / null, never 0; a malformed or non-object ledger line is counted and makes every figure n/a, usd_unrouted included; a spawned agent with no usage-bearing worker_run (a background agent) or a post-agent usage-unverified advisory makes its task n/a, its priced part kept in usd_priced_partial; known + partial-in-n/a + unrouted reconciles with usd_estimated; text and --json agree on the task count; not combinable with --compare or --decision"
 
 # 91. orchestrator-cost (aidlc-borrowings Phase 4.2; ADR-0002 R7b, Q5): report.sh --per-task --transcript PATH attributes the
-#     main session's assistant turns (real usage, priced by message.model) to the task whose route window (first route row
-#     ts .. last row ts, inclusive to the end of that second) holds the turn; turns in no single window go to `unattributed`;
-#     non-assistant lines are ignored; malformed lines and unusable usage are counted as skipped, never priced as 0; sidechain
-#     (subagent) turns are excluded as delegated; duplicate message ids count once; without a transcript the figures are
-#     null / n/a, never 0; with none given the transcript is auto-located by the ledger's UUID session_ids as
-#     <config>/projects/*/<session_id>.jsonl in any project dir (not only the state's checkout); a non-UUID id is ignored,
-#     a UUID id with no file is listed in transcript_sessions_missing (and on REPORT_ORCHESTRATOR), not fatal
+#     main session's assistant turns (real usage, priced by message.model; 1-hour cache writes at 2x input) to the task whose
+#     route window (first route row ts .. last row ts, inclusive to the end of that second) holds the turn; turns in no
+#     single window (none, or two overlapping) go to `unattributed`; non-assistant and type-less lines are ignored; sidechain
+#     (subagent) turns are excluded as delegated; duplicate message ids (and the same file twice) count once. Never 0 or a
+#     partial figure for what was not seen: no transcript, a task session id no read transcript covers, a window with no
+#     main-session turn, a window holding an unusable dated turn, a transcript with no main-session turn, or a line with
+#     no usable timestamp make the affected figures null / n/a. Auto-locate: <config>/projects/*/<session_id>.jsonl in any
+#     project dir by the ledger's UUID session_ids; a non-UUID id is ignored; a missing or unreadable file is listed, not fatal.
+#     Failing-first on 3d7c344: the 1h price, L8's empty window, the realpath dedupe, cases B and D, F-004 (dated in a window,
+#     dated in no window, non-JSON, unparseable ts), the flipped missing-session case and the unreadable file all failed.
 OCU1="0c0c0c0c-1111-4222-8333-444455556666"; OCU2="9f9f9f9f-aaaa-4bbb-8ccc-dddddddddddd"
 OC="$WORK/ocstate"; mkdir -p "$OC"
 python3 - "$PLUGIN_ROOT/scripts/lib" "$OC" "$OCU1" <<'PY' || fail "orchestrator-cost: could not build the fixture ledger"
@@ -3245,56 +3248,154 @@ def route(line, ts):
     at(ts, "route", {"route_id": rid, "status": "READY", "origin": "plan", "line": line, "router": {"class": "docs", "tier": "cheap"}},
        "cli", route_id=rid, route_mode="table")
     return rid
+def verdict(rid, ts, **kw):
+    at(ts, "verdict", dict({"route_id": rid, "role": "reviewer", "verdict": "APPROVE"}, **kw), "hook", route_id=rid,
+       route_mode="table", head_sha="a" * 40)
 a = route(3, "2026-10-14T10:00:00Z")
 at("2026-10-14T10:08:00Z", "worker_run", {"route_id": a, "provider": "claude-session", "role": "builder", "exit_code": 0, "run_id": "w1",
                                           "usage": {"input": 10, "output": 5}, "usd": 0.25, "session_id": sid1}, "shim", route_id=a, route_mode="table")
-b = route(4, "2026-10-14T11:00:00Z")
-at("2026-10-14T11:05:00Z", "verdict", {"route_id": b, "role": "reviewer", "verdict": "APPROVE", "session_id": "sess-not-a-uuid"},
-   "hook", route_id=b, route_mode="table", head_sha="a" * 40)
+verdict(route(4, "2026-10-14T11:00:00Z"), "2026-10-14T11:05:00Z", session_id="sess-not-a-uuid")
+verdict(route(5, "2026-10-14T12:30:00Z"), "2026-10-14T12:40:00Z")      # holds the unpriced-model turn
+l6 = route(6, "2026-10-14T13:00:00Z")                                     # L6 13:00-13:20 and L7 13:10-13:30 overlap
+l7 = route(7, "2026-10-14T13:10:00Z")
+verdict(l6, "2026-10-14T13:20:00Z"); verdict(l7, "2026-10-14T13:30:00Z")
+verdict(route(8, "2026-10-14T14:00:00Z"), "2026-10-14T14:05:00Z")      # no main-session turn in its window
 PY
-OCT="$WORK/oc-transcript.jsonl"
-python3 - "$OCT" <<'PY'
-import json, sys
+OCT="$WORK/oc-transcript.jsonl"; OCB="$WORK/oc-b"; mkdir -p "$OCB"
+python3 - "$WORK" "$OCU1" "$OCU2" <<'PY'
+import json, os, sys
+w, s1, s2 = sys.argv[1:4]
 def turn(ts, mid, u, model="claude-sonnet-5-5", **kw):
-    d = {"type": "assistant", "timestamp": ts, "message": {"id": mid, "model": model, "usage": u}}; d.update(kw); return json.dumps(d)
-L = [json.dumps({"type": "user", "timestamp": "2026-10-14T10:00:01.000Z", "message": {"content": "hi"}}),
-     json.dumps({"type": "summary", "summary": "x"}),
+    d = {"type": "assistant", "timestamp": ts, "message": {"id": mid, "model": model, "usage": u}}; d.update(kw); return d
+M = [{"type": "user", "timestamp": "2026-10-14T10:00:01.000Z", "message": {"content": "hi"}},
+     {"type": "summary", "summary": "x"},
+     {"timestamp": "2026-10-14T10:01:00.000Z", "message": {"id": "m-notype", "usage": {"input_tokens": 777}}},   # no type: not a turn
      turn("2026-10-14T10:05:00.250Z", "m1", {"input_tokens": 1000000, "output_tokens": 100000, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 20}),
      turn("2026-10-14T10:05:00.250Z", "m1", {"input_tokens": 1000000, "output_tokens": 100000, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 20}),
      turn("2026-10-14T10:06:00.000Z", "m-side", {"input_tokens": 999, "output_tokens": 999}, isSidechain=True),
-     "this line is not json {",
-     turn("2026-10-14T10:07:00.000Z", "m-bad", {"input_tokens": "lots"}),
      turn("2026-10-14T11:05:00.500Z", "m2", {"input_tokens": 2000000, "output_tokens": 0}),
-     turn("2026-10-14T12:00:00.000Z", "m3", {"input_tokens": 500, "output_tokens": 50})]
-open(sys.argv[1], "w").write("\n".join(L) + "\n")
+     turn("2026-10-14T12:00:00.000Z", "m3", {"input_tokens": 500, "output_tokens": 50}),
+     turn("2026-10-14T12:35:00.000Z", "m5", {"input_tokens": 100, "output_tokens": 10}, model="mystery-9"),
+     turn("2026-10-14T13:05:00.000Z", "m6", {"input_tokens": 1000, "output_tokens": 0, "cache_creation_input_tokens": 1000000,
+                                             "cache_creation": {"ephemeral_1h_input_tokens": 600000, "ephemeral_5m_input_tokens": 300000}}),
+     turn("2026-10-14T13:15:00.000Z", "m7", {"input_tokens": 100, "output_tokens": 10}),
+     turn("2026-10-14T13:25:00.000Z", "m8", {"input_tokens": 1000, "output_tokens": 100})]
+def write(name, lines, sid=s1):
+    with open(os.path.join(w, name), "w") as f:
+        for d in lines:
+            if isinstance(d, dict) and sid and d.get("type") in ("user", "assistant"):
+                d = dict(d, sessionId=sid)
+            f.write((d if isinstance(d, str) else json.dumps(d)) + "\n")
+bad = lambda ts, mid: turn(ts, mid, {"input_tokens": "lots"})
+write("oc-transcript.jsonl", M)
+write("oc-b/%s.jsonl" % s1, M, sid=None)                         # covered by its basename alone
+write("oc-s2.jsonl", M, sid=s2)                                    # (B) only another session's transcript
+write("oc-wrong.jsonl", [M[0], M[5], dict(M[0], timestamp="2026-10-14T11:00:01.000Z")])   # (D) no main-session turn
+write("oc-f4a.jsonl", M[:7] + [bad("2026-10-14T10:07:00.000Z", "m-bad"), bad("2026-10-14T11:05:00.400Z", "m2")] + M[7:])
+write("oc-f4b.jsonl", M + [bad("2026-10-14T12:10:00.000Z", "m-bad2")])
+write("oc-f4c.jsonl", M + ["this line is not json {"])
+write("oc-f4d.jsonl", M + [turn("yesterday", "m-nots", {"input_tokens": 5})])
 PY
-OCJ="$(env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-nohome" bash "$REPORT" --state "$OC" --per-task --json --transcript "$OCT" 2>&1)" || fail "orchestrator-cost: report.sh --per-task --transcript failed: $OCJ"
+ocj() { env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-nohome" bash "$REPORT" --state "$OC" --per-task "$@" 2>&1; }
+mkdir -p "$WORK/oc-nohome"
+OCJ="$(ocj --json --transcript "$OCT" --transcript "$WORK/./oc-transcript.jsonl")" || fail "orchestrator-cost: report.sh --per-task --transcript failed: $OCJ"
 printf '%s' "$OCJ" | python3 -c '
 import json, sys
 d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
 micro = lambda x: int(round(x * 1e6))
-a, b = by[3], by[4]
+a, b, c, l6, l7, l8 = by[3], by[4], by[5], by[6], by[7], by[8]
 assert a["orchestrator_tokens"] == {"input": 1000000, "output": 100000, "cache_read": 10, "cache_write": 20}, a
 assert a["orchestrator_tokens_total"] == 1100030 and a["orchestrator_turns"] == 1, a   # the duplicate m1 line counts once
-assert micro(a["orchestrator_usd"]) >= micro(4.5) and a["orchestrator_usd"] is not None, a
-assert b["orchestrator_tokens_total"] == 2000000 and micro(b["orchestrator_usd"]) == micro(6.0) and b["orchestrator_turns"] == 1, b
-assert T["orchestrator_unattributed_tokens"] == 550 and T["orchestrator_unattributed_turns"] == 1, T
-assert micro(T["orchestrator_unattributed_usd"]) == micro(550 * 0 + 500 * 3 / 1e6 + 50 * 15 / 1e6), T
-assert T["transcript_skipped"] == 2 and T["transcript_sidechain_turns"] == 1 and T["transcript_deduped"] == 1, T
-assert micro(T["orchestrator_usd"]) == micro(a["orchestrator_usd"]) + micro(b["orchestrator_usd"]) and T["orchestrator_status"] == "measured", T
+assert a["orchestrator_usd"] is not None and micro(a["orchestrator_usd"]) == 4500078 and a["orchestrator_na"] is None, a
+assert b["orchestrator_tokens_total"] == 2000000 and micro(b["orchestrator_usd"]) == 6000000 and b["orchestrator_turns"] == 1, b
+# unpriced model: usd null, tokens kept
+assert c["orchestrator_usd"] is None and c["orchestrator_tokens_total"] == 110 and c["orchestrator_unpriced_turns"] == 1, c
+# 1h cache writes: 600000 at 2x input (6.0/M), 300000 5m + 100000 remainder at cache_write (3.75/M), 1000 input at 3.0/M
+assert l6["orchestrator_tokens"]["cache_write"] == 1000000 and l6["orchestrator_turns"] == 1, l6
+assert l6["orchestrator_usd"] is not None and micro(l6["orchestrator_usd"]) == 3000 + 3600000 + 1500000, l6
+assert l7["orchestrator_usd"] is not None and micro(l7["orchestrator_usd"]) == 4500 and l7["orchestrator_turns"] == 1, l7
+# a window with no main-session turn is n/a, not 0
+assert l8["orchestrator_usd"] is None and l8["orchestrator_tokens_total"] is None and l8["orchestrator_turns"] is None, l8
+assert l8["orchestrator_na"] == "no main-session turn in the window", l8
+# unattributed: m3 (no window) and m7 (in the overlap of L6 and L7)
+assert T["orchestrator_unattributed_tokens"] == 660 and T["orchestrator_unattributed_turns"] == 2, T
+assert T["orchestrator_unattributed_usd"] is not None and micro(T["orchestrator_unattributed_usd"]) == 600 * 3 + 60 * 15, T
+assert T["transcript_skipped"] == 0 and T["transcript_skipped_undated"] == 0, T
+assert T["transcript_sidechain_turns"] == 1 and T["transcript_deduped"] == 1, T   # the same file twice is read once
+assert micro(T["orchestrator_usd"]) == 4500078 + 6000000 + 5103000 + 4500 and T["orchestrator_usd_unknown_tasks"] == 2, T
+assert T["orchestrator_status"] == "measured" and T["transcript_sessions_missing"] == [] and T["transcript_unreadable"] == [], T
 assert len(T["transcripts"]) == 1 and T["transcripts"][0].endswith("oc-transcript.jsonl"), T
 # the delegated figures are untouched, and the ledger rows outside any task stay a separate figure
 assert a["usd"] == 0.25 and a["tokens_total"] == 15 and T["usd_unrouted"] == 0, (a, T)
-' || fail "orchestrator-cost: --transcript JSON is wrong (window attribution, unattributed bucket, skipped / sidechain counts): $OCJ"
-OCX="$(env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-nohome" bash "$REPORT" --state "$OC" --per-task --transcript "$OCT" 2>&1)"
-has '^REPORT_TASK: task=L3 .* usd=0.2500 review_rounds=0 outcome=no-verdict orchestrator_tokens=1100030 orchestrator_usd=' "$OCX" \
+' || fail "orchestrator-cost: --transcript JSON is wrong (exact USD incl. 1h cache writes, unpriced model, empty window n/a, overlap to unattributed, realpath dedupe): $OCJ"
+OCX="$(ocj --transcript "$OCT")"
+has '^REPORT_TASK: task=L3 .* usd=0.2500 review_rounds=0 outcome=no-verdict orchestrator_tokens=1100030 orchestrator_usd=4.5001$' "$OCX" \
   && has '^REPORT_TASK: task=L4 .* orchestrator_tokens=2000000 orchestrator_usd=6.0000$' "$OCX" \
-  && has '^REPORT_ORCHESTRATOR: usd=.*unattributed (.*) usd=0.002[23] .*skipped=2 line(s); sidechain turns excluded=1 ' "$OCX" \
-  && has '^REPORT_ORCHESTRATOR_WARNING: 2 transcript line' "$OCX" \
+  && has '^REPORT_TASK: task=L5 .* orchestrator_tokens=110 orchestrator_usd=n/a$' "$OCX" \
+  && has '^REPORT_TASK: task=L6 .* orchestrator_tokens=1001000 orchestrator_usd=5.1030$' "$OCX" \
+  && has '^REPORT_TASK: task=L8 .* orchestrator_tokens=n/a orchestrator_usd=n/a$' "$OCX" \
+  && has '^REPORT_ORCHESTRATOR: usd=15.6076 (2 task(s) n/a; a lower bound: .*unattributed (.*) usd=0.0027 tokens=660 turns=2; skipped=0 line(s); sidechain turns excluded=1 .*deduped=1;' "$OCX" \
+  && ! has '^REPORT_ORCHESTRATOR_WARNING' "$OCX" \
   || fail "orchestrator-cost: text output is wrong: $OCX"
+# coverage by basename: <uuid>.jsonl with no sessionId on its lines covers that ledger session
+OCJ="$(ocj --json --transcript "$OCB/$OCU1.jsonl")" || fail "orchestrator-cost: basename-covered run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+assert by[3]["orchestrator_tokens_total"] == 1100030 and T["transcript_sessions_missing"] == [] and T["orchestrator_unattributed_tokens"] == 660, (by[3], T)
+' || fail "orchestrator-cost: a <session_id>.jsonl basename must cover that session: $OCJ"
+# (B) --transcript naming only another session: the ledger session is missing, its task and the unattributed bucket n/a
+OCJ="$(ocj --json --transcript "$WORK/oc-s2.jsonl")" || fail "orchestrator-cost: case B run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+assert T["transcript_sessions_missing"] == [sys.argv[1]] and T["orchestrator_status"] == "measured", T
+assert by[3]["orchestrator_usd"] is None and by[3]["orchestrator_tokens_total"] is None and sys.argv[1] in by[3]["orchestrator_na"], by[3]
+assert T["orchestrator_unattributed_usd"] is None and T["orchestrator_unattributed_tokens"] is None, T
+assert by[4]["orchestrator_tokens_total"] == 2000000, by[4]   # no UUID session on L4: still measured
+' "$OCU1" || fail "orchestrator-cost: an explicit transcript that does not cover a ledger session must make its task n/a: $OCJ"
+# (D) the wrong file: no main-session turn at all -> every figure null, a distinct status
+OCJ="$(ocj --json --transcript "$WORK/oc-wrong.jsonl")" || fail "orchestrator-cost: case D run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); T = d["totals"]
+assert T["orchestrator_status"] == "n/a (transcripts held no main-session turns)" and T["transcript_skipped"] == 0, T
+assert all(t["orchestrator_usd"] is None and t["orchestrator_tokens_total"] is None for t in d["tasks"]), d["tasks"]
+assert T["orchestrator_usd"] is None and T["orchestrator_unattributed_tokens"] is None, T
+' || fail "orchestrator-cost: a transcript with no main-session turn must give n/a, not 0: $OCJ"
+has '^REPORT_ORCHESTRATOR: n/a (transcripts held no main-session turns)' "$(ocj --transcript "$WORK/oc-wrong.jsonl")" \
+  || fail "orchestrator-cost: case D text must say n/a"
+# F-004: a dated assistant turn with unusable usage makes its window n/a (one sharing a counted message.id does not)
+OCJ="$(ocj --json --transcript "$WORK/oc-f4a.jsonl")" || fail "orchestrator-cost: F-004 run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+assert by[3]["orchestrator_usd"] is None and by[3]["orchestrator_tokens_total"] is None, by[3]
+assert by[3]["orchestrator_na"] == "1 unusable transcript turn(s) in the window", by[3]
+assert by[4]["orchestrator_tokens_total"] == 2000000 and int(round(by[4]["orchestrator_usd"] * 1e6)) == 6000000, by[4]
+assert T["transcript_skipped"] == 2 and T["transcript_skipped_undated"] == 0 and T["orchestrator_unattributed_tokens"] == 660, T
+' || fail "orchestrator-cost: an unusable dated turn must make its window n/a: $OCJ"
+has '^REPORT_ORCHESTRATOR_WARNING: 2 transcript line' "$(ocj --transcript "$WORK/oc-f4a.jsonl")" \
+  || fail "orchestrator-cost: skipped transcript lines must be warned"
+OCJ="$(ocj --json --transcript "$WORK/oc-f4b.jsonl")" || fail "orchestrator-cost: F-004 (no window) run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+assert T["orchestrator_unattributed_usd"] is None and T["orchestrator_unattributed_tokens"] is None, T
+assert by[3]["orchestrator_tokens_total"] == 1100030 and T["orchestrator_status"] == "measured", (by[3], T)
+' || fail "orchestrator-cost: an unusable dated turn in no window must make the unattributed bucket n/a: $OCJ"
+for f in oc-f4c oc-f4d; do
+  OCJ="$(ocj --json --transcript "$WORK/$f.jsonl")" || fail "orchestrator-cost: $f run failed: $OCJ"
+  printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); T = d["totals"]
+assert T["orchestrator_status"].startswith("n/a (1 transcript line(s) with no usable timestamp") and T["transcript_skipped_undated"] == 1, T
+assert all(t["orchestrator_usd"] is None and t["orchestrator_tokens_total"] is None for t in d["tasks"]), d["tasks"]
+assert T["orchestrator_usd"] is None and T["orchestrator_unattributed_usd"] is None and T["orchestrator_unattributed_tokens"] is None, T
+' || fail "orchestrator-cost: a skipped line with no usable timestamp ($f) must null every orchestrator figure: $OCJ"
+done
 # without --transcript and nothing to auto-locate (empty HOME, no config dir): n/a, never 0
-mkdir -p "$WORK/oc-nohome"
-OCN="$(env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-nohome" bash "$REPORT" --state "$OC" --per-task --json 2>&1)" || fail "orchestrator-cost: report.sh --per-task failed without a transcript: $OCN"
+OCN="$(ocj --json)" || fail "orchestrator-cost: report.sh --per-task failed without a transcript: $OCN"
 printf '%s' "$OCN" | python3 -c '
 import json, sys
 d = json.load(sys.stdin); T = d["totals"]
@@ -3302,24 +3403,27 @@ for t in d["tasks"]:
     assert t["orchestrator_usd"] is None and t["orchestrator_tokens"] is None and t["orchestrator_tokens_total"] is None, t
 for k in ("orchestrator_usd", "orchestrator_unattributed_usd", "orchestrator_unattributed_tokens", "transcript_skipped"):
     assert T[k] is None, (k, T)
-assert T["transcripts"] == [] and T["orchestrator_status"].startswith("n/a"), T
-' || fail "orchestrator-cost: no transcript must give null / n/a, not 0: $OCN"
-OCNT="$(env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-nohome" bash "$REPORT" --state "$OC" --per-task 2>&1)"
-[ "$(printf '%s\n' "$OCNT" | grep -c '^REPORT_TASK: .* orchestrator_tokens=n/a orchestrator_usd=n/a$')" = 2 ] && has '^REPORT_ORCHESTRATOR: n/a' "$OCNT" \
+assert T["transcripts"] == [] and T["orchestrator_status"].startswith("n/a (no transcript") and T["transcript_sessions_missing"] == [sys.argv[1]], T
+' "$OCU1" || fail "orchestrator-cost: no transcript must give null / n/a, not 0: $OCN"
+OCNT="$(ocj)"
+[ "$(printf '%s\n' "$OCNT" | grep -c '^REPORT_TASK: .* orchestrator_tokens=n/a orchestrator_usd=n/a$')" = 6 ] \
+  && has '^REPORT_ORCHESTRATOR: n/a (no transcript: .*<config>/projects (\$CLAUDE_CONFIG_DIR or ~/.claude))' "$OCNT" \
   || fail "orchestrator-cost: text output without a transcript must print n/a: $OCNT"
 # auto-locate by session id: <config>/projects/*/<session_id>.jsonl in any project dir (here one unrelated to the cwd and
 # to the state's checkout), the UUID session_id taken from the ledger; another .jsonl in that project dir is not read
 OCR="$WORK/oc-repo"; mkdir -p "$OCR"
-OCP="$WORK/oc-home/.claude/projects/-some-other-checkout"; mkdir -p "$OCP"; cp "$OCT" "$OCP/$OCU1.jsonl"; cp "$OCT" "$OCP/decoy.jsonl"
-OCA="$(cd "$OCR" && env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-home" bash "$REPORT" --state "$OC" --per-task --json 2>&1)" || fail "orchestrator-cost: auto-locate run failed: $OCA"
+OCP="$WORK/oc-home/.claude/projects/-some-other-checkout"; mkdir -p "$OCP"; cp "$OCT" "$OCP/$OCU1.jsonl"; cp "$WORK/oc-f4c.jsonl" "$OCP/decoy.jsonl"
+oca() { (cd "$OCR" && env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-home" bash "$REPORT" --state "$OC" --per-task "$@" 2>&1); }
+OCA="$(oca --json)" || fail "orchestrator-cost: auto-locate run failed: $OCA"
 printf '%s' "$OCA" | python3 -c '
 import json, sys
 d = json.load(sys.stdin); T = d["totals"]
-assert T["orchestrator_unattributed_tokens"] == 550 and T["orchestrator_status"] == "measured", T
+assert T["orchestrator_unattributed_tokens"] == 660 and T["orchestrator_status"] == "measured", T
 assert len(T["transcripts"]) == 1 and T["transcripts"][0].endswith("/-some-other-checkout/" + sys.argv[1] + ".jsonl"), T
 assert T["transcript_sessions_missing"] == [], T   # the non-UUID ledger id is ignored, not missing
 ' "$OCU1" || fail "orchestrator-cost: the transcript was not auto-located by session id under another project dir: $OCA"
-# a second ledger session id with no transcript anywhere: listed missing, not fatal; the found one is still measured
+# (A) a second ledger session id (on L4) with no transcript anywhere: listed missing, not fatal; L4 and the unattributed
+# bucket are n/a (that session's turns were never read), L3 (covered) is still measured
 python3 - "$PLUGIN_ROOT/scripts/lib" "$OC" "$OCU2" <<'PY' || fail "orchestrator-cost: could not append the second-session row"
 import sys
 sys.path.insert(0, sys.argv[1]); import ledger
@@ -3327,22 +3431,37 @@ ledger.now = lambda: "2026-10-14T11:05:00Z"
 ledger.append(sys.argv[2], "verdict", {"role": "reviewer", "verdict": "APPROVE", "session_id": sys.argv[3]}, "hook",
               route_id="r-0123456789ab-L4-1", route_mode="table", head_sha="a" * 40)
 PY
-OCM="$(cd "$OCR" && env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-home" bash "$REPORT" --state "$OC" --per-task --json 2>&1)" || fail "orchestrator-cost: auto-locate run with a missing session failed: $OCM"
+OCM="$(oca --json)" || fail "orchestrator-cost: auto-locate run with a missing session failed: $OCM"
 printf '%s' "$OCM" | python3 -c '
 import json, sys
 d = json.load(sys.stdin); T = d["totals"]; by = {t["task"]: t for t in d["tasks"]}
 assert T["transcript_sessions_missing"] == [sys.argv[2]], T
 assert len(T["transcripts"]) == 1 and T["transcripts"][0].endswith(sys.argv[1] + ".jsonl"), T
-assert T["orchestrator_status"] == "measured" and T["orchestrator_unattributed_tokens"] == 550, T
-assert by[3]["orchestrator_tokens_total"] == 1100030 and by[4]["orchestrator_tokens_total"] == 2000000, by
-' "$OCU1" "$OCU2" || fail "orchestrator-cost: a ledger session id with no transcript must be listed in transcript_sessions_missing, figures still measured: $OCM"
-OCMT="$(cd "$OCR" && env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-home" bash "$REPORT" --state "$OC" --per-task 2>&1)"
+assert T["orchestrator_status"] == "measured" and T["orchestrator_unattributed_tokens"] is None and T["orchestrator_unattributed_usd"] is None, T
+assert by[3]["orchestrator_tokens_total"] == 1100030, by[3]
+assert by[4]["orchestrator_tokens_total"] is None and by[4]["orchestrator_usd"] is None and sys.argv[2] in by[4]["orchestrator_na"], by[4]
+' "$OCU1" "$OCU2" || fail "orchestrator-cost: a task whose session has no transcript must be n/a, not measured, and the session listed: $OCM"
+OCMT="$(oca)"
 has "^REPORT_ORCHESTRATOR: usd=.*; sessions with no transcript=$OCU2\$" "$OCMT" \
+  && has '^REPORT_TASK: task=L4 .* orchestrator_tokens=n/a orchestrator_usd=n/a$' "$OCMT" \
   || fail "orchestrator-cost: the REPORT_ORCHESTRATOR line must name the session ids with no transcript: $OCMT"
+# an auto-located transcript that cannot be opened is listed (unreadable, its session missing), not a traceback
+if [ "$(id -u)" != 0 ]; then
+  OCQ="$WORK/oc-home/.claude/projects/-third"; mkdir -p "$OCQ"; cp "$OCT" "$OCQ/$OCU2.jsonl"; chmod 000 "$OCQ/$OCU2.jsonl"
+  OCM="$(oca --json)" || { chmod 600 "$OCQ/$OCU2.jsonl"; fail "orchestrator-cost: an unreadable auto-located transcript is fatal: $OCM"; }
+  chmod 600 "$OCQ/$OCU2.jsonl"
+  printf '%s' "$OCM" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); T = d["totals"]; by = {t["task"]: t for t in d["tasks"]}
+assert T["transcript_unreadable"] == [sys.argv[1]] and T["transcript_sessions_missing"] == [sys.argv[2]], T
+assert by[4]["orchestrator_tokens_total"] is None and by[3]["orchestrator_tokens_total"] == 1100030, by
+' "$OCQ/$OCU2.jsonl" "$OCU2" || fail "orchestrator-cost: an unreadable transcript must be listed and its session missing: $OCM"
+  mv "$OCQ/$OCU2.jsonl" "$OCQ/was-unreadable.txt"
+fi
 # a missing --transcript file and --transcript without --per-task are usage errors
 [ "$(bash "$REPORT" --state "$OC" --per-task --transcript "$WORK/nope.jsonl" >/dev/null 2>&1; echo $?)" = 2 ] || fail "orchestrator-cost: a missing transcript file is not a usage error"
 [ "$(bash "$REPORT" --state "$OC" --transcript "$OCT" >/dev/null 2>&1; echo $?)" = 2 ] || fail "orchestrator-cost: --transcript without --per-task is not a usage error"
-pass "orchestrator-cost: report.sh --per-task --transcript PATH (repeatable) attributes main-session assistant turns to the task whose route window (first route ts .. last row ts, to the end of that second) holds them (orchestrator_tokens / orchestrator_usd, priced by message.model through row_usd, cache keys mapped), the rest to the unattributed bucket; user/summary lines are ignored, a malformed line and unusable usage are counted in transcript_skipped (warned), a sidechain turn is excluded as delegated, a duplicate message id counts once; delegated usd / tokens are unchanged; with no transcript (none given, none auto-located from the ledger session_id under the empty HOME) every orchestrator figure is null / n/a, never 0; auto-locate finds <config>/projects/*/<uuid>.jsonl in any project dir by basename, ignores non-UUID ids, and lists ids with no file in transcript_sessions_missing and on REPORT_ORCHESTRATOR, figures still measured"
+pass "orchestrator-cost: report.sh --per-task --transcript PATH (repeatable, deduped by realpath) attributes main-session assistant turns to the task whose route window (first route ts .. last row ts, to the end of that second) holds them, exact USD by message.model (1-hour cache writes at 2x input, the rest of cache_creation at the cache_write rate; an unpriced model gives usd null with tokens kept); turns in no window or in two overlapping windows go to unattributed; user/summary/type-less lines are ignored, sidechain turns excluded, a duplicate message id counts once; delegated usd / tokens unchanged. n/a, never 0 or partial: no transcript; a task whose ledger session id no read transcript covers (by <uuid>.jsonl basename or sessionId), with the unattributed bucket, in --transcript and auto-locate mode; a window with no main-session turn; transcripts with no main-session turn (distinct status); a dated turn with unusable usage (its window, or unattributed when in no window; not when its message.id is counted); a line with no usable timestamp (every figure). Auto-locate finds <config>/projects/*/<uuid>.jsonl in any project dir, ignores non-UUID ids, lists ids with no file or an unreadable file (transcript_unreadable), not fatal"
 
 echo ""
 echo "smoke passed: $N/$N checks"

@@ -24,12 +24,15 @@
 # REPORT_TASK_WARNING and make every figure n/a; REPORT_TASKS_TOTAL reconciles the known,
 # partial and unrouted USD with REPORT_USD_ESTIMATED; it cannot be combined with --compare
 # or --decision (exit 2). Orchestrator (ADR-0002 R7b): --transcript PATH (repeatable; else auto-located
-# by session id as ~/.claude/projects/*/<session_id>.jsonl, any project dir, for each UUID session_id on
-# the ledger; ids with no file are listed as transcript_sessions_missing, not fatal) gives
-# orchestrator_tokens / orchestrator_usd per task (turns inside the task's route window), an
+# by session id as <config>/projects/*/<session_id>.jsonl ($CLAUDE_CONFIG_DIR or ~/.claude), any project
+# dir, for each UUID session_id on the ledger) gives orchestrator_tokens / orchestrator_usd per task (turns
+# inside the task's route window; a lower bound, compaction and utility calls write no assistant line), an
 # unattributed bucket (main-session turns in no single task window; not the same as usd_unrouted, which
-# is delegated ledger rows outside any task), and n/a, never 0, with no transcript; sidechain (subagent)
-# turns are excluded as delegated cost; unusable transcript lines are counted as skipped. All print REPORT_* lines, or JSON with --json.
+# is delegated ledger rows outside any task), and n/a, never 0 or a partial figure, whenever a figure is not
+# covered: no transcript, a task session id no transcript read covers (transcript_sessions_missing), a
+# window with no main-session turn or an unusable turn, or transcripts with no main-session turn at all;
+# sidechain (subagent) turns are excluded as delegated cost; unusable lines are counted as skipped, and one
+# with no usable timestamp nulls every orchestrator figure. All print REPORT_* lines, or JSON with --json.
 # Exit 0 ok (a broken chain is reported, not fatal), 2 usage.
 set -euo pipefail
 

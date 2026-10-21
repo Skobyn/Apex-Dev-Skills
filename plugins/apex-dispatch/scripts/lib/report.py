@@ -46,38 +46,63 @@ Orchestrator cost (ADR-0002 R7b, Q5; --per-task only): the main session's own to
 USD per task, from Claude Code session transcripts (JSONL, read only). The per-task
 `usd` / `tokens` / `tokens_total` stay delegated-only; the orchestrator figures are the
 separate keys `orchestrator_usd`, `orchestrator_tokens`, `orchestrator_tokens_total`,
-`orchestrator_turns`. Rules:
-  * Transcripts: `--transcript PATH`, repeatable (a missing file is a usage error, exit 2).
-    Without it the transcripts are auto-located by session id: for each distinct session_id
-    on any ledger row that is a UUID (other values are ignored), every
-    `<config>/projects/*/<session_id>.jsonl` (any project directory, since the session may run
-    from another checkout than the state's worktree; the file's basename must be exactly
-    `<session_id>.jsonl`, never another .jsonl of that project), where <config> is
-    $CLAUDE_CONFIG_DIR or ~/.claude. Every match is read. A session id with no file is listed
-    in totals.transcript_sessions_missing (and on the REPORT_ORCHESTRATOR line), not fatal.
-    No file found at all (or no ledger row carries a UUID session_id): the orchestrator
-    figures are null / n/a, never 0.
+`orchestrator_turns`, `orchestrator_unpriced_turns`, and `orchestrator_na` (null when
+measured, else why the figures are n/a). They are a lower bound: compaction and utility
+calls write no assistant line, so they are never seen. Without a transcript that covers
+a figure it is null / n/a, never 0 (a partial figure is never shown as complete). Rules:
+  * Transcripts: `--transcript PATH`, repeatable (a missing or unreadable file is a usage
+    error, exit 2; the same file named twice, by realpath, is read once). Without it the
+    transcripts are auto-located by session id: for each distinct session_id on any ledger
+    row that is a UUID (other values are ignored), every `<config>/projects/*/<session_id>.jsonl`
+    (any project directory, since the session may run from another checkout than the state's
+    worktree; the basename must be exactly `<session_id>.jsonl`, never another .jsonl of that
+    project), where <config> is $CLAUDE_CONFIG_DIR or ~/.claude. Every match is read; one that
+    cannot be opened is listed in totals.transcript_unreadable, never a traceback.
+  * Session coverage (both modes): a ledger session id is covered when a transcript read has the
+    basename `<session_id>.jsonl` or an assistant line carrying that `sessionId`. Uncovered ids
+    are listed in totals.transcript_sessions_missing (and on the REPORT_ORCHESTRATOR line). A
+    task with any uncovered session id on its rows (task_of_row) has null orchestrator figures,
+    and any uncovered ledger id makes the unattributed bucket null: the turns of that session
+    were never read and could be anywhere. No transcript read at all: every figure is null.
   * Turns: only lines with type "assistant" count; every other type (user, summary, system,
-    attachments) is ignored without being counted. `isSidechain: true` turns are subagent
-    work, i.e. delegated cost already in the ledger: excluded, counted as sidechain_turns.
-    A line that is not a JSON object, or an assistant turn with an unparseable timestamp or
-    unusable usage (no counts, a non-numeric or negative count), is `skipped`, counted and
-    warned, never priced as 0. Lines sharing a message.id are one API message (the transcript
-    writes one line per content block): the last one counts, the rest are deduped.
+    attachments) and a JSON object with no `type` are not orchestrator turns and are ignored
+    without being counted. `isSidechain: true` turns are subagent work, i.e. delegated cost
+    already in the ledger: excluded, counted as sidechain_turns. Lines sharing a message.id are
+    one API message (the transcript writes one line per content block): the last usable one
+    counts, the rest are deduped.
+  * Skipped lines (counted in transcript_skipped and warned, never priced as 0): an assistant
+    turn with a parseable timestamp but unusable usage (no counts, a non-numeric or negative
+    count, a cache_creation breakdown that is not numeric or exceeds the total) makes n/a every
+    task window holding its timestamp, and the unattributed bucket when it is in no single
+    window. A line with no usable timestamp (not JSON, not an object, or an assistant line whose
+    timestamp does not parse; transcript_skipped_undated) could be any turn of any task, so it
+    makes every orchestrator figure null (as one malformed ledger row nulls every delegated
+    figure). A skipped line whose message.id a usable line counts is that message, not a loss.
   * Usage keys map input_tokens/output_tokens/cache_read_input_tokens/
     cache_creation_input_tokens -> input/output/cache_read/cache_write, priced by row_usd
-    (message.model as resolved_model). A turn whose model is not a priced family makes its
-    task's orchestrator_usd null (tokens stay known); a zero-token turn costs 0.
+    (message.model as resolved_model), except 1-hour cache writes: when
+    usage.cache_creation.ephemeral_1h_input_tokens is present those tokens cost 2x the base
+    input price (Anthropic's 1h cache-write rate), the 5-minute part and any remainder of
+    cache_creation_input_tokens the cache_write rate (1.25x input). orchestrator_tokens.cache_write
+    is the total of both. The delegated ledger pricing is unchanged. A turn whose model is not a
+    priced family makes its task's orchestrator_usd null (tokens stay known); a zero-token turn costs 0.
   * Task window: from the task's first route row's ts to its last ledger row's ts (every row
     of its routes, tasks_of), inclusive, to the end of that last second (ledger ts has 1 s
     resolution). A turn belongs to the task whose window contains its timestamp. A turn in no
     window, or in two or more (overlapping plans in one session, ADR-0002 Consequences), goes
     to the `unattributed` bucket (orchestrator_unattributed_usd / _tokens / _turns). A task or
-    window whose timestamps do not parse makes its figures, and the unattributed bucket, null.
+    window whose timestamps do not parse makes every orchestrator figure null. A real task
+    always has orchestrator turns (the main session routes, spawns and reviews it), so a window
+    with zero main-session turns means "not seen" (e.g. a session that ran only shim workers
+    writes no session_id row, so its missing transcript cannot be named): that task is n/a, not 0.
+    Transcripts read that hold no main-session turn at all (the wrong file) make every
+    orchestrator figure null, status "n/a (transcripts held no main-session turns)".
   * Totals: orchestrator_usd (sum over tasks with a known figure; null when none),
-    orchestrator_usd_unknown_tasks, orchestrator_unattributed_*, transcript_skipped,
-    transcript_sidechain_turns, transcripts (the paths read), transcript_sessions_missing
-    (ledger session ids whose transcript was not found; [] with --transcript).
+    orchestrator_usd_unknown_tasks, orchestrator_unattributed_usd / _tokens / _turns,
+    orchestrator_status ("measured", or the n/a reason that nulls every figure),
+    transcript_skipped, transcript_skipped_undated, transcript_sidechain_turns,
+    transcript_deduped, transcripts (the paths read), transcript_unreadable,
+    transcript_sessions_missing (ledger session ids no transcript read covers).
 `usd_unrouted` (delegated ledger rows outside any task) is a different thing from the
 orchestrator `unattributed` bucket (main-session turns outside every task window).
 
@@ -344,18 +369,30 @@ def malformed_rows(state_dir):
 
 TRANSCRIPT_KEYS = (("input_tokens", "input"), ("output_tokens", "output"),
                    ("cache_read_input_tokens", "cache_read"), ("cache_creation_input_tokens", "cache_write"))
-_SID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_SID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _is_sid(s):
+    return isinstance(s, str) and _SID_RE.fullmatch(s) is not None
+
+
+def ledger_sids(rows):
+    """The UUID session ids on ledger rows (other values are ignored), sorted."""
+    return sorted({r["session_id"] for r in rows if _is_sid(r.get("session_id"))})
+
+
+def _config_projects():
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    return os.path.join(cfg, "projects")
 
 
 def locate_transcripts(rows):
     """Auto-locate by session id: <config>/projects/*/<session_id>.jsonl for each UUID session_id on a
     ledger row, in any project directory (the session may run from another checkout than the state's).
     Returns (paths found, sorted; session ids with no transcript file, sorted)."""
-    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
-    projects = os.path.join(cfg, "projects")
-    sids = sorted({r["session_id"] for r in rows if isinstance(r.get("session_id"), str) and _SID_RE.match(r["session_id"])})
+    projects = _config_projects()
     found, missing = [], []
-    for sid in sids:
+    for sid in ledger_sids(rows):
         name = sid + ".jsonl"
         hits = sorted(p for p in glob.glob(os.path.join(glob.escape(projects), "*", glob.escape(name)))
                       if os.path.basename(p) == name and os.path.isfile(p))
@@ -365,63 +402,143 @@ def locate_transcripts(rows):
     return found, missing
 
 
-def read_transcripts(paths):
-    """Main-session assistant turns from transcript files: (turns, skipped, sidechain, deduped).
-    A turn is {"ts", "model", "usage" (ledger keys), "key"}; see the module docstring for the rules."""
-    by_id, anon = {}, []
-    skipped = sidechain = deduped = 0
-    for path in paths:
-        with open(path, "rb") as f:
-            for n, raw in enumerate(f):
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    d = json.loads(raw.decode("utf-8"))
-                except ValueError:
-                    d = None
-                if not isinstance(d, dict):
-                    skipped += 1
-                    continue
-                if d.get("type") != "assistant":
-                    continue
-                if d.get("isSidechain") is True:
-                    sidechain += 1
-                    continue
-                msg = d.get("message") if isinstance(d.get("message"), dict) else {}
-                src = msg.get("usage")
-                u = {}
-                if isinstance(src, dict):
-                    u = {lk: src[tk] for tk, lk in TRANSCRIPT_KEYS if src.get(tk) is not None}
-                tok = usage_tokens(u)
-                ts = _turn_ts(d.get("timestamp"))
-                if tok is None or ts is None or any(v < 0 for v in tok.values()):
-                    skipped += 1
-                    continue
-                turn = {"ts": ts, "model": msg.get("model"), "usage": tok}
-                mid = msg.get("id")
-                if isinstance(mid, str) and mid:
-                    deduped += 1 if mid in by_id else 0
-                    by_id[mid] = turn
+def _cache_1h(src, cw):
+    """(cache_write total, of which 1-hour writes) from a transcript usage dict, or None when the
+    usage.cache_creation breakdown is unusable (a non-numeric or negative part, parts above the total)."""
+    cc = src.get("cache_creation")
+    if cc is None:
+        return cw, 0
+    if not isinstance(cc, dict):
+        return None
+    h1, m5 = cc.get("ephemeral_1h_input_tokens"), cc.get("ephemeral_5m_input_tokens")
+    for v in (h1, m5):
+        if v is not None and (not _num(v) or v < 0):
+            return None
+    h1, m5 = h1 or 0, m5 or 0
+    if cw is None:
+        return (h1 + m5 or None), h1
+    return (cw, h1) if h1 + m5 <= cw else None
+
+
+def _read_one(path):
+    """One transcript file -> (by_id, anon, stats) or raises OSError; see read_transcripts."""
+    by_id, anon, dated, undated = {}, [], [], []
+    st = {"skipped": 0, "sidechain": 0, "deduped": 0, "sids": set()}
+    stem = os.path.basename(path)[:-len(".jsonl")] if path.endswith(".jsonl") else None
+    if _is_sid(stem):
+        st["sids"].add(stem)
+    with open(path, "rb") as f:
+        for raw in f:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                d = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                d = None
+            if not isinstance(d, dict):
+                st["skipped"] += 1
+                undated.append(None)          # could be any turn of any task: nulls every figure
+                continue
+            if d.get("type") != "assistant":  # user / summary / system / attachment, or no type: not a turn
+                continue
+            if _is_sid(d.get("sessionId")):
+                st["sids"].add(d["sessionId"])
+            if d.get("isSidechain") is True:
+                st["sidechain"] += 1
+                continue
+            msg = d.get("message") if isinstance(d.get("message"), dict) else {}
+            mid = msg.get("id") if isinstance(msg.get("id"), str) and msg.get("id") else None
+            src = msg.get("usage")
+            u, h1 = {}, 0
+            if isinstance(src, dict):
+                u = {lk: src[tk] for tk, lk in TRANSCRIPT_KEYS if src.get(tk) is not None}
+            tok = usage_tokens(u)
+            if tok is not None and any(v < 0 for v in tok.values()):
+                tok = None
+            if tok is not None:
+                cc = _cache_1h(src, tok.get("cache_write"))
+                if cc is None:
+                    tok = None
                 else:
-                    anon.append(turn)
-    return list(by_id.values()) + anon, skipped, sidechain, deduped
+                    if cc[0] is not None:
+                        tok["cache_write"] = cc[0]
+                    h1 = cc[1]
+            ts = _turn_ts(d.get("timestamp"))
+            if tok is None or ts is None:
+                st["skipped"] += 1
+                (dated if ts is not None else undated).append((ts, mid) if ts is not None else mid)
+                continue
+            turn = {"ts": ts, "model": msg.get("model"), "usage": tok, "cache_write_1h": h1}
+            if mid is not None:
+                st["deduped"] += 1 if mid in by_id else 0
+                by_id[mid] = turn
+            else:
+                anon.append(turn)
+    return by_id, anon, dated, undated, st
+
+
+def read_transcripts(paths):
+    """Main-session assistant turns from transcript files. Returns a dict: turns (each {"ts", "model",
+    "usage" (ledger keys), "cache_write_1h"}), skipped, sidechain, deduped, skipped_dated (the timestamps of
+    skipped dated assistant turns whose message.id no usable line counts), skipped_undated (skipped lines
+    with no usable timestamp: not JSON, not an object, or an assistant line whose timestamp does not
+    parse, unless its message.id is counted by a usable line), sids (session ids the files cover: a
+    <uuid>.jsonl basename, or the sessionId on their assistant lines), read (paths read) and unreadable
+    (paths that could not be opened or read). See the module docstring for the rules."""
+    by_id, anon, dated, undated = {}, [], [], []
+    out = {"skipped": 0, "sidechain": 0, "deduped": 0, "sids": set(), "read": [], "unreadable": []}
+    for path in paths:
+        try:
+            b, a, dt, ud, st = _read_one(path)
+        except OSError:
+            out["unreadable"].append(path)
+            continue
+        out["read"].append(path)
+        for mid, turn in b.items():
+            out["deduped"] += 1 if mid in by_id else 0
+            by_id[mid] = turn
+        anon += a
+        dated += dt
+        undated += ud
+        for k in ("skipped", "sidechain", "deduped"):
+            out[k] += st[k]
+        out["sids"] |= st["sids"]
+    out["turns"] = list(by_id.values()) + anon
+    out["skipped_dated"] = [ts for ts, mid in dated if mid is None or mid not in by_id]
+    out["skipped_undated"] = sum(1 for mid in undated if mid is None or mid not in by_id)
+    return out
 
 
 def _turn_usd(turn, price):
-    """USD of one turn through row_usd, or None when its model cannot be priced (0 tokens cost 0)."""
+    """USD of one turn through row_usd, or None when its model cannot be priced (0 tokens cost 0).
+    1-hour cache writes (usage.cache_creation.ephemeral_1h_input_tokens) cost 2x the base input price,
+    not the 5-minute cache_write rate row_usd applies to the whole cache_write count: the difference is
+    added here, so the ledger's (delegated) pricing is unchanged."""
     if not any(turn["usage"].values()):
         return 0.0
     usd, _ = row_usd({"usage": turn["usage"], "resolved_model": turn["model"]}, price)
-    return usd
+    h1 = turn.get("cache_write_1h") or 0
+    if usd is None or not h1:
+        return usd
+    p = price[family(turn["model"])]
+    v = usd + h1 * (2 * float(p.get("input") or 0) - float(p.get("cache_write") or 0)) / 1e6
+    return v if math.isfinite(v) else None
 
 
-def orchestrator(turns, windows, price):
-    """Attribute turns to task windows. Returns (per-task list parallel to windows, unattributed)."""
-    per = [{"turns": 0, "tokens": collections.Counter(), "micro": 0, "unpriced": 0} for _ in windows]
-    un = {"turns": 0, "tokens": collections.Counter(), "micro": 0, "unpriced": 0}
+def _hits(ts, windows):
+    return [i for i, (a, b) in enumerate(windows) if a is not None and b is not None and a <= ts < b + 1]
+
+
+def orchestrator(turns, windows, price, skipped_dated=()):
+    """Attribute turns to task windows. Returns (per-task list parallel to windows, unattributed). A
+    turn in exactly one window is that task's, else unattributed. A skipped dated turn taints every
+    window holding it (tainted: its figures are n/a), and the unattributed bucket when it is in no
+    single window."""
+    per = [{"turns": 0, "tokens": collections.Counter(), "micro": 0, "unpriced": 0, "tainted": 0} for _ in windows]
+    un = {"turns": 0, "tokens": collections.Counter(), "micro": 0, "unpriced": 0, "tainted": 0}
     for t in turns:
-        hits = [i for i, (a, b) in enumerate(windows) if a is not None and b is not None and a <= t["ts"] < b + 1]
+        hits = _hits(t["ts"], windows)
         bucket = per[hits[0]] if len(hits) == 1 else un
         usd = _turn_usd(t, price)
         bucket["turns"] += 1
@@ -430,36 +547,86 @@ def orchestrator(turns, windows, price):
             bucket["unpriced"] += 1
         else:
             bucket["micro"] += _micro(usd)
+    for ts in skipped_dated:
+        hits = _hits(ts, windows)
+        for i in hits:
+            per[i]["tainted"] += 1
+        if len(hits) != 1:
+            un["tainted"] += 1
     return per, un
 
 
-def _orch_fields(o, usable):
-    """Per-task orchestrator keys; all null (n/a) with no transcript or an unusable window."""
-    if o is None or not usable:
-        return {"orchestrator_tokens": None, "orchestrator_tokens_total": None, "orchestrator_usd": None,
-                "orchestrator_turns": None, "orchestrator_unpriced_turns": None}
+_NO_TRANSCRIPT = ("n/a (no transcript: pass --transcript PATH, or the ledger has no session_id whose transcript "
+                  "is under <config>/projects ($CLAUDE_CONFIG_DIR or ~/.claude))")
+_NULL_ORCH = {"orchestrator_tokens": None, "orchestrator_tokens_total": None, "orchestrator_usd": None,
+              "orchestrator_turns": None, "orchestrator_unpriced_turns": None}
+
+
+def _orch_fields(o, na):
+    """Per-task orchestrator keys; all null (n/a, with the reason in orchestrator_na) when na is set."""
+    if o is None or na:
+        return dict(_NULL_ORCH, orchestrator_na=na or "no transcript")
     tok = {k: o["tokens"].get(k, 0) for k in TOKEN_KEYS}
     return {"orchestrator_tokens": tok, "orchestrator_tokens_total": sum(tok.values()),
             "orchestrator_usd": None if o["unpriced"] else o["micro"] / 1e6, "orchestrator_turns": o["turns"],
-            "orchestrator_unpriced_turns": o["unpriced"]}
+            "orchestrator_unpriced_turns": o["unpriced"], "orchestrator_na": None}
 
 
-def _orch_totals(out, oun, paths, wok, skipped, sidechain, deduped, sids_missing):
-    if not paths:
-        return {"transcript_sessions_missing": sids_missing, "orchestrator_usd": None, "orchestrator_usd_unknown_tasks": None, "orchestrator_unattributed_usd": None,
-                "orchestrator_unattributed_tokens": None, "orchestrator_unattributed_turns": None,
-                "transcript_skipped": None, "transcript_sidechain_turns": None, "transcript_deduped": None,
-                "transcripts": [], "orchestrator_status": "n/a (no transcript: pass --transcript PATH, or the ledger has no "
-                                                         "session_id whose transcript is under ~/.claude/projects)"}
+def _orch_status(tr, wok):
+    """'measured', or the n/a reason that nulls every orchestrator figure."""
+    if not tr or not tr["read"]:
+        return _NO_TRANSCRIPT
+    if not wok:
+        return "n/a (a task window has an unparseable timestamp)"
+    if tr["skipped_undated"]:
+        return ("n/a (%d transcript line(s) with no usable timestamp (not JSON, not an object, or an unparseable "
+                "timestamp) may belong to any task window)" % tr["skipped_undated"])
+    if not tr["turns"]:
+        return "n/a (transcripts held no main-session turns)"
+    return "measured"
+
+
+def _task_na(status, o, sids, covered):
+    """Why one task's orchestrator figures are n/a, or None (measured)."""
+    if status != "measured":
+        return status
+    gone = sorted(s for s in sids if s not in covered)
+    if gone:
+        return "session(s) with no transcript read: %s" % ",".join(gone)
+    if o["tainted"]:
+        return "%d unusable transcript turn(s) in the window" % o["tainted"]
+    if not o["turns"]:
+        return "no main-session turn in the window"
+    return None
+
+
+def _orch_totals(out, oun, tr, status, sids_missing):
+    base = {"transcript_sessions_missing": sids_missing, "transcript_unreadable": tr["unreadable"] if tr else [],
+            "transcripts": tr["read"] if tr else [], "orchestrator_status": status}
+    if not tr or not tr["read"]:
+        return dict(base, orchestrator_usd=None, orchestrator_usd_unknown_tasks=None, orchestrator_unattributed_usd=None,
+                    orchestrator_unattributed_tokens=None, orchestrator_unattributed_turns=None,
+                    transcript_skipped=None, transcript_skipped_undated=None, transcript_sidechain_turns=None,
+                    transcript_deduped=None)
     known = [x for x in out if x["orchestrator_usd"] is not None]
-    un_ok = wok and oun["unpriced"] == 0
-    return {"transcript_sessions_missing": sids_missing, "orchestrator_usd": round(sum(_micro(x["orchestrator_usd"]) for x in known) / 1e6, 6) if known else None,
-            "orchestrator_usd_unknown_tasks": len(out) - len(known),
-            "orchestrator_unattributed_usd": oun["micro"] / 1e6 if un_ok else None,
-            "orchestrator_unattributed_tokens": sum(oun["tokens"].values()) if wok else None,
-            "orchestrator_unattributed_turns": oun["turns"] if wok else None,
-            "transcript_skipped": skipped, "transcript_sidechain_turns": sidechain, "transcript_deduped": deduped,
-            "transcripts": paths, "orchestrator_status": "measured" if wok else "n/a (a task window has an unparseable timestamp)"}
+    un_ok = status == "measured" and not sids_missing and not oun["tainted"]
+    return dict(base, orchestrator_usd=round(sum(_micro(x["orchestrator_usd"]) for x in known) / 1e6, 6) if known else None,
+                orchestrator_usd_unknown_tasks=len(out) - len(known),
+                orchestrator_unattributed_usd=oun["micro"] / 1e6 if un_ok and not oun["unpriced"] else None,
+                orchestrator_unattributed_tokens=sum(oun["tokens"].values()) if un_ok else None,
+                orchestrator_unattributed_turns=oun["turns"] if un_ok else None,
+                transcript_skipped=tr["skipped"], transcript_skipped_undated=tr["skipped_undated"],
+                transcript_sidechain_turns=tr["sidechain"], transcript_deduped=tr["deduped"])
+
+
+def _realpath_dedupe(paths):
+    seen, out = set(), []
+    for p in paths:
+        rp = os.path.realpath(p)
+        if rp not in seen:
+            seen.add(rp)
+            out.append(p)
+    return out
 
 
 def per_task(root, state_dir, plan=None, transcripts=None):
@@ -483,11 +650,24 @@ def per_task(root, state_dir, plan=None, transcripts=None):
     out = []
     windows = []
     tlist = tasks_of(rows, price, route_task, windows)
-    paths, sids_missing = (list(transcripts), []) if transcripts else locate_transcripts(rows)
-    turns, skipped, sidechain, deduped = read_transcripts(paths) if paths else ([], None, None, None)
+    paths, sids_missing = (_realpath_dedupe(transcripts), None) if transcripts else locate_transcripts(rows)
+    tr = read_transcripts(paths) if paths else None
+    if tr is not None:   # a ledger session is covered only by a transcript actually read (either mode)
+        sids_missing = [s for s in ledger_sids(rows) if s not in tr["sids"]]
     wok = all(a is not None and b is not None for a, b in windows)
-    oper, oun = orchestrator(turns, windows, price) if paths else ([None] * len(windows), None)
+    status = _orch_status(tr, wok)
+    if tr is not None and tr["read"]:
+        oper, oun = orchestrator(tr["turns"], windows, price, tr["skipped_dated"])
+    else:
+        oper, oun = [None] * len(windows), None
+    task_sids = collections.defaultdict(set)   # the UUID session ids on each task's rows
+    for r in rows:
+        k = task_of_row(r, route_task)
+        if k is not None and _is_sid(r.get("session_id")):
+            task_sids[k].add(r["session_id"])
+    covered = tr["sids"] if tr else set()
     for t, o in zip(tlist, oper):
+        na = _task_na(status, o, task_sids.get(route_task.get(t["routes"][0]), ()), covered) if o is not None else status
         known = not bad and not t["unmeasured_agents"]
         usd_ok = known and not t["unpriced_rows"] and t["priced_rows"] > 0
         tok_ok = known and not t["no_usage_runs"] and t["token_rows"] > 0
@@ -499,7 +679,7 @@ def per_task(root, state_dir, plan=None, transcripts=None):
                     "unpriced_rows": t["unpriced_rows"], "unmeasured_agents": t["unmeasured_agents"],
                     "review_rounds": t["review_rounds"],
                     "escalations": t["escalations"], "approved": t["approved"],
-                    "outcome": t["last_verdict"] or "no-verdict", **_orch_fields(o, paths and wok)})
+                    "outcome": t["last_verdict"] or "no-verdict", **_orch_fields(o, na)})
     agg = usage_totals(rows, price)
     known = sum(_micro(x["usd"]) for x in out if x["usd"] is not None)
     partial = sum(_micro(x["usd_priced_partial"]) for x in out if x["usd"] is None)
@@ -518,7 +698,7 @@ def per_task(root, state_dir, plan=None, transcripts=None):
                        # the priced part of the n/a tasks (a lower bound on their cost, not a figure for them)
                        "usd_partial_in_unknown_tasks": round(partial / 1e6, 6),
                        "usd_unrouted": None if bad else round(unrouted / 1e6, 6),
-                       **_orch_totals(out, oun, paths, wok, skipped, sidechain, deduped, sids_missing)}}
+                       **_orch_totals(out, oun, tr, status, sids_missing)}}
 
 
 def _usd4(v):
@@ -546,10 +726,12 @@ def print_per_task(p):
              _usd4(t["usd_unrouted"])))
     miss = ("; sessions with no transcript=%s" % ",".join(t["transcript_sessions_missing"])
             if t["transcript_sessions_missing"] else "")
+    miss += ("; unreadable transcripts=%s" % ",".join(t["transcript_unreadable"]) if t["transcript_unreadable"] else "")
     if t["orchestrator_status"] != "measured":
         print("REPORT_ORCHESTRATOR: %s%s" % (t["orchestrator_status"], miss))
         return
-    print("REPORT_ORCHESTRATOR: usd=%s (%d task(s) n/a); unattributed (main-session turns in no single task window; "
+    print("REPORT_ORCHESTRATOR: usd=%s (%d task(s) n/a; a lower bound: compaction and utility calls write no assistant "
+          "line); unattributed (main-session turns in no single task window; "
           "not usd_unrouted) usd=%s tokens=%s turns=%s; skipped=%d line(s); sidechain turns excluded=%d (delegated, in the ledger); "
           "deduped=%d; transcripts=%s%s"
           % (_usd4(t["orchestrator_usd"]), t["orchestrator_usd_unknown_tasks"], _usd4(t["orchestrator_unattributed_usd"]),
@@ -949,6 +1131,11 @@ def main(argv):
     for tp in transcripts:
         if not os.path.isfile(tp):
             print("report: transcript not found: %s" % tp, file=sys.stderr)
+            return 2
+        try:
+            open(tp, "rb").close()
+        except OSError as e:
+            print("report: transcript not readable: %s (%s)" % (tp, e.strerror or e), file=sys.stderr)
             return 2
     if do_per_task:
         if do_compare or do_decision:
