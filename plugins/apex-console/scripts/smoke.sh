@@ -440,5 +440,165 @@ assert sys.dont_write_bytecode is False, "monitorlib turned bytecode writing off
 PY
 pass "console-plans-payload: scope (scope-less = feature), intent summary, operate block (deploys, day N of M, per-check latest/breaches/unmeasured, missing state is missing), watched plans, repo checks, and per-task cost equal to report.sh --per-task (n/a stays null); the state base is untouched"
 
+# 13. console-ui-borrowings: the page's own app.js renders scope, intent, the Operate panel, Watched plans and per-task cost.
+# Phase 4.5 owns ui/demo.json, so the render is driven from a payload fixture defined here (api.md's GET /api/progress shape), not from
+# demo.json. app.js is a classic-syntax script: it runs under node's vm against a minimal DOM shim (no jsdom is installed), its own
+# progressNodes()/watchedNodes() build the DOM, and the assertions read the serialized tree. Without node, a static check runs instead.
+UIJS="$PLUGIN_ROOT/ui/app.js"
+if command -v node >/dev/null 2>&1; then
+cat > "$WORK/ui-render.js" <<'JS'
+const vm = require('vm'), fs = require('fs'), assert = require('assert');
+class Node_ {}
+class Text extends Node_ { constructor(t) { super(); this.data = String(t); this.parentNode = null; } get textContent() { return this.data; } remove() { if (this.parentNode) this.parentNode.childNodes = this.parentNode.childNodes.filter((c) => c !== this); } }
+class El extends Node_ {
+  constructor(tag) { super(); this.tag = tag; this.attrs = {}; this.childNodes = []; this.parentNode = null; this.hidden = false; this.listeners = {}; this.style = {}; }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  removeAttribute(k) { delete this.attrs[k]; }
+  addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }
+  append(...k) { for (const c of k) { const n = typeof c === 'string' ? new Text(c) : c; n.parentNode = this; this.childNodes.push(n); } }
+  get firstChild() { return this.childNodes[0] || null; }
+  remove() { if (this.parentNode) this.parentNode.childNodes = this.parentNode.childNodes.filter((c) => c !== this); }
+  set textContent(t) { this.childNodes = []; this.append(String(t)); }
+  get textContent() { return this.childNodes.map((c) => c.textContent).join(''); }
+  focus() {} querySelector() { return null; }
+  get id() { return this.attrs.id; } set id(v) { this.attrs.id = v; }
+}
+const all = (n, f, out = []) => { if (n instanceof El) { if (f(n)) out.push(n); n.childNodes.forEach((c) => all(c, f, out)); } return out; };
+const calls = [];
+const byId = {};
+const ctx = {
+  console, Intl, Date, JSON, URLSearchParams, Promise, setInterval: () => 0, clearInterval() {}, CSS: { escape: (x) => x }, Number, String, Object, Array, Math, Set, Map,
+  Node: Node_, location: { search: '' }, localStorage: { getItem: () => null, setItem() {} },
+  window: { scrollTo() {}, scrollY: 0 },
+  document: {
+    createElement: (t) => new El(t), createElementNS: (_n, t) => new El(t), createTextNode: (t) => new Text(t),
+    getElementById: (id) => byId[id] ||= new El('div'), addEventListener() {}, hidden: false, activeElement: null,
+    documentElement: new El('html'), querySelector: () => null,
+  },
+  fetch: async (path, opts = {}) => {
+    calls.push({ path: String(path), method: (opts.method || 'GET').toUpperCase() });
+    const body = String(path).startsWith('/api/progress') ? FIX : { version: '0', repos: [], config_dir: '' };
+    return { ok: true, status: 200, json: async () => body };
+  },
+};
+const D = '2026-10-20T10:00:00Z';
+const check = (id, o = {}) => ({ id, metric: 'latency.p95', op: '<', threshold: 800, severity: 'high', declared: true, measured: true, last_value: 950, last_status: 'breach',
+  last_ts: D, last_reason: null, breaches: 2, unmeasured_runs: 0, filed: 'lessons', unmeasured: false, last_measured_value: null, last_measured_status: null, last_measured_ts: null, open_at_close: false, ...o });
+const mkTask = (line, title, o = {}) => ({ line, title, status: 'done', tier: 'C', rounds: 1, attempts: 1, completed_at: D, usd: null, tokens: null, orchestrator_usd: null, orchestrator_tokens: null, orchestrator_na: 'no usage recorded', ...o });
+const FIX = { repos: [{ id: 'r1', name: 'my-app', halted: false, halt_reason: null, lock: null, adhoc: [],
+  plans: [
+    { hash: 'aaa111', slug: 'billing', path: '.claude/plans/billing-plan.md', name: 'billing-plan', scope: 'feature', total: 2, done: 1, phase: 'Phase 1', halted: false, halt_reason: null,
+      landed: false, last_activity: D, usd: null, open_findings: 0, enforced: true, operate: null,
+      intent: { file: '.claude/tasks/billing-intent.md', problem: 'Invoices <b>drift</b>', who: 'finance', why_now: null, non_goals: 'taxes' },
+      cost: { status: 'measured', delegated_usd: 1.5, delegated_unknown_tasks: 1, orchestrator_usd: 2.5, orchestrator_unattributed_usd: null, orchestrator_unattributed_tokens: null, usd_unrouted: 0 },
+      tasks: [mkTask(1, 'Add model', { usd: 1.5, tokens: 100, orchestrator_usd: 2.5, orchestrator_tokens: 900, orchestrator_na: null }), mkTask(2, 'Add route', { status: 'todo' })] },
+    { hash: 'bbb222', slug: 'ship', path: '.claude/plans/ship-plan.md', name: 'ship-plan', scope: 'poc', total: 1, done: 1, phase: 'Phase 1', halted: false, halt_reason: null,
+      landed: true, last_activity: D, usd: 1, open_findings: 0, enforced: true, intent: null,
+      cost: { status: 'n/a (no ledger)', delegated_usd: null, delegated_unknown_tasks: 1, orchestrator_usd: null, orchestrator_unattributed_usd: null, orchestrator_unattributed_tokens: null, usd_unrouted: 0 },
+      tasks: [mkTask(1, 'Ship it')],
+      operate: { slug: 'ship', tag: 'operate:ship', state: 'ok', scope: 'poc', monitor: 'ok', window_days: 14, problems: [],
+        deploys: [{ ts: D, sha: 'b'.repeat(40), exit: 0 }], last_deploy: { ts: D, sha: 'b'.repeat(40), exit: 0 },
+        window: { state: 'open', day: 3, days: 14, start: D, end: D, outcome: null, closed_by: null, open_at_close: null, unmeasured_at_close: null, measured_runs: 2, breaches: 2, last_run: D, never_measured: false },
+        windows_closed: 1, last_closed_window: { outcome: 'closed-with-breaches', closed_by: 'monitor', closed_at: D, start: D, end: D, days: 14, open_at_close: ['p95'], unmeasured_at_close: ['never'], measured_runs: 3, breaches: 4, never_measured: false },
+        ingested: { lessons: [{ id: 'L-002', title: 'ship <i>p95</i> breach' }], backlog: [{ id: 'B-001', title: 'errors 9 breached', done: false }], counts: { lessons: 1, backlog: 1, backlog_open: 1 } },
+        checks: [check('p95', { open_at_close: true }), check('never', { measured: false, last_value: null, last_status: null, breaches: null, unmeasured_runs: null, filed: null, unmeasured: true })] } },
+    { hash: 'ccc333', slug: 'fix', path: '.claude/plans/fix-plan.md', name: 'fix-plan', scope: 'bugfix', total: 1, done: 0, phase: null, halted: false, halt_reason: null,
+      landed: false, last_activity: D, usd: null, open_findings: 0, enforced: false, intent: null, operate: null, cost: null, tasks: [] },
+  ],
+  watched: [{ hash: 'bbb222', slug: 'ship', path: '.claude/plans/ship-plan.md', day: 3, days: 14, end: D }],
+  repo_checks: { configured: true, state: 'missing', file: 'm.json', problems: [], checks: [check('site', { threshold: 500, last_value: 120, last_status: 'ok', breaches: 0, filed: null }),
+    check('cold', { measured: false, last_value: null, last_status: null, breaches: null, filed: null, unmeasured: true })],
+    ingested: { backlog: [{ id: 'B-005', title: 'latency breached', done: false }], counts: { backlog: 1, backlog_open: 1 } } } }] };
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx, { filename: 'app.js' });
+(async () => {
+  await new Promise((r) => setTimeout(r, 50));                       // let boot() settle against the stub fetch
+  const run = (src) => vm.runInContext(src, ctx);
+  const html = (nodes) => { const root = new El('div'); root.append(...[nodes].flat(Infinity).filter(Boolean)); return root; };
+  const txt = (n) => n.textContent.replace(/\s+/g, ' ');
+  const prog = html(run('progressNodes')(FIX));
+  const cards = all(prog, (n) => n.attrs.class && /\bplan\b/.test(n.attrs.class) && n.tag === 'div' && n.childNodes.some((c) => c.attrs && c.attrs.class === 'plan-top'));
+  assert.strictEqual(cards.length, 3, 'three plan cards');
+  // scope badge per plan, with an aria-label
+  const badges = all(prog, (n) => /scope-badge/.test(n.attrs.class || ''));
+  assert.deepStrictEqual(badges.map((b) => b.attrs['aria-label']), ['Scope: feature', 'Scope: poc', 'Scope: bugfix']);
+  // scope filter: bugfix / poc / feature, labelled group
+  const filt = all(prog, (n) => n.attrs['aria-label'] === 'Filter plans by scope')[0];
+  assert.ok(filt && filt.attrs.role === 'group', 'scope filter group');
+  assert.deepStrictEqual(all(filt, (n) => n.tag === 'button').map((b) => txt(b)), ['All scopes', 'bugfix', 'poc', 'feature']);
+  // Operate panel only for the landed plan
+  const ops = all(prog, (n) => /\boperate\b/.test(n.attrs.class || ''));
+  assert.strictEqual(ops.length, 1, 'one Operate panel');
+  assert.strictEqual(ops[0].attrs['aria-label'], 'Operate: ship');
+  const ot = txt(ops[0]);
+  for (const want of ['day 3 of 14', 'Deploy history', 'bbbbbbbbbbbb', 'Windows closed: 1', 'closed-with-breaches', 'L-002', 'B-001', 'open-at-close', 'Lessons (1)', 'Backlog (1, 1 open)']) assert.ok(ot.includes(want), 'operate panel lacks ' + want);
+  // `unmeasured` is the word, never a value: the never-measured check shows no number in Latest or Breaches
+  const rows = all(ops[0], (n) => n.tag === 'tr');
+  const never = rows.find((r) => txt(r).startsWith('never'));
+  const cells = never.childNodes.map((c) => txt(c));
+  assert.strictEqual(cells[4], 'unmeasured', cells.join('|'));
+  assert.strictEqual(cells[5], 'unmeasured', cells.join('|'));
+  assert.ok(!/\d/.test(cells[4] + cells[5]), 'unmeasured check shows a number');
+  assert.ok(all(never, (n) => /\bflag\b/.test(n.attrs.class || '') && txt(n) === 'unmeasured').length === 1, 'unmeasured flag chip');
+  const p95 = rows.find((r) => txt(r).startsWith('p95'));
+  assert.ok(txt(p95).includes('950') && txt(p95).includes('800'), 'latest value and threshold of a measured check');
+  // untrusted text stays text: never parsed into elements
+  assert.ok(!all(prog, (n) => n.tag === 'b' || n.tag === 'i').length, 'payload text became markup');
+  assert.ok(txt(prog).includes('Invoices <b>drift</b>') && txt(prog).includes('ship <i>p95</i> breach'));
+  // intent summary: shown, null fields n/a
+  const intent = all(prog, (n) => n.tag === 'details' && /intent/.test(n.attrs.class || ''))[0];
+  assert.ok(intent && /Why\s*now\s*n\/a/.test(txt(intent)) && txt(intent).includes('finance'), txt(intent || prog));
+  // cost table: delegated / orchestrator / unattributed, aria-labelled; null orchestrator renders n/a with the reason as title
+  const costs = all(prog, (n) => /cost-table/.test(n.attrs.class || ''));
+  assert.strictEqual(costs.length, 3);
+  assert.strictEqual(costs[0].attrs['aria-label'], 'Cost per task in billing-plan');
+  assert.deepStrictEqual(all(costs[0], (n) => n.tag === 'th').map(txt), ['Task', 'Delegated', 'Orchestrator', 'Unattributed']);
+  const crow = all(costs[0], (n) => n.tag === 'tr');
+  assert.ok(txt(crow[1]).includes('$1.50') && txt(crow[1]).includes('$2.50'));
+  const orchNa = all(crow[2], (n) => n.attrs.title === 'no usage recorded');
+  assert.strictEqual(txt(crow[2].childNodes[2]), 'n/a'); assert.ok(orchNa.length === 1 && txt(orchNa[0]) === 'n/a');
+  assert.strictEqual(txt(crow[2].childNodes[1]), 'n/a');                    // delegated n/a stays plain
+  assert.strictEqual(txt(crow[crow.length - 1].childNodes[3]), 'n/a');      // unattributed null
+  assert.ok(!/\$0\b|\b0\.00/.test(txt(costs[1])), 'n/a cost rendered as zero');
+  // scope filter narrows the plan list
+  run('ui').scope = 'poc';
+  const only = html(run('progressNodes')(FIX));
+  assert.strictEqual(all(only, (n) => /scope-badge/.test(n.attrs.class || '')).length, 1);
+  run('ui').scope = 'all';
+  // Watched plans view: open windows plus repo-level checks
+  const wv = html(run('watchedNodes')(FIX));
+  const wt = txt(wv);
+  for (const want of ['Open watch windows', 'ship', 'day 3 of 14', 'Repo-level checks', 'site', 'cold', 'B-005']) assert.ok(wt.includes(want), 'watched lacks ' + want);
+  assert.ok(all(wv, (n) => /Open watch windows in my-app|Repo-level checks in my-app/.test(n.attrs['aria-label'] || '')).length === 2);
+  const cold = all(wv, (n) => n.tag === 'tr').find((r) => txt(r).startsWith('cold'));
+  assert.strictEqual(txt(cold.childNodes[4]), 'unmeasured');
+  // the Watched tab and the view are wired
+  assert.ok(run('TABS').some((t) => t.id === 'watched'));
+  await run('viewWatched')();
+  // read-only: only GETs, never an operate action
+  assert.ok(calls.length > 0 && calls.every((c) => c.method === 'GET' && !/operate|deploy|ingest|monitor/.test(c.path)), JSON.stringify(calls));
+  console.log('rendered ' + cards.length + ' plans, ' + ops.length + ' Operate panel, ' + costs.length + ' cost tables, ' + calls.length + ' GETs');
+})().catch((e) => { console.error(e.stack || e); process.exit(1); });
+JS
+OUT="$(node "$WORK/ui-render.js" "$UIJS" 2>&1)" || { echo "$OUT" >&2; fail "console-ui-borrowings: rendering app.js with the plans payload failed"; }
+echo "  $OUT"
+UIMODE="rendered under node with a DOM shim"
+else
+UIMODE="static check (node not found)"
+fi
+python3 - "$PLUGIN_ROOT/ui" <<'PY' || fail "console-ui-borrowings: app.js/app.css/index.html lack a required surface"
+import os, re, sys
+js = open(os.path.join(sys.argv[1], "app.js")).read()
+for needle in ("scope-badge", "`Scope: ", "Filter plans by scope", "'bugfix', 'poc', 'feature'", "operatePanel(p)", "p.landed ? operatePanel",
+               "viewWatched", "Open watch windows", "Repo-level checks", "'unmeasured'", "open-at-close", "Cost per task in",
+               "'Delegated'", "'Orchestrator'", "'Unattributed'", "orchestrator_na", "aria-label"):
+    assert needle in js, needle
+# read-only: no operate action endpoint is ever fetched or posted to
+assert not re.search(r"(apiPost|fetch)\([^)]*(operate|deploy|ingest|monitor)", js, re.I), "operate action endpoint"
+assert "/api/operate" not in js
+PY
+pass "console-ui-borrowings: scope badge per plan and a bugfix/poc/feature filter, Operate panel only for landed plans (deploys, window day N of M, checks with unmeasured/open-at-close, ingested), Watched plans view (open windows, repo checks), unmeasured never a value, cost table with n/a orchestrator cells and aria labels, GET-only ($UIMODE; fixture is inline, demo.json is Phase 4.5's)"
+
 echo ""
 echo "smoke passed: $N/$N checks"

@@ -761,10 +761,12 @@ const TABS = [
   { id: 'overview', label: 'Overview', ico: '◎' },
   { id: 'metrics', label: 'Metrics', ico: '▤' },
   { id: 'progress', label: 'Progress', ico: '▸' },
+  { id: 'watched', label: 'Watched', ico: '◔' },
   { id: 'knobs', label: 'Knobs', ico: '⚙' },
   { id: 'keys', label: 'Keys', ico: '⚿' },
   { id: 'audit', label: 'Audit', ico: '☰' },
 ];
+const SCOPES = ['all', 'bugfix', 'poc', 'feature'];
 const ui = {
   tab: TABS.some((t) => t.id === store.get('tab')) ? store.get('tab') : 'overview',
   repo: store.get('repo', 'all'),
@@ -774,6 +776,8 @@ const ui = {
   metrics: null,
   metricsKey: null,
   expanded: new Set(),
+  scope: SCOPES.includes(store.get('scope')) ? store.get('scope') : 'all',
+  progress: null,
   auditFocus: null,
 };
 let renderToken = 0;
@@ -823,7 +827,7 @@ async function renderView() {
   view.setAttribute('aria-busy', 'true');
   clear(view);
   view.append(h('div', { class: 'loading', text: 'Loading…' }));
-  const views = { overview: viewOverview, metrics: viewMetrics, progress: viewProgress, knobs: viewKnobs, keys: viewKeys, audit: viewAudit };
+  const views = { overview: viewOverview, metrics: viewMetrics, progress: viewProgress, watched: viewWatched, knobs: viewKnobs, keys: viewKeys, audit: viewAudit };
   try {
     const nodes = await views[ui.tab]();
     if (token !== renderToken) return;
@@ -1070,9 +1074,32 @@ async function viewProgress() {
   const data = await apiGet('/api/progress');
   return progressNodes(data);
 }
+function rerenderProgress() {
+  const view = document.getElementById('view');
+  const fkey = document.activeElement?.getAttribute?.('data-fkey');
+  clear(view);
+  append(view, [progressNodes(ui.progress)]);
+  if (fkey) view.querySelector(`[data-fkey="${CSS.escape(fkey)}"]`)?.focus({ preventScroll: true });
+}
+function scopeFilter() {
+  const g = h('div', { class: 'seg', role: 'group', 'aria-label': 'Filter plans by scope' });
+  for (const v of SCOPES) {
+    g.append(h('button', {
+      type: 'button', text: v === 'all' ? 'All scopes' : v, 'aria-pressed': String(ui.scope === v), 'data-fkey': `scope-${v}`,
+      onclick: () => { ui.scope = v; store.set('scope', v); rerenderProgress(); },
+    }));
+  }
+  return h('div', { class: 'field scope-filter' }, h('span', { class: 'eyebrow', text: 'Scope' }), g);
+}
+function scopeBadge(scope) {
+  const v = typeof scope === 'string' && scope ? scope : 'n/a';
+  return h('span', { class: ['chip', 'scope-badge', `scope-${v}`], 'aria-label': `Scope: ${v}`, title: `Plan scope: ${v}`, text: v });
+}
 function progressNodes(data) {
+  ui.progress = data;
   const out = [pageHead('Progress', 'Read-only view of every plan and task. The console never starts work; it can only stop and resume it.',
-    h('span', { class: 'muted small', text: 'Refreshes every 5 s while this tab is visible' }))];
+    h('span', { class: 'muted small', text: 'Refreshes every 5 s while this tab is visible' })),
+  h('div', { class: 'filters' }, scopeFilter())];
   if (!data.repos?.length) out.push(h('div', { class: 'card empty', text: 'No repos registered yet.' }));
   for (const r of data.repos || []) out.push(repoProgress(r));
   return out;
@@ -1093,8 +1120,10 @@ function repoProgress(r) {
       ? h('button', { class: 'btn', type: 'button', 'data-fkey': `halt-${r.id}`, text: 'Resume', onclick: () => resumeRepo(r) })
       : h('button', { class: 'btn btn-danger', type: 'button', 'data-fkey': `halt-${r.id}`, text: 'Stop all work', onclick: () => haltRepo(r) }));
   const card = h('section', { class: 'card', 'aria-label': r.name }, head);
+  const plans = (r.plans || []).filter((p) => ui.scope === 'all' || p.scope === ui.scope);
   if (!r.plans?.length) card.append(h('p', { class: 'plan empty', text: 'No plans in this repo yet.' }));
-  for (const p of r.plans || []) card.append(planEl(r, p, lock));
+  else if (!plans.length) card.append(h('p', { class: 'plan empty', text: `No ${ui.scope} plans in this repo.` }));
+  for (const p of plans) card.append(planEl(r, p, lock));
   if (r.adhoc?.length) {
     card.append(h('div', { class: 'plan' }, h('h3', { class: 'eyebrow', text: 'Ad-hoc routes' }),
       tableWrap(['Id', { label: 'Routes', num: true }, { label: 'Cost', num: true }, 'Last activity'],
@@ -1116,7 +1145,7 @@ function planEl(r, p, lock) {
   });
   const running = lock && lock.id === p.hash ? lock.line : null;
   const tasks = tableWrap(
-    [{ label: 'Line', num: true }, 'Task', 'Status', 'Tier', { label: 'Rounds', num: true }, { label: 'Attempts', num: true }, 'Completed', { label: 'Cost', num: true }],
+    [{ label: 'Line', num: true }, 'Task', 'Status', 'Tier', { label: 'Rounds', num: true }, { label: 'Attempts', num: true }, 'Completed', { label: 'Delegated cost', num: true }],
     (p.tasks || []).map((t) => h('tr', null,
       td(String(t.line), 'num'),
       td(h('span', null, t.title, running === t.line ? h('span', { class: 'chip chip-accent', text: 'running' }) : null), 'task-title'),
@@ -1125,13 +1154,16 @@ function planEl(r, p, lock) {
       td(String(t.rounds ?? '—'), 'num'),
       td(String(t.attempts ?? '—'), 'num'),
       td(t.completed_at ? timeEl(t.completed_at, 'abs') : '—'),
-      td(fmtUSD(t.usd), 'num'))),
+      td(naUSD(t.usd, 'Delegated cost not recorded'), 'num'))),
     { caption: `Tasks in ${p.name}`, class: 'task-table', label: `Tasks in ${p.name}` });
   tasks.id = listId;
   tasks.hidden = !open;
+  const costTable = costTableEl(p);
+  costTable.hidden = !open;
   toggle.addEventListener('click', () => {
     const now = tasks.hidden;
     tasks.hidden = !now;
+    costTable.hidden = !now;
     toggle.setAttribute('aria-expanded', String(now));
     toggle.textContent = `${now ? 'Hide' : 'Show'} ${p.tasks?.length ?? 0} tasks`;
     if (now) ui.expanded.add(key); else ui.expanded.delete(key);
@@ -1142,6 +1174,7 @@ function planEl(r, p, lock) {
         h('div', { class: 'row' }, h('span', { class: 'plan-name', text: p.name }),
           p.enforced ? h('span', { class: 'chip chip-accent', title: 'Dispatch hooks enforce routing for this plan', text: 'enforced' }) : h('span', { class: 'chip', text: 'not enforced' }),
           p.halted ? statusEl('off', 'Halted') : null,
+          scopeBadge(p.scope),
           p.landed ? statusEl('good', 'Landed') : null),
         h('div', { class: 'plan-path', text: p.path })),
       h('span', { class: 'muted small' }, 'Last activity ', timeEl(p.last_activity))),
@@ -1149,10 +1182,164 @@ function planEl(r, p, lock) {
     h('div', { class: 'progress-label', text: `${p.done} of ${p.total} tasks done · ${fmtPct(pct)}` }),
     h('div', { class: 'plan-stats' },
       h('span', null, 'Phase ', h('span', { class: 'v', text: p.phase || '—' })),
-      h('span', null, 'Cost ', h('span', { class: 'v', text: fmtUSD(p.usd) })),
+      h('span', null, 'Cost ', h('span', { class: 'v', text: p.usd === null || p.usd === undefined ? NA : fmtUSD(p.usd) })),
       h('span', null, 'Open findings ', h('span', { class: 'v', text: String(p.open_findings ?? '—') })),
       p.halt_reason ? h('span', null, 'Halt reason ', h('span', { class: 'v', text: p.halt_reason })) : null),
-    toggle, tasks);
+    intentEl(p),
+    p.landed ? operatePanel(p) : null,
+    toggle, tasks, costTable);
+}
+
+// ----------------------------------------------- scope, intent, operate, cost --
+// null / missing is `n/a` (or the word `unmeasured`), never 0 and never blank.
+const NA = 'n/a';
+function naText(v) { return v === null || v === undefined || v === '' ? NA : String(v); }
+function naInt(v) { return Number.isInteger(v) ? String(v) : NA; }
+function naVal(v) { return typeof v === 'number' && Number.isFinite(v) ? fmtNum(v, Math.abs(v) < 10 && v % 1 ? 2 : 1) : NA; }
+function naUSD(v, why) {
+  const ok = typeof v === 'number' && Number.isFinite(v);
+  return h('span', { class: ok ? null : 'na', title: ok ? null : why, text: ok ? fmtUSD(v) : NA });
+}
+function intentEl(p) {
+  const it = p.intent;
+  if (!it) return h('p', { class: 'small muted intent-none', text: 'Intent: n/a (no intent file for this plan).' });
+  const rows = [['Problem', it.problem], ['Who', it.who], ['Why now', it.why_now], ['Non-goals', it.non_goals]];
+  return h('details', { class: 'intent', 'aria-label': `Intent of ${p.name}` },
+    h('summary', null, 'Intent', it.problem ? h('span', { class: 'muted', text: ` — ${String(it.problem).slice(0, 90)}` }) : null),
+    h('dl', null, rows.map(([k, v]) => [h('dt', { text: k }), h('dd', { text: naText(v) })])),
+    it.file ? h('p', { class: 'plan-path', text: it.file }) : null);
+}
+function costTableEl(p) {
+  const c = p.cost || {};
+  const na = typeof c.status === 'string' && c.status !== 'measured' ? c.status : null;
+  const orch = (t) => {
+    const ok = typeof t.orchestrator_usd === 'number';
+    const why = t.orchestrator_na || (typeof t.orchestrator_tokens === 'number' ? `${fmtCompact(t.orchestrator_tokens)} tokens measured, price unknown` : 'Orchestrator cost not available');
+    return td(h('span', { class: ok ? null : 'na', title: ok ? `${naInt(t.orchestrator_tokens)} tokens` : why, text: ok ? fmtUSD(t.orchestrator_usd) : NA }), 'num');
+  };
+  const rows = (p.tasks || []).map((t) => h('tr', null,
+    td(h('span', { text: `${t.line}  ${t.title}` }), 'task-title'),
+    td(naUSD(t.usd, 'Delegated cost not recorded (background agents record no usage)'), 'num'),
+    orch(t),
+    td(h('span', { class: 'muted', title: 'Unattributed time is plan-level, see the total row', text: '—' }), 'num')));
+  rows.push(h('tr', { class: 'total-row' },
+    td(h('strong', { text: 'Plan total' })),
+    td(h('span', null, naUSD(c.delegated_usd, na || 'Delegated cost not available'),
+      c.delegated_unknown_tasks ? h('span', { class: 'muted small', text: ` (${c.delegated_unknown_tasks} task${c.delegated_unknown_tasks === 1 ? '' : 's'} n/a)` }) : null), 'num'),
+    td(naUSD(c.orchestrator_usd, na || 'Orchestrator cost not available'), 'num'),
+    td(h('span', { title: typeof c.orchestrator_unattributed_tokens === 'number' ? `${fmtCompact(c.orchestrator_unattributed_tokens)} tokens in no single task's window` : (na || 'Not available') },
+      naUSD(c.orchestrator_unattributed_usd, na || 'Unattributed cost not available')), 'num')));
+  const t = tableWrap(['Task', { label: 'Delegated', num: true }, { label: 'Orchestrator', num: true }, { label: 'Unattributed', num: true }], rows,
+    { caption: `Cost per task in ${p.name}`, class: 'task-table cost-table', label: `Cost per task in ${p.name}`, focusable: true });
+  return t;
+}
+function flagChip(text, why) { return h('span', { class: 'chip flag', title: why, text }); }
+function latestCell(c) {
+  if (c.unmeasured === true || c.last_status === 'unmeasured' || c.measured === false) {
+    return h('span', { class: 'status st-watch', title: c.last_reason || 'This check has not produced a reading' }, 'unmeasured');
+  }
+  return h('span', { class: ['v', c.last_status === 'breach' ? 'st-off' : null] }, naVal(c.last_value), c.last_status ? h('span', { class: 'muted small', text: ` ${c.last_status}` }) : null);
+}
+function checksTable(checks, label) {
+  if (!checks?.length) return h('p', { class: 'small muted', text: 'No checks declared.' });
+  return tableWrap(['Check', 'Metric', { label: 'Threshold', num: true }, 'Severity', { label: 'Latest', num: true }, { label: 'Breaches', num: true }, 'Flags'],
+    checks.map((c) => h('tr', null,
+      td(h('code', { text: c.id })),
+      td(naText(c.metric)),
+      td(`${c.op ?? ''} ${naVal(c.threshold)}`.trim(), 'num'),
+      td(naText(c.severity)),
+      td(latestCell(c), 'num'),
+      td(c.unmeasured === true ? 'unmeasured' : naInt(c.breaches), 'num'),
+      td(h('span', { class: 'flags' },
+        c.unmeasured === true ? flagChip('unmeasured', 'Never produced a reading') : null,
+        c.open_at_close === true ? flagChip('open-at-close', 'Was in breach when the window closed') : null,
+        c.filed ? flagChip(`filed: ${c.filed}`, 'Where the first breach went') : null)))),
+    { caption: label, label, class: 'task-table', focusable: true });
+}
+function ingestedEl(ing, withLessons) {
+  if (!ing) return h('p', { class: 'small muted', text: 'Ingested lessons / backlog: n/a.' });
+  const list = (items, kind) => items?.length
+    ? h('ul', { class: 'ingested', 'aria-label': `Ingested ${kind}` }, items.map((i) => h('li', null,
+      h('code', { text: i.id }), ' ', i.title, i.done === true ? flagChip('done') : null)))
+    : h('p', { class: 'small muted', text: `No ${kind} ingested.` });
+  const cn = ing.counts || {};
+  return h('div', { class: 'ingested-box' },
+    withLessons ? [h('h5', { class: 'eyebrow', text: `Lessons (${naInt(cn.lessons)})` }), list(ing.lessons, 'lessons')] : null,
+    h('h5', { class: 'eyebrow', text: `Backlog (${naInt(cn.backlog)}, ${naInt(cn.backlog_open)} open)` }), list(ing.backlog, 'backlog items'));
+}
+function windowEl(w) {
+  if (!w) return h('p', { text: 'Watch window: n/a' });
+  const lists = (a) => (Array.isArray(a) && a.length ? a.join(', ') : 'none');
+  let line;
+  if (w.state === 'open') line = `Watch window: day ${naInt(w.day)} of ${naInt(w.days)}`;
+  else if (w.state === 'closed') line = `Watch window closed: ${w.outcome || 'ended, not yet closed by a monitor run'}`;
+  else if (w.state === 'not-opened') line = 'Watch window: not opened (no deploy recorded)';
+  else line = `Watch window: ${naText(w.state)}`;
+  const extra = [];
+  if (w.state === 'open' || w.state === 'closed') {
+    extra.push(h('span', null, 'Measured runs ', h('span', { class: 'v', text: naInt(w.measured_runs) })));
+    extra.push(h('span', null, 'Breaches ', h('span', { class: 'v', text: naInt(w.breaches) })));
+    if (w.never_measured === true) extra.push(flagChip('never measured', 'No monitor run produced a reading'));
+  }
+  if (w.state === 'closed') {
+    extra.push(h('span', null, 'Open at close ', h('span', { class: 'v', text: lists(w.open_at_close) })));
+    extra.push(h('span', null, 'Unmeasured at close ', h('span', { class: 'v', text: lists(w.unmeasured_at_close) })));
+  }
+  return h('div', null, h('p', { class: 'window-line', text: line }), extra.length ? h('div', { class: 'plan-stats' }, extra) : null);
+}
+function operatePanel(p) {
+  const o = p.operate;
+  const label = `Operate: ${p.slug || p.name}`;
+  if (!o) return h('section', { class: 'operate', 'aria-label': label }, h('h4', { text: 'Operate' }), h('p', { class: 'small muted', text: 'Operate state: n/a (not read).' }));
+  const deploys = o.deploys || [];
+  const lc = o.last_closed_window;
+  return h('section', { class: 'operate', 'aria-label': label },
+    h('h4', null, 'Operate ', o.state === 'missing' ? flagChip('state missing', 'The checkpoint has no operate block') : null,
+      o.monitor ? h('span', { class: 'muted small', text: ` monitor: ${o.monitor}` }) : null),
+    o.state === 'missing' ? h('p', { class: 'small muted', text: 'No operate state recorded for this landed plan: nothing deployed or measured.' }) : null,
+    o.problems?.length ? h('ul', { class: 'small', 'aria-label': 'Monitor problems' }, o.problems.map((x) => h('li', { text: x }))) : null,
+    h('h5', { class: 'eyebrow', text: 'Deploy history' }),
+    deploys.length ? tableWrap(['Time', 'Commit', { label: 'Exit', num: true }],
+      deploys.map((d) => h('tr', null, td(timeEl(d.ts, 'abs')), td(h('code', { text: naText(d.sha).slice(0, 12) })), td(naInt(d.exit), 'num'))),
+      { caption: `Deploys of ${p.name}`, label: `Deploy history of ${p.name}`, class: 'task-table', focusable: true })
+      : h('p', { class: 'small muted', text: 'No deploys recorded.' }),
+    h('h5', { class: 'eyebrow', text: 'Watch window' }),
+    windowEl(o.window),
+    lc ? h('p', { class: 'small muted' }, `Windows closed: ${naInt(o.windows_closed)}. Last closed window: ${naText(lc.outcome)} (by ${naText(lc.closed_by)})`) : null,
+    h('h5', { class: 'eyebrow', text: 'Checks' }),
+    checksTable(o.checks, `Operate checks of ${p.name}`),
+    h('h5', { class: 'eyebrow', text: 'Ingested' }),
+    ingestedEl(o.ingested, true));
+}
+
+// -------------------------------------------------------------- watched --
+async function viewWatched() {
+  const data = await apiGet('/api/progress');
+  return watchedNodes(data);
+}
+function watchedNodes(data) {
+  const out = [pageHead('Watched plans', 'Plans whose watch window is open, and each repo\'s own checks. Read-only: deploys, monitor runs and ingest happen in the CLI.',
+    h('button', { class: 'btn', type: 'button', text: 'Refresh', onclick: () => renderView() }))];
+  if (!data.repos?.length) out.push(h('div', { class: 'card empty', text: 'No repos registered yet.' }));
+  for (const r of data.repos || []) {
+    const w = r.watched || [];
+    const rc = r.repo_checks;
+    out.push(h('section', { class: 'card', 'aria-label': `Watched in ${r.name}` },
+      h('h2', { text: r.name }),
+      h('h3', { class: 'eyebrow', text: 'Open watch windows' }),
+      w.length ? tableWrap(['Plan', { label: 'Day', num: true }, 'Window ends'],
+        w.map((x) => h('tr', null, td(h('span', null, h('strong', { text: x.slug }), ' ', h('span', { class: 'plan-path', text: x.path }))),
+          td(`day ${naInt(x.day)} of ${naInt(x.days)}`, 'num'), td(x.end ? timeEl(x.end, 'abs') : NA))),
+        { caption: `Open watch windows in ${r.name}`, label: `Open watch windows in ${r.name}`, class: 'task-table', focusable: true })
+        : h('p', { class: 'small muted', text: 'No plan has an open watch window.' }),
+      h('h3', { class: 'eyebrow', text: 'Repo-level checks' }),
+      !rc || rc.configured === false ? h('p', { class: 'small muted', text: 'No repo-level checks configured.' }) : [
+        h('p', { class: 'small muted' }, `State: ${naText(rc.state)}`),
+        rc.problems?.length ? h('ul', { class: 'small', 'aria-label': 'Repo check problems' }, rc.problems.map((x) => h('li', { text: x }))) : null,
+        checksTable(rc.checks, `Repo-level checks in ${r.name}`)],
+      rc?.ingested ? [h('h3', { class: 'eyebrow', text: 'Ingested' }), ingestedEl(rc.ingested, false)] : null));
+  }
+  return out;
 }
 async function refreshProgress() {
   if (ui.tab !== 'progress' || document.hidden || document.querySelector('dialog[open]')) return;

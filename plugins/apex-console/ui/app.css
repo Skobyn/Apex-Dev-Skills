@@ -602,3 +602,25 @@ dialog.drawer { margin-right: 0; margin-top: 0; height: 100vh; max-height: 100vh
   .sim-reasons { grid-template-columns: minmax(0, 1fr); padding-left: 0; }
   .sim-title-text, .sim-error { padding-left: 0; }
 }
+
+/* ---- scope, intent, Operate panel, cost (Phase 4.4) ---- */
+.scope-badge { text-transform: lowercase; font-weight: 600; }
+.scope-bugfix { color: var(--warn); border-color: currentColor; }
+.scope-poc { color: var(--ink-mid); border-color: currentColor; }
+.scope-feature { color: var(--accent); border-color: currentColor; }
+.scope-filter { margin: 6px 0 12px; }
+.intent { margin-top: 10px; font-size: 0.9rem; }
+.intent summary { cursor: pointer; font-weight: 600; }
+.intent summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.intent dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0; }
+.intent dt { color: var(--ink-faint); font-weight: 600; }
+.intent dd { margin: 0; overflow-wrap: anywhere; }
+.operate { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 12px; background: var(--stage); }
+.operate h4 { margin: 0 0 6px; font-family: var(--f-head); }
+.operate h5 { margin: 12px 0 4px; }
+.na { color: var(--ink-faint); font-style: italic; }
+.flags { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.flag { color: var(--warn); border-color: currentColor; }
+.ingested { margin: 4px 0; padding-left: 18px; font-size: 0.88rem; overflow-wrap: anywhere; }
+.total-row td { border-top: 2px solid var(--line); }
+.cost-table { margin-top: 10px; }
