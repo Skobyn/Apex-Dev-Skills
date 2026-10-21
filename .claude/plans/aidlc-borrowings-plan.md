@@ -161,13 +161,13 @@ Per the ADR amendment of 2026-10-18 (R5–R5d): each plan declares its own monit
   - Paths: plugins/apex-scope-loop/skills/apex-execute/scripts/operate.sh, plugins/apex-scope-loop/skills/apex-execute/scripts/monitorlib.py, plugins/apex-scope-loop/skills/apex-execute/scripts/backlog.sh, plugins/apex-scope-loop/skills/apex-execute/scripts/_lib.sh, plugins/apex-scope-loop/scripts/smoke.sh
   - Blocked-by: phase-3.3
 
-- [ ] **Phase 3.5** [docs] Add `/apex-scope-loop:operate`, document operate and the Monitor section (with metric-naming and tagging conventions, and the daily `/schedule` of `--all monitor --ingest`) in apex-execute SKILL.md, and claim `apex-scope-loop:operate/{slug}` in ADR-0001; bring the plan templates' Monitor guidance in line with the Phase 3.4 contract (cmd `value: stdout|exit`, `latency_ms` needs `expect_status`, runner `{value, note}`)
+- [x] **Phase 3.5** [docs] Add `/apex-scope-loop:operate`, document operate and the Monitor section (with metric-naming and tagging conventions, and the daily `/schedule` of `--all monitor --ingest`) in apex-execute SKILL.md, and claim `apex-scope-loop:operate/{slug}` in ADR-0001; bring the plan templates' Monitor guidance in line with the Phase 3.4 contract (cmd `value: stdout|exit`, `latency_ms` needs `expect_status`, runner `{value, note}`)
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && grep -q '^name: operate' plugins/apex-scope-loop/commands/operate.md && grep -q '^description:' plugins/apex-scope-loop/commands/operate.md && grep -q 'apex-scope-loop:operate/' plugins/apex-scope-loop/docs/adrs/0001-apex-scope-loop-contract.md && grep -q 'operate.sh' plugins/apex-scope-loop/skills/apex-execute/SKILL.md && grep -q 'window_days' plugins/apex-scope-loop/skills/apex-execute/SKILL.md && grep -q -- '--all monitor' plugins/apex-scope-loop/skills/apex-execute/SKILL.md`
   - Swarm: single [docs]
   - Paths: plugins/apex-scope-loop/commands/operate.md, plugins/apex-scope-loop/skills/apex-execute/SKILL.md, plugins/apex-scope-loop/docs/adrs/0001-apex-scope-loop-contract.md, plugins/apex-scope-loop/skills/apex-plan/resources/templates/profiles/generic/plan-template.md, plugins/apex-scope-loop/skills/apex-plan/resources/templates/profiles/generic/plan-template-lean.md, plugins/apex-scope-loop/skills/apex-plan/resources/templates/profiles/apex/plan-template.md, plugins/apex-scope-loop/skills/apex-plan/resources/templates/profiles/apex/plan-template-lean.md
   - Blocked-by: phase-3.4
 
-- [ ] **Gate 3→4** [gate:auto] Operation green in both plugins
+- [x] **Gate 3→4** [gate:auto] Operation green in both plugins
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/compile.sh --check`
   - Blocked-by: phase-3.5
 
@@ -175,7 +175,7 @@ Per the ADR amendment of 2026-10-18 (R5–R5d): each plan declares its own monit
 
 ### Phase 4 — Per-task cost and console UI
 
-- [ ] **Phase 4.1** [backend] Add `report.sh --per-task` (delegated USD, tokens, spawns, review rounds, outcome) from `tasks_of()`
+- [x] **Phase 4.1** [backend] Add `report.sh --per-task` (delegated USD, tokens, spawns, review rounds, outcome) from `tasks_of()`
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh && grep -q 'per-task-listing' plugins/apex-dispatch/scripts/smoke.sh` (smoke check `per-task-listing`: on a fixture ledger, `report.sh --per-task --json` has one `tasks[]` entry per routed task and the per-task USD values sum to `usd_estimated`; text mode prints one `REPORT_TASK` line per task)
   - Swarm: hierarchical 3 [builder, tester, reviewer]
   - Paths: plugins/apex-dispatch/scripts/report.sh, plugins/apex-dispatch/scripts/lib/report.py, plugins/apex-dispatch/scripts/smoke.sh, plugins/apex-dispatch/scripts/fixtures/**
