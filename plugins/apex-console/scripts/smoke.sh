@@ -435,7 +435,7 @@ assert calls.count(sd) - n0 == 9 and sorted(k for k in ac_collect._cache if k[0]
 # monitorlib is loaded from its file path: no sys.path entry, no bytecode flag flipped, no module name left behind
 assert sys.path == path_before, (sys.path[:3], path_before[:3])
 sl = os.path.join(ac_collect.C.sibling("apex-scope-loop"), "skills", "apex-execute", "scripts")
-assert sl not in sys.path and sys.path[:1] != [sl] and "monitorlib" not in sys.modules, (sys.path[:3])
+assert sl not in sys.path and sys.path[:1] != [sl] and "monitorlib" not in sys.modules and "planlib" not in sys.modules, (sys.path[:3])
 assert sys.dont_write_bytecode is False, "monitorlib turned bytecode writing off for the console process"
 PY
 pass "console-plans-payload: scope (scope-less = feature), intent summary, operate block (deploys, day N of M, per-check latest/breaches/unmeasured, missing state is missing), watched plans, repo checks, and per-task cost equal to report.sh --per-task (n/a stays null); the state base is untouched"

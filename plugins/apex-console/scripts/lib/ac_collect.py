@@ -73,6 +73,7 @@ def _sl_module(name):
         if path in _sl_mods:
             return _sl_mods[path]
         saved_path, saved_flag = list(sys.path), sys.dont_write_bytecode
+        had_planlib = "planlib" in sys.modules
         sys.dont_write_bytecode = True
         try:
             if name == "monitorlib":          # it does `import planlib`: hand it ours rather than a path lookup
@@ -86,8 +87,12 @@ def _sl_module(name):
         except Exception:
             return None
         finally:
-            sys.path[:] = saved_path
+            # undo by subtraction, not by restoring a snapshot: another thread may have appended a sibling's lib
+            # dir to sys.path meanwhile (ac_common.import_from) and that must survive
+            sys.path[:] = [e for e in sys.path if e in saved_path or e != os.path.dirname(path)]
             sys.dont_write_bytecode = saved_flag
+            if name == "monitorlib" and not had_planlib:
+                sys.modules.pop("planlib", None)      # monitorlib keeps its own reference
         _sl_mods[path] = mod
         return mod
 
