@@ -48,11 +48,15 @@ USD per task, from Claude Code session transcripts (JSONL, read only). The per-t
 separate keys `orchestrator_usd`, `orchestrator_tokens`, `orchestrator_tokens_total`,
 `orchestrator_turns`. Rules:
   * Transcripts: `--transcript PATH`, repeatable (a missing file is a usage error, exit 2).
-    Without it the transcript is auto-located: for each session_id found on any ledger row,
-    `<config>/projects/<slug>/<session_id>.jsonl`, where <config> is $CLAUDE_CONFIG_DIR or
-    ~/.claude and <slug> is the state's repository path (the checkpoint's worktree, else the
-    cwd) with every non-alphanumeric character turned into `-`. No file found (or no ledger
-    row carries a session_id): the orchestrator figures are null / n/a, never 0.
+    Without it the transcripts are auto-located by session id: for each distinct session_id
+    on any ledger row that is a UUID (other values are ignored), every
+    `<config>/projects/*/<session_id>.jsonl` (any project directory, since the session may run
+    from another checkout than the state's worktree; the file's basename must be exactly
+    `<session_id>.jsonl`, never another .jsonl of that project), where <config> is
+    $CLAUDE_CONFIG_DIR or ~/.claude. Every match is read. A session id with no file is listed
+    in totals.transcript_sessions_missing (and on the REPORT_ORCHESTRATOR line), not fatal.
+    No file found at all (or no ledger row carries a UUID session_id): the orchestrator
+    figures are null / n/a, never 0.
   * Turns: only lines with type "assistant" count; every other type (user, summary, system,
     attachments) is ignored without being counted. `isSidechain: true` turns are subagent
     work, i.e. delegated cost already in the ledger: excluded, counted as sidechain_turns.
@@ -72,7 +76,8 @@ separate keys `orchestrator_usd`, `orchestrator_tokens`, `orchestrator_tokens_to
     window whose timestamps do not parse makes its figures, and the unattributed bucket, null.
   * Totals: orchestrator_usd (sum over tasks with a known figure; null when none),
     orchestrator_usd_unknown_tasks, orchestrator_unattributed_*, transcript_skipped,
-    transcript_sidechain_turns, transcripts (the paths read).
+    transcript_sidechain_turns, transcripts (the paths read), transcript_sessions_missing
+    (ledger session ids whose transcript was not found; [] with --transcript).
 `usd_unrouted` (delegated ledger rows outside any task) is a different thing from the
 orchestrator `unattributed` bucket (main-session turns outside every task window).
 
@@ -91,6 +96,7 @@ sys.dont_write_bytecode = True
 import calendar  # noqa: E402
 import collections  # noqa: E402
 import datetime  # noqa: E402
+import glob  # noqa: E402
 import json  # noqa: E402
 import math  # noqa: E402
 import os  # noqa: E402
@@ -338,26 +344,25 @@ def malformed_rows(state_dir):
 
 TRANSCRIPT_KEYS = (("input_tokens", "input"), ("output_tokens", "output"),
                    ("cache_read_input_tokens", "cache_read"), ("cache_creation_input_tokens", "cache_write"))
-_SID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
-def project_slug(path):
-    """Claude Code's project directory name for a working directory."""
-    return re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(path))
-
-
-def locate_transcripts(state_dir, rows):
-    """Auto-locate: <config>/projects/<slug>/<session_id>.jsonl for each session_id on a ledger row."""
+def locate_transcripts(rows):
+    """Auto-locate by session id: <config>/projects/*/<session_id>.jsonl for each UUID session_id on a
+    ledger row, in any project directory (the session may run from another checkout than the state's).
+    Returns (paths found, sorted; session ids with no transcript file, sorted)."""
     cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    projects = os.path.join(cfg, "projects")
     sids = sorted({r["session_id"] for r in rows if isinstance(r.get("session_id"), str) and _SID_RE.match(r["session_id"])})
-    repos = {ledger.state_repo(state_dir), os.getcwd()}
-    found = []
-    for repo in sorted(repos):
-        for sid in sids:
-            p = os.path.join(cfg, "projects", project_slug(repo), sid + ".jsonl")
-            if os.path.isfile(p) and p not in found:
-                found.append(p)
-    return found
+    found, missing = [], []
+    for sid in sids:
+        name = sid + ".jsonl"
+        hits = sorted(p for p in glob.glob(os.path.join(glob.escape(projects), "*", glob.escape(name)))
+                      if os.path.basename(p) == name and os.path.isfile(p))
+        if not hits:
+            missing.append(sid)
+        found += [p for p in hits if p not in found]
+    return found, missing
 
 
 def read_transcripts(paths):
@@ -439,16 +444,16 @@ def _orch_fields(o, usable):
             "orchestrator_unpriced_turns": o["unpriced"]}
 
 
-def _orch_totals(out, oun, paths, wok, skipped, sidechain, deduped):
+def _orch_totals(out, oun, paths, wok, skipped, sidechain, deduped, sids_missing):
     if not paths:
-        return {"orchestrator_usd": None, "orchestrator_usd_unknown_tasks": None, "orchestrator_unattributed_usd": None,
+        return {"transcript_sessions_missing": sids_missing, "orchestrator_usd": None, "orchestrator_usd_unknown_tasks": None, "orchestrator_unattributed_usd": None,
                 "orchestrator_unattributed_tokens": None, "orchestrator_unattributed_turns": None,
                 "transcript_skipped": None, "transcript_sidechain_turns": None, "transcript_deduped": None,
                 "transcripts": [], "orchestrator_status": "n/a (no transcript: pass --transcript PATH, or the ledger has no "
                                                          "session_id whose transcript is under ~/.claude/projects)"}
     known = [x for x in out if x["orchestrator_usd"] is not None]
     un_ok = wok and oun["unpriced"] == 0
-    return {"orchestrator_usd": round(sum(_micro(x["orchestrator_usd"]) for x in known) / 1e6, 6) if known else None,
+    return {"transcript_sessions_missing": sids_missing, "orchestrator_usd": round(sum(_micro(x["orchestrator_usd"]) for x in known) / 1e6, 6) if known else None,
             "orchestrator_usd_unknown_tasks": len(out) - len(known),
             "orchestrator_unattributed_usd": oun["micro"] / 1e6 if un_ok else None,
             "orchestrator_unattributed_tokens": sum(oun["tokens"].values()) if wok else None,
@@ -478,7 +483,7 @@ def per_task(root, state_dir, plan=None, transcripts=None):
     out = []
     windows = []
     tlist = tasks_of(rows, price, route_task, windows)
-    paths = list(transcripts) if transcripts else locate_transcripts(state_dir, rows)
+    paths, sids_missing = (list(transcripts), []) if transcripts else locate_transcripts(rows)
     turns, skipped, sidechain, deduped = read_transcripts(paths) if paths else ([], None, None, None)
     wok = all(a is not None and b is not None for a, b in windows)
     oper, oun = orchestrator(turns, windows, price) if paths else ([None] * len(windows), None)
@@ -513,7 +518,7 @@ def per_task(root, state_dir, plan=None, transcripts=None):
                        # the priced part of the n/a tasks (a lower bound on their cost, not a figure for them)
                        "usd_partial_in_unknown_tasks": round(partial / 1e6, 6),
                        "usd_unrouted": None if bad else round(unrouted / 1e6, 6),
-                       **_orch_totals(out, oun, paths, wok, skipped, sidechain, deduped)}}
+                       **_orch_totals(out, oun, paths, wok, skipped, sidechain, deduped, sids_missing)}}
 
 
 def _usd4(v):
@@ -539,16 +544,18 @@ def print_per_task(p):
           "of which %s on rows outside any task"
           % (t["tasks"], _usd4(t["usd"]), t["usd_unknown_tasks"], t["usd_partial_in_unknown_tasks"], p["usd_estimated"],
              _usd4(t["usd_unrouted"])))
+    miss = ("; sessions with no transcript=%s" % ",".join(t["transcript_sessions_missing"])
+            if t["transcript_sessions_missing"] else "")
     if t["orchestrator_status"] != "measured":
-        print("REPORT_ORCHESTRATOR: %s" % t["orchestrator_status"])
+        print("REPORT_ORCHESTRATOR: %s%s" % (t["orchestrator_status"], miss))
         return
     print("REPORT_ORCHESTRATOR: usd=%s (%d task(s) n/a); unattributed (main-session turns in no single task window; "
           "not usd_unrouted) usd=%s tokens=%s turns=%s; skipped=%d line(s); sidechain turns excluded=%d (delegated, in the ledger); "
-          "deduped=%d; transcripts=%s"
+          "deduped=%d; transcripts=%s%s"
           % (_usd4(t["orchestrator_usd"]), t["orchestrator_usd_unknown_tasks"], _usd4(t["orchestrator_unattributed_usd"]),
              "n/a" if t["orchestrator_unattributed_tokens"] is None else t["orchestrator_unattributed_tokens"],
              "n/a" if t["orchestrator_unattributed_turns"] is None else t["orchestrator_unattributed_turns"],
-             t["transcript_skipped"], t["transcript_sidechain_turns"], t["transcript_deduped"], ",".join(t["transcripts"])))
+             t["transcript_skipped"], t["transcript_sidechain_turns"], t["transcript_deduped"], ",".join(t["transcripts"]), miss))
     if t["transcript_skipped"]:
         print("REPORT_ORCHESTRATOR_WARNING: %d transcript line(s) were not usable (malformed JSON or unusable usage) and are "
               "not in these figures" % t["transcript_skipped"])

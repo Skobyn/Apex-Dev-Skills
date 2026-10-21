@@ -24,7 +24,8 @@
 # REPORT_TASK_WARNING and make every figure n/a; REPORT_TASKS_TOTAL reconciles the known,
 # partial and unrouted USD with REPORT_USD_ESTIMATED; it cannot be combined with --compare
 # or --decision (exit 2). Orchestrator (ADR-0002 R7b): --transcript PATH (repeatable; else auto-located
-# under ~/.claude/projects/<repo-slug>/<session_id>.jsonl from the ledger's session_ids) gives
+# by session id as ~/.claude/projects/*/<session_id>.jsonl, any project dir, for each UUID session_id on
+# the ledger; ids with no file are listed as transcript_sessions_missing, not fatal) gives
 # orchestrator_tokens / orchestrator_usd per task (turns inside the task's route window), an
 # unattributed bucket (main-session turns in no single task window; not the same as usd_unrouted, which
 # is delegated ledger rows outside any task), and n/a, never 0, with no transcript; sidechain (subagent)

@@ -3228,12 +3228,15 @@ pass "per-task-listing: report.sh --per-task prints one REPORT_TASK line and one
 #     ts .. last row ts, inclusive to the end of that second) holds the turn; turns in no single window go to `unattributed`;
 #     non-assistant lines are ignored; malformed lines and unusable usage are counted as skipped, never priced as 0; sidechain
 #     (subagent) turns are excluded as delegated; duplicate message ids count once; without a transcript the figures are
-#     null / n/a, never 0; with none given the transcript is auto-located from the ledger's session_id under the config dir
+#     null / n/a, never 0; with none given the transcript is auto-located by the ledger's UUID session_ids as
+#     <config>/projects/*/<session_id>.jsonl in any project dir (not only the state's checkout); a non-UUID id is ignored,
+#     a UUID id with no file is listed in transcript_sessions_missing (and on REPORT_ORCHESTRATOR), not fatal
+OCU1="0c0c0c0c-1111-4222-8333-444455556666"; OCU2="9f9f9f9f-aaaa-4bbb-8ccc-dddddddddddd"
 OC="$WORK/ocstate"; mkdir -p "$OC"
-python3 - "$PLUGIN_ROOT/scripts/lib" "$OC" <<'PY' || fail "orchestrator-cost: could not build the fixture ledger"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$OC" "$OCU1" <<'PY' || fail "orchestrator-cost: could not build the fixture ledger"
 import sys
 sys.path.insert(0, sys.argv[1]); import ledger
-st = sys.argv[2]
+st, sid1 = sys.argv[2], sys.argv[3]
 def at(ts, *a, **k):
     ledger.now = lambda: ts
     return ledger.append(st, *a, **k)
@@ -3244,9 +3247,10 @@ def route(line, ts):
     return rid
 a = route(3, "2026-10-14T10:00:00Z")
 at("2026-10-14T10:08:00Z", "worker_run", {"route_id": a, "provider": "claude-session", "role": "builder", "exit_code": 0, "run_id": "w1",
-                                          "usage": {"input": 10, "output": 5}, "usd": 0.25, "session_id": "sess-oc-1"}, "shim", route_id=a, route_mode="table")
+                                          "usage": {"input": 10, "output": 5}, "usd": 0.25, "session_id": sid1}, "shim", route_id=a, route_mode="table")
 b = route(4, "2026-10-14T11:00:00Z")
-at("2026-10-14T11:05:00Z", "verdict", {"route_id": b, "role": "reviewer", "verdict": "APPROVE"}, "hook", route_id=b, route_mode="table", head_sha="a" * 40)
+at("2026-10-14T11:05:00Z", "verdict", {"route_id": b, "role": "reviewer", "verdict": "APPROVE", "session_id": "sess-not-a-uuid"},
+   "hook", route_id=b, route_mode="table", head_sha="a" * 40)
 PY
 OCT="$WORK/oc-transcript.jsonl"
 python3 - "$OCT" <<'PY'
@@ -3303,20 +3307,42 @@ assert T["transcripts"] == [] and T["orchestrator_status"].startswith("n/a"), T
 OCNT="$(env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-nohome" bash "$REPORT" --state "$OC" --per-task 2>&1)"
 [ "$(printf '%s\n' "$OCNT" | grep -c '^REPORT_TASK: .* orchestrator_tokens=n/a orchestrator_usd=n/a$')" = 2 ] && has '^REPORT_ORCHESTRATOR: n/a' "$OCNT" \
   || fail "orchestrator-cost: text output without a transcript must print n/a: $OCNT"
-# auto-locate: <config>/projects/<slug of the cwd>/<session_id>.jsonl, the session_id taken from the ledger
+# auto-locate by session id: <config>/projects/*/<session_id>.jsonl in any project dir (here one unrelated to the cwd and
+# to the state's checkout), the UUID session_id taken from the ledger; another .jsonl in that project dir is not read
 OCR="$WORK/oc-repo"; mkdir -p "$OCR"
-OCS="$(python3 -c 'import os,re,sys; print(re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(sys.argv[1])))' "$OCR")"
-mkdir -p "$WORK/oc-home/.claude/projects/$OCS"; cp "$OCT" "$WORK/oc-home/.claude/projects/$OCS/sess-oc-1.jsonl"
+OCP="$WORK/oc-home/.claude/projects/-some-other-checkout"; mkdir -p "$OCP"; cp "$OCT" "$OCP/$OCU1.jsonl"; cp "$OCT" "$OCP/decoy.jsonl"
 OCA="$(cd "$OCR" && env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-home" bash "$REPORT" --state "$OC" --per-task --json 2>&1)" || fail "orchestrator-cost: auto-locate run failed: $OCA"
 printf '%s' "$OCA" | python3 -c '
 import json, sys
 d = json.load(sys.stdin); T = d["totals"]
-assert T["orchestrator_unattributed_tokens"] == 550 and T["transcripts"][0].endswith("sess-oc-1.jsonl"), T
-' || fail "orchestrator-cost: the transcript was not auto-located from the ledger session_id: $OCA"
+assert T["orchestrator_unattributed_tokens"] == 550 and T["orchestrator_status"] == "measured", T
+assert len(T["transcripts"]) == 1 and T["transcripts"][0].endswith("/-some-other-checkout/" + sys.argv[1] + ".jsonl"), T
+assert T["transcript_sessions_missing"] == [], T   # the non-UUID ledger id is ignored, not missing
+' "$OCU1" || fail "orchestrator-cost: the transcript was not auto-located by session id under another project dir: $OCA"
+# a second ledger session id with no transcript anywhere: listed missing, not fatal; the found one is still measured
+python3 - "$PLUGIN_ROOT/scripts/lib" "$OC" "$OCU2" <<'PY' || fail "orchestrator-cost: could not append the second-session row"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+ledger.now = lambda: "2026-10-14T11:05:00Z"
+ledger.append(sys.argv[2], "verdict", {"role": "reviewer", "verdict": "APPROVE", "session_id": sys.argv[3]}, "hook",
+              route_id="r-0123456789ab-L4-1", route_mode="table", head_sha="a" * 40)
+PY
+OCM="$(cd "$OCR" && env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-home" bash "$REPORT" --state "$OC" --per-task --json 2>&1)" || fail "orchestrator-cost: auto-locate run with a missing session failed: $OCM"
+printf '%s' "$OCM" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); T = d["totals"]; by = {t["task"]: t for t in d["tasks"]}
+assert T["transcript_sessions_missing"] == [sys.argv[2]], T
+assert len(T["transcripts"]) == 1 and T["transcripts"][0].endswith(sys.argv[1] + ".jsonl"), T
+assert T["orchestrator_status"] == "measured" and T["orchestrator_unattributed_tokens"] == 550, T
+assert by[3]["orchestrator_tokens_total"] == 1100030 and by[4]["orchestrator_tokens_total"] == 2000000, by
+' "$OCU1" "$OCU2" || fail "orchestrator-cost: a ledger session id with no transcript must be listed in transcript_sessions_missing, figures still measured: $OCM"
+OCMT="$(cd "$OCR" && env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-home" bash "$REPORT" --state "$OC" --per-task 2>&1)"
+has "^REPORT_ORCHESTRATOR: usd=.*; sessions with no transcript=$OCU2\$" "$OCMT" \
+  || fail "orchestrator-cost: the REPORT_ORCHESTRATOR line must name the session ids with no transcript: $OCMT"
 # a missing --transcript file and --transcript without --per-task are usage errors
 [ "$(bash "$REPORT" --state "$OC" --per-task --transcript "$WORK/nope.jsonl" >/dev/null 2>&1; echo $?)" = 2 ] || fail "orchestrator-cost: a missing transcript file is not a usage error"
 [ "$(bash "$REPORT" --state "$OC" --transcript "$OCT" >/dev/null 2>&1; echo $?)" = 2 ] || fail "orchestrator-cost: --transcript without --per-task is not a usage error"
-pass "orchestrator-cost: report.sh --per-task --transcript PATH (repeatable) attributes main-session assistant turns to the task whose route window (first route ts .. last row ts, to the end of that second) holds them (orchestrator_tokens / orchestrator_usd, priced by message.model through row_usd, cache keys mapped), the rest to the unattributed bucket; user/summary lines are ignored, a malformed line and unusable usage are counted in transcript_skipped (warned), a sidechain turn is excluded as delegated, a duplicate message id counts once; delegated usd / tokens are unchanged; with no transcript (none given, none auto-located from the ledger session_id under the empty HOME) every orchestrator figure is null / n/a, never 0"
+pass "orchestrator-cost: report.sh --per-task --transcript PATH (repeatable) attributes main-session assistant turns to the task whose route window (first route ts .. last row ts, to the end of that second) holds them (orchestrator_tokens / orchestrator_usd, priced by message.model through row_usd, cache keys mapped), the rest to the unattributed bucket; user/summary lines are ignored, a malformed line and unusable usage are counted in transcript_skipped (warned), a sidechain turn is excluded as delegated, a duplicate message id counts once; delegated usd / tokens are unchanged; with no transcript (none given, none auto-located from the ledger session_id under the empty HOME) every orchestrator figure is null / n/a, never 0; auto-locate finds <config>/projects/*/<uuid>.jsonl in any project dir by basename, ignores non-UUID ids, and lists ids with no file in transcript_sessions_missing and on REPORT_ORCHESTRATOR, figures still measured"
 
 echo ""
 echo "smoke passed: $N/$N checks"
