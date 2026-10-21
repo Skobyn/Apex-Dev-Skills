@@ -3144,12 +3144,20 @@ olr "the closing run" 0 -- --all monitor --ingest; cp "$OL_TMP/run.out" "$OL_TMP
 grep -q 'plan ol: watch window ended .*closed closed-with-breaches; open-at-close: .*c-high' "$OL_TMP/run3.out" || fail "operate-loop: threat 4: the ended window was not closed with open-at-close: $(cat "$OL_TMP/run3.out")"
 [ "$(olq "$OL_CP" '(o["window"]["outcome"], "c-high" in o["window"]["open_at_close"], "h-status" in o["window"]["open_at_close"], o["checks"]["c-high"]["last_ts"], len(o["windows_closed"]))')" = "('closed-with-breaches', True, True, '$OL_LT', 1)" ] \
   || fail "operate-loop: threat 4: the window close is wrong, or the expired plan was measured again (mutants: no end check / open_at_close = []): $(olq "$OL_CP" 'o["window"]')"
-# F-018(b): breach (run 1), then unmeasured (every run since), then close → r-run is open at close; c-word, never
-# measured, is not. Mutant "open_at_close = the last run's breaching list" turns this red.
-[ "$(olq "$OL_CP" '("r-run" in o["window"]["open_at_close"], "r-run" in o["window"]["breaching"], "c-word" in o["window"]["open_at_close"])')" = "(True, False, False)" ] \
-  || fail "operate-loop: F-018: a check whose last measured status was breach dropped out of open_at_close: $(olq "$OL_CP" 'o["window"]')"
-case "$(python3 -c 'import json,sys; print([(r["outcome"], r["open_at_close"], r["breaches"] > 0) for r in map(json.loads, open(sys.argv[1])) if r["event"] == "operate_window_closed"])' "$OL_ST/dispatch/ledger.jsonl")" in
-  "[('closed-with-breaches', ["*"'c-high'"*"], True)]") ;; *) fail "operate-loop: threat 4: no operate_window_closed row with open_at_close: $(cat "$OL_ST/dispatch/ledger.jsonl")" ;; esac
+# F-018(b): breach (run 1), then unmeasured (every run since), then close → r-run is open at close. Mutant
+# "open_at_close = the last run's breaching list" turns this red.
+# F-018(a) (operator decision: keep the two outcomes, fail closed): c-word, never measured in the window, is open at
+# close and unmeasured at close; r-run, unmeasured on the last run, is unmeasured at close; c-slow, no longer declared,
+# is neither. measured_runs = the window's runs that measured something (c-high measures on every run, so every signal
+# file). Mutants "a never-measured check is not open" / "measured_runs = every run" / "unmeasured_at_close = never
+# measured only" turn this red.
+[ "$(olq "$OL_CP" '("r-run" in o["window"]["open_at_close"], "r-run" in o["window"]["breaching"], "c-word" in o["window"]["open_at_close"])')" = "(True, False, True)" ] \
+  || fail "operate-loop: F-018: a check whose last measured status was breach, or a never-measured check, is missing from open_at_close: $(olq "$OL_CP" 'o["window"]')"
+[ "$(olq "$OL_CP" '(o["window"]["unmeasured_at_close"], o["window"]["measured_runs"], o["windows_closed"][-1]["measured_runs"], o["windows_closed"][-1]["unmeasured_at_close"] == o["window"]["unmeasured_at_close"], "c-slow" in o["window"]["open_at_close"])')" \
+  = "(['c-word', 'c-pipe', 'c-grep', 'h-lat', 'h-dead', 'r-run'], $OL_NSIG, $OL_NSIG, True, False)" ] \
+  || fail "operate-loop: F-018(a): unmeasured_at_close / measured_runs ($OL_NSIG runs measured something) are wrong: $(olq "$OL_CP" 'o["window"]')"
+case "$(python3 -c 'import json,sys; print([(r["outcome"], r["open_at_close"], r["breaches"] > 0, r["measured_runs"], r["unmeasured_at_close"]) for r in map(json.loads, open(sys.argv[1])) if r["event"] == "operate_window_closed"])' "$OL_ST/dispatch/ledger.jsonl")" in
+  "[('closed-with-breaches', ["*"'c-high'"*"'c-word'"*"], True, $OL_NSIG, ['c-word', "*"'r-run'])]") ;; *) fail "operate-loop: threat 4 / F-018(a): no operate_window_closed row with open_at_close, measured_runs and unmeasured_at_close: $(cat "$OL_ST/dispatch/ledger.jsonl")" ;; esac
 grep -q 'plan ol2: measured 1 check' "$OL_TMP/run3.out" || fail "operate-loop: the open plan ol2 was not measured beside the closing one"
 olr "after the close" 0 -- --all monitor --ingest
 grep -q 'plan ol: watch window closed (closed-with-breaches); not measured' "$OL_TMP/run.out" && [ "$(ls "$OL_ST/operate" | wc -l | tr -d ' ')" = "$OL_NSIG" ] \
@@ -3158,12 +3166,76 @@ grep -q 'plan ol: watch window closed (closed-with-breaches); not measured' "$OL
 grep -q 'window: closed (ended .*, closed-with-breaches, open-at-close: .*c-high' "$OL_TMP/status.out" || fail "operate-loop: status does not flag open-at-close: $(cat "$OL_TMP/status.out")"
 # requirement 7: a redeploy keeps the closed window's outcome (windows_closed) and status shows it; a redeploy over an
 # open window (ol2) closes it first (closed_by redeploy). Mutant "record overwrites operate.window" turns this red.
+# F-018(a): ol2's plan gains c-new before its redeploy; never measured in the closing window, it is open at close
+python3 "$OL_TMP/mkplan.py" "$OL/plans/ol2-plan.md" OL2 7 '[{"id": "c-high", "metric": "m2", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 9"}}, {"id": "c-new", "metric": "m3", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}}]'
 ol_ship ol "$OL_SHA"; ol_ship ol2 "$OL2_SHA"
 [ "$(olq "$OL_CP" '(len(o["windows_closed"]), o["windows_closed"][-1]["outcome"], "outcome" in o["window"])')" = "(1, 'closed-with-breaches', False)" ] \
   && [ "$(olq "$OL2_CP" '(len(o["windows_closed"]), o["windows_closed"][-1]["outcome"], o["windows_closed"][-1]["closed_by"])')" = "(1, 'closed-with-breaches', 'redeploy')" ] \
   || fail "operate-loop: requirement 7: a redeploy erased a window's outcome: ol=$(olq "$OL_CP" 'o.get("windows_closed")') ol2=$(olq "$OL2_CP" 'o.get("windows_closed")')"
 (cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || true
 grep -q 'last closed window: closed-with-breaches' "$OL_TMP/status.out" || fail "operate-loop: requirement 7: status does not show the last closed window: $(cat "$OL_TMP/status.out")"
+grep -q "last closed window: closed-with-breaches .*unmeasured-at-close: c-word, .*measured runs: $OL_NSIG;" "$OL_TMP/status.out" \
+  || fail "operate-loop: F-018(a): status does not print the closed window's unmeasured-at-close and measured runs: $(cat "$OL_TMP/status.out")"
+# F-018(a) on the redeploy close (record reads the plan's declared checks): c-high, measured on every run, is open as
+# a breach; c-new, declared just before the redeploy and never measured, is open and unmeasured at close. Mutant "the
+# redeploy close gets no declared checks" turns this red.
+[ "$(olq "$OL2_CP" '(o["windows_closed"][-1]["unmeasured_at_close"], o["windows_closed"][-1]["measured_runs"] > 0, o["windows_closed"][-1]["open_at_close"])')" = "(['c-new'], True, ['c-high', 'c-new'])" ] \
+  || fail "operate-loop: F-018(a): the redeploy close lacks unmeasured_at_close / measured_runs: $(olq "$OL2_CP" 'o["windows_closed"]')"
+# F-018(a): three more landed plans (fabricated state, each with its own dispatch/ ledger), closed by --all monitor:
+# fz-dead — one http check against a dead port, measured (unmeasured) once in its window, then moved past its end;
+# fz-norun — its window ended before any monitor run; fz-clean — one cmd check measured ok, then moved past its end.
+# A never-measured window is not operated-clean: fz-dead and fz-norun close closed-with-breaches with every check open
+# and unmeasured at close and measured_runs 0, and status says so; fz-clean closes operated-clean with nothing open.
+# Mutant "outcome from the breach count only" turns fz-dead / fz-norun red; "every window closed-with-breaches" fz-clean.
+python3 - "$OL_TMP" "$OL_BASE" "$OL_DEAD_PORT" <<'PY' || fail "operate-loop: cannot fabricate the F-018(a) plans"
+import datetime, json, os, sys
+tmp, base, dead = sys.argv[1:4]
+f = "%Y-%m-%dT%H:%M:%SZ"; t = datetime.datetime.utcnow()
+plans = {"fa0000000001": ("fz-dead", [{"id": "h-gone", "metric": "m_gone", "op": "==", "threshold": 200, "severity": "high", "probe": {"kind": "http", "url": "http://127.0.0.1:%s/ok" % dead, "measure": "status"}}], 3),
+         "fa0000000002": ("fz-norun", [{"id": "n-one", "metric": "n1", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}},
+                                      {"id": "n-two", "metric": "n2", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 2"}}], -1),
+         "fa0000000003": ("fz-clean", [{"id": "k-ok", "metric": "k_ok", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}}], 3)}
+for d, (slug, checks, end) in plans.items():
+    p = os.path.join(tmp, slug + "-plan.md")
+    open(p, "w").write("# %s\n\n## Monitor\n\n```json\n%s\n```\n" % (slug, json.dumps({"checks": checks, "window_days": 3})))
+    sd = os.path.join(base, d); os.makedirs(os.path.join(sd, "dispatch"))
+    start = t - datetime.timedelta(days=4 if end < 0 else 0)
+    json.dump({"landed": True, "plan_path": p, "operate": {"window": {"start": start.strftime(f), "end": (t + datetime.timedelta(days=end)).strftime(f), "days": 3}}},
+              open(os.path.join(sd, "checkpoint.json"), "w"))
+PY
+OL_FZD="$OL_BASE/fa0000000001"; OL_FZN="$OL_BASE/fa0000000002"; OL_FZC="$OL_BASE/fa0000000003"
+olr "F-018(a) run A" 0 -- --all monitor; cp "$OL_TMP/run.out" "$OL_TMP/runA.out"
+grep -q 'plan fz-dead: measured 1 check' "$OL_TMP/runA.out" && grep -q 'plan fz-clean: measured 1 check' "$OL_TMP/runA.out" \
+  && grep -qF 'closed closed-with-breaches; open-at-close: n-one, n-two; unmeasured-at-close: n-one, n-two; 0 measured run(s) (never measured)' "$OL_TMP/runA.out" \
+  || fail "operate-loop: F-018(a): run A did not measure fz-dead / fz-clean or close the never-run fz-norun closed-with-breaches: $(cat "$OL_TMP/runA.out")"
+[ "$(olq "$OL_FZD/checkpoint.json" '(o["checks"]["h-gone"]["last_status"], o["window"]["measured_runs"], o["window"]["last_unmeasured"])')" = "('unmeasured', 0, ['h-gone'])" ] \
+  || fail "operate-loop: F-018(a): the dead-port check was not unmeasured with measured_runs 0: $(olq "$OL_FZD/checkpoint.json" 'o')"
+for OL_FZ in "$OL_FZD" "$OL_FZC"; do
+  python3 -c 'import datetime as d, json, sys; p = sys.argv[1]; s = json.load(open(p)); w = s["operate"]["window"]; f = "%Y-%m-%dT%H:%M:%SZ"; t = d.datetime.strptime(w["start"], f) - d.timedelta(days=4); w["start"], w["end"] = t.strftime(f), (t + d.timedelta(days=3)).strftime(f); json.dump(s, open(p, "w"))' "$OL_FZ/checkpoint.json"
+done
+olr "F-018(a) run B" 0 -- --all monitor; cp "$OL_TMP/run.out" "$OL_TMP/runB.out"
+[ "$(olq "$OL_FZD/checkpoint.json" '(o["window"]["outcome"], o["window"]["open_at_close"], o["window"]["unmeasured_at_close"], o["window"]["measured_runs"], o["windows_closed"][-1]["measured_runs"], o["windows_closed"][-1]["unmeasured_at_close"])')" \
+  = "('closed-with-breaches', ['h-gone'], ['h-gone'], 0, 0, ['h-gone'])" ] \
+  || fail "operate-loop: F-018(a): a window whose every run was unmeasured closed clean or without the check open (mutant: outcome from the breach count only): $(olq "$OL_FZD/checkpoint.json" 'o["window"]')"
+[ "$(olq "$OL_FZN/checkpoint.json" '(o["window"]["outcome"], o["window"]["open_at_close"], o["window"]["unmeasured_at_close"], o["window"]["measured_runs"], o["window"]["breaches"])')" \
+  = "('closed-with-breaches', ['n-one', 'n-two'], ['n-one', 'n-two'], 0, 0)" ] \
+  || fail "operate-loop: F-018(a): a window with no monitor run closed clean or without its checks open: $(olq "$OL_FZN/checkpoint.json" 'o["window"]')"
+[ "$(olq "$OL_FZC/checkpoint.json" '(o["window"]["outcome"], o["window"]["open_at_close"], o["window"]["unmeasured_at_close"], o["window"]["measured_runs"])')" = "('operated-clean', [], [], 1)" ] \
+  || fail "operate-loop: F-018(a): a window whose every check was measured ok did not close operated-clean (mutant: every window closed-with-breaches): $(olq "$OL_FZC/checkpoint.json" 'o["window"]')"
+OL_FZR="$(for OL_FZ in "$OL_FZD" "$OL_FZN" "$OL_FZC"; do python3 -c 'import json,sys; print([(r["slug"], r["outcome"], r["open_at_close"], r["measured_runs"], r["unmeasured_at_close"]) for r in map(json.loads, open(sys.argv[1])) if r["event"] == "operate_window_closed"])' "$OL_FZ/dispatch/ledger.jsonl"; done)"
+[ "$OL_FZR" = "[('fz-dead', 'closed-with-breaches', ['h-gone'], 0, ['h-gone'])]
+[('fz-norun', 'closed-with-breaches', ['n-one', 'n-two'], 0, ['n-one', 'n-two'])]
+[('fz-clean', 'operated-clean', [], 1, [])]" ] || fail "operate-loop: F-018(a): the operate_window_closed rows lack measured_runs / unmeasured_at_close: $OL_FZR"
+for OL_FZ in "$OL_FZD" "$OL_FZN" "$OL_FZC"; do
+  OL_V="$("$LG" verify --state "$OL_FZ" 2>&1)" || fail "operate-loop: F-018(a): ledger.sh verify failed for $OL_FZ: $OL_V"
+done
+(cd "$OL" && "$OL_OPS" --all status >"$OL_TMP/status.out" 2>&1) || true
+awk '/^plan fz-dead /,/^$/' "$OL_TMP/status.out" | grep -q 'WARNING: fz-dead was never measured in this window (0 measured runs)' \
+  && awk '/^plan fz-dead /,/^$/' "$OL_TMP/status.out" | grep -qF 'closed-with-breaches, open-at-close: h-gone, unmeasured-at-close: h-gone, measured runs: 0)' \
+  && awk '/^plan fz-norun /,/^$/' "$OL_TMP/status.out" | grep -q 'WARNING: fz-norun was never measured in this window' \
+  && ! awk '/^plan fz-clean /,/^$/' "$OL_TMP/status.out" | grep -q 'never measured' \
+  || fail "operate-loop: F-018(a): status does not say plainly that a closed window was never measured: $(cat "$OL_TMP/status.out")"
+rm -rf "$OL_FZD" "$OL_FZN" "$OL_FZC" "$OL_TMP"/fz-*-plan.md
 # requirement 2: monitorlib refuses a cmd probe naming operate.sh, deploy or APEX_DEPLOY_CMD (any case), by name.
 # Mutant "no deny pattern in _probe" turns this red; a neighbour without the words still validates.
 for c in "sh $OL_OPS x status" "make DEPLOY" "echo \$apex_deploy_cmd" "./Operate.SH status" 'make de""ploy' 'make de\ploy' "./oper'a'te.sh x"; do
@@ -3186,7 +3258,7 @@ for d in "$OL_ST" "$OL2_ST" "$OL_RD"; do
 done
 [ ! -d "$OL_NM_ST/operate" ] || fail "operate-loop: the plan with no Monitor section was measured"
 { kill "$OL_PID"; wait "$OL_PID"; } >/dev/null 2>&1 || true; OL_PID=""
-ok "operate-loop: --all monitor --ingest measures http (stub on 127.0.0.1), cmd and runner checks only in open windows; run twice it files each high breach once as a lesson tagged operate:{slug},{metric} and counts the repeat, files the low breach as a plan-level backlog item, and files the repo-level breach only under operate:repo; a timed-out probe, a non-number, a failed GET, an expect_status mismatch and every malformed runner reply are unmeasured (null, never 0 or a pass); every signal and ledger row carries its plan's slug (ol2's same-id check credited to ol2) or repo; a window past its end closes closed-with-breaches with open-at-close, writes operate_window_closed and is not measured again; a redeploy keeps windows_closed; the no-Monitor plan is skipped and warned; cmd probes run verbatim under sh -c in the repo root without APEX_*; deploy-naming probes and 51-check plans are refused; the 200-check run cap and APEX_MONITOR_CMD are enforced before any probe; hostile runner text is sanitised; --all walks in one python pass; the ledgers verify"
+ok "operate-loop: --all monitor --ingest measures http (stub on 127.0.0.1), cmd and runner checks only in open windows; run twice it files each high breach once as a lesson tagged operate:{slug},{metric} and counts the repeat, files the low breach as a plan-level backlog item, and files the repo-level breach only under operate:repo; a timed-out probe, a non-number, a failed GET, an expect_status mismatch and every malformed runner reply are unmeasured (null, never 0 or a pass); every signal and ledger row carries its plan's slug (ol2's same-id check credited to ol2) or repo; a window past its end closes closed-with-breaches with open-at-close (a check never measured in the window is open at close), writes operate_window_closed with measured_runs and unmeasured_at_close and is not measured again; a window never measured (every run unmeasured, or no run) closes closed-with-breaches and status says it was never measured, and one measured ok closes operated-clean; a redeploy keeps windows_closed; the no-Monitor plan is skipped and warned; cmd probes run verbatim under sh -c in the repo root without APEX_*; deploy-naming probes and 51-check plans are refused; the 200-check run cap and APEX_MONITOR_CMD are enforced before any probe; hostile runner text is sanitised; --all walks in one python pass; the ledgers verify"
 
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the

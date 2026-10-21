@@ -18,15 +18,22 @@
 # section with checks, and its watch window is open; a plan with no section is skipped (and
 # a landed feature plan is warned about), an invalid section is refused for that plan (exit
 # 2, fail closed). A plan whose window.end has passed is not measured again: the run closes
-# the window with outcome `operated-clean` (no breach in the window) or `closed-with-breaches`,
-# open_at_close = the checks breaching on its last run, keeps it in operate.windows_closed
-# and appends an operate_window_closed ledger row. A redeploy over a window no monitor run
-# closed closes it the same way (closed_by "redeploy", no ledger row), so no outcome is lost.
+# the window (fail closed: a check never measured is not a clean check). open_at_close = the
+# declared checks whose last measured status in the window was breach plus every declared
+# check never measured in the window; unmeasured_at_close = the checks never measured plus
+# those unmeasured on the last run; measured_runs = the monitor runs of the window that
+# measured at least one check. Outcome `closed-with-breaches` when the window saw a breach or
+# open_at_close is non-empty, else `operated-clean` (every declared check measured at least
+# once, none open at close). The window is kept in operate.windows_closed and an
+# operate_window_closed ledger row (with measured_runs and unmeasured_at_close) is appended.
+# A redeploy over a window no monitor run closed closes it the same way against the plan's
+# declared checks (closed_by "redeploy", no ledger row), so no outcome is lost.
 # Refused before any probe runs (exit 2, named): more than 200 checks in one run, a runner
 # check with APEX_MONITOR_CMD unset (or naming operate.sh / the deploy word). Each run's
 # results are recorded under the checkpoint lock with an atomic write: operate.checks.<id>
 # {last_value (null when unmeasured, never 0), last_status ok|breach|unmeasured, last_reason,
-# note, breaches, unmeasured, filed}, window {last_run, breaching, breaches}, the pending
+# note, breaches, unmeasured, filed}, window {last_run, breaching, breaches, last_unmeasured,
+# measured_runs, last_measured}, the pending
 # signals, and <state>/operate/signals-<ts>-<pid>.json (every row carries slug, or repo).
 # Repo-level checks keep their state in <state base>/operate-repo/state.json (its own lock);
 # their ledger rows go to <state base>/operate-repo/dispatch/ only when that dir exists.
@@ -74,7 +81,8 @@
 #   active-route.json's).
 #
 # Status: per landed plan, the last deploy, the window as "day N of M",
-# "not opened" or "closed" (with its outcome and open-at-close), the last closed
+# "not opened" or "closed" (with its outcome, open-at-close, unmeasured-at-close and
+# measured runs; a closed window with 0 measured runs is named as never measured), the last closed
 # window from operate.windows_closed, and the declared checks with their last value
 # ("unmeasured" when a probe failed, never 0), breaches and where they were filed; a
 # landed `feature` plan with no ## Monitor section is warned about (R5b), and so is a
@@ -152,24 +160,43 @@ def scope(plan):
         pass
     return "feature"
 
-def close_window(op, ts, by):
-    """Close op["window"]: outcome from the window's breach count, open_at_close = every check
-    whose last MEASURED status in this window was breach (w["last_measured"]), whether or not
-    the last run measured it, plus the last run's breaching list (state written before
-    last_measured existed); the closed window is kept in op["windows_closed"]."""
+def _ids(*lists):
+    """The str ids of lists, in order, without duplicates."""
+    out = []
+    for l in lists:
+        for x in (l if isinstance(l, list) else []):
+            if isinstance(x, str) and x not in out:
+                out.append(x)
+    return out
+
+def close_window(op, ts, by, declared):
+    """Close op["window"] against the declared check ids (fail closed, F-018(a)).
+    open_at_close = every check whose last MEASURED status in this window was breach
+    (w["last_measured"]), whether or not the last run measured it, plus the last run's breaching
+    list (state written before last_measured existed), plus every declared check never measured in
+    this window. unmeasured_at_close = the declared checks never measured plus the checks
+    unmeasured on the last run. measured_runs = the window's runs that measured at least one check.
+    Outcome closed-with-breaches when the window saw a breach or open_at_close is non-empty;
+    operated-clean only when every declared check was measured and none is open at close.
+    The closed window is kept in op["windows_closed"]."""
     w = op["window"]
     b = w.get("breaches") if isinstance(w.get("breaches"), int) else 0
-    outcome = "closed-with-breaches" if b > 0 else "operated-clean"
     lm = w.get("last_measured") if isinstance(w.get("last_measured"), dict) else {}
-    oac = []
-    for x in [k for k, v in lm.items() if isinstance(v, dict) and v.get("status") == "breach"] + list(w.get("breaching") or []):
-        if isinstance(x, str) and x not in oac:
-            oac.append(x)
-    w.update(outcome=outcome, open_at_close=oac, breaches=b, closed_at=ts, closed_by=by)
+    measured = [k for k, v in lm.items() if isinstance(v, dict) and v.get("status") in ("ok", "breach")]
+    never = [i for i in _ids(declared) if i not in measured]
+    oac = _ids([k for k, v in lm.items() if isinstance(v, dict) and v.get("status") == "breach"],
+               list(w.get("breaching") or []), never)
+    unm = _ids(never, w.get("last_unmeasured"))
+    mr = w.get("measured_runs")
+    if not isinstance(mr, int) or isinstance(mr, bool) or mr < 0:
+        mr = 1 if measured else 0          # state written before measured_runs: a lower bound
+    outcome = "closed-with-breaches" if b > 0 or oac else "operated-clean"
+    w.update(outcome=outcome, open_at_close=oac, unmeasured_at_close=unm, measured_runs=mr, breaches=b,
+             closed_at=ts, closed_by=by)
     wc = op.get("windows_closed") if isinstance(op.get("windows_closed"), list) else []
     wc.append(dict(w))
     op["windows_closed"] = wc
-    return outcome, b, oac
+    return outcome, b, oac, unm, mr
 
 if mode == "window-days":
     cfg, probs = monitor(sys.argv[3])
@@ -181,6 +208,13 @@ if mode == "window-days":
 
 elif mode == "record":
     cp, lock, sha, code, days, head = sys.argv[3], sys.argv[4], sys.argv[5], int(sys.argv[6]), int(sys.argv[7]), sys.argv[8]
+    declared = None                         # the plan's checks now (validated by window-days in this run)
+    try:
+        cfg, probs = monitor(sys.argv[9]) if len(sys.argv) > 9 else (None, ["no plan"])
+        if not probs:
+            declared = [c["id"] for c in (cfg or {}).get("checks") or []]
+    except Exception:
+        pass                                # the deploy ran: recording it must not fail here
     fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
     fcntl.flock(fd, fcntl.LOCK_EX)          # checkpoint.sh's state lock
     with open(cp) as f:
@@ -192,7 +226,9 @@ elif mode == "record":
     op["deploys"] = deploys
     if code == 0:                           # only a successful deploy opens (restarts) the window
         if isinstance(op.get("window"), dict) and not op["window"].get("outcome"):
-            close_window(op, iso(t), "redeploy")   # never erase an unclosed window's outcome
+            if declared is None:            # the plan could not be read: every check this plan ever measured
+                declared = [k for k in (op.get("checks") or {}) if isinstance(k, str)] if isinstance(op.get("checks"), dict) else []
+            close_window(op, iso(t), "redeploy", declared)   # never erase an unclosed window's outcome
         op["window"] = {"start": iso(t), "end": iso(t + datetime.timedelta(days=days)), "days": days}
     s["operate"] = op
     tmp = cp + ".tmp"
@@ -306,7 +342,13 @@ elif mode in ("status", "status-all", "run"):
                 oac = w.get("open_at_close") or []
                 if oac:
                     extra += ", open-at-close: " + ", ".join(str(x) for x in oac)
+                if w.get("outcome"):
+                    unm = w.get("unmeasured_at_close") or []
+                    extra += ", unmeasured-at-close: %s, measured runs: %s" % (
+                        ", ".join(str(x) for x in unm) or "none", w.get("measured_runs", "?"))
                 print("  window: closed (ended %s%s)" % (w["end"], extra))
+                if w.get("outcome") and w.get("measured_runs") == 0:
+                    print("  WARNING: %s was never measured in this window (0 measured runs): nothing is known about its health, so it closed %s" % (slug, w["outcome"]))
             else:
                 n = min(days, max(1, (t - start).days + 1))
                 print("  window: day %d of %d (opened %s, ends %s)" % (n, days, w["start"], w["end"]))
@@ -323,9 +365,10 @@ elif mode in ("status", "status-all", "run"):
         wc = [x for x in (op.get("windows_closed") or []) if isinstance(x, dict)]
         if wc:
             x = wc[-1]
-            print("  last closed window: %s (%s to %s, %s breach(es), open-at-close: %s; %d closed window(s))"
+            print("  last closed window: %s (%s to %s, %s breach(es), open-at-close: %s, unmeasured-at-close: %s, measured runs: %s%s; %d closed window(s))"
                   % (x.get("outcome"), x.get("start"), x.get("end"), x.get("breaches", 0),
-                     ", ".join(x.get("open_at_close") or []) or "none", len(wc)))
+                     ", ".join(x.get("open_at_close") or []) or "none", ", ".join(x.get("unmeasured_at_close") or []) or "none",
+                     x.get("measured_runs", "?"), " (never measured)" if x.get("measured_runs") == 0 else "", len(wc)))
         cfg, probs = monitor(plan)
         if probs:
             print("  monitor: INVALID ## Monitor section:")
@@ -564,7 +607,7 @@ elif mode in ("status", "status-all", "run"):
             with Lock(t["lock"]):
                 s, st = read_state(t)
                 cstate = st.get("checks") if isinstance(st.get("checks"), dict) else {}
-                rows, breaching, all_un = [], [], True
+                rows, breaching, unmeasured_now, all_un = [], [], [], True
                 for c, r in results:
                     cs = cstate.get(c["id"]) if isinstance(cstate.get(c["id"]), dict) else {}
                     for k in ("breaches", "unmeasured"):
@@ -576,6 +619,7 @@ elif mode in ("status", "status-all", "run"):
                         breaching.append(c["id"])
                     if r["status"] == "unmeasured":
                         cs["unmeasured"] += 1
+                        unmeasured_now.append(c["id"])
                     else:
                         all_un = False
                         cs.update(last_measured_status=r["status"], last_measured_value=r["value"], last_measured_ts=ts)
@@ -591,6 +635,10 @@ elif mode in ("status", "status-all", "run"):
                 if t["kind"] == "plan":
                     w = st["window"]
                     w["last_run"], w["breaching"], w["last_run_all_unmeasured"] = ts, breaching, all_un
+                    w["last_unmeasured"] = unmeasured_now
+                    mr = w.get("measured_runs")
+                    mr = mr if isinstance(mr, int) and not isinstance(mr, bool) and mr >= 0 else 0
+                    w["measured_runs"] = mr + (0 if all_un else 1)
                     lm = w.get("last_measured") if isinstance(w.get("last_measured"), dict) else {}
                     for row in rows:              # window-scoped: a redeploy's new window starts empty
                         if row["status"] != "unmeasured":
@@ -614,13 +662,16 @@ elif mode in ("status", "status-all", "run"):
                 s, op = read_state(t)
                 w = op.get("window")
                 if isinstance(w, dict) and not w.get("outcome"):
-                    outcome, breaches, oac = close_window(op, iso(now()), "monitor")
+                    outcome, breaches, oac, unm, mr = close_window(op, iso(now()), "monitor", [c["id"] for c in t["checks"]])
                     write_atomic(t["cp"], s)
-                    closed_row = {"slug": t["slug"], "outcome": outcome, "breaches": breaches, "open_at_close": oac}
+                    closed_row = {"slug": t["slug"], "outcome": outcome, "breaches": breaches, "open_at_close": oac,
+                                  "measured_runs": mr, "unmeasured_at_close": unm}
             if closed_row:
-                print("plan %s: watch window ended (%s); closed %s%s; no longer measured" % (
+                print("plan %s: watch window ended (%s); closed %s%s%s; %d measured run(s)%s; no longer measured" % (
                     t["slug"], op["window"]["end"], closed_row["outcome"],
-                    ("; open-at-close: " + ", ".join(closed_row["open_at_close"])) if closed_row["open_at_close"] else ""))
+                    ("; open-at-close: " + ", ".join(closed_row["open_at_close"])) if closed_row["open_at_close"] else "",
+                    ("; unmeasured-at-close: " + ", ".join(closed_row["unmeasured_at_close"])) if closed_row["unmeasured_at_close"] else "",
+                    closed_row["measured_runs"], " (never measured)" if closed_row["measured_runs"] == 0 else ""))
         ledger_rows = []
         if ingesting:
             with Lock(t["lock"]):
@@ -786,7 +837,7 @@ trap 'DEPLOY_SIG=2' INT; trap 'DEPLOY_SIG=15' TERM; trap 'DEPLOY_SIG=1' HUP
 trap '' INT TERM HUP                                 # recording is not interruptible
 
 RECORDED=1
-op_py record "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" "$LANDED_SHA" "$DEPLOY_RC" "$WINDOW_DAYS" "$HEAD_SHA" || RECORDED=0
+op_py record "$CHECKPOINT" "$STATE_DIR/.checkpoint.lock" "$LANDED_SHA" "$DEPLOY_RC" "$WINDOW_DAYS" "$HEAD_SHA" "$PLAN_ABS" || RECORDED=0
 
 if [[ -d "$STATE_DIR/dispatch" ]]; then
   DISPATCH="$(apex_dispatch_root)"
