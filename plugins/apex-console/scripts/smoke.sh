@@ -12,6 +12,9 @@ SERVER_PID=""
 cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$WORK"; }
 trap cleanup EXIT
 export APEX_CONFIG_DIR="$WORK/config"
+# hermetic: report.py auto-locates transcripts under $CLAUDE_CONFIG_DIR (else ~/.claude); never read the real ones
+export HOME="$WORK/home" CLAUDE_CONFIG_DIR="$WORK/claude"; mkdir -p "$HOME" "$CLAUDE_CONFIG_DIR/projects/p"
+unset APEX_STATE_ROOT
 BIN="$PLUGIN_ROOT/bin/apex-console"
 
 # 1. plugin.json has the required keys and enumerates no surfaces
@@ -200,6 +203,153 @@ PY
 POST tiers/simulate '{"repo":"r1","patch":{"exempt":[{"glob":"*/*","reason":"almost everything is fine"}]}}' | grep -q 'names no directory' \
   || fail "the simulator did not refuse an invalid proposal through knobslib"
 pass "tier simulator: risk-tier.sh replays past tasks under a proposed exemption (C→A with the reasons that change), writes nothing, and knobslib refuses a bad proposal"
+
+# 12. console-plans-payload: the plans API carries scope, intent, operate state and per-task cost, read-only
+python3 - "$PLUGIN_ROOT" "$REPO" "$WORK" <<'PY' || fail "console-plans-payload: could not build the operate fixture"
+import hashlib, json, os, subprocess, sys, time
+root, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, os.path.join(root, "scripts", "lib"))
+import ac_common as C
+droot = C.sibling("apex-dispatch")
+sys.path.append(os.path.join(droot, "scripts", "lib"))
+import ledger
+os.environ["APEX_DISPATCH_ENFORCE"] = "1"
+head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+def mkplan(name, body):
+    rel = ".claude/plans/%s-plan.md" % name
+    p = os.path.join(repo, rel)
+    open(p, "w").write(body)
+    h = hashlib.sha256(rel.encode()).hexdigest()[:12]
+    sd = os.path.join(repo, ".dev-plan-state", h)
+    os.makedirs(sd, exist_ok=True)
+    return rel, sd, h
+mon = ('## Monitor\n\n```json\n{"window_days": 14, "checks": [\n'
+       ' {"id": "p95", "metric": "latency.p95", "op": "<", "threshold": 800, "severity": "high", "probe": {"kind": "cmd", "command": "echo 1"}},\n'
+       ' {"id": "err", "metric": "errors", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}},\n'
+       ' {"id": "never", "metric": "up", "op": ">", "threshold": 0, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}}]}\n```\n')
+ship_body = ("# Ship plan\n\n> **Scope**: poc\n\n## Phase 1\n\n- [x] Build it [id:T1]\n  - Acceptance: `true`\n- [x] Wire it [id:T2]\n  - Acceptance: `true`\n\n" + mon)
+rel, sd, h = mkplan("ship", ship_body)
+os.makedirs(os.path.join(repo, ".claude", "tasks"), exist_ok=True)
+open(os.path.join(repo, ".claude", "tasks", "ship-intent.md"), "w").write(
+    "# Intent\n\n## Problem\n\nOperators cannot see what a landed plan does in production.\n\n## Who it's for\n\nThe operator.\n\n"
+    "## Why now\n\nPlans land daily.\n\n## Non-goals\n\nDashboards.\n")
+now = time.time()
+iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+sid = "11111111-2222-4333-8444-555555555555"
+cp = {"plan_path": rel, "plan_hash": h, "total_tasks": 2, "completed_tasks": 2, "landed": True, "halted": False, "epoch": 0,
+      "operate": {"deploys": [{"ts": iso(now - 3 * 86400), "sha": "a" * 40, "head": None, "exit": 1, "ack_source": "tty"},
+                              {"ts": iso(now - 2 * 86400), "sha": "b" * 40, "head": None, "exit": 0, "ack_source": "tty"}],
+                  "window": {"start": iso(now - 2 * 86400), "end": iso(now + 12 * 86400), "days": 14, "last_run": iso(now - 3600),
+                             "breaches": 2, "breaching": ["p95"], "measured_runs": 2,
+                             "last_measured": {"p95": {"status": "breach"}, "err": {"status": "ok"}}},
+                  "checks": {"p95": {"last_value": 950, "last_status": "breach", "last_ts": iso(now - 3600), "breaches": 2,
+                                     "unmeasured": 0, "filed": "lessons"},
+                             "err": {"last_value": None, "last_status": "unmeasured", "last_reason": "probe failed", "last_ts": iso(now - 3600),
+                                     "breaches": 0, "unmeasured": 1, "filed": None, "last_measured_value": 1, "last_measured_status": "ok"}}}}
+json.dump(cp, open(os.path.join(sd, "checkpoint.json"), "w"))
+def row(ev, data, mode="table"):
+    d = dict(data); d["route_id"] = rid; d.setdefault("session_id", sid)
+    ledger.append(sd, ev, d, "hook", route_id=rid, route_mode=mode, head_sha=head, root=droot)
+rid = "r-%s-L7-1" % h
+row("route", {"line": 7, "status": "READY", "origin": "plan", "router": {"class": "feature", "tier": "standard"}})
+row("spawn", {"agent_id": "a1", "role": "builder"})
+row("worker_run", {"agent_id": "a1", "provider": "claude-session", "role": "builder", "exit_code": 0, "resolved_model": "claude-sonnet-5-5",
+                   "usage": {"input": 20000, "output": 4000, "cache_read": 60000, "cache_write": 5000}})
+row("verdict", {"role": "reviewer", "verdict": "APPROVE", "line": 7})
+t5 = [json.loads(l) for l in open(os.path.join(sd, "dispatch", "ledger.jsonl"))][0]["ts"]
+time.sleep(1.2)
+rid = "r-%s-L9-1" % h
+row("route", {"line": 9, "status": "READY", "origin": "plan", "router": {"class": "feature", "tier": "standard"}})
+row("spawn", {"agent_id": "bg1", "role": "builder"})          # a background agent: never measured -> n/a, not a partial figure
+# an orchestrator transcript with one main-session turn inside the first task's window
+with open(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p", sid + ".jsonl"), "w") as f:
+    f.write(json.dumps({"type": "assistant", "timestamp": t5, "sessionId": sid, "message": {
+        "id": "m1", "model": "claude-sonnet-5-5", "usage": {"input_tokens": 1000, "output_tokens": 500}}}) + "\n")
+# a landed plan with no operate block at all, scope-less (= feature)
+rel2, sd2, h2 = mkplan("bare", "# Bare plan\n\n## Phase 1\n\n- [x] Only task [id:T1]\n  - Acceptance: `true`\n")
+json.dump({"plan_path": rel2, "plan_hash": h2, "total_tasks": 1, "completed_tasks": 1, "landed": True, "halted": False, "epoch": 0},
+          open(os.path.join(sd2, "checkpoint.json"), "w"))
+# repo-level checks: one with state, one never measured
+os.makedirs(os.path.join(repo, ".claude", "apex-scope-loop"), exist_ok=True)
+json.dump({"checks": [{"id": "site", "metric": "latency.p95", "op": "<", "threshold": 500, "severity": "high",
+                       "probe": {"kind": "cmd", "command": "echo 1"}},
+                      {"id": "queue", "metric": "depth", "op": "<", "threshold": 9, "severity": "low",
+                       "probe": {"kind": "cmd", "command": "echo 1"}}]},
+          open(os.path.join(repo, ".claude", "apex-scope-loop", "monitor.json"), "w"))
+os.makedirs(os.path.join(repo, ".dev-plan-state", "operate-repo"), exist_ok=True)
+json.dump({"checks": {"site": {"last_value": 120, "last_status": "ok", "last_ts": iso(now), "breaches": 0, "unmeasured": 0}}},
+          open(os.path.join(repo, ".dev-plan-state", "operate-repo", "state.json"), "w"))
+print(os.path.basename(sd), file=open(os.path.join(sys.argv[3], "ship-state"), "w"))
+PY
+SHIP="$REPO/.dev-plan-state/$(cat "$WORK/ship-state")"
+bash "$PLUGIN_ROOT/../apex-dispatch/scripts/report.sh" --state "$SHIP" --per-task --json >"$WORK/report-pt.json" || fail "console-plans-payload: report.sh --per-task failed"
+SUM_BEFORE="$(cd "$REPO/.dev-plan-state" && find . -type f -exec cksum {} + | sort | cksum)"
+"$BIN" progress >"$WORK/p2.json" || fail "console-plans-payload: progress failed"
+[ "$SUM_BEFORE" = "$(cd "$REPO/.dev-plan-state" && find . -type f -exec cksum {} + | sort | cksum)" ] || fail "console-plans-payload: the console wrote into the state base"
+python3 - "$WORK/p2.json" "$WORK/report-pt.json" "$(cat "$WORK/ship-state")" <<'PY' || fail "console-plans-payload: the plans payload is wrong"
+import json, sys
+repo = json.load(open(sys.argv[1]))["repos"][0]
+rep = json.load(open(sys.argv[2]))
+by = {p["hash"]: p for p in repo["plans"]}
+ship, bare = by[sys.argv[3]], [p for p in repo["plans"] if p["slug"] == "bare"][0]
+demo = [p for p in repo["plans"] if p["slug"] == "demo"][0]
+# scope: header value; a scope-less plan is feature
+assert ship["scope"] == "poc" and bare["scope"] == "feature" and demo["scope"] == "feature", (ship["scope"], bare["scope"])
+# intent: summary when the file exists, null otherwise
+assert ship["intent"]["problem"].startswith("Operators cannot see") and ship["intent"]["non_goals"] == "Dashboards.", ship["intent"]
+assert bare["intent"] is None and demo["intent"] is None
+# per-task cost is report.per_task's, task by task (null where report says n/a)
+rt = {t["task"]: t for t in rep["tasks"]}
+assert set(rt) == {7, 9}, rt.keys()
+pt = {t["line"]: t for t in ship["tasks"]}
+assert rt[7]["usd"] is not None and rt[9]["usd"] is None, (rt[7]["usd"], rt[9]["usd"])    # background agent: n/a
+tl = {t["line"]: t for t in ship["tasks"]}
+assert set(tl) == {7, 9}, tl.keys()
+for ln, t in rt.items():     # the payload's per-task figures are the CLI's, null where it says n/a
+    for k_out, k_rep in (("usd", "usd"), ("tokens", "tokens_total"), ("orchestrator_usd", "orchestrator_usd"),
+                         ("orchestrator_tokens", "orchestrator_tokens_total"), ("orchestrator_na", "orchestrator_na")):
+        assert tl[ln][k_out] == t[k_rep], (ln, k_out, tl[ln][k_out], t[k_rep])
+assert tl[9]["usd"] is None and tl[9]["tokens"] is None and tl[7]["usd"] is not None and tl[7]["orchestrator_usd"] is not None
+assert tl[9]["orchestrator_usd"] is None and tl[9]["orchestrator_na"], tl[9]
+assert ship["cost"]["delegated_usd"] == rep["totals"]["usd"], (ship["cost"], rep["totals"]["usd"])
+assert ship["cost"]["orchestrator_usd"] == rep["totals"]["orchestrator_usd"] is not None
+assert ship["cost"]["orchestrator_unattributed_usd"] == rep["totals"]["orchestrator_unattributed_usd"]
+assert ship["cost"]["status"] == rep["totals"]["orchestrator_status"] == "measured", ship["cost"]
+# operate: window, deploys, checks, open-at-close
+o = ship["operate"]
+assert o["state"] == "ok" and [d["exit"] for d in o["deploys"]] == [1, 0] and o["last_deploy"]["sha"] == "b" * 40, o
+assert o["window"]["state"] == "open" and o["window"]["day"] == 3 and o["window"]["days"] == 14, o["window"]
+ck = {c["id"]: c for c in o["checks"]}
+assert ck["p95"]["last_value"] == 950 and ck["p95"]["threshold"] == 800 and ck["p95"]["breaches"] == 2 and ck["p95"]["filed"] == "lessons", ck["p95"]
+assert ck["err"]["last_value"] is None and ck["err"]["unmeasured"] is True and ck["err"]["last_measured_value"] == 1, ck["err"]
+assert ck["never"]["last_value"] is None and ck["never"]["measured"] is False and ck["never"]["breaches"] is None and ck["never"]["unmeasured"] is True, ck["never"]
+assert ship["operate"]["tag"] == "operate:ship"
+# missing operate state is reported as missing, not zeros; a plan that has not landed has no operate block
+assert bare["operate"]["state"] == "missing" and bare["operate"]["deploys"] == [] and bare["operate"]["window"] == {"state": "not-opened"}, bare["operate"]
+assert demo["operate"] is None
+# watched plans and repo-level checks
+assert [w["slug"] for w in repo["watched"]] == ["ship"] and repo["watched"][0]["day"] == 3, repo["watched"]
+rc = repo["repo_checks"]
+assert rc["state"] == "ok" and rc["configured"], rc
+rk = {c["id"]: c for c in rc["checks"]}
+assert rk["site"]["last_value"] == 120 and rk["site"]["last_status"] == "ok" and rk["queue"]["last_value"] is None and rk["queue"]["measured"] is False, rk
+PY
+python3 - "$WORK/p2.json" "$WORK/report-pt.json" "$(cat "$WORK/ship-state")" "$PLUGIN_ROOT" <<'PY' || fail "console-plans-payload: per-task cost differs from report.sh --per-task"
+import json, os, sys
+sys.path.insert(0, os.path.join(sys.argv[4], "scripts", "lib"))
+import ac_collect
+repo = json.load(open(sys.argv[1]))["repos"][0]
+rep = {t["task"]: t for t in json.load(open(sys.argv[2]))["tasks"]}
+ship = [p for p in repo["plans"] if p["hash"] == sys.argv[3]][0]
+cst = ac_collect.plan_cost(os.path.join(repo["path"], ".dev-plan-state", sys.argv[3]), "dispatch")
+assert set(cst["tasks"]) == set(rep) == {7, 9}
+for ln, t in rep.items():
+    c = cst["tasks"][ln]
+    assert c["usd"] == t["usd"] and c["tokens_total"] == t["tokens_total"], (ln, c["usd"], t["usd"])
+    assert c["orchestrator_usd"] == t["orchestrator_usd"] and c["orchestrator_na"] == t["orchestrator_na"]
+assert rep[9]["usd"] is None and rep[7]["usd"] is not None and rep[7]["orchestrator_usd"] is not None and rep[9]["orchestrator_usd"] is None
+PY
+pass "console-plans-payload: scope (scope-less = feature), intent summary, operate block (deploys, day N of M, per-check latest/breaches/unmeasured, missing state is missing), watched plans, repo checks, and per-task cost equal to report.sh --per-task (n/a stays null); the state base is untouched"
 
 echo ""
 echo "smoke passed: $N/$N checks"

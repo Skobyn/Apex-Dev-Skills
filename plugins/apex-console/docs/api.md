@@ -100,15 +100,79 @@ Scorecard ids (the server must emit all of these; `value` may be null):
 ```json
 {"repos": [{"id": "r1", "name": "my-app", "halted": false, "halt_reason": null,
   "lock": {"kind": "plan", "id": "a1b2c3d4e5f6", "line": 14, "stage": "REVIEW", "since": "..."},
-  "plans": [{"hash": "a1b2c3d4e5f6", "path": ".claude/plans/billing-plan.md", "name": "billing-plan",
+  "plans": [{"hash": "a1b2c3d4e5f6", "slug": "billing", "path": ".claude/plans/billing-plan.md", "name": "billing-plan",
+    "scope": "feature",
+    "intent": {"file": ".claude/tasks/billing-intent.md", "problem": "...", "who": "...", "why_now": "...", "non_goals": "..."},
     "total": 12, "done": 7, "phase": "Phase 2", "halted": false, "halt_reason": null,
     "landed": false, "last_activity": "...", "usd": 18.4, "open_findings": 2, "enforced": true,
+    "operate": null,
+    "cost": {"status": "measured", "delegated_usd": 17.9, "delegated_unknown_tasks": 1, "orchestrator_usd": 6.2,
+             "orchestrator_unattributed_usd": 0.4, "orchestrator_unattributed_tokens": 120000, "usd_unrouted": 0.0},
     "tasks": [{"line": 12, "title": "Add invoice model", "status": "done", "tier": "C",
-               "rounds": 2, "attempts": 1, "completed_at": "...", "usd": 3.1}]}],
+               "rounds": 2, "attempts": 1, "completed_at": "...", "usd": 3.1, "tokens": 91000,
+               "orchestrator_usd": 0.9, "orchestrator_tokens": 410000, "orchestrator_na": null}]}],
+  "watched": [{"hash": "c0ffee123456", "slug": "ship", "path": ".claude/plans/ship-plan.md", "day": 3, "days": 14, "end": "..."}],
+  "repo_checks": {"configured": true, "state": "ok", "file": ".../.claude/apex-scope-loop/monitor.json", "problems": [],
+                  "checks": [{"id": "site", "metric": "latency.p95", "op": "<", "threshold": 500, "severity": "high",
+                              "declared": true, "measured": true, "last_value": 120, "last_status": "ok", "last_ts": "...",
+                              "last_reason": null, "breaches": 0, "unmeasured_runs": 0, "filed": null, "unmeasured": false,
+                              "last_measured_value": null, "last_measured_status": null, "last_measured_ts": null}]},
   "adhoc": [{"id": "x9", "routes": 2, "usd": 0.8, "last_activity": "..."}]}]}
 ```
 
 Task `status`: `done`, `active`, `failed` (has failures and is not done), `todo`.
+
+Everything in this payload is read from files the plugins wrote. The console never runs `operate.sh deploy`,
+`monitor` or `ingest`, and never writes state. A value that cannot be computed is `null` (never `0`); a
+state file that does not exist or cannot be read is reported as such (`"missing"`, `"unreadable"`), not as zeros.
+
+**Scope and intent.** `scope` is the plan header's `> **Scope**: bugfix|poc|feature` (a plan without the header is
+`feature`). `intent` is `null` unless `.claude/tasks/<slug>-intent.md` exists; its four sections are each at most
+400 characters, `null` when empty. `slug` is the plan file name without `.md` and a trailing `-plan`.
+
+**Operate (`plans[].operate`).** `null` until the plan has landed. For a landed plan, from checkpoint.json's
+`operate` block (apex-scope-loop's `operate.sh` schema) and the plan's `## Monitor` section (read with
+apex-scope-loop's `monitorlib`):
+
+```json
+{"slug": "ship", "tag": "operate:ship", "state": "ok", "scope": "poc", "monitor": "ok", "window_days": 14, "problems": [],
+ "deploys": [{"ts": "...", "sha": "bbbb...", "exit": 0}], "last_deploy": {"ts": "...", "sha": "bbbb...", "exit": 0},
+ "window": {"state": "open", "day": 3, "days": 14, "start": "...", "end": "...", "outcome": null, "closed_by": null,
+            "open_at_close": null, "unmeasured_at_close": null, "measured_runs": 2, "breaches": 2, "last_run": "...",
+            "never_measured": false},
+ "windows_closed": 0,
+ "checks": [{"id": "p95", "metric": "latency.p95", "op": "<", "threshold": 800, "severity": "high", "declared": true,
+             "measured": true, "last_value": 950, "last_status": "breach", "last_ts": "...", "last_reason": null,
+             "breaches": 2, "unmeasured_runs": 0, "filed": "lessons", "unmeasured": false,
+             "last_measured_value": null, "last_measured_status": null, "last_measured_ts": null, "open_at_close": false}]}
+```
+
+- `state`: `ok`, or `missing` when the landed plan's checkpoint has no `operate` block (no deploys, `window.state`
+  `not-opened`, nothing measured). `monitor`: `ok`, `empty` (checks: []), `none` (no section; `warning` says so),
+  `invalid` (`problems` lists why), `unknown`.
+- `window.state`: `not-opened`, `open` (`day` N of `days`), `closed` (`outcome` `operated-clean` or
+  `closed-with-breaches`, with `open_at_close`, `unmeasured_at_close`, `measured_runs`; `outcome` is null when
+  the window ended but no monitor run has closed it yet) or `unreadable`.
+- Each check merges the declared check with its recorded state. A check never measured has `measured: false`,
+  `last_value: null`, `breaches: null`, `unmeasured: true`. `last_value` is `null` when the last probe failed
+  (`last_status: "unmeasured"`; `last_measured_*` hold the last good reading). Breach counts are the plan-lifetime
+  counts operate.sh keeps; `filed` says where the first breach went (lessons or backlog, tag `operate:<slug>`).
+
+**`watched`** lists every plan whose window is open. **`repo_checks`** are the repo-level checks from
+`.claude/apex-scope-loop/monitor.json` with their state from `<state base>/operate-repo/state.json`; `state` is
+`ok`, `missing` (declared, state file absent), `invalid`, `unreadable` or `none` (no monitor.json, `configured: false`).
+
+**Cost.** Per task and per plan these are the numbers of `report.sh --per-task --json` (apex-dispatch's
+`report.per_task`, called read-only; transcripts are auto-located under `$CLAUDE_CONFIG_DIR` or `~/.claude`).
+Per task: `usd` / `tokens` are delegated only and `null` when n/a (an agent with no recorded usage, for example a
+background agent, makes both null; there is no partial figure); `orchestrator_usd` / `orchestrator_tokens` are the
+main session's, `null` when n/a, with the reason in `orchestrator_na` (`null` when measured; `orchestrator_usd`
+alone null with `orchestrator_na` null means tokens measured, price unknown). The plan's `usd` above is the older
+row-priced sum and may differ from `cost.delegated_usd`. `plans[].cost`: `status` is `measured` or the
+`n/a (...)` reason every orchestrator figure is null (no ledger, no transcript, report unavailable);
+`delegated_usd` is the sum over tasks with a known figure and `delegated_unknown_tasks` counts the n/a ones;
+`orchestrator_unattributed_usd` / `_tokens` are main-session turns inside no single task's window (null = n/a).
+A task not in the ledger has all of these null.
 
 ## GET /api/knobs?repo=r1
 
