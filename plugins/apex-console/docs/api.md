@@ -116,7 +116,9 @@ Scorecard ids (the server must emit all of these; `value` may be null):
                   "checks": [{"id": "site", "metric": "latency.p95", "op": "<", "threshold": 500, "severity": "high",
                               "declared": true, "measured": true, "last_value": 120, "last_status": "ok", "last_ts": "...",
                               "last_reason": null, "breaches": 0, "unmeasured_runs": 0, "filed": null, "unmeasured": false,
-                              "last_measured_value": null, "last_measured_status": null, "last_measured_ts": null}]},
+                              "last_measured_value": null, "last_measured_status": null, "last_measured_ts": null}],
+                  "ingested": {"backlog": [{"id": "B-005", "title": "latency.p95 600 breached the expected ... (check site)", "done": false}],
+                               "counts": {"backlog": 1, "backlog_open": 1}}},
   "adhoc": [{"id": "x9", "routes": 2, "usd": 0.8, "last_activity": "..."}]}]}
 ```
 
@@ -140,7 +142,13 @@ apex-scope-loop's `monitorlib`):
  "window": {"state": "open", "day": 3, "days": 14, "start": "...", "end": "...", "outcome": null, "closed_by": null,
             "open_at_close": null, "unmeasured_at_close": null, "measured_runs": 2, "breaches": 2, "last_run": "...",
             "never_measured": false},
- "windows_closed": 0,
+ "windows_closed": 1,
+ "last_closed_window": {"outcome": "closed-with-breaches", "closed_by": "monitor", "closed_at": "...", "start": "...",
+                        "end": "...", "days": 14, "open_at_close": ["p95"], "unmeasured_at_close": ["never"],
+                        "measured_runs": 3, "breaches": 4, "never_measured": false},
+ "ingested": {"lessons": [{"id": "L-002", "title": "operate-ship-p95-breach"}],
+              "backlog": [{"id": "B-001", "title": "errors 9 breached the expected errors < 5 (...)", "done": false}],
+              "counts": {"lessons": 1, "backlog": 1, "backlog_open": 1}},
  "checks": [{"id": "p95", "metric": "latency.p95", "op": "<", "threshold": 800, "severity": "high", "declared": true,
              "measured": true, "last_value": 950, "last_status": "breach", "last_ts": "...", "last_reason": null,
              "breaches": 2, "unmeasured_runs": 0, "filed": "lessons", "unmeasured": false,
@@ -157,22 +165,42 @@ apex-scope-loop's `monitorlib`):
   `last_value: null`, `breaches: null`, `unmeasured: true`. `last_value` is `null` when the last probe failed
   (`last_status: "unmeasured"`; `last_measured_*` hold the last good reading). Breach counts are the plan-lifetime
   counts operate.sh keeps; `filed` says where the first breach went (lessons or backlog, tag `operate:<slug>`).
+  `breaches` and `unmeasured_runs` are `null` (never `0`) when the check was never measured or the recorded count
+  is missing or not an integer (a boolean is not one).
+- `windows_closed` is how many windows have closed; `last_closed_window` is the last entry of operate's
+  `windows_closed` (what `operate.sh status` prints as "last closed window"): `outcome`, `closed_by`, `closed_at`,
+  `start`, `end`, `days`, `open_at_close`, `unmeasured_at_close`, `measured_runs`, `breaches` (counts `null` when
+  not integers) and `never_measured` (true for 0 measured runs). `null` when no window has closed.
+- `ingested` is what `operate.sh ingest` filed for this plan, read from the MAIN checkout's
+  `.claude/apex-scope-loop/LESSONS.md` (blocks tagged `#operate:<slug>`) and `BACKLOG.md` (items under a
+  `## Plan:` section whose text starts `[operate:<slug>]`), the files `lessons.sh` and `backlog.sh` use
+  (`APEX_LESSONS_FILE` / `APEX_BACKLOG_FILE` override them). Ids and short titles only (a title is at most 100
+  characters; `done` is the backlog item's `[x]`), at most 50 of each; `counts` are the totals (`backlog_open`
+  excludes done items). The files are only read, never written.
 
 **`watched`** lists every plan whose window is open. **`repo_checks`** are the repo-level checks from
 `.claude/apex-scope-loop/monitor.json` with their state from `<state base>/operate-repo/state.json`; `state` is
 `ok`, `missing` (declared, state file absent), `invalid`, `unreadable` or `none` (no monitor.json, `configured: false`).
+`repo_checks.ingested` lists the repo-level backlog items (`[operate:repo]` under `## Repo: ...` in BACKLOG.md; the
+repo level never files a lesson, so there is no `lessons` key): `{"backlog": [{id, title, done}], "counts":
+{"backlog", "backlog_open"}}`, present whether or not monitor.json exists.
 
 **Cost.** Per task and per plan these are the numbers of `report.sh --per-task --json` (apex-dispatch's
 `report.per_task`, called read-only; transcripts are auto-located under `$CLAUDE_CONFIG_DIR` or `~/.claude`).
 Per task: `usd` / `tokens` are delegated only and `null` when n/a (an agent with no recorded usage, for example a
 background agent, makes both null; there is no partial figure); `orchestrator_usd` / `orchestrator_tokens` are the
 main session's, `null` when n/a, with the reason in `orchestrator_na` (`null` when measured; `orchestrator_usd`
-alone null with `orchestrator_na` null means tokens measured, price unknown). The plan's `usd` above is the older
+alone null with `orchestrator_na` null means tokens measured, price unknown). For a task with no routed row in the
+ledger, `orchestrator_na` is the string `"no routed task"` (or the plan's `n/a (...)` status when the whole report is
+unavailable), never `null`. The plan's `usd` above is the older
 row-priced sum and may differ from `cost.delegated_usd`. `plans[].cost`: `status` is `measured` or the
 `n/a (...)` reason every orchestrator figure is null (no ledger, no transcript, report unavailable);
 `delegated_usd` is the sum over tasks with a known figure and `delegated_unknown_tasks` counts the n/a ones;
 `orchestrator_unattributed_usd` / `_tokens` are main-session turns inside no single task's window (null = n/a).
-A task not in the ledger has all of these null.
+A task not in the ledger has all the figures null and `orchestrator_na` set as above.
+The cost result is cached once per state dir and refreshed when the ledger, a located transcript's (mtime, size) or
+the 30-second time bucket changes (the bucket is in the stamp, never in the cache key, so a console left open does
+not accumulate entries).
 
 ## GET /api/knobs?repo=r1
 

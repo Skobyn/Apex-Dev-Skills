@@ -202,7 +202,7 @@ def api_progress():
             usd = sum(v for v in cost.values())
             slug = ac_collect.plan_slug(p["plan_path"])
             scope = ac_collect.plan_scope(p["plan_abs"])
-            operate = ac_collect.plan_operate(cp, p["plan_abs"], slug, scope)
+            operate = ac_collect.plan_operate(cp, p["plan_abs"], slug, scope, top=s["top"])
             tot = cst["totals"] or {}
             cost_blk = {"status": cst["status"], "delegated_usd": tot.get("usd"), "delegated_unknown_tasks": tot.get("usd_unknown_tasks"),
                         "orchestrator_usd": tot.get("orchestrator_usd"),
@@ -236,7 +236,8 @@ def api_progress():
                     "halted": bool(s.get("halt_files")), "halt_reason": halt_reason, "lock": lk,
                     "plans": plans, "watched": watched,
                     "repo_checks": ac_collect.repo_checks(s["top"], s.get("state_base")) if s.get("top") and not s.get("error")
-                    else {"configured": False, "state": "none", "file": None, "checks": [], "problems": []},
+                    else {"configured": False, "state": "none", "file": None, "checks": [], "problems": [],
+                         "ingested": {"backlog": [], "counts": {"backlog": 0, "backlog_open": 0}}},
                     "adhoc": adhoc})
     return {"repos": out}
 

@@ -245,7 +245,7 @@ cp = {"plan_path": rel, "plan_hash": h, "total_tasks": 2, "completed_tasks": 2, 
                   "checks": {"p95": {"last_value": 950, "last_status": "breach", "last_ts": iso(now - 3600), "breaches": 2,
                                      "unmeasured": 0, "filed": "lessons"},
                              "err": {"last_value": None, "last_status": "unmeasured", "last_reason": "probe failed", "last_ts": iso(now - 3600),
-                                     "breaches": 0, "unmeasured": 1, "filed": None, "last_measured_value": 1, "last_measured_status": "ok"}}}}
+                                     "unmeasured": True, "filed": None, "last_measured_value": 1, "last_measured_status": "ok"}}}}   # hand-written: no breaches count, a bool unmeasured
 json.dump(cp, open(os.path.join(sd, "checkpoint.json"), "w"))
 def row(ev, data, mode="table"):
     d = dict(data); d["route_id"] = rid; d.setdefault("session_id", sid)
@@ -269,6 +269,33 @@ with open(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p", sid + "
 rel2, sd2, h2 = mkplan("bare", "# Bare plan\n\n## Phase 1\n\n- [x] Only task [id:T1]\n  - Acceptance: `true`\n")
 json.dump({"plan_path": rel2, "plan_hash": h2, "total_tasks": 1, "completed_tasks": 1, "landed": True, "halted": False, "epoch": 0},
           open(os.path.join(sd2, "checkpoint.json"), "w"))
+# a landed plan whose watch window closed twice (operate.windows_closed): the last entry is what status prints
+rel3, sd3, h3 = mkplan("closed", "# Closed plan\n\n## Phase 1\n\n- [x] Only task [id:T1]\n  - Acceptance: `true`\n\n" + mon)
+w1 = {"start": iso(now - 40 * 86400), "end": iso(now - 26 * 86400), "days": 14, "outcome": "operated-clean", "closed_by": "monitor",
+      "closed_at": iso(now - 26 * 86400), "open_at_close": [], "unmeasured_at_close": [], "measured_runs": 5, "breaches": 0}
+w2 = {"start": iso(now - 20 * 86400), "end": iso(now - 6 * 86400), "days": 14, "outcome": "closed-with-breaches", "closed_by": "monitor",
+      "closed_at": iso(now - 6 * 86400), "open_at_close": ["p95"], "unmeasured_at_close": ["never"], "measured_runs": 3, "breaches": 4,
+      "last_run": iso(now - 6 * 86400)}
+json.dump({"plan_path": rel3, "plan_hash": h3, "total_tasks": 1, "completed_tasks": 1, "landed": True, "halted": False, "epoch": 0,
+           "operate": {"deploys": [], "window": w2, "windows_closed": [w1, w2], "checks": {}}}, open(os.path.join(sd3, "checkpoint.json"), "w"))
+# ledgers filed by lessons.sh / backlog.sh in the MAIN checkout (their formats), some for other plans
+asl = os.path.join(repo, ".claude", "apex-scope-loop")
+os.makedirs(asl, exist_ok=True)
+open(os.path.join(asl, "LESSONS.md"), "w").write(
+    "# apex-scope-loop Lessons (append-only)\n\nFiled by the loop.\n\n"
+    "## L-001 · 2026-10-01 · retry-storm\n**What happened:** x\n**Root cause:** y\n**Harness fix:** z\n**Plan:** other-plan.md\n**Tags:** #backend #operate:other\n\n"
+    "## L-002 · 2026-10-20 · operate-ship-p95-breach\n**What happened:** Plan ship: latency.p95 950 breached.\n**Root cause:** Not yet diagnosed.\n"
+    "**Harness fix:** Diagnose.\n**Plan:** ship-plan.md\n**Tags:** #operate:ship #latency.p95\n")
+open(os.path.join(asl, "BACKLOG.md"), "w").write(
+    "# apex-scope-loop Hardening Backlog\n\nNon-blocking review findings.\n\n"
+    "## Plan: .claude/plans/ship-plan.md\n\n"
+    "- [ ] B-001 · 2026-10-20 · plan-level · from operate \u2014 [operate:ship] errors 9 breached the expected errors < 5 (check err, severity low)\n"
+    "- [x] B-002 · 2026-10-19 · plan-level · from operate \u2014 [operate:ship] up 0 breached the expected up > 0 (done 2026-10-20)\n"
+    "- [ ] B-003 · 2026-10-19 · line 7 (T1) · from reviewer \u2014 an unrelated reviewer finding\n\n"
+    "## Plan: .claude/plans/other-plan.md\n\n"
+    "- [ ] B-004 · 2026-10-18 · plan-level · from operate \u2014 [operate:other] not this plan's\n\n"
+    "## Repo: operate checks (monitor.json)\n\n"
+    "- [ ] B-005 · 2026-10-20 · repo-level · from operate \u2014 [operate:repo] latency.p95 600 breached the expected latency.p95 < 500 (check site)\n")
 # repo-level checks: one with state, one never measured
 os.makedirs(os.path.join(repo, ".claude", "apex-scope-loop"), exist_ok=True)
 json.dump({"checks": [{"id": "site", "metric": "latency.p95", "op": "<", "threshold": 500, "severity": "high",
@@ -283,9 +310,10 @@ print(os.path.basename(sd), file=open(os.path.join(sys.argv[3], "ship-state"), "
 PY
 SHIP="$REPO/.dev-plan-state/$(cat "$WORK/ship-state")"
 bash "$PLUGIN_ROOT/../apex-dispatch/scripts/report.sh" --state "$SHIP" --per-task --json >"$WORK/report-pt.json" || fail "console-plans-payload: report.sh --per-task failed"
-SUM_BEFORE="$(cd "$REPO/.dev-plan-state" && find . -type f -exec cksum {} + | sort | cksum)"
+sums() { (cd "$REPO/.dev-plan-state" && find . -type f -exec cksum {} + | sort | cksum; cd "$REPO/.claude" && cksum apex-scope-loop/LESSONS.md apex-scope-loop/BACKLOG.md apex-scope-loop/monitor.json tasks/ship-intent.md; stat -f '%m %z' apex-scope-loop/LESSONS.md apex-scope-loop/BACKLOG.md 2>/dev/null || stat -c '%Y %s' apex-scope-loop/LESSONS.md apex-scope-loop/BACKLOG.md); }
+SUM_BEFORE="$(sums)"
 "$BIN" progress >"$WORK/p2.json" || fail "console-plans-payload: progress failed"
-[ "$SUM_BEFORE" = "$(cd "$REPO/.dev-plan-state" && find . -type f -exec cksum {} + | sort | cksum)" ] || fail "console-plans-payload: the console wrote into the state base"
+[ "$SUM_BEFORE" = "$(sums)" ] || fail "console-plans-payload: the console wrote into the state base, LESSONS.md or BACKLOG.md"
 python3 - "$WORK/p2.json" "$WORK/report-pt.json" "$(cat "$WORK/ship-state")" <<'PY' || fail "console-plans-payload: the plans payload is wrong"
 import json, sys
 repo = json.load(open(sys.argv[1]))["repos"][0]
@@ -320,6 +348,8 @@ o = ship["operate"]
 assert o["state"] == "ok" and [d["exit"] for d in o["deploys"]] == [1, 0] and o["last_deploy"]["sha"] == "b" * 40, o
 assert o["window"]["state"] == "open" and o["window"]["day"] == 3 and o["window"]["days"] == 14, o["window"]
 ck = {c["id"]: c for c in o["checks"]}
+assert ck["err"]["breaches"] is None and ck["err"]["unmeasured_runs"] is None, ck["err"]      # missing or non-int (bool) count: null, never 0
+assert ck["p95"]["unmeasured_runs"] == 0 and o["last_closed_window"] is None and o["windows_closed"] == 0
 assert ck["p95"]["last_value"] == 950 and ck["p95"]["threshold"] == 800 and ck["p95"]["breaches"] == 2 and ck["p95"]["filed"] == "lessons", ck["p95"]
 assert ck["err"]["last_value"] is None and ck["err"]["unmeasured"] is True and ck["err"]["last_measured_value"] == 1, ck["err"]
 assert ck["never"]["last_value"] is None and ck["never"]["measured"] is False and ck["never"]["breaches"] is None and ck["never"]["unmeasured"] is True, ck["never"]
@@ -327,10 +357,27 @@ assert ship["operate"]["tag"] == "operate:ship"
 # missing operate state is reported as missing, not zeros; a plan that has not landed has no operate block
 assert bare["operate"]["state"] == "missing" and bare["operate"]["deploys"] == [] and bare["operate"]["window"] == {"state": "not-opened"}, bare["operate"]
 assert demo["operate"] is None
+# ingested lessons / backlog under operate:<slug>: ids and short titles, other plans' and reviewer items excluded
+ig = ship["operate"]["ingested"]
+assert ig["lessons"] == [{"id": "L-002", "title": "operate-ship-p95-breach"}], ig
+assert [(b["id"], b["done"]) for b in ig["backlog"]] == [("B-001", False), ("B-002", True)], ig
+assert ig["backlog"][0]["title"].startswith("errors 9 breached") and len(ig["backlog"][0]["title"]) <= 100, ig
+assert ig["counts"] == {"lessons": 1, "backlog": 2, "backlog_open": 1}, ig
+assert bare["operate"]["ingested"]["counts"] == {"lessons": 0, "backlog": 0, "backlog_open": 0}, bare["operate"]["ingested"]
+# the last closed window block (what operate.sh status prints), plus the count
+cl = [p for p in repo["plans"] if p["slug"] == "closed"][0]["operate"]
+assert cl["windows_closed"] == 2 and cl["window"]["state"] == "closed" and cl["window"]["outcome"] == "closed-with-breaches", cl["window"]
+lw = cl["last_closed_window"]
+assert (lw["outcome"], lw["closed_by"], lw["open_at_close"], lw["unmeasured_at_close"], lw["measured_runs"], lw["breaches"]) == \
+    ("closed-with-breaches", "monitor", ["p95"], ["never"], 3, 4), lw
+assert lw["start"] and lw["end"] and lw["never_measured"] is False, lw
+assert cl["ingested"]["counts"]["backlog"] == 0
 # watched plans and repo-level checks
 assert [w["slug"] for w in repo["watched"]] == ["ship"] and repo["watched"][0]["day"] == 3, repo["watched"]
 rc = repo["repo_checks"]
 assert rc["state"] == "ok" and rc["configured"], rc
+assert [(b["id"], b["done"]) for b in rc["ingested"]["backlog"]] == [("B-005", False)] and "lessons" not in rc["ingested"], rc["ingested"]
+assert rc["ingested"]["counts"] == {"backlog": 1, "backlog_open": 1}, rc["ingested"]
 rk = {c["id"]: c for c in rc["checks"]}
 assert rk["site"]["last_value"] == 120 and rk["site"]["last_status"] == "ok" and rk["queue"]["last_value"] is None and rk["queue"]["measured"] is False, rk
 PY
@@ -348,6 +395,48 @@ for ln, t in rep.items():
     assert c["usd"] == t["usd"] and c["tokens_total"] == t["tokens_total"], (ln, c["usd"], t["usd"])
     assert c["orchestrator_usd"] == t["orchestrator_usd"] and c["orchestrator_na"] == t["orchestrator_na"]
 assert rep[9]["usd"] is None and rep[7]["usd"] is not None and rep[7]["orchestrator_usd"] is not None and rep[9]["orchestrator_usd"] is None
+# F-001: the cost cache holds ONE entry per state dir however many 30 s buckets pass; the bucket and the transcripts' (mtime, size)
+# are in the stamp. Other cached results (scope, intent, operate, repo checks, ledgers) are keyed on files, not on time.
+sd = os.path.join(repo["path"], ".dev-plan-state", sys.argv[3])
+calls = []
+real = ac_collect.dispatch_mods()[1].per_task
+ac_collect.dispatch_mods()[1].per_task = lambda *a, **k: (calls.append(a[1]), real(*a, **k))[1]
+snap = ac_collect.repo_snapshot({"id": "r1", "path": repo["path"]})
+ac_collect.plan_cost(sd, "dispatch")      # loads and caches the sibling modules before the interpreter-state snapshot
+sys.dont_write_bytecode = False                  # whatever the environment says: loading monitorlib must not flip it
+path_before, bytecode_before = list(sys.path), sys.dont_write_bytecode
+def sweep(i):
+    ac_collect._cost_bucket = lambda: 1000 + i              # a stubbed 30 s bucket
+    ac_collect.repo_snapshot({"id": "r1", "path": repo["path"]})
+    for p in snap["plans"]:
+        slug = ac_collect.plan_slug(p["plan_path"])
+        scope = ac_collect.plan_scope(p["plan_abs"])
+        ac_collect.plan_operate(p["checkpoint"], p["plan_abs"], slug, scope, now=1.8e9 + i * 86400, top=snap["top"])
+        ac_collect.plan_intent(snap["top"], slug)
+        ac_collect.plan_cost(p["dir"], p["ledger"].get("dir"))
+    ac_collect.repo_checks(snap["top"], snap["state_base"])
+sweep(0)
+size0, costkeys0 = len(ac_collect._cache), [k for k in ac_collect._cache if k[0] == "cost"]
+want = sorted(("cost", p["dir"]) for p in snap["plans"] if p["ledger"].get("dir"))
+assert sorted(costkeys0) == want and ("cost", sd) in want, (costkeys0, want)      # one per state dir that has a ledger
+n0 = calls.count(sd)
+for i in range(1, 9):
+    sweep(i)
+assert len(ac_collect._cache) == size0, (size0, len(ac_collect._cache))                # nothing accumulates per bucket or per poll
+assert sorted(k for k in ac_collect._cache if k[0] == "cost") == want
+assert calls.count(sd) - n0 == 8, (n0, calls.count(sd))                                          # one recompute per new bucket, none within one
+ac_collect._cost_bucket = lambda: 1000 + 8
+ac_collect.plan_cost(sd, "dispatch"); ac_collect.plan_cost(sd, "dispatch")
+assert calls.count(sd) - n0 == 8, "a repeated call in the same bucket recomputed"
+tp = [os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p", f) for f in os.listdir(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p"))][0]
+open(tp, "a").write("\n")                                                              # a transcript grows inside the same bucket
+ac_collect.plan_cost(sd, "dispatch")
+assert calls.count(sd) - n0 == 9 and sorted(k for k in ac_collect._cache if k[0] == "cost") == want, "a grown transcript did not refresh the entry"
+# monitorlib is loaded from its file path: no sys.path entry, no bytecode flag flipped, no module name left behind
+assert sys.path == path_before, (sys.path[:3], path_before[:3])
+sl = os.path.join(ac_collect.C.sibling("apex-scope-loop"), "skills", "apex-execute", "scripts")
+assert sl not in sys.path and sys.path[:1] != [sl] and "monitorlib" not in sys.modules, (sys.path[:3])
+assert sys.dont_write_bytecode is False, "monitorlib turned bytecode writing off for the console process"
 PY
 pass "console-plans-payload: scope (scope-less = feature), intent summary, operate block (deploys, day N of M, per-check latest/breaches/unmeasured, missing state is missing), watched plans, repo checks, and per-task cost equal to report.sh --per-task (n/a stays null); the state base is untouched"
 

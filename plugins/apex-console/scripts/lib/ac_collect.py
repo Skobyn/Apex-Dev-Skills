@@ -12,13 +12,18 @@ Per registered repository:
 Results are cached on the files' (mtime, size).
 """
 import glob
+import importlib.util
 import os
+import re
+import sys
 import threading
+import time
 
 import ac_common as C
 
 _cache = {}
 _lock = threading.Lock()
+_CACHE_MAX = 4096          # a safety net only: every key below is one entry per file or directory, not per poll
 
 
 def _stamp(*paths):
@@ -32,8 +37,11 @@ def _stamp(*paths):
     return tuple(out)
 
 
-def cached(key, paths, fn):
-    stamp = _stamp(*paths)
+def cached(key, paths, fn, extra=None):
+    """fn()'s value, recomputed when the (mtime, size) of `paths` or `extra` changes. The KEY names what is
+    cached (one entry per file, directory or state dir) and must never carry a time or a growing value: anything
+    that varies goes in `paths` or `extra`, so the entry is replaced, not added to."""
+    stamp = (_stamp(*paths), extra)
     with _lock:
         hit = _cache.get(key)
         if hit and hit[0] == stamp:
@@ -41,7 +49,47 @@ def cached(key, paths, fn):
     val = fn()
     with _lock:
         _cache[key] = (stamp, val)
+        while len(_cache) > _CACHE_MAX:
+            _cache.pop(next(iter(_cache)), None)
     return val
+
+
+# --- scope-loop's own python modules ---------------------------------------------------------
+
+_sl_mods = {}
+_sl_lock = threading.RLock()
+
+
+def _sl_module(name):
+    """planlib / monitorlib from apex-scope-loop, loaded from their file path. monitorlib puts its directory at
+    the front of sys.path and turns bytecode writing off at import; neither may leak into the console process
+    (the console must not shadow its own modules, and its flag is not scope-loop's to flip), so both are restored.
+    Bytecode is off while the file executes so nothing is written into the plugin directory."""
+    sl = _sl_scripts()
+    path = os.path.join(sl, name + ".py") if sl else None
+    if not path or not os.path.isfile(path):
+        return None
+    with _sl_lock:
+        if path in _sl_mods:
+            return _sl_mods[path]
+        saved_path, saved_flag = list(sys.path), sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            if name == "monitorlib":          # it does `import planlib`: hand it ours rather than a path lookup
+                pl = _sl_module("planlib")
+                if pl is None:
+                    return None
+                sys.modules.setdefault("planlib", pl)
+            spec = importlib.util.spec_from_file_location("_apex_sl_" + name, path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except Exception:
+            return None
+        finally:
+            sys.path[:] = saved_path
+            sys.dont_write_bytecode = saved_flag
+        _sl_mods[path] = mod
+        return mod
 
 
 # --- plugins -------------------------------------------------------------------------
@@ -145,14 +193,7 @@ def plan_tasks(plan_abs):
         return []
 
     def compute():
-        import sys
-        if sl not in sys.path:
-            sys.path.append(sl)
-        try:
-            import planlib
-            mods = planlib
-        except Exception:
-            mods = None
+        mods = _sl_module("planlib")
         if not mods:
             return []
         try:
@@ -164,7 +205,6 @@ def plan_tasks(plan_abs):
 
 
 def _title(line):
-    import re
     t = re.sub(r"^\s*[-*]\s*\[[ xX]\]\s*", "", line)
     t = re.sub(r"\[[^\]]*\]", "", t)              # tags
     t = re.sub(r"`[^`]*`", lambda m: m.group(0)[1:-1], t)
@@ -244,10 +284,10 @@ def repo_snapshot(repo):
 # .claude/tasks/<slug>-intent.md. Operate state is checkpoint.json's `operate` block (operate.sh's
 # schema) plus <state base>/operate-repo/state.json, read as files: operate.sh has no JSON status and
 # the console never runs it (deploy, monitor and ingest are human/scheduled steps). Declared checks
-# come from scope-loop's own monitorlib. Cost is apex-dispatch's report.per_task, the CLI's numbers.
-
-import re
-import time
+# come from scope-loop's own monitorlib. Ingested lessons and backlog entries are read from the main
+# checkout's LESSONS.md / BACKLOG.md (lessons.sh / backlog.sh's files, never written here). Cost is
+# apex-dispatch's report.per_task, the CLI's numbers. Every cache key below names a file or a state
+# dir; what changes goes in the stamp.
 
 _SCOPE_RE = re.compile(r"^(?:>[ \t]?)?\*\*Scope\*\*:[ \t]*(.*?)[ \t]*$")
 
@@ -260,18 +300,20 @@ def plan_slug(plan_path):
 
 def plan_scope(plan_abs):
     """bugfix|poc|feature as written in the plan header; a header-less plan is feature."""
-    try:
-        with open(plan_abs, encoding="utf-8", errors="replace") as f:
-            for n, line in enumerate(f, 1):
-                line = line.rstrip("\r\n")
-                if n > 1 and (line.strip() == "---" or line.startswith("## ")):
-                    break
-                m = _SCOPE_RE.match(line)
-                if m:
-                    return m.group(1) or "feature"
-    except OSError:
-        pass
-    return "feature"
+    def compute():
+        try:
+            with open(plan_abs, encoding="utf-8", errors="replace") as f:
+                for n, line in enumerate(f, 1):
+                    line = line.rstrip("\r\n")
+                    if n > 1 and (line.strip() == "---" or line.startswith("## ")):
+                        break
+                    m = _SCOPE_RE.match(line)
+                    if m:
+                        return m.group(1) or "feature"
+        except OSError:
+            pass
+        return "feature"
+    return cached(("scope", plan_abs), [plan_abs], compute)
 
 
 _INTENT_KEYS = (("problem", "Problem"), ("who", "Who it's for"), ("why_now", "Why now"), ("non_goals", "Non-goals"))
@@ -282,27 +324,36 @@ def plan_intent(top, slug):
     p = os.path.join(top, ".claude", "tasks", "%s-intent.md" % slug)
     if not slug or not os.path.isfile(p):
         return None
-    try:
-        text = open(p, encoding="utf-8", errors="replace").read()
-    except OSError as e:
-        return {"file": os.path.relpath(p, top), "error": "unreadable: %s" % (e.strerror or e)}
-    secs, cur = {}, None
-    for line in text.splitlines():
-        m = re.match(r"^##\s+(.*?)\s*$", line)
-        if m:
-            cur = m.group(1).strip().lower()
-            secs.setdefault(cur, [])
-        elif cur is not None:
-            secs[cur].append(line)
-    out = {"file": os.path.relpath(p, top)}
-    for key, head in _INTENT_KEYS:
-        body = " ".join(" ".join(secs.get(head.lower(), [])).split())
-        out[key] = body[:400] or None
-    return out
+
+    def compute():
+        try:
+            with open(p, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError as e:
+            return {"file": os.path.relpath(p, top), "error": "unreadable: %s" % (e.strerror or e)}
+        secs, cur = {}, None
+        for line in text.splitlines():
+            m = re.match(r"^##\s+(.*?)\s*$", line)
+            if m:
+                cur = m.group(1).strip().lower()
+                secs.setdefault(cur, [])
+            elif cur is not None:
+                secs[cur].append(line)
+        out = {"file": os.path.relpath(p, top)}
+        for key, head in _INTENT_KEYS:
+            body = " ".join(" ".join(secs.get(head.lower(), [])).split())
+            out[key] = body[:400] or None
+        return out
+    return cached(("intent", p), [p], compute)
 
 
 def _num(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _count(v):
+    """A recorded count, or None when it is missing or not an integer (a bool is not one): never 0."""
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
 def _check_row(cid, decl, cs):
@@ -313,8 +364,8 @@ def _check_row(cid, decl, cs):
            "declared": decl is not None, "measured": cs is not None,
            "last_value": _num(cs.get("last_value")) if cs else None, "last_status": cs.get("last_status") if cs else None,
            "last_ts": cs.get("last_ts") if cs else None, "last_reason": cs.get("last_reason") if cs else None,
-           "breaches": cs.get("breaches") if cs and isinstance(cs.get("breaches"), int) else (0 if cs else None),
-           "unmeasured_runs": cs.get("unmeasured") if cs and isinstance(cs.get("unmeasured"), int) else (0 if cs else None),
+           "breaches": _count(cs.get("breaches")) if cs else None,
+           "unmeasured_runs": _count(cs.get("unmeasured")) if cs else None,
            "filed": cs.get("filed") if cs else None,
            "last_measured_value": _num(cs.get("last_measured_value")) if cs else None,
            "last_measured_status": cs.get("last_measured_status") if cs else None,
@@ -324,17 +375,120 @@ def _check_row(cid, decl, cs):
 
 
 def _monitorlib():
+    return _sl_module("monitorlib")
+
+
+def _ml_path():
     sl = _sl_scripts()
-    if not sl or not os.path.isfile(os.path.join(sl, "monitorlib.py")):
-        return None
-    import sys
-    if sl not in sys.path:
-        sys.path.append(sl)
+    return os.path.join(sl, "monitorlib.py") if sl else ""
+
+
+# --- ingested lessons and backlog (read-only) ---------------------------------------------------
+# lessons.sh: "## L-NNN · date · title-slug" blocks with a "**Tags:** #operate:<slug> #metric" line.
+# backlog.sh: "- [ ] B-NNN · date · where · from src — text" items, a plan's under "## Plan: <plan>",
+# the repo's under "## Repo: operate checks (monitor.json)"; operate.sh ingest writes the text as
+# "[operate:<slug>] ..." (repo level: "[operate:repo] ..."). Ids and short titles only.
+
+_INGEST_LIST_MAX = 50
+_LESSON_RE = re.compile(r"^## (L-\d+)\b(?: · [^·]*· (.*))?$")
+_ITEM_RE = re.compile(r"^- \[( |x)\] (B-\d+) · (.*)$")
+_OTAG_RE = re.compile(r"^\[operate:([^\]]+)\]\s*(.*)$")
+
+
+def _short(t, n=100):
+    t = " ".join(str(t or "").split())
+    return t if len(t) <= n else t[:n - 1] + "\u2026"
+
+
+def ledger_files(top):
+    """(LESSONS.md, BACKLOG.md) as lessons.sh and backlog.sh resolve them: the MAIN checkout's
+    .claude/apex-scope-loop/ (APEX_LESSONS_FILE / APEX_BACKLOG_FILE override), else the common git dir for a
+    bare repository."""
+    def compute():
+        main = None
+        rc, out, _ = C.run(["git", "-C", top, "worktree", "list", "--porcelain"], timeout=10)
+        if rc == 0:
+            blocks = out.strip().split("\n\n")
+            if blocks and blocks[0].startswith("worktree ") and "\nbare" not in "\n" + blocks[0]:
+                main = os.path.realpath(blocks[0].split("\n", 1)[0][len("worktree "):])
+        if main:
+            d = os.path.join(main, ".claude", "apex-scope-loop")
+        else:
+            rc, out, _ = C.run(["git", "-C", top, "rev-parse", "--path-format=absolute", "--git-common-dir"], timeout=10)
+            d = os.path.join(os.path.realpath(out.strip()), "apex-scope-loop") if rc == 0 and out.strip() \
+                else os.path.join(top, ".claude", "apex-scope-loop")
+        return (os.environ.get("APEX_LESSONS_FILE") or os.path.join(d, "LESSONS.md"),
+                os.environ.get("APEX_BACKLOG_FILE") or os.path.join(d, "BACKLOG.md"))
+    return cached(("ledger-files", top, os.environ.get("APEX_LESSONS_FILE"), os.environ.get("APEX_BACKLOG_FILE")),
+                  [os.path.join(top, ".git")], compute)
+
+
+def _read_lines(path):
     try:
-        import monitorlib
-        return monitorlib
-    except Exception:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().split("\n")
+    except OSError:
         return None
+
+
+def _lessons(path):
+    def compute():
+        lines = _read_lines(path)
+        out, cur = [], None
+        for ln in lines or []:
+            m = _LESSON_RE.match(ln)
+            if m:
+                cur = {"id": m.group(1), "title": _short(m.group(2)), "tags": set()}
+                out.append(cur)
+            elif cur is not None and ln.startswith("**Tags:**"):
+                cur["tags"] = {t.lstrip("#").lower() for t in ln[len("**Tags:**"):].split()}
+        return {"readable": lines is not None, "items": out}
+    return cached(("lessons", path), [path], compute)
+
+
+def _backlog(path):
+    def compute():
+        lines = _read_lines(path)
+        out, sect = [], None
+        for ln in lines or []:
+            if ln.startswith("## "):
+                sect = "repo" if ln.startswith("## Repo:") else ("plan" if ln.startswith("## Plan:") else None)
+                continue
+            m = _ITEM_RE.match(ln)
+            if m and sect:
+                text = m.group(3).partition(" \u2014 ")[2]
+                t = _OTAG_RE.match(text.strip())
+                if t:
+                    out.append({"id": m.group(2), "done": m.group(1) == "x", "section": sect,
+                                "slug": t.group(1).lower(), "title": _short(t.group(2))})
+        return {"readable": lines is not None, "items": out}
+    return cached(("backlog", path), [path], compute)
+
+
+def _ingest_block(lessons, backlog):
+    bl = [{"id": b["id"], "title": b["title"], "done": b["done"]} for b in backlog]
+    ls = [{"id": l["id"], "title": l["title"]} for l in lessons]
+    return {"lessons": ls[:_INGEST_LIST_MAX], "backlog": bl[:_INGEST_LIST_MAX],
+            "counts": {"lessons": len(ls), "backlog": len(bl), "backlog_open": sum(1 for b in bl if not b["done"])}}
+
+
+def ingested(top, slug):
+    """The lessons (tag #operate:<slug>) and backlog items ([operate:<slug>] under a plan section) that
+    operate.sh ingest filed for one plan: ids and short titles, plus counts. Read-only."""
+    lf, bf = ledger_files(top)
+    want = ("operate:%s" % slug).lower()
+    les = [l for l in _lessons(lf)["items"] if want in l["tags"]]
+    bk = [b for b in _backlog(bf)["items"] if b["section"] == "plan" and b["slug"] == slug.lower()]
+    return _ingest_block(les, bk)
+
+
+def ingested_repo(top):
+    """The repo-level backlog items ([operate:repo] under `## Repo: ...`); the repo level never files a lesson."""
+    bk = [b for b in _backlog(ledger_files(top)[1])["items"] if b["section"] == "repo" and b["slug"] == "repo"]
+    blk = _ingest_block([], bk)
+    del blk["lessons"]
+    del blk["counts"]["lessons"]
+    return blk
 
 
 def _window(op, now):
@@ -353,52 +507,75 @@ def _window(op, now):
            "outcome": w.get("outcome"), "closed_by": w.get("closed_by"),
            "open_at_close": list(w.get("open_at_close") or []) if w.get("outcome") else None,
            "unmeasured_at_close": list(w.get("unmeasured_at_close") or []) if w.get("outcome") else None,
-           "measured_runs": w.get("measured_runs") if isinstance(w.get("measured_runs"), int) else None,
-           "breaches": w.get("breaches") if isinstance(w.get("breaches"), int) else None,
+           "measured_runs": _count(w.get("measured_runs")),
+           "breaches": _count(w.get("breaches")),
            "last_run": w.get("last_run")}
     out["never_measured"] = bool(w.get("outcome")) and w.get("measured_runs") == 0
     return out
 
 
-def plan_operate(cp, plan_abs, slug, scope, now=None):
-    """The operate panel data for a landed plan, or None for a plan that has not landed."""
+def _last_closed(op):
+    """The last entry of operate.windows_closed, as operate.sh status prints it, or None."""
+    wc = [x for x in (op.get("windows_closed") or []) if isinstance(x, dict)]
+    if not wc:
+        return None
+    x = wc[-1]
+    return {"outcome": x.get("outcome"), "closed_by": x.get("closed_by"), "closed_at": x.get("closed_at"),
+            "start": x.get("start"), "end": x.get("end"), "days": _count(x.get("days")),
+            "open_at_close": [str(i) for i in (x.get("open_at_close") or [])],
+            "unmeasured_at_close": [str(i) for i in (x.get("unmeasured_at_close") or [])],
+            "measured_runs": _count(x.get("measured_runs")), "breaches": _count(x.get("breaches")),
+            "never_measured": x.get("measured_runs") == 0}
+
+
+def _declared(plan_abs):
+    """(cfg, problems, monitor state) of the plan's ## Monitor section through monitorlib; cached on the plan file."""
+    ml = _monitorlib()
+    if not ml:
+        return None, ["apex-scope-loop's monitorlib is not available: declared checks not read"], "unknown"
+    if not os.path.isfile(plan_abs):
+        return None, ["the plan file is gone: declared checks not read"], "unknown"
+
+    def compute():
+        try:
+            cfg, probs = ml.load_plan(plan_abs)
+        except Exception as e:
+            cfg, probs = None, ["cannot read the Monitor section: %s" % e]
+        mon = "invalid" if probs else ("none" if cfg is None else ("empty" if not cfg.get("checks") else "ok"))
+        return cfg, probs, mon
+    return cached(("declared", plan_abs), [plan_abs, _ml_path()], compute)
+
+
+def plan_operate(cp, plan_abs, slug, scope, now=None, top=None):
+    """The operate panel data for a landed plan, or None for a plan that has not landed. The checkpoint is
+    already read by the caller; the window is computed against `now`; the declared checks and the ingested
+    entries are cached on the files they come from."""
     if cp.get("landed") is not True:
         return None
     now = now or time.time()
     op = cp.get("operate")
     out = {"slug": slug, "tag": "operate:%s" % slug}
     if not isinstance(op, dict):
-        out.update(state="missing", deploys=[], last_deploy=None, window={"state": "not-opened"}, windows_closed=0,
-                   checks=[], monitor="unknown", problems=[])
-        # fall through to the declared checks so the panel still shows what would be watched
-        op = {}
+        out["state"] = "missing"
+        op = {}              # fall through to the declared checks so the panel still shows what would be watched
     else:
         out["state"] = "ok"
     deploys = [{"ts": d.get("ts"), "sha": d.get("sha"), "exit": d.get("exit")}
                for d in (op.get("deploys") or []) if isinstance(d, dict)]
     out.update(deploys=deploys, last_deploy=deploys[-1] if deploys else None, window=_window(op, now),
-               windows_closed=len([x for x in (op.get("windows_closed") or []) if isinstance(x, dict)]))
+               windows_closed=len([x for x in (op.get("windows_closed") or []) if isinstance(x, dict)]),
+               last_closed_window=_last_closed(op))
     cstate = op.get("checks") if isinstance(op.get("checks"), dict) else {}
-    ml, cfg, probs, mon = _monitorlib(), None, [], "unknown"
-    if ml and os.path.isfile(plan_abs):
-        try:
-            cfg, probs = ml.load_plan(plan_abs)
-        except Exception as e:
-            cfg, probs = None, ["cannot read the Monitor section: %s" % e]
-        mon = "invalid" if probs else ("none" if cfg is None else ("empty" if not cfg.get("checks") else "ok"))
-    elif not ml:
-        probs = ["apex-scope-loop's monitorlib is not available: declared checks not read"]
-    elif not os.path.isfile(plan_abs):
-        probs = ["the plan file is gone: declared checks not read"]
+    cfg, probs, mon = _declared(plan_abs)
     decl = {c["id"]: c for c in ((cfg or {}).get("checks") or []) if isinstance(c, dict) and "id" in c}
-    w = (cp.get("operate") or {}).get("window") if isinstance(cp.get("operate"), dict) else None
+    w = op.get("window")
     oac = set(w.get("open_at_close") or []) if isinstance(w, dict) and w.get("outcome") else set()
     ids = list(decl) + [k for k in cstate if isinstance(k, str) and k not in decl]
     checks = [_check_row(i, decl.get(i), cstate.get(i)) for i in ids]
     for c in checks:
         c["open_at_close"] = c["id"] in oac
-    out.update(checks=checks, monitor=mon, problems=probs, window_days=(cfg or {}).get("window_days"),
-               scope=scope)
+    out.update(checks=checks, monitor=mon, problems=list(probs), window_days=(cfg or {}).get("window_days"),
+               scope=scope, ingested=ingested(top, slug) if top else _ingest_block([], []))
     if mon == "none":
         out["warning"] = ("no ## Monitor section: not watched" +
                           ("; a landed feature plan should declare one" if scope == "feature" else ""))
@@ -406,25 +583,38 @@ def plan_operate(cp, plan_abs, slug, scope, now=None):
 
 
 def repo_checks(top, base, now=None):
-    """Repo-level checks (.claude/apex-scope-loop/monitor.json) with their state in <base>/operate-repo/state.json."""
+    """Repo-level checks (.claude/apex-scope-loop/monitor.json) with their state in <base>/operate-repo/state.json,
+    and the backlog items operate.sh ingest filed for them (`ingested`)."""
     f = os.path.join(top, ".claude", "apex-scope-loop", "monitor.json")
     if not os.path.isfile(f):
-        return {"configured": False, "state": "none", "file": None, "checks": [], "problems": []}
-    ml = _monitorlib()
-    if not ml:
-        return {"configured": True, "state": "unreadable", "file": f, "checks": [],
-                "problems": ["apex-scope-loop's monitorlib is not available"]}
-    try:
-        cfg, probs = ml.load_file(f)
-    except Exception as e:
-        cfg, probs = None, [str(e)]
-    if probs or not cfg:
-        return {"configured": True, "state": "invalid", "file": f, "checks": [], "problems": probs}
+        return {"configured": False, "state": "none", "file": None, "checks": [], "problems": [],
+                "ingested": ingested_repo(top)}
     sp = os.path.join(base or "", "operate-repo", "state.json")
-    rs = C.read_json(sp, None) if base and os.path.isfile(sp) else None
-    cstate = rs.get("checks") if isinstance(rs, dict) and isinstance(rs.get("checks"), dict) else {}
-    rows = [_check_row(c["id"], c, cstate.get(c["id"])) for c in cfg.get("checks") or [] if isinstance(c, dict)]
-    return {"configured": True, "state": "ok" if rs is not None else "missing", "file": f, "checks": rows, "problems": []}
+
+    def compute():
+        ml = _monitorlib()
+        if not ml:
+            return {"configured": True, "state": "unreadable", "file": f, "checks": [],
+                    "problems": ["apex-scope-loop's monitorlib is not available"]}
+        try:
+            cfg, probs = ml.load_file(f)
+        except Exception as e:
+            cfg, probs = None, [str(e)]
+        if probs or not cfg:
+            return {"configured": True, "state": "invalid", "file": f, "checks": [], "problems": probs}
+        rs = C.read_json(sp, None) if base and os.path.isfile(sp) else None
+        cstate = rs.get("checks") if isinstance(rs, dict) and isinstance(rs.get("checks"), dict) else {}
+        rows = [_check_row(c["id"], c, cstate.get(c["id"])) for c in cfg.get("checks") or [] if isinstance(c, dict)]
+        return {"configured": True, "state": "ok" if rs is not None else "missing", "file": f, "checks": rows, "problems": []}
+    res = cached(("repo-checks", f, sp), [f, sp, _ml_path()], compute)
+    return dict(res, ingested=ingested_repo(top))
+
+
+COST_TTL = 30        # seconds: how long a located-but-unchanged transcript set is trusted
+
+
+def _cost_bucket():
+    return int(time.time() // COST_TTL)
 
 
 def plan_cost(state_dir, ledger_dir):
@@ -438,6 +628,10 @@ def plan_cost(state_dir, ledger_dir):
     if not mods or not root or not hasattr(mods[1], "per_task"):
         return na("apex-dispatch's report.per_task is not available")
     stamp = [os.path.join(state_dir, ledger_dir, "ledger.jsonl"), os.path.join(state_dir, ledger_dir, "ledger.head")]
+    try:       # the transcripts report.per_task will read: a growing one changes the stamp, a new one the path set
+        stamp += list(mods[1].locate_transcripts(ledger_of(state_dir)["rows"])[0])
+    except Exception:
+        pass
 
     def compute():
         try:
@@ -447,5 +641,6 @@ def plan_cost(state_dir, ledger_dir):
         tasks = {x["task"]: x for x in p["tasks"] if isinstance(x.get("task"), int)}
         return {"status": p["totals"].get("orchestrator_status"), "tasks": tasks, "totals": p["totals"],
                 "chain_ok": p["chain"]["ok"]}
-    # transcripts grow while a session runs and are not in the stamp, so the cache lives 30 seconds
-    return cached(("cost", state_dir, int(time.time() // 30)), stamp, compute)
+    # ONE entry per state dir. The 30 s bucket is in the stamp (a transcript that has not appeared yet, or a
+    # session whose file was replaced in place, is picked up within COST_TTL), never in the key.
+    return cached(("cost", state_dir), stamp, compute, extra=_cost_bucket())
