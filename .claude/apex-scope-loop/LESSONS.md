@@ -38,3 +38,10 @@ with a new one.
 **Harness fix:** When a check is redesigned as an inventory, make every axis an inventory: compare the bytes of every tracked regular file with what a checkout writes, rather than listing the cases where git's comparison differs.
 **Plan:** apex-dispatch-plan.md
 **Tags:** #backend #harness #gate #security
+
+## L-006 · 2026-10-20 · parser-based-command-deny-never-converges
+**What happened:** Phase 3.3 attempt 1: the pre-bash deny of operate.sh deploy parsed bash structure (comments, continuations, heredocs, here-strings, arithmetic); each of 3 review rounds found a new ordinary construct that hid a deploy line, and the review cap was reached
+**Root cause:** a deny that must read shell structure has to model all of bash; every construct it gets wrong makes the parsed command differ from what bash runs, and the gaps fail OPEN (lines silently dropped)
+**Harness fix:** For a must-not-run command, deny on plain text (both key words anywhere in the normalised command) and allow only exact whole-command forms with no shell metacharacters; accept false denies on mentions. Never let a security filter drop text it does not understand.
+**Plan:** aidlc-borrowings-plan.md
+**Tags:** #security #hooks #parser #tier:c
