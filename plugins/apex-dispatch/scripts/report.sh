@@ -32,7 +32,11 @@
 # covered: no transcript, a task session id no transcript read covers (transcript_sessions_missing), a
 # window with no main-session turn or an unusable turn, or transcripts with no main-session turn at all;
 # sidechain (subagent) turns are excluded as delegated cost; unusable lines are counted as skipped, and one
-# with no usable timestamp nulls every orchestrator figure. All print REPORT_* lines, or JSON with --json.
+# with no usable timestamp nulls every orchestrator figure. A turn carrying message.usage.iterations is
+# computed from its iterations (every type, each priced by its own model and cache breakdown; the top-level
+# usage omits advisor calls): an advisor call on a model with no price tier (e.g. fable) makes that task's
+# orchestrator usd n/a, tokens kept, until the policy prices the model (orchestrator_unpriced_turns,
+# orchestrator_advisor_turns). All print REPORT_* lines, or JSON with --json.
 # Exit 0 ok (a broken chain is reported, not fatal), 2 usage.
 set -euo pipefail
 

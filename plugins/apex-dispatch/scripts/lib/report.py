@@ -46,8 +46,9 @@ Orchestrator cost (ADR-0002 R7b, Q5; --per-task only): the main session's own to
 USD per task, from Claude Code session transcripts (JSONL, read only). The per-task
 `usd` / `tokens` / `tokens_total` stay delegated-only; the orchestrator figures are the
 separate keys `orchestrator_usd`, `orchestrator_tokens`, `orchestrator_tokens_total`,
-`orchestrator_turns`, `orchestrator_unpriced_turns`, and `orchestrator_na` (null when
-measured, else why the figures are n/a). They are a lower bound: compaction and utility
+`orchestrator_turns`, `orchestrator_unpriced_turns`, `orchestrator_advisor_turns`, and `orchestrator_na` (null when
+measured, else why the figures are n/a; orchestrator_na null with orchestrator_usd null means "tokens measured, price
+unknown": orchestrator_unpriced_turns > 0). They are a lower bound: compaction and utility
 calls write no assistant line, so they are never seen. Without a transcript that covers
 a figure it is null / n/a, never 0 (a partial figure is never shown as complete). Rules:
   * Transcripts: `--transcript PATH`, repeatable (a missing or unreadable file is a usage
@@ -67,17 +68,21 @@ a figure it is null / n/a, never 0 (a partial figure is never shown as complete)
   * Turns: only lines with type "assistant" count; every other type (user, summary, system,
     attachments) and a JSON object with no `type` are not orchestrator turns and are ignored
     without being counted. `isSidechain: true` turns are subagent work, i.e. delegated cost
-    already in the ledger: excluded, counted as sidechain_turns. Lines sharing a message.id are
+    already in the ledger: excluded, counted as sidechain_turns; their sessionId does not cover a session (only a
+    main-session line is evidence that session's turns were read). Lines sharing a message.id are
     one API message (the transcript writes one line per content block): the last usable one
     counts, the rest are deduped.
   * Skipped lines (counted in transcript_skipped and warned, never priced as 0): an assistant
     turn with a parseable timestamp but unusable usage (no counts, a non-numeric or negative
-    count, a cache_creation breakdown that is not numeric or exceeds the total) makes n/a every
+    count, a cache_creation breakdown that is not numeric or exceeds the total; with iterations, any such
+    iteration, an iteration that is not an object or has a non-string model, or an iterations value that is
+    not a list) makes n/a every
     task window holding its timestamp, and the unattributed bucket when it is in no single
     window. A line with no usable timestamp (not JSON, not an object, or an assistant line whose
     timestamp does not parse; transcript_skipped_undated) could be any turn of any task, so it
     makes every orchestrator figure null (as one malformed ledger row nulls every delegated
-    figure). A skipped line whose message.id a usable line counts is that message, not a loss.
+    figure). A skipped line whose message.id a usable line counts is that message, not a loss:
+    transcript_skipped_lost counts the lost lines, the rest of transcript_skipped are such duplicates.
   * Usage keys map input_tokens/output_tokens/cache_read_input_tokens/
     cache_creation_input_tokens -> input/output/cache_read/cache_write, priced by row_usd
     (message.model as resolved_model), except 1-hour cache writes: when
@@ -86,6 +91,18 @@ a figure it is null / n/a, never 0 (a partial figure is never shown as complete)
     cache_creation_input_tokens the cache_write rate (1.25x input). orchestrator_tokens.cache_write
     is the total of both. The delegated ledger pricing is unchanged. A turn whose model is not a
     priced family makes its task's orchestrator_usd null (tokens stay known); a zero-token turn costs 0.
+  * usage.iterations (F-014): Claude Code writes one usage object per inference of a message in
+    message.usage.iterations (type "message", or "advisor_message" for an advisor call, which carries its
+    own `model`). The top-level usage sums the "message" iterations only (an advisor call is not in it) and
+    its cache_creation breakdown is not reliably their sum, so when iterations is a non-empty list the turn
+    is computed from the iterations alone: tokens = the sum over every iteration of any type (an unknown
+    type is counted, never dropped), USD = the sum of each iteration priced by its own model (its `model`,
+    else message.model) with its own 1h / 5m breakdown, as above. Each iteration is validated like a
+    top-level usage. An advisor call on a model with no price tier (the policy prices haiku, sonnet and
+    opus; e.g. claude-fable-*) makes the turn unpriced, so its task's orchestrator_usd is n/a (tokens
+    kept, orchestrator_unpriced_turns counts it) until the policy prices that model;
+    orchestrator_advisor_turns counts the turns with an advisor_message iteration, per task and in totals.
+    Without iterations (absent, null or []) the top-level usage is used.
   * Task window: from the task's first route row's ts to its last ledger row's ts (every row
     of its routes, tasks_of), inclusive, to the end of that last second (ledger ts has 1 s
     resolution). A turn belongs to the task whose window contains its timestamp. A turn in no
@@ -94,13 +111,15 @@ a figure it is null / n/a, never 0 (a partial figure is never shown as complete)
     window whose timestamps do not parse makes every orchestrator figure null. A real task
     always has orchestrator turns (the main session routes, spawns and reviews it), so a window
     with zero main-session turns means "not seen" (e.g. a session that ran only shim workers
-    writes no session_id row, so its missing transcript cannot be named): that task is n/a, not 0.
+    writes no session_id row, so its missing transcript cannot be named): that task is n/a, not 0,
+    and so is the unattributed bucket (that unseen session's turns could be anywhere).
     Transcripts read that hold no main-session turn at all (the wrong file) make every
     orchestrator figure null, status "n/a (transcripts held no main-session turns)".
   * Totals: orchestrator_usd (sum over tasks with a known figure; null when none),
     orchestrator_usd_unknown_tasks, orchestrator_unattributed_usd / _tokens / _turns,
+    orchestrator_unpriced_turns and orchestrator_advisor_turns (over every counted main-session turn),
     orchestrator_status ("measured", or the n/a reason that nulls every figure),
-    transcript_skipped, transcript_skipped_undated, transcript_sidechain_turns,
+    transcript_skipped, transcript_skipped_lost, transcript_skipped_undated, transcript_sidechain_turns,
     transcript_deduped, transcripts (the paths read), transcript_unreadable,
     transcript_sessions_missing (ledger session ids no transcript read covers).
 `usd_unrouted` (delegated ledger rows outside any task) is a different thing from the
@@ -420,8 +439,53 @@ def _cache_1h(src, cw):
     return (cw, h1) if h1 + m5 <= cw else None
 
 
+def _usage_part(src):
+    """(tokens in ledger keys, of which 1-hour cache writes) of one usage object (a message's usage or one of its
+    usage.iterations), or None when it is unusable: no count, a non-numeric, bool or negative count, or a
+    cache_creation breakdown that is not numeric or exceeds the total."""
+    if not isinstance(src, dict):
+        return None
+    tok = usage_tokens({lk: src[tk] for tk, lk in TRANSCRIPT_KEYS if src.get(tk) is not None})
+    if tok is None or any(v < 0 for v in tok.values()):
+        return None
+    cc = _cache_1h(src, tok.get("cache_write"))
+    if cc is None:
+        return None
+    if cc[0] is not None:
+        tok["cache_write"] = cc[0]
+    return tok, cc[1]
+
+
+def _turn_parts(msg):
+    """([part, ...], advisor?) for one assistant message, or None when its usage is unusable. A part is one
+    priced inference {"model", "usage", "cache_write_1h"}. With a non-empty usage.iterations list the parts are
+    the iterations, every type (an advisor_message, or a type this code does not know, is counted, never
+    dropped), each priced by its own `model` when present, else message.model; the top-level usage is then
+    ignored (it sums the "message" iterations only, and its cache_creation breakdown is not their sum). An
+    iterations value that is not a list, an element that is not an object, an unusable count or a non-string
+    model makes the whole turn unusable. Without iterations (absent, null or []) the top-level usage is the part."""
+    src = msg.get("usage")
+    it = src.get("iterations") if isinstance(src, dict) else None
+    if it is None or (isinstance(it, list) and not it):
+        p = _usage_part(src)
+        return None if p is None else ([{"model": msg.get("model"), "usage": p[0], "cache_write_1h": p[1]}], False)
+    if not isinstance(it, list):
+        return None
+    parts, advisor = [], False
+    for x in it:
+        p = _usage_part(x)
+        if p is None:
+            return None
+        m = x.get("model")
+        if m is not None and not isinstance(m, str):
+            return None
+        parts.append({"model": msg.get("model") if m is None else m, "usage": p[0], "cache_write_1h": p[1]})
+        advisor = advisor or x.get("type") == "advisor_message"
+    return parts, advisor
+
+
 def _read_one(path):
-    """One transcript file -> (by_id, anon, stats) or raises OSError; see read_transcripts."""
+    """One transcript file -> (by_id, anon, dated, undated, stats) or raises OSError; see read_transcripts."""
     by_id, anon, dated, undated = {}, [], [], []
     st = {"skipped": 0, "sidechain": 0, "deduped": 0, "sids": set()}
     stem = os.path.basename(path)[:-len(".jsonl")] if path.endswith(".jsonl") else None
@@ -442,34 +506,23 @@ def _read_one(path):
                 continue
             if d.get("type") != "assistant":  # user / summary / system / attachment, or no type: not a turn
                 continue
-            if _is_sid(d.get("sessionId")):
-                st["sids"].add(d["sessionId"])
-            if d.get("isSidechain") is True:
+            if d.get("isSidechain") is True:  # subagent work: delegated, and no evidence the main session was read
                 st["sidechain"] += 1
                 continue
+            if _is_sid(d.get("sessionId")):
+                st["sids"].add(d["sessionId"])
             msg = d.get("message") if isinstance(d.get("message"), dict) else {}
             mid = msg.get("id") if isinstance(msg.get("id"), str) and msg.get("id") else None
-            src = msg.get("usage")
-            u, h1 = {}, 0
-            if isinstance(src, dict):
-                u = {lk: src[tk] for tk, lk in TRANSCRIPT_KEYS if src.get(tk) is not None}
-            tok = usage_tokens(u)
-            if tok is not None and any(v < 0 for v in tok.values()):
-                tok = None
-            if tok is not None:
-                cc = _cache_1h(src, tok.get("cache_write"))
-                if cc is None:
-                    tok = None
-                else:
-                    if cc[0] is not None:
-                        tok["cache_write"] = cc[0]
-                    h1 = cc[1]
+            pa = _turn_parts(msg)
             ts = _turn_ts(d.get("timestamp"))
-            if tok is None or ts is None:
+            if pa is None or ts is None:
                 st["skipped"] += 1
                 (dated if ts is not None else undated).append((ts, mid) if ts is not None else mid)
                 continue
-            turn = {"ts": ts, "model": msg.get("model"), "usage": tok, "cache_write_1h": h1}
+            parts, advisor = pa
+            tok = {k: sum(p["usage"].get(k, 0) for p in parts) for k in TOKEN_KEYS if any(k in p["usage"] for p in parts)}
+            turn = {"ts": ts, "model": msg.get("model"), "usage": tok,
+                    "cache_write_1h": sum(p["cache_write_1h"] for p in parts), "parts": parts, "advisor": advisor}
             if mid is not None:
                 st["deduped"] += 1 if mid in by_id else 0
                 by_id[mid] = turn
@@ -480,7 +533,7 @@ def _read_one(path):
 
 def read_transcripts(paths):
     """Main-session assistant turns from transcript files. Returns a dict: turns (each {"ts", "model",
-    "usage" (ledger keys), "cache_write_1h"}), skipped, sidechain, deduped, skipped_dated (the timestamps of
+    "usage" (ledger keys, summed over its parts), "cache_write_1h", "parts" (see _turn_parts), "advisor"}), skipped, sidechain, deduped, skipped_dated (the timestamps of
     skipped dated assistant turns whose message.id no usable line counts), skipped_undated (skipped lines
     with no usable timestamp: not JSON, not an object, or an assistant line whose timestamp does not
     parse, unless its message.id is counted by a usable line), sids (session ids the files cover: a
@@ -510,20 +563,27 @@ def read_transcripts(paths):
     return out
 
 
-def _turn_usd(turn, price):
-    """USD of one turn through row_usd, or None when its model cannot be priced (0 tokens cost 0).
-    1-hour cache writes (usage.cache_creation.ephemeral_1h_input_tokens) cost 2x the base input price,
-    not the 5-minute cache_write rate row_usd applies to the whole cache_write count: the difference is
-    added here, so the ledger's (delegated) pricing is unchanged."""
-    if not any(turn["usage"].values()):
+def _part_usd(part, price):
+    """USD of one inference through row_usd, or None when its model cannot be priced (0 tokens cost 0, whatever
+    the model). 1-hour cache writes (cache_creation.ephemeral_1h_input_tokens) cost 2x the base input price, not
+    the 5-minute cache_write rate row_usd applies to the whole cache_write count: the difference is added here,
+    so the ledger's (delegated) pricing is unchanged."""
+    if not any(part["usage"].values()):
         return 0.0
-    usd, _ = row_usd({"usage": turn["usage"], "resolved_model": turn["model"]}, price)
-    h1 = turn.get("cache_write_1h") or 0
+    usd, _ = row_usd({"usage": part["usage"], "resolved_model": part["model"]}, price)
+    h1 = part.get("cache_write_1h") or 0
     if usd is None or not h1:
         return usd
-    p = price[family(turn["model"])]
+    p = price[family(part["model"])]
     v = usd + h1 * (2 * float(p.get("input") or 0) - float(p.get("cache_write") or 0)) / 1e6
     return v if math.isfinite(v) else None
+
+
+def _turn_usd(turn, price):
+    """USD of one turn: the sum of its parts (usage.iterations, each by its own model and breakdown), or None
+    when any part cannot be priced (e.g. an advisor call on a model with no price tier)."""
+    vals = [_part_usd(p, price) for p in turn["parts"]]
+    return None if any(v is None for v in vals) else sum(vals)
 
 
 def _hits(ts, windows):
@@ -535,14 +595,16 @@ def orchestrator(turns, windows, price, skipped_dated=()):
     turn in exactly one window is that task's, else unattributed. A skipped dated turn taints every
     window holding it (tainted: its figures are n/a), and the unattributed bucket when it is in no
     single window."""
-    per = [{"turns": 0, "tokens": collections.Counter(), "micro": 0, "unpriced": 0, "tainted": 0} for _ in windows]
-    un = {"turns": 0, "tokens": collections.Counter(), "micro": 0, "unpriced": 0, "tainted": 0}
+    per = [{"turns": 0, "tokens": collections.Counter(), "micro": 0, "unpriced": 0, "advisor": 0, "tainted": 0}
+           for _ in windows]
+    un = {"turns": 0, "tokens": collections.Counter(), "micro": 0, "unpriced": 0, "advisor": 0, "tainted": 0}
     for t in turns:
         hits = _hits(t["ts"], windows)
         bucket = per[hits[0]] if len(hits) == 1 else un
         usd = _turn_usd(t, price)
         bucket["turns"] += 1
         bucket["tokens"].update(t["usage"])
+        bucket["advisor"] += 1 if t["advisor"] else 0
         if usd is None:
             bucket["unpriced"] += 1
         else:
@@ -559,17 +621,20 @@ def orchestrator(turns, windows, price, skipped_dated=()):
 _NO_TRANSCRIPT = ("n/a (no transcript: pass --transcript PATH, or the ledger has no session_id whose transcript "
                   "is under <config>/projects ($CLAUDE_CONFIG_DIR or ~/.claude))")
 _NULL_ORCH = {"orchestrator_tokens": None, "orchestrator_tokens_total": None, "orchestrator_usd": None,
-              "orchestrator_turns": None, "orchestrator_unpriced_turns": None}
+              "orchestrator_turns": None, "orchestrator_unpriced_turns": None, "orchestrator_advisor_turns": None}
 
 
 def _orch_fields(o, na):
-    """Per-task orchestrator keys; all null (n/a, with the reason in orchestrator_na) when na is set."""
+    """Per-task orchestrator keys; all null (n/a, with the reason in orchestrator_na) when na is set. With na
+    null the tokens are measured; orchestrator_usd is still null when a turn could not be priced
+    (orchestrator_unpriced_turns > 0: tokens measured, price unknown)."""
     if o is None or na:
         return dict(_NULL_ORCH, orchestrator_na=na or "no transcript")
     tok = {k: o["tokens"].get(k, 0) for k in TOKEN_KEYS}
     return {"orchestrator_tokens": tok, "orchestrator_tokens_total": sum(tok.values()),
             "orchestrator_usd": None if o["unpriced"] else o["micro"] / 1e6, "orchestrator_turns": o["turns"],
-            "orchestrator_unpriced_turns": o["unpriced"], "orchestrator_na": None}
+            "orchestrator_unpriced_turns": o["unpriced"], "orchestrator_advisor_turns": o["advisor"],
+            "orchestrator_na": None}
 
 
 def _orch_status(tr, wok):
@@ -600,22 +665,27 @@ def _task_na(status, o, sids, covered):
     return None
 
 
-def _orch_totals(out, oun, tr, status, sids_missing):
+def _orch_totals(out, oper, oun, tr, status, sids_missing):
     base = {"transcript_sessions_missing": sids_missing, "transcript_unreadable": tr["unreadable"] if tr else [],
             "transcripts": tr["read"] if tr else [], "orchestrator_status": status}
     if not tr or not tr["read"]:
         return dict(base, orchestrator_usd=None, orchestrator_usd_unknown_tasks=None, orchestrator_unattributed_usd=None,
                     orchestrator_unattributed_tokens=None, orchestrator_unattributed_turns=None,
-                    transcript_skipped=None, transcript_skipped_undated=None, transcript_sidechain_turns=None,
-                    transcript_deduped=None)
+                    orchestrator_unpriced_turns=None, orchestrator_advisor_turns=None,
+                    transcript_skipped=None, transcript_skipped_lost=None, transcript_skipped_undated=None,
+                    transcript_sidechain_turns=None, transcript_deduped=None)
     known = [x for x in out if x["orchestrator_usd"] is not None]
-    un_ok = status == "measured" and not sids_missing and not oun["tainted"]
+    # a window with no main-session turn is an unseen session (B-149): its turns could be anywhere, unattributed too
+    un_ok = status == "measured" and not sids_missing and not oun["tainted"] and all(o["turns"] for o in oper)
+    lost = len(tr["skipped_dated"]) + tr["skipped_undated"]
     return dict(base, orchestrator_usd=round(sum(_micro(x["orchestrator_usd"]) for x in known) / 1e6, 6) if known else None,
                 orchestrator_usd_unknown_tasks=len(out) - len(known),
                 orchestrator_unattributed_usd=oun["micro"] / 1e6 if un_ok and not oun["unpriced"] else None,
                 orchestrator_unattributed_tokens=sum(oun["tokens"].values()) if un_ok else None,
                 orchestrator_unattributed_turns=oun["turns"] if un_ok else None,
-                transcript_skipped=tr["skipped"], transcript_skipped_undated=tr["skipped_undated"],
+                orchestrator_unpriced_turns=sum(o["unpriced"] for o in oper) + oun["unpriced"],
+                orchestrator_advisor_turns=sum(o["advisor"] for o in oper) + oun["advisor"],
+                transcript_skipped=tr["skipped"], transcript_skipped_lost=lost, transcript_skipped_undated=tr["skipped_undated"],
                 transcript_sidechain_turns=tr["sidechain"], transcript_deduped=tr["deduped"])
 
 
@@ -698,7 +768,7 @@ def per_task(root, state_dir, plan=None, transcripts=None):
                        # the priced part of the n/a tasks (a lower bound on their cost, not a figure for them)
                        "usd_partial_in_unknown_tasks": round(partial / 1e6, 6),
                        "usd_unrouted": None if bad else round(unrouted / 1e6, 6),
-                       **_orch_totals(out, oun, tr, status, sids_missing)}}
+                       **_orch_totals(out, oper, oun, tr, status, sids_missing)}}
 
 
 def _usd4(v):
@@ -733,14 +803,20 @@ def print_per_task(p):
     print("REPORT_ORCHESTRATOR: usd=%s (%d task(s) n/a; a lower bound: compaction and utility calls write no assistant "
           "line); unattributed (main-session turns in no single task window; "
           "not usd_unrouted) usd=%s tokens=%s turns=%s; skipped=%d line(s); sidechain turns excluded=%d (delegated, in the ledger); "
-          "deduped=%d; transcripts=%s%s"
+          "deduped=%d; turns with an unpriced model=%d (their task's or the unattributed usd n/a, tokens kept), with an "
+          "advisor call=%d; "
+          "transcripts=%s%s"
           % (_usd4(t["orchestrator_usd"]), t["orchestrator_usd_unknown_tasks"], _usd4(t["orchestrator_unattributed_usd"]),
              "n/a" if t["orchestrator_unattributed_tokens"] is None else t["orchestrator_unattributed_tokens"],
              "n/a" if t["orchestrator_unattributed_turns"] is None else t["orchestrator_unattributed_turns"],
-             t["transcript_skipped"], t["transcript_sidechain_turns"], t["transcript_deduped"], ",".join(t["transcripts"]), miss))
+             t["transcript_skipped"], t["transcript_sidechain_turns"], t["transcript_deduped"],
+             t["orchestrator_unpriced_turns"], t["orchestrator_advisor_turns"], ",".join(t["transcripts"]), miss))
     if t["transcript_skipped"]:
-        print("REPORT_ORCHESTRATOR_WARNING: %d transcript line(s) were not usable (malformed JSON or unusable usage) and are "
-              "not in these figures" % t["transcript_skipped"])
+        dup = t["transcript_skipped"] - t["transcript_skipped_lost"]
+        print("REPORT_ORCHESTRATOR_WARNING: %d transcript line(s) were not usable (malformed JSON or unusable usage): %d lost "
+              "(not in these figures; the task window holding each, or the unattributed bucket, is n/a) and %d duplicate(s) of "
+              "a message.id counted from another line (that message is counted, nothing lost)"
+              % (t["transcript_skipped"], t["transcript_skipped_lost"], dup))
 
 
 def _median(xs):
