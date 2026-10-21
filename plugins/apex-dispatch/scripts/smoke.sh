@@ -3134,6 +3134,9 @@ micro = lambda x: int(round(x * 1e6))
 known = sum(micro(t["usd"]) for t in ts if t["usd"] is not None)
 assert known == micro(d["usd_estimated"]) == micro(4.875), (known, d["usd_estimated"])
 assert d["totals"]["usd_unknown_tasks"] == 2 and d["totals"]["usd_unrouted"] == 0 and d["malformed_rows"] == 0, d["totals"]
+# known tasks + the priced part of the n/a tasks + rows outside any task reconcile with the aggregate
+T = d["totals"]
+assert T["usd_partial_in_unknown_tasks"] == 0 and micro(T["usd"]) + micro(T["usd_partial_in_unknown_tasks"]) + micro(T["usd_unrouted"]) == micro(d["usd_estimated"]), T
 ' || fail "per-task-listing: --per-task --json is wrong (one entry per task, USD sums to usd_estimated, unknown is null): $OJ"
 # the aggregate the tasks must match is the one report.sh prints without --per-task
 bash "$REPORT" --state "$PT" --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["usd_estimated"] == 4.875' || fail "per-task-listing: the aggregate usd_estimated moved"
@@ -3141,6 +3144,7 @@ bash "$REPORT" --state "$PT" --json | python3 -c 'import json,sys; assert json.l
 [ "$(printf '%s' "$OJ" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["tasks"]))')" = "$(printf '%s\n' "$OT" | grep -c '^REPORT_TASK: ')" ] \
   || fail "per-task-listing: text and --json disagree on the task count"
 [ "$(bash "$REPORT" --state "$PT" --per-task --compare >/dev/null 2>&1; echo $?)" = 2 ] || fail "per-task-listing: --per-task --compare is not a usage error"
+[ "$(bash "$REPORT" --state "$PT" --per-task --decision >/dev/null 2>&1; echo $?)" = 2 ] || fail "per-task-listing: --per-task --decision is not a usage error"
 # a malformed ledger line must not shrink the total silently: it is counted, warned, and every task's USD/tokens are n/a
 PTB="$WORK/ptbad"; rm -rf "$PTB"; cp -R "$PT" "$PTB"
 PTL="$(find "$PTB" -name ledger.jsonl | head -1)"; [ -n "$PTL" ] || fail "per-task-listing: no ledger.jsonl in the fixture"
@@ -3152,8 +3156,72 @@ bash "$REPORT" --state "$PTB" --per-task --json | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 assert d["malformed_rows"] == 1 and all(t["usd"] is None and t["tokens"] is None for t in d["tasks"]), d
-' || fail "per-task-listing: malformed-line JSON is wrong"
-pass "per-task-listing: report.sh --per-task prints one REPORT_TASK line and one tasks[] entry per routed task (task, class, tier, spawns, tokens, usd, review rounds, outcome) from tasks_of(); per-task USD sums to usd_estimated in integer micro-dollars; unpriced or unmeasured cost and tokens are n/a / null, never 0; a malformed ledger line is counted and makes every figure n/a; text and --json agree on the task count; not combinable with --compare"
+assert d["totals"]["usd"] is None and d["totals"]["usd_unrouted"] is None, d["totals"]
+' || fail "per-task-listing: malformed-line JSON is wrong (usd_unrouted must be null, not a definite 0, when a line did not parse)"
+has 'of which n/a on rows outside any task' "$OB" || fail "per-task-listing: a malformed line still prints a definite usd_unrouted: $OB"
+# a line that is valid JSON but not an object is malformed too: counted, warned, n/a (not a crash)
+PTA="$WORK/ptarr"; rm -rf "$PTA"; cp -R "$PT" "$PTA"
+printf '[1]\n' >>"$(find "$PTA" -name ledger.jsonl | head -1)"
+OA="$(bash "$REPORT" --state "$PTA" --per-task 2>&1)" || fail "per-task-listing: a non-object JSON line crashed --per-task: $OA"
+has '^REPORT_TASK_WARNING: 1 ledger line' "$OA" && [ "$(printf '%s\n' "$OA" | grep -c '^REPORT_TASK: .* tokens=n/a usd=n/a ')" = 4 ] \
+  && has 'of which n/a on rows outside any task' "$OA" || fail "per-task-listing: a non-object JSON line was not counted as malformed: $OA"
+bash "$REPORT" --state "$PTA" --per-task --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["malformed_rows"] == 1 and d["totals"]["usd_unrouted"] is None and all(t["usd"] is None for t in d["tasks"]), d
+' || fail "per-task-listing: non-object-line JSON is wrong"
+# F-004: a background agent (spawn + post-agent "usage unverified" advisory, never a worker_run) makes its task n/a;
+# a foreground agent matched by agent_id to a priced worker_run keeps its task known; rows outside any task are summed exactly
+PG="$WORK/ptbg"; mkdir -p "$PG"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$PG" <<'PY' || fail "per-task-listing: could not build the background-agent fixture ledger"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+st = sys.argv[2]
+def route(line, cls, tier):
+    rid = "r-0123456789ab-L%d-1" % line
+    ledger.append(st, "route", {"route_id": rid, "status": "READY", "origin": "plan", "line": line, "router": {"class": cls, "tier": tier}},
+                  "cli", route_id=rid, route_mode="table")
+    return rid
+def spawn(rid, aid, role):
+    ledger.append(st, "spawn", {"route_id": rid, "agent_id": aid, "role": role}, "hook", route_id=rid, route_mode="table")
+def hrun(rid, aid, role, inp, out):
+    ledger.append(st, "worker_run", {"route_id": rid, "provider": "claude-session", "role": role, "exit_code": 0, "agent_id": aid,
+                                     "usage": {"input": inp, "output": out}, "resolved_model": "claude-sonnet-5-5"}, "hook", route_id=rid, route_mode="table")
+def bg(rid):
+    ledger.append(st, "hook_advisory", {"hook": "post-agent.sh", "tool_use_id": "tu-" + rid,
+                                        "advisory": "Agent apex-dispatch:builder returned status async_launched without resolvedModel or usage; usage unverified"},
+                  "hook", route_id=rid, route_mode="table")
+a = route(7, "docs", "cheap")        # background builder (never measured) + a priced foreground reviewer
+spawn(a, "agbuilder7", "builder"); bg(a)
+spawn(a, "agreviewer7", "reviewer"); hrun(a, "agreviewer7", "reviewer", 100000, 10000)       # 0.45
+ledger.append(st, "verdict", {"route_id": a, "role": "reviewer", "verdict": "APPROVE"}, "hook", route_id=a, route_mode="table", head_sha="a" * 40)
+b = route(8, "feature", "mid")       # one foreground builder, matched by agent_id: fully measured
+spawn(b, "agbuilder8", "builder"); hrun(b, "agbuilder8", "builder", 200000, 20000)          # 0.90
+c = route(9, "docs", "cheap")        # a background agent with no spawn row (only the advisory) + a priced shim run
+bg(c)
+ledger.append(st, "worker_run", {"route_id": c, "provider": "codex", "role": "docs", "exit_code": 0, "run_id": "w9",
+                                 "usage": {"input": 10, "output": 5}, "usd": 0.25}, "shim", route_id=c, route_mode="table")
+ledger.append(st, "worker_run", {"route_id": "unrouted", "provider": "codex", "role": "docs", "exit_code": 0, "run_id": "wu",
+                                 "usage": {"input": 1, "output": 1}, "usd": 0.125}, "shim", route_id="unrouted", route_mode="table")
+PY
+OG="$(bash "$REPORT" --state "$PG" --per-task 2>&1)" || fail "per-task-listing: --per-task failed on the background-agent fixture: $OG"
+has '^REPORT_TASK: task=L7 class=docs tier=cheap spawns=2 tokens=n/a usd=n/a review_rounds=1 outcome=APPROVE$' "$OG" \
+  && has '^REPORT_TASK: task=L8 class=feature tier=mid spawns=1 tokens=220000 usd=0.9000 review_rounds=0 outcome=no-verdict$' "$OG" \
+  && has '^REPORT_TASK: task=L9 class=docs tier=cheap spawns=1 tokens=n/a usd=n/a review_rounds=0 outcome=no-verdict$' "$OG" \
+  && has '^REPORT_TASKS_TOTAL: 3 task(s); usd=0.9000 (2 n/a, 0.7000 priced in them); aggregate REPORT_USD_ESTIMATED 1.7250, of which 0.1250 on rows outside any task$' "$OG" \
+  || fail "per-task-listing: a task with an unmeasured background agent printed its partial cost as known: $OG"
+bash "$REPORT" --state "$PG" --per-task --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+micro = lambda x: int(round(x * 1e6))
+assert by[7]["usd"] is None and by[7]["tokens"] is None and by[7]["tokens_total"] is None and by[7]["spawns"] == 2, by[7]
+assert micro(by[7]["usd_priced_partial"]) == micro(0.45) and by[7]["unmeasured_agents"] == 1, by[7]
+assert micro(by[8]["usd"]) == micro(0.9) and by[8]["tokens_total"] == 220000 and by[8]["unmeasured_agents"] == 0, by[8]
+assert by[9]["usd"] is None and by[9]["tokens"] is None and micro(by[9]["usd_priced_partial"]) == micro(0.25), by[9]
+assert micro(T["usd"]) == micro(0.9) and micro(T["usd_partial_in_unknown_tasks"]) == micro(0.7) and micro(T["usd_unrouted"]) == micro(0.125), T
+assert micro(T["usd"]) + micro(T["usd_partial_in_unknown_tasks"]) + micro(T["usd_unrouted"]) == micro(d["usd_estimated"]) == micro(1.725), (T, d["usd_estimated"])
+' || fail "per-task-listing: background-agent JSON is wrong (unmeasured agent must make usd/tokens null; totals must reconcile)"
+pass "per-task-listing: report.sh --per-task prints one REPORT_TASK line and one tasks[] entry per routed task (task, class, tier, spawns, tokens, usd, review rounds, outcome) from tasks_of(); per-task USD sums to usd_estimated in integer micro-dollars; unpriced or unmeasured cost and tokens are n/a / null, never 0; a malformed or non-object ledger line is counted and makes every figure n/a, usd_unrouted included; a spawned agent with no usage-bearing worker_run (a background agent) or a post-agent usage-unverified advisory makes its task n/a, its priced part kept in usd_priced_partial; known + partial-in-n/a + unrouted reconciles with usd_estimated; text and --json agree on the task count; not combinable with --compare or --decision"
 
 echo ""
 echo "smoke passed: $N/$N checks"

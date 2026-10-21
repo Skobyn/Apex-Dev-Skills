@@ -6,7 +6,7 @@
 #   report.sh --plan PLAN [--json]        resolve the plan's state dir through apex-scope-loop
 #   report.sh ... --compare [baseline] [--baseline-state DIR]   routed vs baseline (spec §10)
 #   report.sh ... --decision                                    decision layer vs routing (spec §4)
-#   report.sh ... --per-task                                    delegated USD, tokens, spawns, rounds, outcome per task
+#   report.sh ... --per-task                                    delegated USD, tokens, spawns, rounds, outcome per task (alone)
 #
 # Prints REPORT_* lines (or one JSON object with --json): chain status, routes by
 # class/tier/provider/mode, spawns, verdicts, escalations, tokens, estimated USD
@@ -17,8 +17,13 @@
 # approval rates, escalation rate, p50 wall-clock, per class, and the deltas; an arm
 # under the pre-registered minimum n is "insufficient n". --decision: what
 # ${APEX_DECIDE_CMD} said vs what routing did (agreement by calibration and
-# confidence bucket), or "no decision data". Both print REPORT_* lines, or JSON with
-# --json. Exit 0 ok (a broken chain is reported, not fatal), 2 usage.
+# confidence bucket), or "no decision data". --per-task (ADR-0002 R7): one REPORT_TASK
+# line per routed task; unknown USD/tokens (unpriced rows, an unmeasured or background
+# agent, nothing run) print n/a, never 0; malformed ledger lines are counted in a
+# REPORT_TASK_WARNING and make every figure n/a; REPORT_TASKS_TOTAL reconciles the known,
+# partial and unrouted USD with REPORT_USD_ESTIMATED; it cannot be combined with --compare
+# or --decision (exit 2). All print REPORT_* lines, or JSON with --json.
+# Exit 0 ok (a broken chain is reported, not fatal), 2 usage.
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
