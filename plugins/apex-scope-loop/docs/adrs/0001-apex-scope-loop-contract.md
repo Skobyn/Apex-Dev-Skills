@@ -39,7 +39,7 @@ Both SKILL.md files use lowercase kebab-case `name:` matching their directory (`
 ### Surface
 
 - **2 skills** — auto-discovered from `skills/` subtree, not enumerated in plugin.json
-- **2 slash commands** — `/apex-scope-loop:start`, `/apex-scope-loop:iterate`
+- **3 slash commands** — `/apex-scope-loop:start`, `/apex-scope-loop:iterate`, `/apex-scope-loop:operate`
 - **1 agent** — `plan-author` (Sonnet, single-purpose, delegated from main thread)
 
 ### Worktree-bound execution
@@ -65,6 +65,7 @@ The plugin reserves a single AgentDB / memory namespace: **`apex-scope-loop`**. 
 - `apex-scope-loop:adrs/<slug>` — ADR metadata + status
 - `apex-scope-loop:plans/<slug>` — plan checkpoint + completion %
 - `apex-scope-loop:outcomes/<slug>/<phase>` — per-phase verdict + trajectory pattern
+- `apex-scope-loop:operate/<slug>` — post-land operation state for one landed plan: deploy records, watch window, per-check last values and breach counts (written by `apex-execute/scripts/operate.sh`; repo-level checks keep their own state outside this namespace)
 
 This follows the namespace convention from the optional ruflo-agentdb ADR-0001 §"Namespace convention" (kebab-case `<plugin-stem>-<intent>`, scoped sub-keys with colons). Coordination expectation: any future plugin that wants to read/write these keys must claim a non-overlapping prefix and reference this ADR.
 
@@ -113,3 +114,4 @@ The smoke script exits non-zero on any failing check and names the first failure
 - 2026-05-29 — Renamed the two skills: `decide-plan-loop` → `apex-plan`, `dev-plan-loop` → `apex-execute` (directories, frontmatter `name:`, the execution memory namespace, and all cross-references). The `promote-to-loop.sh` handoff mechanism is unchanged.
 - 2026-05-29 — Made execution worktree-bound: `init.sh` provisions an isolated worktree + branch per plan, `iterate.sh` reports/enforces it, and new `land.sh` merges the branch into the base branch after the final gate. Added `worktree_path`/`worktree_branch`/`base_branch`/`landed` to the checkpoint schema.
 - 2026-09-27 — Extended by [ADR-0002](0002-gibson-harness.md): Gibson harness (green gate, independent review, Tier C / G12, ratchet, kill switch); adds the `gibson-reviewer` agent and smoke checks 11–13.
+- 2026-10-21 — Added the operate surface (aidlc-borrowings ADR, Phase 3.5 docs): `apex-execute/scripts/operate.sh` (`PLAN deploy|status|monitor|ingest`, `--all status`, `--all monitor [--ingest]`) and the `/apex-scope-loop:operate` command. The plan's `## Monitor` section is part of the plan contract and only runs on landed plans. Claims memory namespace `apex-scope-loop:operate/<slug>`. The deploy control is apex-dispatch's pre-bash deny plus the human ack typed at the terminal. Operate runs only on landed plans and never runs deploy as an agent.

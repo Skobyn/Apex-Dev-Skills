@@ -32,8 +32,7 @@ Trusted, non-malicious agents and operators. Guard against accidents and realist
 > expected (healthy) condition: the check passes while `value op threshold` holds and is breached when it does not.
 > "p99 must stay under 2000 ms" is `"op": "<", "threshold": 2000`. A success criterion is a pass condition, so it
 > maps directly onto a check. `severity` is high, medium or low, and `probe` is
-> `{"kind": "http", "url", "measure": "status" or "latency_ms"}` (GET only), `{"kind": "cmd", "command"}`
-> or `{"kind": "runner"}`. `window_days` is 1-90 (default 14). Ids and metrics match `[A-Za-z0-9][A-Za-z0-9_.:-]*`.
+> `{"kind": "http", "url", "measure": "status" or "latency_ms", "expect_status"}` (GET only; `latency_ms` requires `expect_status`, since a fast error page is not a healthy latency), `{"kind": "cmd", "command", "value": "stdout" or "exit"}` (`stdout` is the default: the number on the last stdout line, and empty stdout or a non-zero exit is `unmeasured`, never 0), or `{"kind": "runner", "metrics"}` (`$APEX_MONITOR_CMD` prints one JSON object keyed by metric, each value a number or `{"value": number, "note": "..."}`; `note` is optional and is the only runner text kept). `window_days` is 1-90 (default 14). Ids and metrics match `[A-Za-z0-9][A-Za-z0-9_.:-]*`.
 
 ```json
 {"window_days": 14, "checks": []}
