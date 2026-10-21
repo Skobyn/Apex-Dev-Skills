@@ -2,7 +2,7 @@
 """apex-dispatch report: summarise one state dir's ledger (python3 stdlib).
 
   report.py ROOT --state DIR [--plan PLAN] [--json]
-            [--compare [--baseline-state DIR]] [--decision] [--per-task]
+            [--compare [--baseline-state DIR]] [--decision] [--per-task [--transcript PATH]...]
 
 Counts routes by class, tier, provider and route_mode; spawn_request, spawn and
 worker_run rows; verdicts; escalations by rung. Estimated USD is real usage x
@@ -41,7 +41,40 @@ usage-bearing worker_run of its agent_id, e.g. a background agent, or a post-age
 and warned; the unrouted figure is then n/a too). Totals: the known tasks' USD, the priced
 part inside the n/a tasks, and the USD on rows outside any task, which together reconcile
 with REPORT_USD_ESTIMATED. Not combinable with --compare or --decision (exit 2).
-Orchestrator (main-session) tokens are a later column (R7b).
+
+Orchestrator cost (ADR-0002 R7b, Q5; --per-task only): the main session's own tokens and
+USD per task, from Claude Code session transcripts (JSONL, read only). The per-task
+`usd` / `tokens` / `tokens_total` stay delegated-only; the orchestrator figures are the
+separate keys `orchestrator_usd`, `orchestrator_tokens`, `orchestrator_tokens_total`,
+`orchestrator_turns`. Rules:
+  * Transcripts: `--transcript PATH`, repeatable (a missing file is a usage error, exit 2).
+    Without it the transcript is auto-located: for each session_id found on any ledger row,
+    `<config>/projects/<slug>/<session_id>.jsonl`, where <config> is $CLAUDE_CONFIG_DIR or
+    ~/.claude and <slug> is the state's repository path (the checkpoint's worktree, else the
+    cwd) with every non-alphanumeric character turned into `-`. No file found (or no ledger
+    row carries a session_id): the orchestrator figures are null / n/a, never 0.
+  * Turns: only lines with type "assistant" count; every other type (user, summary, system,
+    attachments) is ignored without being counted. `isSidechain: true` turns are subagent
+    work, i.e. delegated cost already in the ledger: excluded, counted as sidechain_turns.
+    A line that is not a JSON object, or an assistant turn with an unparseable timestamp or
+    unusable usage (no counts, a non-numeric or negative count), is `skipped`, counted and
+    warned, never priced as 0. Lines sharing a message.id are one API message (the transcript
+    writes one line per content block): the last one counts, the rest are deduped.
+  * Usage keys map input_tokens/output_tokens/cache_read_input_tokens/
+    cache_creation_input_tokens -> input/output/cache_read/cache_write, priced by row_usd
+    (message.model as resolved_model). A turn whose model is not a priced family makes its
+    task's orchestrator_usd null (tokens stay known); a zero-token turn costs 0.
+  * Task window: from the task's first route row's ts to its last ledger row's ts (every row
+    of its routes, tasks_of), inclusive, to the end of that last second (ledger ts has 1 s
+    resolution). A turn belongs to the task whose window contains its timestamp. A turn in no
+    window, or in two or more (overlapping plans in one session, ADR-0002 Consequences), goes
+    to the `unattributed` bucket (orchestrator_unattributed_usd / _tokens / _turns). A task or
+    window whose timestamps do not parse makes its figures, and the unattributed bucket, null.
+  * Totals: orchestrator_usd (sum over tasks with a known figure; null when none),
+    orchestrator_usd_unknown_tasks, orchestrator_unattributed_*, transcript_skipped,
+    transcript_sidechain_turns, transcripts (the paths read).
+`usd_unrouted` (delegated ledger rows outside any task) is a different thing from the
+orchestrator `unattributed` bucket (main-session turns outside every task window).
 
 Decision calls (decision-layer spec §11.2 item 7) are priced in their own bucket,
 never in REPORT_USD_ESTIMATED: the rows of apex-decision-layer's decision log
@@ -55,10 +88,13 @@ import sys
 
 sys.dont_write_bytecode = True
 
+import calendar  # noqa: E402
 import collections  # noqa: E402
+import datetime  # noqa: E402
 import json  # noqa: E402
 import math  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger  # noqa: E402
@@ -137,11 +173,31 @@ def row_usd(r, price):
 
 
 def _ts(s):
-    import datetime
+    """Epoch seconds (UTC) of a ledger ts, or None."""
     try:
-        return datetime.datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").timestamp()
+        return float(calendar.timegm(datetime.datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").timetuple()))
     except ValueError:
         return None
+
+
+_TS_RE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:?\d\d)?$")
+
+
+def _turn_ts(s):
+    """Epoch seconds (UTC, fractions kept) of a transcript timestamp, or None."""
+    m = _TS_RE.match(s) if isinstance(s, str) else None
+    if not m:
+        return None
+    try:
+        t = calendar.timegm(datetime.datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").timetuple())
+    except ValueError:
+        return None
+    t += float(m.group(2)) if m.group(2) else 0.0
+    z = m.group(3)
+    if z and z != "Z":
+        off = int(z[1:3]) * 3600 + int(z[-2:]) * 60
+        t -= off if z[0] == "+" else -off
+    return t
 
 
 def _route_key(r):
@@ -161,9 +217,10 @@ def task_of_row(r, route_task):
     return route_task.get(r.get("route_id")) or route_task.get(r.get("prior_route_id"))
 
 
-def tasks_of(rows, price, route_task=None):
+def tasks_of(rows, price, route_task=None, windows=None):
     """One dict per routed task with its arm, class, tier and outcome metrics. Pass a
-    dict as route_task to get the route_id -> task key map back (per_task uses it)."""
+    dict as route_task to get the route_id -> task key map back, and a list as windows to get
+    one (first route ts, last row ts) in epoch seconds per returned task, in order (per_task uses both)."""
     tasks = {}
     route_task = {} if route_task is None else route_task
     for r in rows:
@@ -249,6 +306,8 @@ def tasks_of(rows, price, route_task=None):
                   # wall-clock only for finished (approved) tasks: an open task has no end
                   "wall_min": round((t["t1"] - t["t0"]) / 60.0, 2) if approved and t["t0"] is not None and t["t1"] is not None else None,
                   "usd": round(t["usd"], 6), "spawns": len(t["agents"]), "mixed_arms": len(arms) > 1})
+        if windows is not None:
+            windows.append((t["t0"], t["t1"]))
         del t["verdicts"], t["t0"], t["t1"], t["agents"], t["modes"], t["measured_agents"]
         out.append(t)
     return out
@@ -277,7 +336,128 @@ def malformed_rows(state_dir):
     return n
 
 
-def per_task(root, state_dir, plan=None):
+TRANSCRIPT_KEYS = (("input_tokens", "input"), ("output_tokens", "output"),
+                   ("cache_read_input_tokens", "cache_read"), ("cache_creation_input_tokens", "cache_write"))
+_SID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def project_slug(path):
+    """Claude Code's project directory name for a working directory."""
+    return re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(path))
+
+
+def locate_transcripts(state_dir, rows):
+    """Auto-locate: <config>/projects/<slug>/<session_id>.jsonl for each session_id on a ledger row."""
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    sids = sorted({r["session_id"] for r in rows if isinstance(r.get("session_id"), str) and _SID_RE.match(r["session_id"])})
+    repos = {ledger.state_repo(state_dir), os.getcwd()}
+    found = []
+    for repo in sorted(repos):
+        for sid in sids:
+            p = os.path.join(cfg, "projects", project_slug(repo), sid + ".jsonl")
+            if os.path.isfile(p) and p not in found:
+                found.append(p)
+    return found
+
+
+def read_transcripts(paths):
+    """Main-session assistant turns from transcript files: (turns, skipped, sidechain, deduped).
+    A turn is {"ts", "model", "usage" (ledger keys), "key"}; see the module docstring for the rules."""
+    by_id, anon = {}, []
+    skipped = sidechain = deduped = 0
+    for path in paths:
+        with open(path, "rb") as f:
+            for n, raw in enumerate(f):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    d = json.loads(raw.decode("utf-8"))
+                except ValueError:
+                    d = None
+                if not isinstance(d, dict):
+                    skipped += 1
+                    continue
+                if d.get("type") != "assistant":
+                    continue
+                if d.get("isSidechain") is True:
+                    sidechain += 1
+                    continue
+                msg = d.get("message") if isinstance(d.get("message"), dict) else {}
+                src = msg.get("usage")
+                u = {}
+                if isinstance(src, dict):
+                    u = {lk: src[tk] for tk, lk in TRANSCRIPT_KEYS if src.get(tk) is not None}
+                tok = usage_tokens(u)
+                ts = _turn_ts(d.get("timestamp"))
+                if tok is None or ts is None or any(v < 0 for v in tok.values()):
+                    skipped += 1
+                    continue
+                turn = {"ts": ts, "model": msg.get("model"), "usage": tok}
+                mid = msg.get("id")
+                if isinstance(mid, str) and mid:
+                    deduped += 1 if mid in by_id else 0
+                    by_id[mid] = turn
+                else:
+                    anon.append(turn)
+    return list(by_id.values()) + anon, skipped, sidechain, deduped
+
+
+def _turn_usd(turn, price):
+    """USD of one turn through row_usd, or None when its model cannot be priced (0 tokens cost 0)."""
+    if not any(turn["usage"].values()):
+        return 0.0
+    usd, _ = row_usd({"usage": turn["usage"], "resolved_model": turn["model"]}, price)
+    return usd
+
+
+def orchestrator(turns, windows, price):
+    """Attribute turns to task windows. Returns (per-task list parallel to windows, unattributed)."""
+    per = [{"turns": 0, "tokens": collections.Counter(), "micro": 0, "unpriced": 0} for _ in windows]
+    un = {"turns": 0, "tokens": collections.Counter(), "micro": 0, "unpriced": 0}
+    for t in turns:
+        hits = [i for i, (a, b) in enumerate(windows) if a is not None and b is not None and a <= t["ts"] < b + 1]
+        bucket = per[hits[0]] if len(hits) == 1 else un
+        usd = _turn_usd(t, price)
+        bucket["turns"] += 1
+        bucket["tokens"].update(t["usage"])
+        if usd is None:
+            bucket["unpriced"] += 1
+        else:
+            bucket["micro"] += _micro(usd)
+    return per, un
+
+
+def _orch_fields(o, usable):
+    """Per-task orchestrator keys; all null (n/a) with no transcript or an unusable window."""
+    if o is None or not usable:
+        return {"orchestrator_tokens": None, "orchestrator_tokens_total": None, "orchestrator_usd": None,
+                "orchestrator_turns": None, "orchestrator_unpriced_turns": None}
+    tok = {k: o["tokens"].get(k, 0) for k in TOKEN_KEYS}
+    return {"orchestrator_tokens": tok, "orchestrator_tokens_total": sum(tok.values()),
+            "orchestrator_usd": None if o["unpriced"] else o["micro"] / 1e6, "orchestrator_turns": o["turns"],
+            "orchestrator_unpriced_turns": o["unpriced"]}
+
+
+def _orch_totals(out, oun, paths, wok, skipped, sidechain, deduped):
+    if not paths:
+        return {"orchestrator_usd": None, "orchestrator_usd_unknown_tasks": None, "orchestrator_unattributed_usd": None,
+                "orchestrator_unattributed_tokens": None, "orchestrator_unattributed_turns": None,
+                "transcript_skipped": None, "transcript_sidechain_turns": None, "transcript_deduped": None,
+                "transcripts": [], "orchestrator_status": "n/a (no transcript: pass --transcript PATH, or the ledger has no "
+                                                         "session_id whose transcript is under ~/.claude/projects)"}
+    known = [x for x in out if x["orchestrator_usd"] is not None]
+    un_ok = wok and oun["unpriced"] == 0
+    return {"orchestrator_usd": round(sum(_micro(x["orchestrator_usd"]) for x in known) / 1e6, 6) if known else None,
+            "orchestrator_usd_unknown_tasks": len(out) - len(known),
+            "orchestrator_unattributed_usd": oun["micro"] / 1e6 if un_ok else None,
+            "orchestrator_unattributed_tokens": sum(oun["tokens"].values()) if wok else None,
+            "orchestrator_unattributed_turns": oun["turns"] if wok else None,
+            "transcript_skipped": skipped, "transcript_sidechain_turns": sidechain, "transcript_deduped": deduped,
+            "transcripts": paths, "orchestrator_status": "measured" if wok else "n/a (a task window has an unparseable timestamp)"}
+
+
+def per_task(root, state_dir, plan=None, transcripts=None):
     """One entry per routed task (tasks_of), delegated cost only. usd / tokens are
     None (n/a, never 0) when nothing was measured, when a row of the task could not be
     priced (usage without a priceable model, a shim run with no usage), when an agent of
@@ -286,7 +466,8 @@ def per_task(root, state_dir, plan=None):
     when the ledger has lines that did not parse or are not objects (they may be the
     missing usage rows; usd_unrouted is then None too). The aggregate is computed from the
     same rows (usage_totals), so totals.usd + totals.usd_partial_in_unknown_tasks +
-    totals.usd_unrouted reconciles with usd_estimated."""
+    totals.usd_unrouted reconciles with usd_estimated. Orchestrator figures: see the module
+    docstring; `transcripts` is the explicit list of paths (None: auto-locate)."""
     ok, rows, msg = ledger.verify(state_dir)
     if not ok:
         rows = ledger.read_rows(state_dir)
@@ -295,7 +476,13 @@ def per_task(root, state_dir, plan=None):
     price = prices(root)
     route_task = {}
     out = []
-    for t in tasks_of(rows, price, route_task):
+    windows = []
+    tlist = tasks_of(rows, price, route_task, windows)
+    paths = list(transcripts) if transcripts else locate_transcripts(state_dir, rows)
+    turns, skipped, sidechain, deduped = read_transcripts(paths) if paths else ([], None, None, None)
+    wok = all(a is not None and b is not None for a, b in windows)
+    oper, oun = orchestrator(turns, windows, price) if paths else ([None] * len(windows), None)
+    for t, o in zip(tlist, oper):
         known = not bad and not t["unmeasured_agents"]
         usd_ok = known and not t["unpriced_rows"] and t["priced_rows"] > 0
         tok_ok = known and not t["no_usage_runs"] and t["token_rows"] > 0
@@ -307,7 +494,7 @@ def per_task(root, state_dir, plan=None):
                     "unpriced_rows": t["unpriced_rows"], "unmeasured_agents": t["unmeasured_agents"],
                     "review_rounds": t["review_rounds"],
                     "escalations": t["escalations"], "approved": t["approved"],
-                    "outcome": t["last_verdict"] or "no-verdict"})
+                    "outcome": t["last_verdict"] or "no-verdict", **_orch_fields(o, paths and wok)})
     agg = usage_totals(rows, price)
     known = sum(_micro(x["usd"]) for x in out if x["usd"] is not None)
     partial = sum(_micro(x["usd_priced_partial"]) for x in out if x["usd"] is None)
@@ -325,7 +512,8 @@ def per_task(root, state_dir, plan=None):
                        "usd_unknown_tasks": sum(1 for x in out if x["usd"] is None),
                        # the priced part of the n/a tasks (a lower bound on their cost, not a figure for them)
                        "usd_partial_in_unknown_tasks": round(partial / 1e6, 6),
-                       "usd_unrouted": None if bad else round(unrouted / 1e6, 6)}}
+                       "usd_unrouted": None if bad else round(unrouted / 1e6, 6),
+                       **_orch_totals(out, oun, paths, wok, skipped, sidechain, deduped)}}
 
 
 def _usd4(v):
@@ -341,14 +529,29 @@ def print_per_task(p):
         print("REPORT_TASK_WARNING: %d ledger line(s) did not parse; per-task USD and tokens are n/a" % p["malformed_rows"])
     for x in p["tasks"]:
         tid = "L%d" % x["task"] if isinstance(x["task"], int) else x["task"]
-        print("REPORT_TASK: task=%s class=%s tier=%s spawns=%d tokens=%s usd=%s review_rounds=%d outcome=%s"
+        print("REPORT_TASK: task=%s class=%s tier=%s spawns=%d tokens=%s usd=%s review_rounds=%d outcome=%s "
+              "orchestrator_tokens=%s orchestrator_usd=%s"
               % (tid, x["class"], x["tier"], x["spawns"], "n/a" if x["tokens_total"] is None else x["tokens_total"],
-                 _usd4(x["usd"]), x["review_rounds"], x["outcome"]))
+                 _usd4(x["usd"]), x["review_rounds"], x["outcome"],
+                 "n/a" if x["orchestrator_tokens_total"] is None else x["orchestrator_tokens_total"], _usd4(x["orchestrator_usd"])))
     t = p["totals"]
     print("REPORT_TASKS_TOTAL: %d task(s); usd=%s (%d n/a, %.4f priced in them); aggregate REPORT_USD_ESTIMATED %.4f, "
           "of which %s on rows outside any task"
           % (t["tasks"], _usd4(t["usd"]), t["usd_unknown_tasks"], t["usd_partial_in_unknown_tasks"], p["usd_estimated"],
              _usd4(t["usd_unrouted"])))
+    if t["orchestrator_status"] != "measured":
+        print("REPORT_ORCHESTRATOR: %s" % t["orchestrator_status"])
+        return
+    print("REPORT_ORCHESTRATOR: usd=%s (%d task(s) n/a); unattributed (main-session turns in no single task window; "
+          "not usd_unrouted) usd=%s tokens=%s turns=%s; skipped=%d line(s); sidechain turns excluded=%d (delegated, in the ledger); "
+          "deduped=%d; transcripts=%s"
+          % (_usd4(t["orchestrator_usd"]), t["orchestrator_usd_unknown_tasks"], _usd4(t["orchestrator_unattributed_usd"]),
+             "n/a" if t["orchestrator_unattributed_tokens"] is None else t["orchestrator_unattributed_tokens"],
+             "n/a" if t["orchestrator_unattributed_turns"] is None else t["orchestrator_unattributed_turns"],
+             t["transcript_skipped"], t["transcript_sidechain_turns"], t["transcript_deduped"], ",".join(t["transcripts"])))
+    if t["transcript_skipped"]:
+        print("REPORT_ORCHESTRATOR_WARNING: %d transcript line(s) were not usable (malformed JSON or unusable usage) and are "
+              "not in these figures" % t["transcript_skipped"])
 
 
 def _median(xs):
@@ -692,19 +895,22 @@ def fmt_counter(d):
 def main(argv):
     if not argv:
         print("usage: report.py ROOT --state DIR [--plan PLAN] [--json] "
-              "[--compare [--baseline-state DIR]] [--decision] | [--per-task]", file=sys.stderr)
+              "[--compare [--baseline-state DIR]] [--decision] | [--per-task [--transcript PATH]...]", file=sys.stderr)
         return 2
     root, rest = os.path.abspath(argv[0]), argv[1:]
     state = plan = base_state = None
     as_json = do_compare = do_decision = do_per_task = False
+    transcripts = []
     i = 0
     while i < len(rest):
         a = rest[i]
-        if a in ("--state", "--plan", "--baseline-state") and i + 1 < len(rest):
+        if a in ("--state", "--plan", "--baseline-state", "--transcript") and i + 1 < len(rest):
             if a == "--state":
                 state = rest[i + 1]
             elif a == "--plan":
                 plan = rest[i + 1]
+            elif a == "--transcript":
+                transcripts.append(rest[i + 1])
             else:
                 base_state = rest[i + 1]
             i += 2
@@ -725,16 +931,23 @@ def main(argv):
         i += 1
     if not state:
         print("usage: report.sh (--state DIR | --plan PLAN) [--json] [--compare [baseline] [--baseline-state DIR]] "
-              "[--decision] | [--per-task]", file=sys.stderr)
+              "[--decision] | [--per-task [--transcript PATH]...]", file=sys.stderr)
         return 2
     if base_state and not do_compare:
         print("report: --baseline-state needs --compare", file=sys.stderr)
         return 2
+    if transcripts and not do_per_task:
+        print("report: --transcript needs --per-task", file=sys.stderr)
+        return 2
+    for tp in transcripts:
+        if not os.path.isfile(tp):
+            print("report: transcript not found: %s" % tp, file=sys.stderr)
+            return 2
     if do_per_task:
         if do_compare or do_decision:
             print("report: --per-task cannot be combined with --compare or --decision", file=sys.stderr)
             return 2
-        p = per_task(root, state, plan)
+        p = per_task(root, state, plan, transcripts)
         if as_json:
             print(json.dumps(p, indent=2, sort_keys=True))
         else:

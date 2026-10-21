@@ -6,7 +6,8 @@
 #   report.sh --plan PLAN [--json]        resolve the plan's state dir through apex-scope-loop
 #   report.sh ... --compare [baseline] [--baseline-state DIR]   routed vs baseline (spec §10)
 #   report.sh ... --decision                                    decision layer vs routing (spec §4)
-#   report.sh ... --per-task                                    delegated USD, tokens, spawns, rounds, outcome per task (alone)
+#   report.sh ... --per-task [--transcript PATH]...             delegated USD, tokens, spawns, rounds, outcome per task (alone),
+#                                                               plus orchestrator (main-session) tokens and USD from session transcripts
 #
 # Prints REPORT_* lines (or one JSON object with --json): chain status, routes by
 # class/tier/provider/mode, spawns, verdicts, escalations, tokens, estimated USD
@@ -22,13 +23,18 @@
 # agent, nothing run) print n/a, never 0; malformed ledger lines are counted in a
 # REPORT_TASK_WARNING and make every figure n/a; REPORT_TASKS_TOTAL reconciles the known,
 # partial and unrouted USD with REPORT_USD_ESTIMATED; it cannot be combined with --compare
-# or --decision (exit 2). All print REPORT_* lines, or JSON with --json.
+# or --decision (exit 2). Orchestrator (ADR-0002 R7b): --transcript PATH (repeatable; else auto-located
+# under ~/.claude/projects/<repo-slug>/<session_id>.jsonl from the ledger's session_ids) gives
+# orchestrator_tokens / orchestrator_usd per task (turns inside the task's route window), an
+# unattributed bucket (main-session turns in no single task window; not the same as usd_unrouted, which
+# is delegated ledger rows outside any task), and n/a, never 0, with no transcript; sidechain (subagent)
+# turns are excluded as delegated cost; unusable transcript lines are counted as skipped. All print REPORT_* lines, or JSON with --json.
 # Exit 0 ok (a broken chain is reported, not fatal), 2 usage.
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 command -v python3 >/dev/null 2>&1 || { echo "report: python3 is required" >&2; exit 1; }
-usage() { sed -n '4,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '4,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 STATE=""; PLAN=""; JSON=(); EXTRA=()
 while [[ $# -gt 0 ]]; do
@@ -39,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --compare) EXTRA+=(--compare); shift; if [[ "${1:-}" == baseline ]]; then shift; fi ;;
     --decision) EXTRA+=(--decision); shift ;;
     --per-task) EXTRA+=(--per-task); shift ;;
+    --transcript) EXTRA+=(--transcript "${2:?--transcript needs a value}"); shift 2 ;;
     --baseline-state) EXTRA+=(--baseline-state "${2:?--baseline-state needs a value}"); shift 2 ;;
     -h|--help) usage ;;
     *) echo "report: unknown argument $1" >&2; usage ;;
