@@ -848,7 +848,7 @@
       "halted": false,
       "halt_reason": null,
       "landed": true,
-      "last_activity": "2026-09-24T14:28:00Z",
+      "last_activity": "2026-10-03T14:08:00Z",
       "usd": 0.459,
       "open_findings": 0,
       "enforced": true,
@@ -1007,6 +1007,310 @@
         "orchestrator_usd": null,
         "orchestrator_tokens": null,
         "orchestrator_na": "n/a (transcripts held no main-session turns)"
+       }
+      ]
+     },
+     {
+      "hash": "b8c9d0e1f2a3",
+      "slug": "tax-rates-sync",
+      "scope": "bugfix",
+      "intent": null,
+      "operate": {
+       "slug": "tax-rates-sync",
+       "tag": "operate:tax-rates-sync",
+       "state": "ok",
+       "deploys": [
+        {
+         "ts": "2026-10-10T10:03:00Z",
+         "sha": "4c6e8a0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c",
+         "exit": 0
+        }
+       ],
+       "last_deploy": {
+        "ts": "2026-10-10T10:03:00Z",
+        "sha": "4c6e8a0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c",
+        "exit": 0
+       },
+       "window": {
+        "state": "open",
+        "start": "2026-10-10T10:03:00Z",
+        "end": "2026-10-24T10:03:00Z",
+        "days": 14,
+        "day": 3,
+        "outcome": null,
+        "closed_by": null,
+        "open_at_close": null,
+        "unmeasured_at_close": null,
+        "measured_runs": 0,
+        "breaches": 0,
+        "last_run": "2026-10-12T11:03:00Z",
+        "never_measured": false
+       },
+       "windows_closed": 0,
+       "last_closed_window": null,
+       "checks": [
+        {
+         "id": "sync-lag",
+         "metric": "tax.sync_lag_minutes",
+         "op": "<",
+         "threshold": 90,
+         "severity": "medium",
+         "declared": true,
+         "measured": true,
+         "last_value": null,
+         "last_status": "unmeasured",
+         "last_ts": "2026-10-12T11:03:00Z",
+         "last_reason": "the command printed nothing on stdout (set \"value\": \"exit\" to measure the exit code)",
+         "breaches": 0,
+         "unmeasured_runs": 2,
+         "filed": null,
+         "last_measured_value": null,
+         "last_measured_status": null,
+         "last_measured_ts": null,
+         "unmeasured": true,
+         "open_at_close": false
+        },
+        {
+         "id": "rate-errors",
+         "metric": "tax.rate_errors",
+         "op": "<",
+         "threshold": 1,
+         "severity": "high",
+         "declared": true,
+         "measured": true,
+         "last_value": null,
+         "last_status": "unmeasured",
+         "last_ts": "2026-10-12T11:03:00Z",
+         "last_reason": "the command printed nothing on stdout (set \"value\": \"exit\" to measure the exit code)",
+         "breaches": 0,
+         "unmeasured_runs": 2,
+         "filed": null,
+         "last_measured_value": null,
+         "last_measured_status": null,
+         "last_measured_ts": null,
+         "unmeasured": true,
+         "open_at_close": false
+        }
+       ],
+       "monitor": "ok",
+       "problems": [],
+       "window_days": 14,
+       "scope": "bugfix",
+       "ingested": {
+        "lessons": [],
+        "backlog": [],
+        "counts": {
+         "lessons": 0,
+         "backlog": 0,
+         "backlog_open": 0
+        }
+       }
+      },
+      "cost": {
+       "status": "measured",
+       "delegated_usd": 0.4152,
+       "delegated_unknown_tasks": 0,
+       "orchestrator_usd": 0.3042,
+       "orchestrator_unattributed_usd": 0.0,
+       "orchestrator_unattributed_tokens": 0,
+       "usd_unrouted": 0.0
+      },
+      "path": ".claude/plans/tax-rates-sync-plan.md",
+      "name": "tax-rates-sync-plan",
+      "total": 2,
+      "done": 2,
+      "phase": "Phase 1",
+      "halted": false,
+      "halt_reason": null,
+      "landed": true,
+      "last_activity": "2026-10-12T11:08:00Z",
+      "usd": 0.4152,
+      "open_findings": 0,
+      "enforced": true,
+      "chain_ok": true,
+      "tasks": [
+       {
+        "line": 4,
+        "title": "Nightly tax-rate pull",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-04T16:03:00Z",
+        "usd": 0.2076,
+        "tokens": 107600,
+        "orchestrator_usd": 0.1521,
+        "orchestrator_tokens": 328100,
+        "orchestrator_na": null
+       },
+       {
+        "line": 7,
+        "title": "Rate cache invalidation",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-05T16:03:00Z",
+        "usd": 0.2076,
+        "tokens": 107600,
+        "orchestrator_usd": 0.1521,
+        "orchestrator_tokens": 328100,
+        "orchestrator_na": null
+       }
+      ]
+     },
+     {
+      "hash": "c9d0e1f2a3b4",
+      "slug": "dunning-sms",
+      "scope": "feature",
+      "intent": null,
+      "operate": {
+       "slug": "dunning-sms",
+       "tag": "operate:dunning-sms",
+       "state": "ok",
+       "deploys": [
+        {
+         "ts": "2026-10-07T12:03:00Z",
+         "sha": "6e8a0c2b4d6f8a0e2c4b6d8f0a2e4c6b8d0f2a4e",
+         "exit": 0
+        }
+       ],
+       "last_deploy": {
+        "ts": "2026-10-07T12:03:00Z",
+        "sha": "6e8a0c2b4d6f8a0e2c4b6d8f0a2e4c6b8d0f2a4e",
+        "exit": 0
+       },
+       "window": {
+        "state": "open",
+        "start": "2026-10-07T12:03:00Z",
+        "end": "2026-10-21T12:03:00Z",
+        "days": 14,
+        "day": 6,
+        "outcome": null,
+        "closed_by": null,
+        "open_at_close": null,
+        "unmeasured_at_close": null,
+        "measured_runs": 1,
+        "breaches": 0,
+        "last_run": "2026-10-08T11:03:00Z",
+        "never_measured": false
+       },
+       "windows_closed": 0,
+       "last_closed_window": null,
+       "checks": [
+        {
+         "id": "sms-delivery",
+         "metric": null,
+         "op": null,
+         "threshold": null,
+         "severity": null,
+         "declared": false,
+         "measured": true,
+         "last_value": 0.97,
+         "last_status": "ok",
+         "last_ts": "2026-10-08T11:03:00Z",
+         "last_reason": null,
+         "breaches": 0,
+         "unmeasured_runs": 0,
+         "filed": null,
+         "last_measured_value": 0.97,
+         "last_measured_status": "ok",
+         "last_measured_ts": "2026-10-08T11:03:00Z",
+         "unmeasured": false,
+         "open_at_close": false
+        },
+        {
+         "id": "sms-p95",
+         "metric": null,
+         "op": null,
+         "threshold": null,
+         "severity": null,
+         "declared": false,
+         "measured": true,
+         "last_value": 840,
+         "last_status": "ok",
+         "last_ts": "2026-10-08T11:03:00Z",
+         "last_reason": null,
+         "breaches": 0,
+         "unmeasured_runs": 0,
+         "filed": null,
+         "last_measured_value": 840,
+         "last_measured_status": "ok",
+         "last_measured_ts": "2026-10-08T11:03:00Z",
+         "unmeasured": false,
+         "open_at_close": false
+        }
+       ],
+       "monitor": "invalid",
+       "problems": [
+        "checks[0] (id 'sms-delivery'): threshold must be a finite number"
+       ],
+       "window_days": null,
+       "scope": "feature",
+       "ingested": {
+        "lessons": [],
+        "backlog": [],
+        "counts": {
+         "lessons": 0,
+         "backlog": 0,
+         "backlog_open": 0
+        }
+       }
+      },
+      "cost": {
+       "status": "measured",
+       "delegated_usd": 0.6948,
+       "delegated_unknown_tasks": 0,
+       "orchestrator_usd": 0.3093,
+       "orchestrator_unattributed_usd": 0.0,
+       "orchestrator_unattributed_tokens": 0,
+       "usd_unrouted": 0.0
+      },
+      "path": ".claude/plans/dunning-sms-plan.md",
+      "name": "dunning-sms-plan",
+      "total": 2,
+      "done": 2,
+      "phase": "Phase 1",
+      "halted": false,
+      "halt_reason": null,
+      "landed": true,
+      "last_activity": "2026-10-08T11:08:00Z",
+      "usd": 0.6948,
+      "open_findings": 0,
+      "enforced": true,
+      "chain_ok": true,
+      "tasks": [
+       {
+        "line": 4,
+        "title": "SMS provider client",
+        "tags": [],
+        "status": "done",
+        "tier": "C",
+        "rounds": 2,
+        "attempts": 1,
+        "completed_at": "2026-10-02T16:03:00Z",
+        "usd": 0.3474,
+        "tokens": 188000,
+        "orchestrator_usd": 0.15465,
+        "orchestrator_tokens": 328350,
+        "orchestrator_na": null
+       },
+       {
+        "line": 7,
+        "title": "Dunning SMS step",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-03T16:03:00Z",
+        "usd": 0.3474,
+        "tokens": 188000,
+        "orchestrator_usd": 0.15465,
+        "orchestrator_tokens": 328350,
+        "orchestrator_na": null
        }
       ]
      },
@@ -1198,7 +1502,7 @@
       "halted": false,
       "halt_reason": null,
       "landed": true,
-      "last_activity": "2026-09-28T14:03:00Z",
+      "last_activity": "2026-10-12T11:08:00Z",
       "usd": 2.5296,
       "open_findings": 0,
       "enforced": true,
@@ -1494,7 +1798,7 @@
       "halted": false,
       "halt_reason": null,
       "landed": true,
-      "last_activity": "2026-09-20T14:03:00Z",
+      "last_activity": "2026-10-05T16:03:00Z",
       "usd": 2.112,
       "open_findings": 0,
       "enforced": true,
@@ -1611,7 +1915,7 @@
       "halted": false,
       "halt_reason": null,
       "landed": true,
-      "last_activity": "2026-09-06T14:28:00Z",
+      "last_activity": "2026-09-06T16:03:00Z",
       "usd": 0.7794,
       "open_findings": 0,
       "enforced": true,
@@ -1666,6 +1970,22 @@
      }
     ],
     "watched": [
+     {
+      "hash": "b8c9d0e1f2a3",
+      "slug": "tax-rates-sync",
+      "path": ".claude/plans/tax-rates-sync-plan.md",
+      "day": 3,
+      "days": 14,
+      "end": "2026-10-24T10:03:00Z"
+     },
+     {
+      "hash": "c9d0e1f2a3b4",
+      "slug": "dunning-sms",
+      "path": ".claude/plans/dunning-sms-plan.md",
+      "day": 6,
+      "days": 14,
+      "end": "2026-10-21T12:03:00Z"
+     },
      {
       "hash": "d4e5f6a7b8c9",
       "slug": "agent-prompts",
@@ -2416,35 +2736,319 @@
    }
   ],
   "summary": {
-   "replayed": 19,
+   "replayed": 32,
    "errors": 1,
-   "changed": 6,
+   "changed": 7,
    "looser": 5,
-   "stricter": 1,
+   "stricter": 2,
    "moves": {
+    "A→B": 2,
     "C→A": 4,
-    "C→B": 1,
-    "A→B": 1
+    "C→B": 1
    },
    "mix_current": {
-    "A": 6,
-    "B": 4,
-    "C": 9
+    "A": 9,
+    "B": 12,
+    "C": 11
    },
    "mix_proposed": {
-    "A": 9,
-    "B": 6,
-    "C": 4
+    "A": 11,
+    "B": 15,
+    "C": 6
    },
    "note": "Replays the classifier only: reviewer raises and the decision layer are not replayed, so a recorded tier can be higher than the replayed one."
   },
   "tasks": [
    {
+    "plan": "a1b2c3d4e5f6",
+    "plan_path": ".claude/plans/billing-plan.md",
+    "line": 30,
+    "title": "Stripe webhook for paid status",
+    "completed_at": "2026-10-06T16:03:00Z",
+    "recorded": "C",
+    "current": "C",
+    "proposed": "C",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 118 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 118 lines > 100"
+    ],
+    "removed": [
+     "size: 118 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-c path (knobs): payments/webhooks/stripe.py",
+     "tier-c content: \"stripe_secret\" (knobs)",
+     "size: 118 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-c path (knobs): payments/webhooks/stripe.py",
+     "tier-c content: \"stripe_secret\" (knobs)",
+     "size: 118 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 118 lines > 100"
+    ]
+   },
+   {
+    "plan": "b8c9d0e1f2a3",
+    "plan_path": ".claude/plans/tax-rates-sync-plan.md",
+    "line": 7,
+    "title": "Rate cache invalidation",
+    "completed_at": "2026-10-05T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "b8c9d0e1f2a3",
+    "plan_path": ".claude/plans/tax-rates-sync-plan.md",
+    "line": 4,
+    "title": "Nightly tax-rate pull",
+    "completed_at": "2026-10-04T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 94 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 94 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 94 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 94 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "c9d0e1f2a3b4",
+    "plan_path": ".claude/plans/dunning-sms-plan.md",
+    "line": 7,
+    "title": "Dunning SMS step",
+    "completed_at": "2026-10-03T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 72 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 72 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir billing/dunning/steps.py",
+     "size: 72 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir billing/dunning/steps.py",
+     "size: 72 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "b7c8d9e0f1a2",
+    "plan_path": ".claude/plans/invoices-export.md",
+    "line": 20,
+    "title": "Export audit trail",
+    "completed_at": "2026-10-03T15:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "A",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "c9d0e1f2a3b4",
+    "plan_path": ".claude/plans/dunning-sms-plan.md",
+    "line": 4,
+    "title": "SMS provider client",
+    "completed_at": "2026-10-02T16:03:00Z",
+    "recorded": "C",
+    "current": "C",
+    "proposed": "C",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 86 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 86 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-c content: \"api_key\" in billing/sms/client.py",
+     "size: 86 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-c content: \"api_key\" in billing/sms/client.py",
+     "size: 86 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "a1b2c3d4e5f6",
+    "plan_path": ".claude/plans/billing-plan.md",
+    "line": 27,
+    "title": "Email delivery of invoices",
+    "completed_at": "2026-10-01T15:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "B",
+    "move": "A→B",
+    "error": null,
+    "added": [
+     "size: 124 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 124 lines > 100"
+    ],
+    "removed": [
+     "size: 124 lines, 4 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 124 lines, 4 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 124 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 124 lines > 100"
+    ]
+   },
+   {
+    "plan": "b7c8d9e0f1a2",
+    "plan_path": ".claude/plans/invoices-export.md",
+    "line": 17,
+    "title": "Retry and backoff",
+    "completed_at": "2026-10-01T15:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 98 lines, 7 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 98 lines, 7 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: 7 files > 6",
+     "size: 98 lines, 7 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: 7 files > 6",
+     "size: 98 lines, 7 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "a1b2c3d4e5f6",
+    "plan_path": ".claude/plans/billing-plan.md",
+    "line": 24,
+    "title": "PDF render endpoint",
+    "completed_at": "2026-09-29T15:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "A",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 96 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 96 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 96 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 96 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "b7c8d9e0f1a2",
+    "plan_path": ".claude/plans/invoices-export.md",
+    "line": 14,
+    "title": "Export status API",
+    "completed_at": "2026-09-29T15:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "A",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 70 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 70 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 70 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 70 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "b7c8d9e0f1a2",
+    "plan_path": ".claude/plans/invoices-export.md",
+    "line": 11,
+    "title": "S3 upload with signed URLs",
+    "completed_at": "2026-09-27T15:03:00Z",
+    "recorded": "C",
+    "current": "C",
+    "proposed": "C",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 84 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 84 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-c content: \"secret\" in exporter/s3.py",
+     "size: 84 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-c content: \"secret\" in exporter/s3.py",
+     "size: 84 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
     "plan": "d4e5f6a7b8c9",
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 27,
     "title": "Agent prompt docs",
-    "completed_at": "2026-10-11T15:20:00Z",
+    "completed_at": "2026-09-27T01:39:00Z",
     "recorded": "A",
     "current": "A",
     "proposed": "A",
@@ -2470,7 +3074,7 @@
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 24,
     "title": "Agent routing hook",
-    "completed_at": "2026-10-10T13:25:00Z",
+    "completed_at": "2026-09-25T20:51:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "C",
@@ -2494,25 +3098,81 @@
    {
     "plan": "b7c8d9e0f1a2",
     "plan_path": ".claude/plans/invoices-export.md",
-    "line": 20,
-    "title": "Export audit trail",
-    "completed_at": "2026-10-09T11:30:00Z",
-    "recorded": "A",
-    "current": "A",
-    "proposed": "A",
+    "line": 8,
+    "title": "Export job queue",
+    "completed_at": "2026-09-25T15:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
     "move": null,
     "error": null,
     "added": [
-     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+     "size: 92 lines, 3 files (Tier B above 100 lines or 6 files)"
     ],
     "removed": [
-     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+     "size: 92 lines, 3 files (Tier B above 150 lines or 6 files)"
     ],
     "reasons_current": [
-     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+     "tier-b: shared dir core/queue.py",
+     "size: 92 lines, 3 files (Tier B above 150 lines or 6 files)"
     ],
     "reasons_proposed": [
-     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+     "tier-b: shared dir core/queue.py",
+     "size: 92 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "a1b2c3d4e5f6",
+    "plan_path": ".claude/plans/billing-plan.md",
+    "line": 21,
+    "title": "Tax line calculation",
+    "completed_at": "2026-09-24T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 76 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 76 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 76 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 76 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "a7b8c9d0e1f2",
+    "plan_path": ".claude/plans/receipt-emails-plan.md",
+    "line": 7,
+    "title": "Resend on bounce",
+    "completed_at": "2026-09-24T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 132 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 132 lines > 100"
+    ],
+    "removed": [
+     "size: 132 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/email/sender.py",
+     "size: 132 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/email/sender.py",
+     "size: 132 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 132 lines > 100"
     ]
    },
    {
@@ -2520,7 +3180,7 @@
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 21,
     "title": "Agent eval fixtures",
-    "completed_at": "2026-10-09T10:10:00Z",
+    "completed_at": "2026-09-24T16:03:00Z",
     "recorded": "B",
     "current": "B",
     "proposed": "B",
@@ -2544,11 +3204,37 @@
     ]
    },
    {
+    "plan": "a7b8c9d0e1f2",
+    "plan_path": ".claude/plans/receipt-emails-plan.md",
+    "line": 4,
+    "title": "Receipt template escape fix",
+    "completed_at": "2026-09-23T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 46 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 46 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/email/templates.py",
+     "size: 46 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/email/templates.py",
+     "size: 46 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
     "plan": "d4e5f6a7b8c9",
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 18,
     "title": "Dunning agent prompt",
-    "completed_at": "2026-10-08T16:50:00Z",
+    "completed_at": "2026-09-23T11:15:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "A",
@@ -2572,29 +3258,27 @@
     ]
    },
    {
-    "plan": "b7c8d9e0f1a2",
-    "plan_path": ".claude/plans/invoices-export.md",
-    "line": 17,
-    "title": "Retry and backoff",
-    "completed_at": "2026-10-07T17:25:00Z",
+    "plan": "a1b2c3d4e5f6",
+    "plan_path": ".claude/plans/billing-plan.md",
+    "line": 18,
+    "title": "Invoice number sequence",
+    "completed_at": "2026-09-22T15:03:00Z",
     "recorded": "B",
-    "current": "B",
-    "proposed": "B",
+    "current": "A",
+    "proposed": "A",
     "move": null,
     "error": null,
     "added": [
-     "size: 98 lines, 7 files (Tier B above 100 lines or 6 files)"
+     "size: 88 lines, 3 files (Tier B above 100 lines or 6 files)"
     ],
     "removed": [
-     "size: 98 lines, 7 files (Tier B above 150 lines or 6 files)"
+     "size: 88 lines, 3 files (Tier B above 150 lines or 6 files)"
     ],
     "reasons_current": [
-     "tier-b: 7 files > 6",
-     "size: 98 lines, 7 files (Tier B above 150 lines or 6 files)"
+     "size: 88 lines, 3 files (Tier B above 150 lines or 6 files)"
     ],
     "reasons_proposed": [
-     "tier-b: 7 files > 6",
-     "size: 98 lines, 7 files (Tier B above 100 lines or 6 files)"
+     "size: 88 lines, 3 files (Tier B above 100 lines or 6 files)"
     ]
    },
    {
@@ -2602,7 +3286,7 @@
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 15,
     "title": "Shared tone section for all agents",
-    "completed_at": "2026-10-07T11:15:00Z",
+    "completed_at": "2026-09-22T06:27:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "B",
@@ -2628,41 +3312,11 @@
     ]
    },
    {
-    "plan": "a1b2c3d4e5f6",
-    "plan_path": ".claude/plans/billing-plan.md",
-    "line": 30,
-    "title": "Stripe webhook for paid status",
-    "completed_at": "2026-10-06T10:20:00Z",
-    "recorded": "C",
-    "current": "C",
-    "proposed": "C",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 118 lines, 3 files (Tier B above 100 lines or 6 files)",
-     "tier-b: 118 lines > 100"
-    ],
-    "removed": [
-     "size: 118 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "tier-c path (knobs): payments/webhooks/stripe.py",
-     "tier-c content: \"stripe_secret\" (knobs)",
-     "size: 118 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "tier-c path (knobs): payments/webhooks/stripe.py",
-     "tier-c content: \"stripe_secret\" (knobs)",
-     "size: 118 lines, 3 files (Tier B above 100 lines or 6 files)",
-     "tier-b: 118 lines > 100"
-    ]
-   },
-   {
     "plan": "d4e5f6a7b8c9",
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 12,
     "title": "Tax rules agent: VAT examples",
-    "completed_at": "2026-10-05T09:40:00Z",
+    "completed_at": "2026-09-21T01:39:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "A",
@@ -2690,7 +3344,7 @@
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 9,
     "title": "Refund triage agent",
-    "completed_at": "2026-10-04T14:30:00Z",
+    "completed_at": "2026-09-19T20:51:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "A",
@@ -2711,210 +3365,6 @@
     "reasons_proposed": [
      "exempted by knobs: plugins/billing-bot/agents/refund-triage.md (plugins/*/agents/*.md: Agent prompts are text; no code runs from them)",
      "size: 48 lines, 1 file (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "d4e5f6a7b8c9",
-    "plan_path": ".claude/plans/agent-prompts-plan.md",
-    "line": 6,
-    "title": "Invoice reviewer agent prompt",
-    "completed_at": "2026-10-03T10:05:00Z",
-    "recorded": "C",
-    "current": "C",
-    "proposed": "A",
-    "move": "C→A",
-    "error": null,
-    "added": [
-     "exempted by knobs: plugins/billing-bot/agents/invoice-reviewer.md (plugins/*/agents/*.md: Agent prompts are text; no code runs from them)",
-     "size: 64 lines, 1 file (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "tier-c content: \"token\" in plugins/billing-bot/agents/invoice-reviewer.md",
-     "size: 64 lines, 1 file (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "tier-c content: \"token\" in plugins/billing-bot/agents/invoice-reviewer.md",
-     "size: 64 lines, 1 file (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "exempted by knobs: plugins/billing-bot/agents/invoice-reviewer.md (plugins/*/agents/*.md: Agent prompts are text; no code runs from them)",
-     "size: 64 lines, 1 file (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "b7c8d9e0f1a2",
-    "plan_path": ".claude/plans/invoices-export.md",
-    "line": 14,
-    "title": "Export status API",
-    "completed_at": "2026-10-02T09:45:00Z",
-    "recorded": "A",
-    "current": "A",
-    "proposed": "A",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 70 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 70 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "size: 70 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "size: 70 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "a1b2c3d4e5f6",
-    "plan_path": ".claude/plans/billing-plan.md",
-    "line": 27,
-    "title": "Email delivery of invoices",
-    "completed_at": "2026-10-01T16:44:00Z",
-    "recorded": "A",
-    "current": "A",
-    "proposed": "B",
-    "move": "A→B",
-    "error": null,
-    "added": [
-     "size: 124 lines, 4 files (Tier B above 100 lines or 6 files)",
-     "tier-b: 124 lines > 100"
-    ],
-    "removed": [
-     "size: 124 lines, 4 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "size: 124 lines, 4 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "size: 124 lines, 4 files (Tier B above 100 lines or 6 files)",
-     "tier-b: 124 lines > 100"
-    ]
-   },
-   {
-    "plan": "b7c8d9e0f1a2",
-    "plan_path": ".claude/plans/invoices-export.md",
-    "line": 11,
-    "title": "S3 upload with signed URLs",
-    "completed_at": "2026-09-30T14:10:00Z",
-    "recorded": "C",
-    "current": "C",
-    "proposed": "C",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 84 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 84 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "tier-c content: \"secret\" in exporter/s3.py",
-     "size: 84 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "tier-c content: \"secret\" in exporter/s3.py",
-     "size: 84 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "a1b2c3d4e5f6",
-    "plan_path": ".claude/plans/billing-plan.md",
-    "line": 24,
-    "title": "PDF render endpoint",
-    "completed_at": "2026-09-29T11:02:00Z",
-    "recorded": "A",
-    "current": "A",
-    "proposed": "A",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 96 lines, 3 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 96 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "size: 96 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "size: 96 lines, 3 files (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "b7c8d9e0f1a2",
-    "plan_path": ".claude/plans/invoices-export.md",
-    "line": 8,
-    "title": "Export job queue",
-    "completed_at": "2026-09-25T12:00:00Z",
-    "recorded": "B",
-    "current": "B",
-    "proposed": "B",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 92 lines, 3 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 92 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "tier-b: shared dir core/queue.py",
-     "size: 92 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "tier-b: shared dir core/queue.py",
-     "size: 92 lines, 3 files (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "a1b2c3d4e5f6",
-    "plan_path": ".claude/plans/billing-plan.md",
-    "line": 21,
-    "title": "Tax line calculation",
-    "completed_at": "2026-09-24T13:30:00Z",
-    "recorded": "B",
-    "current": "B",
-    "proposed": "B",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 76 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 76 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "tier-b: shared dir lib/tax.py",
-     "size: 76 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "tier-b: shared dir lib/tax.py",
-     "size: 76 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "a1b2c3d4e5f6",
-    "plan_path": ".claude/plans/billing-plan.md",
-    "line": 18,
-    "title": "Invoice number sequence",
-    "completed_at": "2026-09-22T09:05:00Z",
-    "recorded": "B",
-    "current": "A",
-    "proposed": "A",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 88 lines, 3 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 88 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "size: 88 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "size: 88 lines, 3 files (Tier B above 100 lines or 6 files)"
     ]
    },
    {
@@ -2922,8 +3372,8 @@
     "plan_path": ".claude/plans/billing-plan.md",
     "line": 15,
     "title": "Migrate legacy invoice rows",
-    "completed_at": "2026-09-18T15:40:00Z",
-    "recorded": null,
+    "completed_at": "2026-09-18T17:03:00Z",
+    "recorded": "C",
     "current": null,
     "proposed": null,
     "move": null,
@@ -2934,11 +3384,65 @@
     "reasons_proposed": []
    },
    {
+    "plan": "d4e5f6a7b8c9",
+    "plan_path": ".claude/plans/agent-prompts-plan.md",
+    "line": 6,
+    "title": "Invoice reviewer agent prompt",
+    "completed_at": "2026-09-18T16:03:00Z",
+    "recorded": "C",
+    "current": "C",
+    "proposed": "A",
+    "move": "C→A",
+    "error": null,
+    "added": [
+     "exempted by knobs: plugins/billing-bot/agents/invoice-reviewer.md (plugins/*/agents/*.md: Agent prompts are text; no code runs from them)",
+     "size: 64 lines, 1 file (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "tier-c content: \"token\" in plugins/billing-bot/agents/invoice-reviewer.md",
+     "size: 64 lines, 1 file (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-c content: \"token\" in plugins/billing-bot/agents/invoice-reviewer.md",
+     "size: 64 lines, 1 file (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "exempted by knobs: plugins/billing-bot/agents/invoice-reviewer.md (plugins/*/agents/*.md: Agent prompts are text; no code runs from them)",
+     "size: 64 lines, 1 file (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "e6f7a8b9c0d1",
+    "plan_path": ".claude/plans/card-retry-plan.md",
+    "line": 14,
+    "title": "Ops runbook",
+    "completed_at": "2026-09-18T16:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "A",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 52 lines, 1 file (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 52 lines, 1 file (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "exempted by knobs: docs/runbooks/card-retry.md (docs/**: Docs only; reviewed by humans in PR)",
+     "size: 52 lines, 1 file (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "exempted by knobs: docs/runbooks/card-retry.md (docs/**: Docs only; reviewed by humans in PR)",
+     "size: 52 lines, 1 file (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
     "plan": "a1b2c3d4e5f6",
     "plan_path": ".claude/plans/billing-plan.md",
     "line": 12,
     "title": "Add invoice model",
-    "completed_at": "2026-09-16T10:12:00Z",
+    "completed_at": "2026-09-16T16:03:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "C",
@@ -2957,6 +3461,168 @@
     "reasons_proposed": [
      "tier-c path: migrations/0042_invoice.sql",
      "size: 140 lines, 5 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "e6f7a8b9c0d1",
+    "plan_path": ".claude/plans/card-retry-plan.md",
+    "line": 11,
+    "title": "Dead-letter queue",
+    "completed_at": "2026-09-16T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 168 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 168 lines > 100"
+    ],
+    "removed": [
+     "size: 168 lines, 4 files (Tier B above 150 lines or 6 files)",
+     "tier-b: 168 lines > 150"
+    ],
+    "reasons_current": [
+     "size: 168 lines, 4 files (Tier B above 150 lines or 6 files)",
+     "tier-b: 168 lines > 150"
+    ],
+    "reasons_proposed": [
+     "size: 168 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 168 lines > 100"
+    ]
+   },
+   {
+    "plan": "e6f7a8b9c0d1",
+    "plan_path": ".claude/plans/card-retry-plan.md",
+    "line": 8,
+    "title": "Retry scheduler",
+    "completed_at": "2026-09-14T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 110 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 110 lines > 100"
+    ],
+    "removed": [
+     "size: 110 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir core/scheduler.py",
+     "size: 110 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir core/scheduler.py",
+     "size: 110 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 110 lines > 100"
+    ]
+   },
+   {
+    "plan": "e6f7a8b9c0d1",
+    "plan_path": ".claude/plans/card-retry-plan.md",
+    "line": 5,
+    "title": "Webhook signature check",
+    "completed_at": "2026-09-12T16:03:00Z",
+    "recorded": "C",
+    "current": "C",
+    "proposed": "C",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 64 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 64 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-c path (knobs): payments/webhooks/signature.py",
+     "tier-c content: \"stripe_secret\" (knobs)",
+     "size: 64 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-c path (knobs): payments/webhooks/signature.py",
+     "tier-c content: \"stripe_secret\" (knobs)",
+     "size: 64 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "f1a2b3c4d5e6",
+    "plan_path": ".claude/plans/legacy-pdf-export-plan.md",
+    "line": 10,
+    "title": "Remove wkhtmltopdf",
+    "completed_at": "2026-09-06T16:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "B",
+    "move": "A→B",
+    "error": null,
+    "added": [
+     "size: 120 lines, 5 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 120 lines > 100"
+    ],
+    "removed": [
+     "size: 120 lines, 5 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 120 lines, 5 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 120 lines, 5 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 120 lines > 100"
+    ]
+   },
+   {
+    "plan": "f1a2b3c4d5e6",
+    "plan_path": ".claude/plans/legacy-pdf-export-plan.md",
+    "line": 7,
+    "title": "Font embedding",
+    "completed_at": "2026-09-04T16:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "A",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 60 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 60 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 60 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 60 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "f1a2b3c4d5e6",
+    "plan_path": ".claude/plans/legacy-pdf-export-plan.md",
+    "line": 4,
+    "title": "Render template port",
+    "completed_at": "2026-09-02T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 140 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 140 lines > 100"
+    ],
+    "removed": [
+     "size: 140 lines, 4 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/pdf/render.py",
+     "size: 140 lines, 4 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/pdf/render.py",
+     "size: 140 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 140 lines > 100"
     ]
    }
   ]
