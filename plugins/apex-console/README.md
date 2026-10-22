@@ -21,6 +21,11 @@ It prints `CONSOLE_URL: http://127.0.0.1:4747/?t=<token>`. Open that address onc
   - The scorecard shows each metric with its trend, its status and how it is computed.
 - **Metrics.** Weekly charts: agent runs, spend, cost per 1,000 runs, cost per task, tasks completed, cache hit rate, active repos, and the A/B/C tier mix.
 - **Progress.** Per repository: the running task and its stage, each plan's done/total, cost, open findings, and every task's tier, rounds and attempts. **Stop all work** writes the HALT kill switch that apex-scope-loop obeys; **Resume** removes it.
+  - *Scope:* each plan carries a scope badge (`bugfix`, `poc` or `feature`, from the plan header; a plan without one reads `feature`). The **Scope** filter shows all plans or one scope.
+  - *Intent:* a collapsible summary of the plan's intent file (problem, who, why now, non-goals). A plan with no intent file reads "Intent: n/a".
+  - *Operate:* a panel on each landed plan (see below).
+  - *Cost:* a per-task table and plan totals (see below).
+- **Watched.** Every plan whose watch window is open, with its day N of M, and each repository's own checks from `.claude/apex-scope-loop/monitor.json`.
 - **Knobs.**
   - *Review strictness:* the Lenient, Standard, Strict and Paranoid presets, or the six numbers directly (review cap, ask-human-after, adversary budget, escalate-after, error budget, attempt cap).
   - *Tier definitions:* extra Tier C path and content triggers, reasoned exemptions, and the Tier B size thresholds and shared dirs. **Simulate on past tasks** replays your completed tasks under the proposal before you apply it: which tasks would get a lower or higher tier, and the reasons that change.
@@ -28,6 +33,29 @@ It prints `CONSOLE_URL: http://127.0.0.1:4747/?t=<token>`. Open that address onc
   - *Decision layer:* egress, state fields, the primary backend per rubric, shadow.
 - **Keys.** Set, replace or remove the keys the plugins read. The tab shows which ones your enabled providers need, and whether your shell profile sources the keys file.
 - **Audit.** Every change, with Undo.
+
+## Operate and cost panels
+
+These panels only read files the plugins wrote. The console never runs `operate.sh deploy`, `monitor` or `ingest`, never runs a plan, and never writes plugin state. Deploys, monitor runs and ingest happen in the CLI; the page shows what they recorded.
+
+**Operate** (on each landed plan) shows the operate state of that plan, read from its checkpoint and its `## Monitor` section:
+- *Deploys:* the most recent deploys, with the commit and exit code, and the last deploy.
+- *Watch window:* either not opened, open as "day N of M" with its end date, or closed with its outcome (`operated-clean` or `closed-with-breaches`). A window that has ended but has no outcome yet reads "outcome n/a": no monitor run has closed it.
+- *Checks:* each declared check with its last value, status, breach count and where its first breach was filed. A check that was never measured shows **unmeasured**, and each check shows whether it was open (in breach) when the window closed.
+- *Ingested:* the lessons and backlog items that `operate.sh ingest` filed for the plan, with a count of the open backlog items.
+- *Last closed window:* the outcome, how it closed, its checks open or unmeasured at close, and its measured runs and breaches.
+- *State missing:* a landed plan whose checkpoint has no operate block reads **state missing**, with nothing deployed or measured. That is a fact to act on, not a zero.
+
+A value the console cannot compute is shown as **n/a** (or **unmeasured** for a check), never as 0.
+
+**Watched** lists the plans whose window is open, then each repository's repo-level checks (its `monitor.json` with the state from the repo-level operate run). Repo-level backlog items from ingest appear under the checks.
+
+**Cost** is on each plan's task table, from apex-dispatch's per-task report, read-only:
+- *Delegated:* the USD and tokens the delegated agents used for the task.
+- *Orchestrator:* the main session's cost attributed to the task.
+- *Orchestrator unattributed:* main-session turns that fall outside every task's window. It appears on the plan's total row, not on a task.
+
+Each cell shows **n/a**, not 0, when it cannot be measured. A background agent with no recorded usage has no delegated figure, so its delegated cell is n/a. A task whose orchestrator figure is missing shows the reason on hover (for example "no routed task" or "task still running"). Where tokens are measured but the price is not, the cell shows the tokens with an n/a price. The totals row notes how many tasks are n/a, as "(N tasks n/a)". Plan totals use the measured tasks only, so they may differ from the older per-plan USD shown on the plan header.
 
 ## Tier simulator
 
