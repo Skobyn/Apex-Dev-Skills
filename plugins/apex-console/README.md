@@ -2,7 +2,7 @@
 
 **One desk for the suite.** A local admin page for apex-scope-loop, apex-dispatch and apex-decision-layer. On it you can put in your API keys, see where every plan stands, measure how well the factory runs, and turn the knobs each plugin already honours. It is an admin layer: it never starts or drives work. Every change is logged, and most can be undone.
 
-> **Status: 0.2.0.** Built: the server, the page, keys, progress (with plan scope, intent, the Operate panel and per-task cost), the Watched tab, metrics, all four knob panels, the tier simulator, the kill switch, and the audit log with undo.
+> **Status: 0.3.0.** Built: the server, the page, keys, progress (with plan scope and filter, intent, the Operate panel and per-task cost), the Watched tab, metrics, all four knob panels, the tier simulator, the kill switch, and the audit log with undo. Demo data (`?demo=1`) covers every view. The operate and cost panels are read-only.
 
 ## Start it
 
@@ -88,8 +88,8 @@ Never put keys in a repository or a `.env` file.
 
 | Component | Version |
 |---|---|
-| apex-scope-loop | ≥ 0.5.0 for the knobs file, ≥ 0.6.0 for the tier simulator; older: progress and metrics only |
-| apex-dispatch | ≥ 0.6.0 |
+| apex-scope-loop | ≥ 0.5.0 for the knobs file, ≥ 0.6.0 for the tier simulator, ≥ 0.7.0 for scope, intent and the Operate and Watched panels; older: progress and metrics only |
+| apex-dispatch | ≥ 0.6.0; ≥ 0.7.0 for the per-task cost table (`report.sh --per-task`) |
 | apex-decision-layer | ≥ 0.6.0 |
 | python3 | ≥ 3.8 (stdlib only) |
 | git | any recent; used to find repositories and reverts |

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-12
-- **Plugin:** apex-console v0.2.0 (tier simulator in v0.2.0)
+- **Plugin:** apex-console v0.3.0 (tier simulator in v0.2.0; scope, intent, operate state, watched plans and per-task cost in v0.3.0)
 
 ## Context
 
@@ -142,3 +142,4 @@ apex-console claims `<config-dir>/console.json`, `console-audit.jsonl`, `keys.en
 
 - 2026-10-12 (v0.1.0): first release.
 - 2026-10-12 (v0.2.0) — **Tier simulator.** `POST /api/tiers/simulate` replays up to 60 completed tasks of a repository under a proposed tiers object. The proposal is the knobs file in force merged with the patch, validated by `knobslib.py`. Each task's committed diff (its tier record's `since` to its `completes` head) is classified twice by apex-scope-loop's own `risk-tier.sh --no-record --since --head` (0.6.0), once under the knobs in force and once with `--knobs <proposal>`. The result lists per task the recorded, current and proposed tiers, the move, and the reasons added and removed. It is read-only: it holds no write lock and writes nothing. Only the heuristic is replayed, never reviewer raises or the decision layer, and the page says so. Smoke check 11.
+- 2026-10-22 (v0.3.0) — **Operate, Watched and per-task cost, read-only.** The plans API carries scope, intent, each landed plan's operate state (deploy history, watch window, checks, ingested lessons and backlog, last closed window), the watched plans, the repo-level checks from `monitor.json`, and per-task cost (delegated, orchestrator, orchestrator unattributed and delegated outside any task) from apex-dispatch's `report.sh --per-task`. The page adds a scope badge and filter, an intent summary, an Operate panel per landed plan, a Watched tab and a per-task cost table; demo data covers every view. Reads only: the console never runs `operate.sh` deploy, monitor or ingest, and writes no plugin state. Minor bump: new read-only API fields and UI panels; the admin and knob contract is unchanged.

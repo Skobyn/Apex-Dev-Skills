@@ -86,6 +86,7 @@ Then `/reload-plugins` (or restart Claude Code) to activate.
 | Skill | `apex-execute` | Auto-triggered on "iterate plan", "autonomous loop", `/loop` invocations referencing a plan |
 | Command | `/apex-scope-loop:start <slug>` | Begin a new SCOPE authoring session |
 | Command | `/apex-scope-loop:iterate <plan>` | Run one phase of a promoted plan |
+| Command | `/apex-scope-loop:operate` | Watch landed plans: `status`, `monitor`, `ingest`; `deploy` is run by you in a terminal (see [Scope, intent and operate](#scope-intent-and-operate-v070)) |
 | Agent | `gibson-reviewer` | Independent, read-only six-lens reviewer of one task's exact head SHA (Opus). Dispatched by the iterate loop; never reviews its own work |
 | Agent | `plan-author` | Delegate the SCOPE/COMPOSE/OPTIMIZE rounds to a Sonnet subagent (saves main-thread context) |
 
@@ -162,11 +163,36 @@ Full mapping, and what was deliberately left out (cross-vendor routing, GitHub c
 ### Replaying a past task (v0.6.0)
 
 `risk-tier.sh PLAN LINE --no-record --since <base> --head <sha> [--knobs <file>]` classifies a completed task's committed diff, `<base>..<sha>`, without touching the current head or anything uncommitted. With `--knobs`, it classifies the diff under a proposed knobs file instead of the one in force. That file is validated the same way, and an invalid one exits 3. Both flags need `--no-record` and refuse `--raise` and `--classify`, so a replay never changes a recorded tier. apex-console's tier simulator uses them to show what a tier-definition change would have done to your past tasks before you apply it.
+## Scope, intent and operate (v0.7.0)
+
+**Scope sizing.** `start.sh` takes `--scope bugfix|poc|feature` and picks a template to match. `bugfix` and `poc` get lean templates with fewer required sections; `feature` gets the full SPARC-shaped set. The scope is written into the plan header, and `status.sh` and apex-console show it. A plan without one reads `feature`.
+
+**Intent round.** Before the ADR is composed, the start flow asks a short intent round (problem, who it is for, why now, non-goals) and writes it to `.claude/tasks/<slug>-intent.md`. `status.sh` prints the Scope and Intent lines for the plan. It is a summary for the reader and does not change the gates.
+
+**Operate.** Once a plan has landed, `operate.sh` watches what it shipped:
+
+```bash
+operate.sh PLAN deploy                  # human only, see below
+operate.sh PLAN status | monitor | ingest
+operate.sh --all status | monitor [--ingest]   # every landed plan
+```
+
+Or run `/apex-scope-loop:operate`. Operate only runs on landed plans.
+
+- **`## Monitor` section.** A plan can declare `window_days` and a list of checks. Each check uses an `http`, `cmd` or `runner` probe with a threshold and a severity. `monitorlib` validates the section. Without a `## Monitor` section, a landed plan has no checks to measure.
+- **Repo-level checks.** `.claude/apex-scope-loop/monitor.json` holds checks that belong to the whole repository, not to one plan. `operate.sh --all monitor` runs them with the plans.
+- **Watch windows.** A successful deploy opens a window of `window_days`. A deploy that exits non-zero opens none. A later successful deploy closes the window still open (`redeploy`) and opens a new one. A window closes as `operated-clean` or `closed-with-breaches`. Checks still in breach, or never measured, at close are flagged **open-at-close**. An unmeasured probe is recorded as unmeasured, never as a zero.
+- **Breaches are filed once.** `ingest` files each breach as a lesson or a backlog item, tagged `operate:<slug>`. Repeat runs do not file it again.
+- **Deploy is human-only.** `operate.sh PLAN deploy` asks you to type `<slug>@<landed sha>` at your terminal. apex-dispatch's pre-bash hook denies any agent command that names both `operate.sh` and `deploy`, so an agent cannot run it. An agent can run `status`, `monitor` and `ingest`.
+
+Each deploy, check breach and closed window is written to the ledger as an `operate_*` event (see apex-dispatch). Apex-console shows the operate state read-only and never runs these commands.
+
 ## Compatibility
 
 - **Claude Code:** 2.0+ (requires `/loop`, `/schedule`, AskUserQuestion, ScheduleWakeup, Agent)
 - **git:** 2.40+ (the clean-worktree check builds its comparison checkout with `--attr-source=HEAD`; older git makes the gate fail closed on files git converts on checkout)
 - **bash** 3.2+ (the macOS default `/bin/bash` included) and **python3** 3.8+ (stdlib only)
+- **apex-dispatch:** optional; 0.7.0+ supplies the operate deploy deny and the `operate_*` ledger events. Without it the terminal ack still stands, but no agent-side deny applies
 - **ruflo / `@claude-flow/cli`:** optional — used only when `APEX_MEMORY_CMD` seeds memory or a plan's advisory `Swarm:` directive is run through it
 
 ## Namespace coordination
@@ -179,6 +205,7 @@ This plugin claims the AgentDB / memory namespace **`apex-scope-loop`**, followi
 | `apex-scope-loop:plans/<slug>` | Plan checkpoint + completion % |
 | `apex-scope-loop:outcomes/<slug>/<phase>` | Per-phase verdict + trajectory pattern |
 | `apex-scope-loop:lessons/<tag>` | Ratchet lessons (mirror of the tracked `.claude/apex-scope-loop/LESSONS.md`, per ADR-0002) |
+| `apex-scope-loop:operate/<slug>` | Operate state for a landed plan (deploys, watch window, check readings), per ADR-0001 (v0.7.0) |
 
 The hardening backlog (ADR-0004) is a tracked file beside the ledger, `.claude/apex-scope-loop/BACKLOG.md`, not a memory key.
 
@@ -190,7 +217,7 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 65 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, the review-loop calibration of ADR-0004, and the knobs file). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 73 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, the review-loop calibration of ADR-0004, and the knobs file). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 
