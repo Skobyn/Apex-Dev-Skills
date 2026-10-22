@@ -221,13 +221,13 @@ Per the ADR amendment of 2026-10-18 (R5–R5d): each plan declares its own monit
   - Paths: plugins/apex-scope-loop/README.md, plugins/apex-dispatch/README.md, plugins/apex-console/README.md, plugins/*/.claude-plugin/plugin.json, plugins/*/docs/adrs/0001-*.md, .claude-plugin/marketplace.json, README.md, plugins/apex-scope-loop/scripts/smoke.sh, plugins/apex-dispatch/scripts/smoke.sh, plugins/apex-dispatch/resources/compiled/**
   - Blocked-by: gate-4-5
 
-- [ ] **Phase 5.2** [docs] Flip the ADR to `Implemented`
+- [x] **Phase 5.2** [docs] Flip the ADR to `Implemented`
   - Acceptance: `grep -q '^\*\*Status\*\*: Implemented' .claude/tasks/aidlc-borrowings-adr.md`
   - Swarm: single [docs]
   - Paths: .claude/tasks/aidlc-borrowings-adr.md
   - Blocked-by: phase-5.1
 
-- [ ] **Gate 5→done** [gate:auto] The three touched suites green and the existing plans still validate
+- [x] **Gate 5→done** [gate:auto] The three touched suites green and the existing plans still validate
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-console/scripts/smoke.sh && python3 plugins/apex-scope-loop/skills/apex-execute/scripts/planlib.py validate .claude/plans/apex-dispatch-plan.md && python3 plugins/apex-scope-loop/skills/apex-execute/scripts/planlib.py validate .claude/plans/novel-plugins-suite-plan.md`
   - Blocked-by: phase-5.2
 
