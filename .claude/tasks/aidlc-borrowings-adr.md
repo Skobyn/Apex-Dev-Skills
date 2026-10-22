@@ -42,19 +42,22 @@ A comparison with AWS AI-DLC v2 (core concepts page, v2.3.0) found four gaps in 
 | R2 | MUST | `promote-to-loop.sh` applies per-scope validation: `bugfix` allows ≤ 2 phases and doesn't require the Pseudocode/Architecture/Data Model/API sections; `poc` allows ≤ 3 phases; `feature` keeps today's rules. A plan or ADR with no Scope line validates exactly as today. |
 | R3 | MUST | The apex-plan SKILL.md and `/apex-scope-loop:start` say how many interview rounds each scope runs: bugfix 2 (scope+done, gate), poc 4, feature 6. |
 | R4 | MUST | An Intent step writes `.claude/tasks/<slug>-intent.md` (problem, who it's for, why now, non-goals), and `start.sh` seeds its "Problem" text into the ADR's "Why this matters". It is optional for `bugfix`. |
-| R5 | MUST | `operate.sh PLAN deploy\|monitor\|ingest\|status` runs only on a landed plan. Deploy runs `$APEX_DEPLOY_CMD` after a human ack (Ask Contract) and never stores credentials. Monitor runs `$APEX_MONITOR_CMD`, which prints JSON signals. Ingest writes each signal at or over threshold to `lessons.sh` / `backlog.sh` tagged `operate:<slug>`. Each step is recorded in checkpoint.json. |
-| R6 | MUST | `operate.sh` refuses (non-zero exit, named reason) when the plan isn't landed, the relevant command is unset, or a kill switch is set. |
+| R5 | MUST | `operate.sh PLAN deploy\|monitor\|ingest\|status` and `operate.sh --all monitor [--ingest]` run only on landed plans. Deploy runs `$APEX_DEPLOY_CMD` after a human ack (Ask Contract) typed at the controlling terminal (`/dev/tty`) on every deploy, and never stores credentials. Monitor measures **only the checks the plan declares in its `## Monitor` section** (see R5b), and only while the plan's watch window is open. Every signal carries its plan slug (or `repo`). Ingest files a breach once per (plan, check): high severity to `lessons.sh`, otherwise to `backlog.sh`, tagged `operate:<slug>,<metric>`. Repeats increment a count instead of re-filing. Each step is recorded in checkpoint.json. |
+| R5b | MUST | **Per-plan monitor checks.** A plan may carry a `## Monitor` section holding one fenced `json` block: `{"window_days": N, "checks": [{id, metric, op, threshold, severity, probe}]}`. It is drafted from the success criteria in the PLAN stage and agreed in OPTIMIZE. `window_days` defaults to 14 (1–90) and starts at the last successful deploy. Probes: `http` (url, `expect_status`, measures `status` or `latency_ms`, and `latency_ms` requires `expect_status`; GET only, no credentials or custom headers, 10 s timeout), `cmd` (a command with `value`: `stdout` (default; the number on its last stdout line, and empty stdout or a non-zero exit is `unmeasured`) or `exit` (its exit code)), and `runner` (`$APEX_MONITOR_CMD <metric>…` prints `{metric: value}`, where a value may be `{"value": v, "note": "…"}`; stderr is never stored). The section is optional: no section, or `checks: []`, means not watched. `promote-to-loop.sh` validates the section when present (fail closed, naming the problem); `status` warns when a landed `feature` plan has none. |
+| R5c | MUST | **Watch windows close.** When a plan's window ends, operate records the outcome `operated-clean` or `closed-with-breaches` and stops measuring it; its lessons and backlog entries stay. A check whose last measured status was a breach, or that was never measured in the window, is flagged `open-at-close` in `status` and in the console, never silently expired, and makes the outcome `closed-with-breaches`. The close also records `measured_runs` and `unmeasured_at_close`; `operated-clean` means every declared check was measured and none is open at close. |
+| R5d | SHOULD | **Repo-level checks** for health that belongs to no single feature live in `.claude/apex-scope-loop/monitor.json` (same shape, no `window_days`, never expire). Their breaches go to the backlog only, tagged `operate:repo`, never to a plan's lessons. `operate.sh --all monitor` measures every open plan window plus the repo checks, which is what a `/schedule` runs once a day. |
+| R6 | MUST | `operate.sh` refuses (non-zero exit, named reason) when the plan isn't landed, the command a step needs is unset (`APEX_DEPLOY_CMD` for deploy; `APEX_MONITOR_CMD` only when a `runner` probe is declared), the Monitor section is invalid, or a kill switch is set. A failing probe (timeout, bad output) is recorded as `unmeasured`, never as a pass or as 0. |
 | R7 | MUST | `report.sh --per-task` prints one `REPORT_TASK` line per routed task (task, class, tier, spawns, tokens, USD, review rounds, outcome), or a `tasks` array with `--json`. The totals match the existing aggregate USD. |
 | R7b | MUST | `report.sh --per-task` adds orchestrator (main-session) tokens and USD per task from the session transcript, plus an `unattributed` bucket, reading transcripts only (Q5). Without a transcript the column is `n/a`, never 0. |
-| R8 | SHOULD | apex-dispatch's ledger gains non-provenance events `operate_deploy` and `operate_signal`, which `operate.sh` appends through `ledger.sh append` when the plan's dispatch dir exists (decided in Q2). |
-| R9 | MUST | apex-console UI adapts to every change, **read-only**: (a) a Scope badge on each plan and a scope filter in the plans view; (b) an intent link/summary when `<slug>-intent.md` exists; (c) an Operate panel per landed plan: deploy history (ts, sha, exit), last monitor run, signals with threshold/severity, and the lessons/backlog entries ingested under `operate:<slug>`; (d) a per-task cost table with delegated, orchestrator and unattributed USD and tokens, `n/a` shown as such. The console never runs deploy, monitor or ingest. The plans API, `docs/api.md`, `ui/demo.json` and the demo mock in `app.js` change in step, and the UI meets the console's existing accessibility conventions (aria labels, keyboard focus). |
+| R8 | SHOULD | apex-dispatch's ledger gains non-provenance events `operate_deploy`, `operate_signal` and `operate_window_closed`, which `operate.sh` appends through `ledger.sh append` when the plan's dispatch dir exists (decided in Q2). |
+| R9 | MUST | apex-console UI adapts to every change, **read-only**: (a) a Scope badge on each plan and a scope filter in the plans view; (b) an intent link/summary when `<slug>-intent.md` exists; (c) an Operate panel per landed plan: deploy history (ts, sha, exit), the watch window (day N of M, or its closed outcome), each declared check with its latest value, threshold, breach count and `open-at-close` flag, `unmeasured` shown as such, and the lessons/backlog entries ingested under `operate:<slug>`; plus a **Watched plans** view listing every plan with an open window and the repo-level checks; (d) a per-task cost table with delegated, orchestrator and unattributed USD and tokens, `n/a` shown as such. The console never runs deploy, monitor or ingest. The plans API, `docs/api.md`, `ui/demo.json` and the demo mock in `app.js` change in step, and the UI meets the console's existing accessibility conventions (aria labels, keyboard focus). |
 | R10 | MAY | `status.sh` (apex-plan) prints the Scope and whether an intent file exists. |
 
 ### Constraints
 
 - **Plan dialect stays compatible.** `.claude/plans/apex-dispatch-plan.md` and `novel-plugins-suite-plan.md` (and any plan without a Scope line) must still pass `planlib.py validate`, iterate, promote and land unchanged. planlib ignores header lines, and that must stay true.
 - **Enforcement is never loosened.** Scope affects authoring only: interview rounds, required ADR sections, phase-count limit. The green gate, independent review, risk tier/G12, the ratchet, kill switches and ledger evidence apply the same way to bugfix, poc and feature.
-- **No deploy credentials.** `operate.sh` never holds, reads or logs deploy secrets. It calls a user-configured command whose environment the user owns. A deploy always needs a human ack, and neither an agent nor a knob can turn that off.
+- **No deploy credentials.** `operate.sh` never holds, reads or logs deploy secrets. It calls a user-configured command whose environment the user owns. A deploy always needs a human ack, and neither an agent nor a knob can turn that off: apex-dispatch's pre-bash refuses `operate.sh … deploy` to every agent tool call at every stage (with or without a run lock, wrappers such as `script`, `expect` or a Python pty included), and the human then types the ack at their own terminal. A terminal read alone is not a human check: an agent can make its own pty. An agent that writes a script file calling `operate.sh deploy` defeats the text match; that is deliberate circumvention and out of the threat model.
 - **Smoke + version bump.** Every touched plugin keeps `scripts/smoke.sh` at exit 0, adds checks for the new behaviour, bumps `plugin.json` (minor: new behaviour) and adds an ADR-0001 status-log entry. `marketplace.json`, `plugin.json` and the README descriptions stay consistent.
 - **No new hook.** Operation runs as a script plus a slash command. Hooks keep the repo's parallel, deny-first rules, and `hooks/hooks.json` stays untouched except by apex-dispatch's `compile.sh`.
 - **Namespaces.** Any new memory key (`apex-scope-loop:operate/<slug>`) is claimed in apex-scope-loop's ADR-0001 namespace table before use.
@@ -64,7 +67,7 @@ A comparison with AWS AI-DLC v2 (core concepts page, v2.3.0) found four gaps in 
 - All three smoke suites pass — runnable: `bash plugins/apex-scope-loop/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-console/scripts/smoke.sh`
 - A bugfix plan authors small and promotes, and a scope-less plan promotes as before — runnable: new smoke checks build a fixture `--scope bugfix` plan with ≤ 2 phases in a temp repo, run `promote-to-loop.sh` on it (exit 0), run it on a 3-phase bugfix plan (exit 1, names the phase limit), and promote a scope-less fixture unchanged
 - Existing plans still validate — runnable: `python3 plugins/apex-scope-loop/skills/apex-execute/scripts/planlib.py validate .claude/plans/apex-dispatch-plan.md && … novel-plugins-suite-plan.md`
-- The operate loop works on stubs — runnable: a smoke fixture lands a plan, runs `operate.sh deploy` with a stub `APEX_DEPLOY_CMD` and a pre-supplied ack, `monitor` with a stub `APEX_MONITOR_CMD` emitting one over-threshold signal, then `ingest`. It asserts a `LESSONS.md` or `BACKLOG.md` entry tagged `operate:<slug>`, an `operate_signal` ledger row, and `ledger.sh verify` exit 0. With `APEX_DEPLOY_CMD` unset it asserts exit ≠ 0 and the reason.
+- The operate loop works on stubs — runnable: a smoke fixture lands a plan whose Monitor section declares one `http` check (against a local stub server on 127.0.0.1), one `cmd` check and one `runner` check, then runs `operate.sh deploy` with a stub `APEX_DEPLOY_CMD` and a pre-supplied ack, then `operate.sh --all monitor --ingest` twice. It asserts: the high-severity breach is filed once as a lesson and its second breach only increments the count; the low-severity breach goes to the backlog; a timed-out probe is `unmeasured`; every signal carries the plan slug; a repo-level check files only under `operate:repo`; after the window is moved past its end, the plan closes as `closed-with-breaches` with `open-at-close` listed and an `operate_window_closed` ledger row; and `ledger.sh verify` exits 0. With `APEX_DEPLOY_CMD` unset it asserts exit ≠ 0 and the reason, and an invalid Monitor section is refused by `promote-to-loop.sh` with the problem named.
 - Orchestrator cost is attributed — runnable: a smoke check runs `report.sh --per-task --json --transcript <fixture.jsonl>` on a fixture ledger with two task windows and three assistant turns (one per window, one outside), and asserts the per-task orchestrator tokens, the `unattributed` bucket, and `n/a` without `--transcript`
 - Per-task cost matches — runnable: a smoke check runs `report.sh --per-task --json` on a fixture ledger and asserts the per-task USD values sum to the aggregate `usd_estimated`, and to the console's plan `usd` for the same fixture
 
@@ -90,20 +93,37 @@ ALGORITHM author_plan(slug, title, scope=feature):
          fail with the first failing item, else init.sh
   OUTPUT: promoted plan; execution identical for every scope
 
-ALGORITHM operate(plan, step):
-  PRECONDITIONS: checkpoint.landed == true; no HALT; step's command env var set
-  deploy:  print Ask Contract → require ack (APEX_OPERATE_ACK=<slug>@<landed sha> or interactive)
+ALGORITHM operate(plan | --all, step):
+  PRECONDITIONS: checkpoint.landed == true; no HALT; Monitor section valid (if present)
+  deploy:  print Ask Contract → read ack from /dev/tty, must equal <slug>@<landed sha>; no tty → refuse
+           (APEX_OPERATE_ACK never authorizes a deploy on its own; it stays a protected switch)
            run $APEX_DEPLOY_CMD with PLAN_SLUG, LANDED_SHA in env; record exit + ts
-  monitor: run $APEX_MONITOR_CMD → JSON [{id, metric, value, threshold, severity, note}]
-           validate shape (fail closed on bad JSON); store signals in state
-  ingest:  FOR each signal with value ≥ threshold:
-             severity=high → lessons.sh PLAN add TITLE WHAT ROOT_CAUSE FIX "operate:<slug>,<metric>"
-             else          → backlog.sh PLAN add 0 "[operate:<slug>] <metric> …" --from operate
-                             (line 0 = plan-level finding; backlog.sh gains --from operate)
+           on exit 0: window.start = now; window.end = now + window_days
+  monitor: targets = --all ? [plans with an open window] + [repo checks] : [this plan]
+           FOR each target, FOR each declared check:
+             value = probe(check.probe)          # http | cmd | runner
+             IF probe failed THEN record {check, status: unmeasured, reason}; CONTINUE
+             breach = NOT (value check.op check.threshold)
+             record signal {slug|repo, check.id, metric, value, threshold, severity, breach}
+           validate every runner reply (fail closed on bad JSON)
+  ingest:  FOR each signal with breach:
+             key = (slug, check.id)
+             IF key already filed THEN state.breach_count[key] += 1; CONTINUE
+             IF target == repo        → backlog.sh PLAN add 0 "[operate:repo] <metric> …" --from operate
+             ELIF severity == high    → lessons.sh PLAN add TITLE WHAT ROOT_CAUSE FIX "operate:<slug>,<metric>"
+             ELSE                     → backlog.sh PLAN add 0 "[operate:<slug>] <metric> …" --from operate
              IF dispatch dir exists THEN ledger.sh append operate_signal
-  status:  print last deploy, last monitor, ingested counts
-  ERROR PATHS: not landed → exit 3; env unset → exit 2 naming the var;
-               HALT → exit 4; deploy cmd non-zero → recorded, exit 1, no ingest
+  close:   (run by monitor) FOR each plan whose window.end has passed:
+             open_at_close = checks whose last measured status was breach
+                             + checks never measured in the window
+             outcome = (breaches > 0 or open_at_close) ? closed-with-breaches : operated-clean
+             record measured_runs, unmeasured_at_close (never measured + unmeasured on the last run)
+             record outcome; append operate_window_closed; stop measuring the plan
+  status:  per plan: deploys, window (day N of M | outcome), checks with latest value,
+           breach counts, unmeasured, open-at-close; warn when a landed feature plan has no Monitor
+  ERROR PATHS: not landed → exit 3; needed env unset → exit 2 naming the var;
+               invalid Monitor section → exit 2 naming the problem; HALT → exit 4;
+               deploy cmd non-zero → recorded, exit 1, window not started
 ```
 
 ### Architecture (SPARC)
@@ -118,9 +138,12 @@ ALGORITHM operate(plan, step):
                      init → iterate → gate → tier → review → complete → land.sh   (unchanged)
                                                                             │ landed: true
                                                                             ▼
-                      operate.sh deploy ─(human ack)─► $APEX_DEPLOY_CMD
-                      operate.sh monitor ───────────► $APEX_MONITOR_CMD → signals.json
-                      operate.sh ingest ──► lessons.sh / backlog.sh  (+ ledger operate_signal)
+                      plan ## Monitor (checks + window_days) ─┐
+                      operate.sh deploy ─(human ack)─► $APEX_DEPLOY_CMD → window opens
+                      operate.sh --all monitor ─► probes: http | cmd | runner ($APEX_MONITOR_CMD)
+                           (each open plan's own checks + repo monitor.json) → signals (slug|repo)
+                      ingest ──► first breach: lessons.sh (high) / backlog.sh; repeats counted
+                      window end ──► operated-clean | closed-with-breaches (+ open-at-close)
                                                                             │
                                      next plan's iterate recalls lessons by tag ◄┘
 
@@ -135,8 +158,9 @@ ALGORITHM operate(plan, step):
 |--------|----------------|------------|
 | `apex-plan/scripts/start.sh` | `--scope` flag, template pick, intent seeding | templates, intent file |
 | `apex-plan/resources/templates/profiles/{generic,apex}/plan-template-lean.md`, `adr-template-lean.md` | Lean bugfix/poc shapes | — |
+| all plan templates (lean and full, both profiles) | `## Monitor` stub (`{"window_days": 14, "checks": []}`) drafted from success criteria in the PLAN stage | — |
 | `apex-plan/resources/templates/profiles/*/feedback-interview.md` | Intent round + per-scope round sets | — |
-| `apex-plan/scripts/promote-to-loop.sh` | Per-scope validation | planlib.py counts |
+| `apex-plan/scripts/promote-to-loop.sh` | Per-scope validation; Monitor section validation when present | planlib.py counts, a monitor-section validator shared with operate.sh |
 | `apex-plan/SKILL.md`, `commands/start.md` | Instructions for round count by scope, intent step | — |
 | `apex-execute/scripts/operate.sh` (new) | deploy / monitor / ingest / status | _lib.sh, lessons.sh, backlog.sh, ledger.sh (optional) |
 | `commands/operate.md` (new) | `/apex-scope-loop:operate <plan> <step>` | operate.sh |
@@ -153,12 +177,26 @@ ALGORITHM operate(plan, step):
 ADR header:   **Scope**: bugfix|poc|feature            (absent ⇒ feature)
 Plan header:  > **Scope**: bugfix|poc|feature          (planlib ignores; promote reads)
 .claude/tasks/<slug>-intent.md:  ## Problem / ## Who it's for / ## Why now / ## Non-goals
-<state>/checkpoint.json  += "operate": {"deploys":[{ts, sha, exit}], "monitor":{ts, signals_n},
-                                        "ingested":{lessons:n, backlog:n}}
-<state>/operate/signals-<ts>.json   validated monitor output
+Plan section (optional):
+  ## Monitor
+  ```json
+  {"window_days": 14,
+   "checks": [{"id": "csv-p99", "metric": "export_p99_ms", "op": "<", "threshold": 2000, "severity": "high",
+               "probe": {"kind": "http", "url": "https://app.example/api/export?event=big", "measure": "latency_ms", "expect_status": 200}},
+              {"id": "csv-5xx", "metric": "export_5xx_rate", "op": "<", "threshold": 0.01, "severity": "low",
+               "probe": {"kind": "runner"}}]}
+  ```
+  op ∈ {<, <=, >, >=, ==}; severity ∈ {high, medium, low}; probe.kind ∈ {http, cmd, runner}
+.claude/apex-scope-loop/monitor.json   repo-level checks: {"checks": [...]}  (no window, never expire)
+<state>/checkpoint.json  += "operate": {"deploys":[{ts, sha, exit}],
+                                        "window": {start, end, days, outcome?, open_at_close?: [check ids], unmeasured_at_close?: [check ids], measured_runs?},
+                                        "checks": {<id>: {last_value, last_ts, breaches, filed: lessons|backlog|null, unmeasured}},
+                                        "ingested": {lessons:n, backlog:n}}
+<state>/operate/signals-<ts>.json   validated signals of one monitor run (every row carries slug|repo)
 ledger events (non-provenance, CLI-appendable):
   operate_deploy {slug, landed_sha, exit_code}
-  operate_signal {slug, signal_id, metric, value, threshold, severity, sink: lessons|backlog}
+  operate_signal {slug|repo, check_id, metric, value, threshold, severity, breach_count, sink: lessons|backlog|counted}
+  operate_window_closed {slug, outcome: operated-clean|closed-with-breaches, breaches, open_at_close, measured_runs, unmeasured_at_close}
 memory namespace: apex-scope-loop:operate/<slug>   (claimed in ADR-0001)
 ```
 
@@ -167,10 +205,11 @@ memory namespace: apex-scope-loop:operate/<slug>   (claimed in ADR-0001)
 | Verb | Path | Purpose | Auth |
 |------|------|---------|------|
 | CLI | `start.sh <slug> "<T>" [--scope S]` | Scaffold scoped ADR + plan | local user |
-| CLI | `operate.sh PLAN deploy\|monitor\|ingest\|status` | Post-land operation | local user; deploy needs ack |
+| CLI | `operate.sh PLAN deploy\|monitor\|ingest\|status` | Post-land operation for one plan | local user; deploy needs ack |
+| CLI | `operate.sh --all monitor [--ingest]` / `--all status` | Every open watch window + repo checks (for `/schedule`) | local user |
 | Slash | `/apex-scope-loop:operate <plan> <step>` | Same, from Claude Code | session |
 | CLI | `report.sh --plan P --per-task [--transcript PATH]… [--json]` | Cost per task, delegated + orchestrator | local user |
-| Env | `APEX_DEPLOY_CMD`, `APEX_MONITOR_CMD`, `APEX_OPERATE_ACK` | User-owned commands, non-interactive ack | user env; `APEX_OPERATE_ACK` added to pre-bash.sh's protected switches |
+| Env | `APEX_DEPLOY_CMD`, `APEX_MONITOR_CMD` (only for `runner` probes), `APEX_OPERATE_ACK` | User-owned commands, non-interactive ack | user env; `APEX_OPERATE_ACK` added to pre-bash.sh's protected switches |
 | HTTP | apex-console `/api/…` plans payload `scope`, `operate` fields | Display | 127.0.0.1 only (existing) |
 
 ---
@@ -199,7 +238,7 @@ memory namespace: apex-scope-loop:operate/<slug>   (claimed in ADR-0001)
 | Slash commands | yes | `/apex-scope-loop:start` text (scope, intent); new `/apex-scope-loop:operate` |
 | Skill instructions (SKILL.md) | yes | apex-plan stages; apex-execute mentions operate |
 | Skill scripts | yes | start.sh, promote-to-loop.sh, status.sh, new operate.sh; report.sh/report.py |
-| Templates (generic **and** apex profiles) | yes | Both profiles get the lean templates and the intent round, in parity |
+| Templates (generic **and** apex profiles) | yes | Both profiles get the lean templates, the intent round and the `## Monitor` stub, in parity |
 | apex-console UI + API | yes | Read-only: scope badge + filter, intent summary, Operate panel, per-task cost table (delegated / orchestrator / unattributed). API payload, `docs/api.md`, `ui/demo.json` and demo mock updated together. No action buttons for operate. |
 | Plugin READMEs / ADR-0001 / plugin.json / marketplace.json | yes | Description trio kept consistent; required README sections kept |
 | Smoke suites | yes | New checks in all three; Phase 0 first fixes the two macOS baseline failures (apex-scope-loop `.GIT` check on case-insensitive APFS; apex-dispatch ad-hoc state path under `/private/var`) |
@@ -222,7 +261,11 @@ N/A — applies to every repo that installs these plugins, with no per-repo dive
 ### Workflow B: Operate a landed plan
 
 1. After `land.sh`, run `/apex-scope-loop:operate .claude/plans/x-plan.md deploy`. It prints an Ask Contract, waits for the ack, then runs `$APEX_DEPLOY_CMD`.
-2. Later (by hand or from `/schedule`), run `monitor` then `ingest`. Over-threshold signals become tagged lessons/backlog items that the next plan's tasks recall.
+2. The deploy opens the plan's watch window (14 days unless its Monitor section says otherwise).
+3. A daily `/schedule` runs `operate.sh --all monitor --ingest`. Each open plan is measured against only its own declared checks, and repo checks run too. A first breach becomes a lesson (high) or backlog item tagged with that plan and metric; repeats are counted.
+4. When the window ends, the plan closes as `operated-clean` or `closed-with-breaches`, with any `open-at-close` check flagged. `operate.sh --all status` and the console's Watched plans view show where every plan stands.
+
+**Example.** Three merges ship the same week: guest CSV export, a task-completion webhook and PDF import. Each plan declares its own checks (export latency over HTTP; webhook delivery rate from the runner; PDF parse failures from a `cmd` probe). They are three separate watch lists with separate windows, measured by one shared runner. A webhook failure is credited to the webhook plan, never to whichever plan was being operated.
 
 ---
 
@@ -241,7 +284,7 @@ N/A — applies to every repo that installs these plugins, with no per-repo dive
 - **Decision**: Round-0 intent step writing `<slug>-intent.md`. The SCOPE name and its five stages stay. (2026-10-14)
 
 **Q5.** Should cost cover the orchestrator's own main-session tokens (as AI-DLC's session-cost does)?
-- **Decision**: Yes, include it. `report.sh --per-task` adds an `orchestrator` column computed from the Claude Code session transcript(s): the real `usage` of each main-session assistant turn, attributed to the task whose route window (its first `route` row's ts to its last ledger row's ts) contains the turn, and priced with the merged policy's tier prices by the turn's model. Turns outside every window go to an `unattributed` bucket. Read-only; transcripts are passed with `--transcript PATH` (repeatable) or found under `~/.claude/projects/<repo-slug>/`. token-lens is not used because it estimates and does not bill. (2026-10-14)
+- **Decision**: Yes, include it. `report.sh --per-task` adds an `orchestrator` column computed from the Claude Code session transcript(s): the real `usage` of each main-session assistant turn, attributed to the task whose route window (its first `route` row's ts to its last ledger row's ts) contains the turn, and priced with the merged policy's tier prices by the turn's model. Turns outside every window go to an `unattributed` bucket. Read-only; transcripts are passed with `--transcript PATH` (repeatable) or found by the ledger's session ids as `<config>/projects/*/<session_id>.jsonl` (`$CLAUDE_CONFIG_DIR` or `~/.claude`). token-lens is not used because it estimates and does not bill. (2026-10-14) Amended 2026-10-21 (Phase 4.2 review): a task's orchestrator figure is `n/a` unless every session on its ledger rows has a read transcript, its window holds at least one main-session turn, and no unreadable dated turn falls in it; an unreadable undated line makes every orchestrator figure `n/a`; 1-hour cache writes are priced at 2x input; figures are a lower bound (compaction and utility calls write no assistant line).
 
 ---
 
@@ -250,7 +293,9 @@ N/A — applies to every repo that installs these plugins, with no per-repo dive
 | Risk | Severity | Mitigation |
 |------|----------|------------|
 | A bugfix plan ships Tier C work with too little authoring | med | Enforcement is unchanged, so `risk-tier.sh` still raises Tier C and G12 still halts. `promote-to-loop.sh` warns when a bugfix plan has `[tier:c]` tags. |
-| Deploy runs without a human | high | Ack required every time. `APEX_OPERATE_ACK` is bound to `<slug>@<landed sha>` and added to apex-dispatch's protected switches so an agent can't set it mid-run. |
+| Deploy runs without a human | high | apex-dispatch's pre-bash denies `operate.sh … deploy` to agent tool calls at every stage (lock or not, pty and shell wrappers included), and the ack is typed at the operator's terminal and bound to `<slug>@<landed sha>`. A terminal read alone is agent-satisfiable (self-made pty), so it is the second layer, not the control. Residual: a script file that calls operate.sh (deliberate circumvention, out of model). `APEX_OPERATE_ACK` stays a lock-scoped protected switch (defence in depth). |
+| Signals credited to the wrong plan, or checks piling up forever | med | Checks are declared per plan and each signal carries its slug; windows close and stop measurement; repo-wide checks are kept apart under `operate:repo` |
+| A probe failure read as healthy | med | A failed probe is `unmeasured`, never a pass or 0; a plan whose last run was all unmeasured is flagged in status |
 | Monitor output injects text into LESSONS.md | med | JSON shape validated fail-closed; `note` fields truncated and stored as data; signal ids sanitised |
 | The two template profiles drift | low | A smoke check diffs the section headings of the generic and apex lean templates |
 | Transcript format changes between Claude Code versions | med | Parse only `type`, `timestamp`, `message.model`, `message.usage`; unknown lines skipped and counted; a smoke fixture pins the shape; a missing field gives `n/a`, not 0 |
@@ -322,4 +367,10 @@ Solo: approved by skobyn@gmail.com in the authoring session.
 
 - 2026-10-14 — Drafted by skobyn@gmail.com via `apex-plan` skill
 - 2026-10-14 — Q1–Q5 resolved (Q5: orchestrator cost in scope); status Accepted (solo)
+- 2026-10-18 — Amended (Phase 3–4 not started): operation is per-plan. A plan declares its own monitor checks in a `## Monitor` section (R5b) with a watch window (default 14 days); built-in `http` and `cmd` probes plus the user's runner; signals carry their plan slug; first breach filed once, repeats counted; windows close as `operated-clean` or `closed-with-breaches` with `open-at-close` flagged (R5c); repo-level checks never expire and go only to the backlog (R5d); `operate.sh --all` for a daily `/schedule`; new ledger event `operate_window_closed`; console gains a Watched plans view. Solo, skobyn@gmail.com.
+- 2026-10-19 — Amended (Phase 3.1 review, adversarial finding F-018): the deploy ack is read from the controlling terminal on every deploy (R5, row 293, operate pseudocode). The `APEX_OPERATE_ACK` env guard added in Phase 3.1 is lock-scoped and never fires after land, so it cannot be the control; it stays as defence in depth. Phase 3.3 carries the threat and its test.
+- 2026-10-20 — Amended (Phase 3.1 round 2, waived F-018/F-026; operator chose the hook-deny design for Phase 3.3): a terminal ack is agent-satisfiable through a self-made pty (demonstrated with pty.fork), so the deploy control is apex-dispatch's pre-bash denying `operate.sh … deploy` at every stage, wrappers included; the terminal ack is the second layer. Phase 3.3 owns the hook change and corrects ADR-0001's "human-only" wording.
+- 2026-10-21 — Amended (Phase 3.4 review, findings F-005, F-017, F-018, F-019; operator chose the fail-closed close): a `cmd` probe declares `value: stdout|exit` (default stdout, where empty stdout is `unmeasured`, never its exit code); `latency_ms` requires `expect_status`; the runner note comes only from a per-metric `{value, note}` reply, never stderr; a check never measured in its window, or breaching at its last measurement, is `open-at-close` and closes the window `closed-with-breaches` (R5c), with `measured_runs` and `unmeasured_at_close` recorded. The outcome enum is unchanged. Solo, skobyn@gmail.com.
+- 2026-10-21 — Amended (Phase 4.2 review, findings F-003, F-004): Q5's orchestrator column is `n/a`, not 0, for a task whose sessions lack a read transcript, whose window has no main-session turn, or that holds an unreadable turn; transcripts are located by session id across project dirs; 1-hour cache writes priced at 2x input; the figure is labelled a lower bound. Solo, skobyn@gmail.com.
+- 2026-10-22 — Status → Implemented. Phases 0–5 delivered on the plan branch: scope sizing and intent (R1–R4), the operate loop with per-plan monitoring and the human-only deploy (R5–R6, R8), per-task delegated and orchestrator cost (R7, R7b), and the console views (R9); apex-scope-loop 0.7.0, apex-dispatch 0.7.0, apex-console 0.3.0. Phase 4.5's demo-data finding F-017 waived (B-179). Solo, skobyn@gmail.com.
 - 2026-10-14 — Amended before promotion: console UI scope made explicit and read-only (R9 → MUST); Phase 0 added for the two pre-existing macOS smoke failures; apex-decision-layer's red smoke (commit-hygiene shadow) is out of scope; the loop forks from branch `aidlc-borrowings-base`, not main
