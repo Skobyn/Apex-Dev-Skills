@@ -227,7 +227,7 @@ Per the ADR amendment of 2026-10-18 (R5–R5d): each plan declares its own monit
   - Paths: .claude/tasks/aidlc-borrowings-adr.md
   - Blocked-by: phase-5.1
 
-- [x] **Gate 5→done** [gate:auto] The three touched suites green and the existing plans still validate
+- [ ] **Gate 5→done** [gate:auto] The three touched suites green and the existing plans still validate
   - Acceptance: `bash plugins/apex-scope-loop/scripts/smoke.sh && bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-console/scripts/smoke.sh && python3 plugins/apex-scope-loop/skills/apex-execute/scripts/planlib.py validate .claude/plans/apex-dispatch-plan.md && python3 plugins/apex-scope-loop/skills/apex-execute/scripts/planlib.py validate .claude/plans/novel-plugins-suite-plan.md`
   - Blocked-by: phase-5.2
 
