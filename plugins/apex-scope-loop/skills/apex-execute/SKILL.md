@@ -212,6 +212,79 @@ Additional guardrails can be enforced via Claude Code hooks (`settings.json`):
 
 Enforced hook governance ships in the `apex-guardrails` and `apex-dispatch` plugins; this skill no longer carries a hooks snippet.
 
+## Operate
+
+`operate.sh` runs after `land.sh` on a plan that has landed (`checkpoint.json` `landed: true`). Anything else exits 3. The slash command is `/apex-scope-loop:operate`.
+
+```bash
+${CLAUDE_SKILL_DIR}/scripts/operate.sh PLAN.md deploy            # human-only, see below
+${CLAUDE_SKILL_DIR}/scripts/operate.sh PLAN.md status            # deploys, the watch window, declared checks and their last values
+${CLAUDE_SKILL_DIR}/scripts/operate.sh PLAN.md monitor           # measure the declared checks while the window is open
+${CLAUDE_SKILL_DIR}/scripts/operate.sh PLAN.md ingest            # file the measured breaches to lessons / backlog
+${CLAUDE_SKILL_DIR}/scripts/operate.sh --all status              # the same for every landed plan, plus the repo-level checks
+${CLAUDE_SKILL_DIR}/scripts/operate.sh --all monitor [--ingest]  # every open window plus the repo checks; what a daily /schedule runs
+```
+
+`--all ingest` is refused; ingest runs through `monitor --ingest` only.
+
+### Deploy is human-only
+
+- `operate.sh PLAN deploy` runs `$APEX_DEPLOY_CMD` from the checkout with `PLAN_SLUG` and `LANDED_SHA` in its environment. `APEX_DEPLOY_CMD` is required; operate never holds or reads deploy credentials.
+- apex-dispatch's pre-bash hook denies every agent Bash call whose text names `operate.sh` and the word `deploy`, at every stage. An agent must not work around it (for example by writing a script that calls it).
+- The ack is read from the controlling terminal (`/dev/tty`) only, and must equal `<slug>@<landed sha>` (the full 40-hex sha shown in the Ask Contract). `APEX_OPERATE_ACK` never authorizes a deploy. With no terminal, the deploy is refused (exit 5).
+- Exit 0 opens the watch window. A non-zero exit is recorded and opens no window (exit 1). A deploy that cannot be recorded exits 6.
+
+### The Monitor section
+
+The plan declares its checks in a `## Monitor` section with one fenced `json` block (see the plan template):
+
+```json
+{"window_days": 14,
+ "checks": [{"id": "csv-p99", "metric": "export_p99_ms", "op": "<", "threshold": 2000, "severity": "high",
+             "probe": {"kind": "http", "url": "https://app.example/api/export?event=big", "measure": "latency_ms", "expect_status": 200}}]}
+```
+
+- `window_days` is 1 to 90, default 14. The window starts at the last successful deploy.
+- Each check is `{id, metric, op, threshold, severity, probe}`. `op` is the EXPECTED (healthy) condition: a check passes while `value op threshold` holds, and it is breached when it does not. `op` is one of `<`, `<=`, `>`, `>=`, `==`. "p99 must stay under 2000 ms" is `"op": "<", "threshold": 2000`.
+- `severity` is `high`, `medium` or `low`. A `## Monitor` section with `checks: []` (or no section) is not watched. A malformed section is refused (exit 2), never read as "not watched".
+- Probes:
+  - `http`: one GET, `measure` is `status` or `latency_ms`. `latency_ms` requires `expect_status`, because a fast error page is not a healthy latency; a status other than `expect_status` is `unmeasured`. 10 s timeout, no credentials or headers, no redirects followed.
+  - `cmd`: `command` runs under `/bin/sh -c`. `value` is `stdout` (the default: the number on the last non-empty stdout line; empty stdout or a non-zero exit is `unmeasured`, never 0) or `exit` (the exit code). A command naming `operate.sh`, the word deploy or `APEX_DEPLOY_CMD` is refused.
+  - `runner`: `$APEX_MONITOR_CMD <metric>...` is run once per runner check and must print one JSON object with exactly the requested metrics as keys. Each value is a number, `null` (unmeasured), or `{"value": number|null, "note": "..."}`; `note` is optional, sanitised and capped at 120 characters. Its stderr is never stored. `APEX_MONITOR_CMD` is required only when a runner check is declared.
+- An unmeasured check is recorded as `unmeasured` with a reason. It is never a pass and never 0.
+
+### Breaches, lessons and backlog
+
+- The first breach of a (plan, check) is filed once. `severity: high` goes to `lessons.sh PLAN add` with tags `operate:<slug>,<metric>`. Any other severity goes to `backlog.sh PLAN add 0 "[operate:<slug>] ..." --from operate`.
+- Later breaches of a filed check only increment its count (`counted`). Filed-once holds for the plan's lifetime, across windows and redeploys.
+- Repo-level checks in `.claude/apex-scope-loop/monitor.json` (same shape, no `window_days`) file only to the backlog as `[operate:repo]`, never to a lesson. They never expire.
+- A breach that cannot be filed stays pending and exits 7; the next ingest retries it.
+
+### Window close
+
+When `window.end` has passed, the next monitor run closes the window and stops measuring the plan. Outcomes:
+
+- `operated-clean`: every declared check was measured at least once in the window and none is open at close.
+- `closed-with-breaches`: the window saw a breach, or some check is open at close.
+- `open-at-close`: a check whose last measured status in the window was a breach, or a check never measured in the window. Both make the outcome `closed-with-breaches`. A check is never silently expired.
+- The close records `measured_runs` (the runs that measured at least one check) and `unmeasured_at_close` (the checks never measured plus those unmeasured on the last run), and appends an `operate_window_closed` ledger row. A window closed with 0 measured runs is reported as never measured.
+
+### Naming and tagging
+
+- Metric names are `lower_snake_case` in the form `<area>_<measure>[_<unit>]`, for example `export_p99_ms` or `webhook_delivery_rate`. Metric names are unique per plan.
+- A runner metric is shared across plans, so prefix it with the plan slug or the area (for example `export_p99_ms`, not `p99_ms`), so two plans never read the same value by accident.
+- Tags follow the slug: `operate:<slug>` for a plan's signals and `operate:repo` for the repo-level checks. Use them to find the lessons and backlog items an operate run filed.
+
+### Daily schedule
+
+Schedule the monitor once a day with a `/schedule` routine. It only measures and files; it never runs deploy:
+
+```bash
+/schedule "0 9 * * *" ${CLAUDE_SKILL_DIR}/scripts/operate.sh --all monitor --ingest
+```
+
+Check the state with `operate.sh --all status`, or the console's Watched plans view.
+
 ## Available Scripts
 
 | Script | Purpose |
@@ -222,6 +295,7 @@ Enforced hook governance ships in the `apex-guardrails` and `apex-dispatch` plug
 | `scripts/audit.sh PLAN.md` | Nightly diff + memory append (called by `/schedule`) |
 | `scripts/architecture-review.sh PLAN.md` | Weekly drift check vs. plan intent |
 | `scripts/status.sh PLAN.md` | Print current state |
+| `scripts/operate.sh PLAN.md status\|monitor\|ingest` (or `--all status\|monitor [--ingest]`) | Operate a landed plan: watch its declared Monitor checks and file breaches; `deploy` is human-only (see Operate) |
 | `scripts/checkpoint.sh PLAN.md ACTION` | `complete` / `fail` / `review` / `approve` / `halt` / `rewind` — records verdicts and enforces the harness on check-off |
 | `scripts/green-gate.sh PLAN.md baseline\|check` | Baseline-relative green gate (zero new failures vs. the fork point) |
 | `scripts/risk-tier.sh PLAN.md LINE_NO` | Classify a task diff as Tier A/B/C and record it |

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-12
-- **Plugin:** apex-console v0.2.0 (tier simulator in v0.2.0)
+- **Plugin:** apex-console v0.3.0 (tier simulator in v0.2.0; scope, intent, operate state, watched plans and per-task cost in v0.3.0)
 
 ## Context
 
@@ -44,6 +44,7 @@ apex-console is an **admin layer, not an orchestration layer**. It is a local we
 | `<state-base>/knobs/scope-loop.json` | apex-scope-loop (ADR-0003, v0.5.0) | writes after `knobslib.py validate` |
 | `<state>/dispatch*/ledger.jsonl`, `doctor.json` | apex-dispatch | reads; verifies with `ledger.verify` |
 | `<repo>/.claude/apex-dispatch/policy.json` | apex-dispatch | writes after `compile.py --print-merged --overlay` |
+| `<config>/projects/*/<session_id>.jsonl` (`<config>` is `$CLAUDE_CONFIG_DIR` or `~/.claude`; only files named after a ledger session id) | Claude Code | reads, never writes, through apex-dispatch's `report.per_task` for the per-task cost table; only usage fields are parsed (`type`, `isSidechain`, `sessionId`, `timestamp`, `message.id`, `message.model`, usage and iteration counts), never message content, and nothing is shown or stored beyond token and USD figures and session ids |
 | `<state-base>/decisions/decisions.jsonl` | apex-decision-layer | reads |
 | `<repo>/.claude/apex-decision-layer/config.json` | apex-decision-layer | writes `egress`, `state_fields`, `primary`, `shadow` after `decide.load_config`; never `calibration_lock` |
 
@@ -119,8 +120,8 @@ Also: cost per 1,000 runs, runs per week, prompt cache hit rate (cache_read / (i
 
 ## Compatibility
 
-- apex-scope-loop ≥ 0.5.0 for the knobs file and ≥ 0.6.0 for the tier simulator (older versions: progress and metrics only; the scope-loop knobs show as unavailable).
-- apex-dispatch ≥ 0.6.0, whose `report.row_usd`, `ledger.verify` and `compile.py --print-merged --overlay` the console calls.
+- apex-scope-loop ≥ 0.5.0 for the knobs file, ≥ 0.6.0 for the tier simulator, and ≥ 0.7.0 for scope, intent and the Operate and Watched panels (older versions: progress and metrics only; the scope-loop knobs show as unavailable).
+- apex-dispatch ≥ 0.6.0, whose `report.row_usd`, `ledger.verify` and `compile.py --print-merged --overlay` the console calls; ≥ 0.7.0 for the per-task cost table, through `report.per_task` and `locate_transcripts` (older versions: the cost cells read n/a, "apex-dispatch's report.per_task is not available").
 - apex-decision-layer ≥ 0.6.0.
 - python3 ≥ 3.8 and git. bash only for apex-scope-loop's `apex_state_base`.
 
@@ -136,9 +137,13 @@ apex-console claims `<config-dir>/console.json`, `console-audit.jsonl`, `keys.en
 - the server's token, Host and header checks;
 - that no route returns a key value;
 - refusals by each plugin's validator;
-- the audit and undo round trip, and the kill switch.
+- the audit and undo round trip, and the kill switch;
+- check 11, the tier simulator: a proposed exemption moves the fixture's agent-prompt task from C to A, nothing is written, and a bad proposal is refused;
+- check 12, console-plans-payload: the plans API carries scope, intent, operate state and per-task cost, read-only;
+- check 13, console-ui-borrowings: the page's own `app.js` renders scope, intent, the Operate panel, Watched plans and per-task cost under node (without node, a static scan of `app.js` with a warning).
 
 ## Status log
 
 - 2026-10-12 (v0.1.0): first release.
 - 2026-10-12 (v0.2.0) — **Tier simulator.** `POST /api/tiers/simulate` replays up to 60 completed tasks of a repository under a proposed tiers object. The proposal is the knobs file in force merged with the patch, validated by `knobslib.py`. Each task's committed diff (its tier record's `since` to its `completes` head) is classified twice by apex-scope-loop's own `risk-tier.sh --no-record --since --head` (0.6.0), once under the knobs in force and once with `--knobs <proposal>`. The result lists per task the recorded, current and proposed tiers, the move, and the reasons added and removed. It is read-only: it holds no write lock and writes nothing. Only the heuristic is replayed, never reviewer raises or the decision layer, and the page says so. Smoke check 11.
+- 2026-10-22 (v0.3.0) — **Operate, Watched and per-task cost, read-only.** The plans API carries scope, intent, each landed plan's operate state (deploy history, watch window, checks, ingested lessons and backlog, last closed window), the watched plans, the repo-level checks from `monitor.json`, and per-task cost (delegated, orchestrator, orchestrator unattributed and delegated outside any task) from apex-dispatch's `report.sh --per-task`. The page adds a scope badge and filter, an intent summary, an Operate panel per landed plan, a Watched tab and a per-task cost table; demo data covers every view. Reads only: the console never runs `operate.sh` deploy, monitor or ingest, and writes no plugin state. Minor bump: new read-only API fields and UI panels; the admin and knob contract is unchanged.

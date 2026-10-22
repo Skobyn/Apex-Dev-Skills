@@ -28,7 +28,7 @@
     },
     {
       "name": "apex-scope-loop",
-      "description": "Decide -> plan -> loop: SPARC-shaped ADR + phased plan authoring, with autonomous /loop + /schedule execution, per-phase swarm dispatch, and The Gibson's harness gates (baseline green gate, independent review, Tier-C human approval).",
+      "description": "Decide -> plan -> loop: SPARC-shaped ADR + phased plan authoring with scope sizing (bugfix, poc, feature) and an intent round, autonomous /loop + /schedule execution, per-phase swarm dispatch, The Gibson's harness gates (baseline green gate, independent review, Tier-C human approval), and an operate phase that watches landed plans against their declared checks.",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"
@@ -49,7 +49,7 @@
     },
     {
       "name": "apex-dispatch",
-      "description": "Route and govern delegation: a compiled routing policy picks the tier, provider, fan-out and review shape for each task or ad-hoc ask; PreToolUse/SubagentStop hooks enforce it; provider shims run external workers; every route, spawn, worker run and verdict lands in a hash-chained ledger. Drives apex-scope-loop as its execution engine.",
+      "description": "Route and govern delegation: a compiled routing policy picks the tier, provider, fan-out and review shape for each task or ad-hoc ask; PreToolUse/SubagentStop hooks enforce it; provider shims run external workers; every route, spawn, worker run and verdict lands in a hash-chained ledger, which report.sh --per-task prices per routed task. Drives apex-scope-loop as its execution engine.",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"
@@ -87,7 +87,7 @@
     },
     {
       "name": "apex-console",
-      "description": "A local admin console for apex-scope-loop, apex-dispatch and apex-decision-layer: manage API keys, see progress per repo, plan and task, measure the software factory (Uber's cost equation, cost per outcome paired with quality, and flow and integrity metrics) against your own targets, and turn the knobs each plugin honours (review strictness, tier definitions, reviewers and providers, decision-layer config) with a kill switch and an undoable audit log. An admin layer: it never starts or drives work.",
+      "description": "A local admin console for apex-scope-loop, apex-dispatch and apex-decision-layer: manage API keys, see progress per repo, plan and task (with scope, intent, each landed plan's operate state and per-task cost, read-only), measure the software factory (Uber's cost equation, cost per outcome paired with quality, and flow and integrity metrics) against your own targets, and turn the knobs each plugin honours (review strictness, tier definitions, reviewers and providers, decision-layer config) with a kill switch and an undoable audit log. An admin layer: it never starts or drives work.",
       "author": {
         "name": "Apex Insights",
         "url": "https://getapexinsights.com"

@@ -82,7 +82,19 @@ pass "version is semver"
 
 # --- Phase 2.2: policy, overlay, compile ------------------------------------
 COMPILE="$PLUGIN_ROOT/scripts/compile.sh"
+# $TMPDIR ends in "/" on macOS, so mktemp returns "T//name", and tools print the canonical path
+# (/private/var/.../T/name). Resolve once so every "$WORK/..." comparison matches tool output.
+# Two statements, not one nested substitution: if mktemp fails, set -e stops here, before the
+# trap exists. (A nested `cd "$(mktemp ...)"` with an empty result would cd nowhere and leave
+# WORK pointing at the current directory, which the EXIT trap would then delete.)
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/apex-dispatch-smoke.XXXXXX")"
+WORK="$(cd "$WORK" && pwd -P)"
+TMP_ROOT="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+# Refuse anything but a fresh apex-dispatch-smoke.* directory under the temp root before rm -rf.
+case "$WORK" in
+  "$TMP_ROOT"/apex-dispatch-smoke.*) [ -d "$WORK" ] || { echo "smoke: refusing WORK=$WORK (not a directory)" >&2; exit 2; } ;;
+  *) echo "smoke: refusing WORK=$WORK" >&2; exit 2 ;;
+esac
 trap 'rm -rf "$WORK"' EXIT
 
 # 11. policy inputs exist and every compiled artifact is current
@@ -284,7 +296,9 @@ val() { sed -n "s/^$1: //p" <<<"$2" | head -1; }
 pass "route.sh --version == plugin.json version"
 
 # Fixture: a plain git repo with one plan (no toolchain markers).
-FX="$WORK/fx"; mkdir -p "$FX/plans"; git init -q -b main "$FX"
+# macOS: $TMPDIR sits under /var, a symlink to /private/var. git and route.sh print the resolved
+# toplevel, so the fixture path is resolved here too or prefix comparisons against $FX never match.
+FX="$WORK/fx"; mkdir -p "$FX/plans"; git init -q -b main "$FX"; FX="$(cd "$FX" && pwd -P)"
 cat >"$FX/plans/p.md" <<'PLAN'
 # Fixture plan
 
@@ -964,7 +978,7 @@ MS=$(( (T1 - T0) / 1000000 ))
 grep -q 'python3' "$PLUGIN_ROOT/scripts/lib/hook-common.bash" && \
   awk '/STATE_BASE\/ACTIVE/{lock=NR} /python3 -B/{py=NR} END{exit !(lock && py && lock < py)}' "$PLUGIN_ROOT/scripts/lib/hook-common.bash" \
   || fail "hook-common.bash does not check the ACTIVE lock before starting python3"
-pass "a governed pre-bash call took ${MS} ms (< 2000 ms; timeout 10 s); python3 starts only after the ACTIVE lock check"
+pass "a governed pre-bash call took ${MS} ms (< 2000 ms; timeout 10 s); python3 starts only after the ACTIVE lock check, except pre-bash's operate deploy pre-check (a command whose flattened text names operate.sh: check 89)"
 
 # 50. apex-scope-loop's real layout: the plan worktree lives at <state>/worktree inside .dev-plan-state/.
 #     Work inside it is allowed; the run state around it (checkpoint.json, gate/, ACTIVE, the worktree dir itself) is not.
@@ -1729,7 +1743,7 @@ wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md" 
 [ "$WRC" = 1 ] && [ $((SECONDS - T0)) -lt 15 ] || fail "the timeout was not honoured (rc=$WRC, $((SECONDS - T0)) s)"
 WOT="$(val WORKER_OUT "$WOUT")"
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["timed_out"] and r["exit_code"] in (124, 137) and r["timeout_sec"] == 2 and not r["ok"] and r["verdict"] is None, r' "$WOT/result.json" || fail "a timed-out run's result.json is wrong"
-grep -q '^DISPATCH-DONE exit=12[4]$\|^DISPATCH-DONE exit=137$' <<<"$WOUT" || fail "a timed-out run did not print its sentinel with the exit"
+grep -qE '^DISPATCH-DONE exit=(124|137)$' <<<"$WOUT" || fail "a timed-out run did not print its sentinel with the exit"
 [ ! -e "$(jget "$WOT/worker.json" worktree)" ] || fail "a failed worker's worktree was kept"
 echo fail >"$STUB/mode"
 wrun "$WX" bash "$CODEXW" --route "$WRID" --role docs --brief "$WORK/wbrief.md"; [ "$WRC" = 1 ] || fail "a failing provider run was not exit 1"
@@ -1860,17 +1874,17 @@ for j in '{"providers":[{"id":"codex","allowed_classes":[{"a":1}]}]}|allowed_cla
 done
 pass "carry-overs: overlays with NaN/Infinity or unhashable values are refused with a named error, never a traceback"
 
-# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.6.1 everywhere
+# 70. docs point at the real shim paths through \${CLAUDE_PLUGIN_ROOT}; version 0.7.0 everywhere
 for f in "$PLUGIN_ROOT/skills/dispatch-worker/SKILL.md" "$PLUGIN_ROOT/commands/run.md"; do
   grep -qF '${CLAUDE_PLUGIN_ROOT}/bin/worker-codex.sh' "$f" && grep -qF '${CLAUDE_PLUGIN_ROOT}/scripts/apply.sh' "$f" || fail "$(basename "$f") does not reference the shims through \${CLAUDE_PLUGIN_ROOT}"
   if grep -nE '(^|[[:space:]`(])(bin/worker-[a-z*<>-]+\.sh|scripts/apply\.sh)' "$f" | grep -qv 'CLAUDE_PLUGIN_ROOT'; then fail "$(basename "$f") has an un-prefixed shim/apply path"; fi
   if grep -q 'Phase 4 — not shipped\|not in this plugin yet\|arrive in Phase 4' "$f"; then fail "$(basename "$f") still says the shims are not shipped"; fi
 done
 V="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")"
-[ "$V" = 0.6.1 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
-  || fail "the 0.6.1 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
+[ "$V" = 0.7.0 ] && grep -q "^version=$V$" "$PLUGIN_ROOT/resources/compiled/VERSION" && grep -q "apex-dispatch v$V" "$ADR" && grep -q "Status: $V" "$R" \
+  || fail "the 0.7.0 version is not consistent across plugin.json, compiled VERSION, ADR-0001 and README"
 grep -q 'Worker contract' "$ADR" && grep -q 'worker-codex.sh' "$R" || fail "ADR-0001/README do not document the worker contract"
-pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.6.1 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
+pass "docs: skills/commands use \${CLAUDE_PLUGIN_ROOT}/bin/worker-*.sh and scripts/apply.sh; version 0.7.0 in plugin.json, compiled VERSION, ADR-0001 and README; worker contract documented"
 
 # --- Phase 4.2: flagged-off grok/opencode/aider shims, openai-sdk stub, compile --target codex,
 #     report --compare/--decision, carried hardening. Provider CLIs are stubs on a fixture PATH. ---
@@ -2779,6 +2793,762 @@ RUNMD="$PLUGIN_ROOT/commands/run.md"
 ! grep -rqE 'apex-scope-loop/\*/|\.\./\.\./apex-scope-loop' "$PLUGIN_ROOT/scripts" "$PLUGIN_ROOT/bin" --include=*.sh --include=*.bash --exclude=smoke.sh --exclude=sibling.bash \
   || fail "a script still resolves apex-scope-loop by a first-match glob"
 pass "macOS field fixes: verdict parser (shared indent, 'APPROVE. nits', CommonMark fences, unclosed fence, trace on the record, transcript fallback incl. a hand-back tool call); sibling resolver takes the highest cached version (py and bash), env override, --min names the installs; no bash-3.2-breaking heredoc; run.md extracts the plan path"
+
+# 88. operate-ledger-events (aidlc-borrowings Phase 3.1): operate_deploy, operate_signal and operate_window_closed are
+#     non-provenance and append through the ledger.sh CLI, the chain then verifies; every required field, the
+#     slug|repo exactly-one rule, the enums and the types (exit_code/breach_count integers, landed_sha a full hex SHA,
+#     ids without spaces or newlines, finite numbers) are enforced; an unmeasured value is stored as null (never 0,
+#     never the string "n/a"); provenance events stay CLI-refused; a malformed ledger line fails verify and blocks
+#     appends instead of being skipped. pre-bash (the real hook, under an ACTIVE lock only, like every other switch)
+#     refuses setting, exporting or unsetting APEX_OPERATE_ACK, APEX_DEPLOY_CMD and APEX_MONITOR_CMD; a longer name
+#     that merely contains one, and a mention in echo/grep/printenv, are allowed. With no lock, or a DONE or landed
+#     owner, that switch guard is inert and allows them: by design (F-018); the deploy itself stays denied at every
+#     stage by the operate deploy deny (check 89), the deploy control, with operate.sh's terminal ack the second layer
+LO="$WORK/lo"; mkdir -p "$LO"
+OPD='{"slug":"aidlc-borrowings","landed_sha":"'"$HEAD_FX"'","exit_code":0}'
+OPS='{"slug":"aidlc-borrowings","check_id":"api-latency","metric":"latency_ms","value":812.5,"threshold":500,"severity":"high","breach_count":1,"sink":"lessons"}'
+OPR='{"repo":true,"check_id":"disk-free","metric":"free_gb","value":null,"threshold":5,"severity":"low","breach_count":0,"sink":"counted"}'
+OPW='{"slug":"aidlc-borrowings","outcome":"closed-with-breaches","breaches":2,"open_at_close":["api-latency"]}'
+OPZ='{"slug":"aidlc-borrowings","check_id":"api-status","metric":"status","value":0,"threshold":200,"severity":"medium","breach_count":3,"sink":"counted"}'
+for ej in "operate_deploy|$OPD" "operate_signal|$OPS" "operate_signal|$OPR" "operate_window_closed|$OPW" "operate_signal|$OPZ"; do
+  ev="${ej%%|*}"; js="${ej#*|}"
+  O="$(lg append "$ev" "$js" --state "$LO" --source cli)" || fail "ledger.sh append refused a valid $ev row: $O"
+  has '^LEDGER_ROW: ' "$O" || fail "ledger.sh append $ev printed no LEDGER_ROW: $O"
+done
+O="$(lg verify --state "$LO")" || fail "ledger verify failed after the operate rows: $O"
+has '^ledger verify: OK — 5 rows, chain intact' "$O" || fail "ledger verify did not pass the 5 operate rows: $O"
+python3 - "$LO/dispatch-shadow/ledger.jsonl" "$LO/dispatch/ledger.jsonl" <<'PY' || fail "operate rows were not stored as given (an unmeasured value must be null, a measured 0 must stay 0)"
+import json, os, sys
+p = next(x for x in sys.argv[1:] if os.path.exists(x))
+rows = [json.loads(l) for l in open(p)]
+assert [r["event"] for r in rows] == ["operate_deploy", "operate_signal", "operate_signal", "operate_window_closed", "operate_signal"], rows
+assert all(r["source"] == "cli" for r in rows)
+assert rows[2]["repo"] is True and "slug" not in rows[2]
+assert "value" in rows[2] and rows[2]["value"] is None, rows[2]          # unmeasured: null, not 0, not "n/a"
+assert '"value":null' in open(p).read().split("\n")[2]
+assert rows[4]["value"] == 0 and type(rows[4]["value"]) is int           # a real 0 is a measurement, kept distinct
+assert rows[1]["value"] == 812.5 and rows[3]["open_at_close"] == ["api-latency"] and rows[0]["exit_code"] == 0
+PY
+# every required field of each event, taken from the schema itself, is refused when missing
+python3 - "$PLUGIN_ROOT/resources/ledger-events.json" "$OPD" "$OPS" "$OPW" >"$WORK/opmiss.txt" <<'PY' || fail "could not derive the operate missing-field cases"
+import json, sys
+s = json.load(open(sys.argv[1]))["events"]
+for ev, js in zip(("operate_deploy", "operate_signal", "operate_window_closed"), sys.argv[2:]):
+    assert not s[ev].get("provenance"), ev + " is provenance"
+    d = json.loads(js)
+    assert set(s[ev]["required"]) <= set(d), ev
+    for f in s[ev]["required"]:
+        print("%s\t%s\t%s" % (ev, f, json.dumps({k: v for k, v in d.items() if k != f})))
+PY
+[ "$(wc -l <"$WORK/opmiss.txt")" -ge 14 ] || fail "fewer than 14 operate required fields in the schema"
+while IFS=$'\t' read -r ev f js; do
+  if lg append "$ev" "$js" --state "$LO" --source cli >"$WORK/lg.out"; then fail "ledger.sh accepted $ev without $f"; fi
+  grep -q -- "missing required field $f" "$WORK/lg.out" || fail "$ev without $f refused without naming it: $(cat "$WORK/lg.out")"
+done <"$WORK/opmiss.txt"
+SIG='"check_id":"c1","metric":"m","threshold":2,"severity":"high","breach_count":0,"sink":"counted"'
+for bad in "operate_signal|{\"value\":1,$SIG}|exactly one of slug|repo is required (got none)" \
+           "operate_signal|{\"slug\":\"p\",\"repo\":true,\"value\":1,$SIG}|exactly one of slug|repo is required (got slug|repo)" \
+           "operate_signal|{\"repo\":false,\"value\":1,$SIG}|is not one of true" \
+           "operate_signal|{\"repo\":1,\"value\":1,$SIG}|operate_signal.repo: expected boolean" \
+           "operate_signal|{\"repo\":\"repo\",\"value\":1,$SIG}|operate_signal.repo: expected boolean" \
+           "operate_signal|{\"slug\":\"Bad Slug\",\"value\":1,$SIG}|operate_signal.slug: expected slug" \
+           "operate_signal|{\"slug\":\"p\",\"value\":\"n/a\",$SIG}|operate_signal.value: expected number|null" \
+           "operate_signal|{\"slug\":\"p\",\"value\":\"0\",$SIG}|operate_signal.value: expected number|null" \
+           "operate_signal|{\"slug\":\"p\",\"value\":true,$SIG}|operate_signal.value: expected number|null" \
+           "operate_signal|{\"slug\":\"p\",\"value\":NaN,$SIG}|operate_signal.value: expected number|null" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"m\",\"threshold\":Infinity,\"severity\":\"high\",\"breach_count\":0,\"sink\":\"counted\"}|operate_signal.threshold: expected number" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"m\",\"threshold\":2,\"severity\":\"critical\",\"breach_count\":0,\"sink\":\"counted\"}|operate_signal.severity: 'critical' is not one of high|medium|low" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"m\",\"threshold\":2,\"severity\":\"high\",\"breach_count\":0,\"sink\":\"LESSONS.md\"}|operate_signal.sink: 'LESSONS.md' is not one of lessons|backlog|counted" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"m\",\"threshold\":2,\"severity\":\"high\",\"breach_count\":1.0,\"sink\":\"counted\"}|operate_signal.breach_count: expected count" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"m\",\"threshold\":2,\"severity\":\"high\",\"breach_count\":-1,\"sink\":\"counted\"}|operate_signal.breach_count: expected count" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\\n## injected\",\"metric\":\"m\",\"threshold\":2,\"severity\":\"high\",\"breach_count\":0,\"sink\":\"counted\"}|operate_signal.check_id: expected id" \
+           "operate_signal|{\"slug\":\"p\",\"value\":1,\"check_id\":\"c1\",\"metric\":\"a b\",\"threshold\":2,\"severity\":\"high\",\"breach_count\":0,\"sink\":\"counted\"}|operate_signal.metric: expected id" \
+           "operate_deploy|{\"slug\":\"p\",\"landed_sha\":\"${HEAD_FX:0:7}\",\"exit_code\":0}|operate_deploy.landed_sha: expected sha" \
+           "operate_deploy|{\"slug\":\"p\",\"landed_sha\":\"$(tr a-f A-F <<<"$HEAD_FX")\",\"exit_code\":0}|operate_deploy.landed_sha: expected sha" \
+           "operate_deploy|{\"slug\":\"p\",\"landed_sha\":\"${HEAD_FX}0\",\"exit_code\":0}|operate_deploy.landed_sha: expected sha" \
+           "operate_deploy|{\"slug\":\"p\",\"landed_sha\":\"$HEAD_FX\",\"exit_code\":\"0\"}|operate_deploy.exit_code: expected integer" \
+           "operate_deploy|{\"slug\":\"p\",\"landed_sha\":\"$HEAD_FX\",\"exit_code\":false}|operate_deploy.exit_code: expected integer" \
+           "operate_window_closed|{\"slug\":\"p\",\"outcome\":\"clean\",\"breaches\":0,\"open_at_close\":[]}|operate_window_closed.outcome: 'clean' is not one of operated-clean|closed-with-breaches" \
+           "operate_window_closed|{\"slug\":\"p\",\"outcome\":\"operated-clean\",\"breaches\":\"0\",\"open_at_close\":[]}|operate_window_closed.breaches: expected count" \
+           "operate_window_closed|{\"slug\":\"p\",\"outcome\":\"operated-clean\",\"breaches\":0,\"open_at_close\":\"c1\"}|operate_window_closed.open_at_close: expected array" \
+           "operate_window_closed|{\"slug\":\"p\",\"outcome\":\"closed-with-breaches\",\"breaches\":1,\"open_at_close\":[\"c1\",7]}|operate_window_closed.open_at_close[1]: expected id"; do
+  ev="${bad%%|*}"; rest="${bad#*|}"; want="${rest#*\}|}"; js="${rest%"|$want"}"
+  if lg append "$ev" "$js" --state "$LO" --source cli >"$WORK/lg.out"; then fail "ledger.sh accepted an invalid $ev row: $js"; fi
+  grep -qF -- "$want" "$WORK/lg.out" || fail "invalid $ev row refused without naming '$want': $(cat "$WORK/lg.out")"
+done
+for ev in route spawn_request spawn worker_run verdict worker_applied worker_rejected; do   # still CLI-refused
+  if lg append "$ev" '{"route_id":"r-0123456789ab-L5-1","status":"READY","origin":"plan","router":{},"role":"builder","model":"haiku","agent_id":"x","provider":"codex","exit_code":0,"verdict":"APPROVE","run_id":"r1","commit_sha":"'"$HEAD_FX"'","reason":"x"}' --state "$LO" --source cli >"$WORK/lg.out"; then
+    fail "ledger.sh append accepted provenance event $ev from the CLI"; fi
+  grep -q "$ev is a provenance event" "$WORK/lg.out" || fail "CLI refusal of $ev does not say why: $(cat "$WORK/lg.out")"
+done
+O="$(lg verify --state "$LO")" || fail "refused operate rows broke the chain: $O"
+has '^ledger verify: OK — 5 rows, chain intact' "$O" || fail "a refused row was written to the ledger: $O"
+# a malformed line is never skipped: verify fails naming it and the next append refuses
+LOJ="$(ls "$LO"/dispatch*/ledger.jsonl)"
+printf '{"event":"operate_signal","value":0\n' >>"$LOJ"
+if O="$(lg verify --state "$LO")"; then fail "verify passed a ledger with a malformed operate line"; fi
+has 'row 6: not JSON' "$O" || fail "verify did not name the malformed line: $O"
+if O="$(lg append operate_deploy "$OPD" --state "$LO" --source cli)"; then fail "append extended a ledger whose last line is malformed"; fi
+has 'not JSON' "$O" || fail "append on a malformed tail did not say why: $O"
+# pre-bash: the operate switches, through the real hook entry point; first without a lock (no-op), then under one
+OX="$WORK/ox"; mkdir -p "$OX/plans"; git init -q -b main "$OX"; OX="$(cd "$OX" && pwd -P)"
+printf '# Operate fixture\n\n- [ ] **Phase 1.1** [mechanical] one task\n  - Acceptance: `true`\n  - Paths: src/**\n' >"$OX/plans/p.md"
+git -C "$OX" add -A; git -C "$OX" commit -qm ox
+ohk() { (cd "$OX" && printf '%s' "$1" | bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null); }
+odec() { ohk "$1" | one; }
+# No lock: the switch guard is inert by design (F-018); it is lock-scoped. The deploy control is the operate deploy deny (check 89).
+[ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = "{}" ] || fail "pre-bash acted on APEX_OPERATE_ACK without an ACTIVE lock"
+O="$(cd "$OX" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ -f "$OX/.dev-plan-state/ACTIVE/owner.json" ] || fail "operate fixture route took no ACTIVE lock: $O"
+for c in 'export APEX_OPERATE_ACK=x@y' 'APEX_DEPLOY_CMD=foo bash x' 'env APEX_MONITOR_CMD=./runner.sh bash operate.sh p monitor' \
+         'APEX_OPERATE_ACK=p@0123 bash operate.sh p deploy' 'export APEX_DEPLOY_CMD="make deploy"' 'APEX_MONITOR_CMD= bash x' \
+         'declare -x APEX_OPERATE_ACK=x@y' 'typeset APEX_DEPLOY_CMD=x' 'readonly APEX_MONITOR_CMD=x' \
+         'unset APEX_OPERATE_ACK' 'env -u APEX_DEPLOY_CMD bash x' 'env --unset=APEX_MONITOR_CMD bash x' \
+         'bash -c "export APEX_OPERATE_ACK=x@y"' 'eval "APEX_DEPLOY_CMD=x bash y"' 'echo $(APEX_MONITOR_CMD=x bash y)' \
+         'sudo APEX_OPERATE_ACK=x@y bash x' 'true && APEX_DEPLOY_CMD=x bash y' 'if true; then export APEX_MONITOR_CMD=x; fi'; do
+  [ "$(odec "$(pl bash "$OX" "$c")")" = deny ] || fail "pre-bash allowed under the ACTIVE lock: $c"
+done
+O="$(ohk "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")"
+has 'APEX_OPERATE_ACK=x@y would change what the harness enforces; it is set by the human, never by a command during a run' "$O" \
+  || fail "the APEX_OPERATE_ACK denial does not name the switch and why: $O"
+O="$(ohk "$(pl bash "$OX" 'unset APEX_MONITOR_CMD')")"
+has 'unsetting APEX_MONITOR_CMD would change what the harness enforces' "$O" || fail "the APEX_MONITOR_CMD unset denial does not say why: $O"
+for c in 'git status' 'bash operate.sh p status' 'MY_APEX_DEPLOY_CMD_X=1 bash x' 'APEX_OPERATE_ACK_HINT=1 bash x' 'export XAPEX_MONITOR_CMD=1' \
+         'echo APEX_OPERATE_ACK=x@y' 'grep -rn "APEX_DEPLOY_CMD=" .' 'printenv APEX_MONITOR_CMD' 'echo "$APEX_OPERATE_ACK"'; do
+  [ "$(odec "$(pl bash "$OX" "$c")")" = "{}" ] || fail "pre-bash denied under the ACTIVE lock: $c"
+done
+# After land the switch guard is inert, by design (F-018): a DONE owner, or a live-stage owner whose checkpoint is
+# landed, is stale (hooks.py Ctx.stale), so the lock-scoped rules print {}. The deploy itself is still denied: the
+# deploy control is pre-bash's operate deploy deny, which is not lock-scoped (check 89, Phase 3.3); operate.sh's
+# terminal ack is the second layer. Each inert case is paired with the live lock denying again, so the {} is caused
+# by the stale owner and not by a broken fixture.
+OOWN="$OX/.dev-plan-state/ACTIVE/owner.json"
+ost() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); o.update(stage=sys.argv[2]); json.dump(o, open(sys.argv[1], "w"))' "$OOWN" "$1"; }
+ost DONE
+[ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = "{}" ] || fail "pre-bash acted on APEX_OPERATE_ACK with a DONE owner (it is inert after the run by design, F-018)"
+ost BUILD
+[ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = deny ] || fail "restoring stage BUILD did not restore the APEX_OPERATE_ACK guard"
+OCP="$OX/.dev-plan-state/$(jget "$OOWN" id)/checkpoint.json"; mkdir -p "$(dirname "$OCP")"
+python3 -c 'import json, os, sys; p = sys.argv[1]; s = json.load(open(p)) if os.path.exists(p) else {}; s["landed"] = True; json.dump(s, open(p, "w"))' "$OCP"
+[ "$(odec "$(pl bash "$OX" 'export APEX_OPERATE_ACK=x@y')")" = "{}" ] || fail "pre-bash acted on APEX_OPERATE_ACK with a landed owner (it is inert after land by design, F-018)"
+[ "$(odec "$(pl bash "$OX" 'APEX_OPERATE_ACK=p@0123 bash operate.sh p deploy')")" = deny ] || fail "pre-bash allowed an inline APEX_OPERATE_ACK deploy with a landed owner (the operate deploy deny, check 89, is not lock-scoped)"
+pass "operate-ledger-events: operate_deploy/operate_signal/operate_window_closed append via the CLI and verify; missing fields, slug|repo none/both, enums, types and short SHAs refused; unmeasured value stored null (0 kept distinct); provenance still CLI-refused; malformed lines fail verify; pre-bash denies setting/exporting/unsetting APEX_OPERATE_ACK/APEX_DEPLOY_CMD/APEX_MONITOR_CMD under a live ACTIVE lock only and that guard is inert with no lock or a DONE/landed owner (F-018), while the deploy itself stays denied (check 89); longer names and mentions allowed"
+
+# 89. operate-deploy-deny (aidlc-borrowings Phase 3.3; ADR-0001 "pre-bash enforces", Amendments 2026-10-20): the deploy
+#     control, a fail-closed text rule (lesson L-001: three review rounds of a hand-written bash parser each found a
+#     construct that hid a deploy line, so the parser is gone). Through the real hooks/pre-bash.sh entry point, pre-bash
+#     denies every command whose text (backslash-newline joined; ", ' and \ removed; every line, heredoc body, comment
+#     and quoted string) names operate.sh and the word deploy (case-insensitive), unless the whole command, trimmed, is
+#     exactly one allow-listed form with no shell metacharacter: [bash |sh ]PATH/operate.sh PLAN status|monitor|ingest
+#     or … --all status|monitor [--ingest]. It holds in each state a deploy can happen in: no ACTIVE lock, a live lock,
+#     APEX_DISPATCH_MODE=off, a DONE owner and a landed owner (the post-land state where every lock-scoped rule is inert:
+#     guard-dead-in-target-flow). The gate is cheap: with no lock a command that never names operate.sh starts no python
+#     (a python3 spy on PATH), and it fails closed: a broken python3 still denies a command naming both, the allow-listed
+#     forms included when their plan path contains deploy (the allow-list is python's).
+#     Attempt 2 (failing-first on f69110b, hooks.py operate-gate printed {}): `for((i=0;i<1<<n;i++)); do :; done` ⏎
+#     deploy, `if((m & 1<<b))` ⏎ deploy, `v=${line%% #*}; bash operate.sh p deploy`, and a heredoc body naming both.
+#     Accepted false denies (the cost of no parser): a mention that names both words, e.g. `echo operate.sh deploy`,
+#     `grep -n deploy operate.sh`, a heredoc body and a `git commit -m` message (use `git commit -F FILE`,
+#     `gh pr create --body-file FILE`). Residual, out of model (ADR-0001), so not asserted here: a script name hidden
+#     by a glob or expansion (`bash op*.sh p deploy`, `P=./op?rate.sh; "$P" p deploy`, `bash op[e]rate.sh p deploy`) and
+#     a deploy word built by expansion or string construction (`${X}loy`, an interpreter's "dep" + "loy"); those two
+#     families were parser cases before attempt 2. `bash operate.sh p` (no step) only prints usage and is allowed.
+#     Review rounds 2 and 3 found the 64 KB timing case: a ${x//[…]/} pre-check is quadratic in bash 3.2, so a 64 KB
+#     quote- and backslash-heavy command must clear /bin/bash in under 2 s, allowed (names operate.sh only) and denied
+#     (names both), with and without a lock.
+OY="$WORK/oy"; mkdir -p "$OY/plans"; git init -q -b main "$OY"; OY="$(cd "$OY" && pwd -P)"
+printf '# Operate deny fixture\n\n- [ ] **Phase 1.1** [mechanical] one task\n  - Acceptance: `true`\n  - Paths: src/**\n' >"$OY/plans/p.md"
+cp "$OY/plans/p.md" "$OY/plans/deploy-x-plan.md"   # a plan whose path contains "deploy": its status still runs
+git -C "$OY" add -A; git -C "$OY" commit -qm oy
+EXS="$(cd "$PLUGIN_ROOT/../apex-scope-loop/skills/apex-execute/scripts" && pwd -P)"; [ -x "$EXS/operate.sh" ] || fail "operate-deploy-deny: no sibling operate.sh at $EXS"
+ydec() { (cd "$OY" && printf '%s' "$(pl bash "$OY" "$1")" | env PATH="${YPATH:-$PATH}" ${YMODE:+APEX_DISPATCH_MODE="$YMODE"} bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null) | one; }
+# ytime STATE — pre-bash under /bin/bash (macOS: bash 3.2) on a 64 KB quote- and backslash-heavy heredoc command, run
+# twice: its last line names operate.sh only (python judges the whole text: {}) and then operate.sh and deploy (deny).
+# Each run must finish in < 2000 ms.
+ytime() {
+  local sh=/bin/bash t0 t1 o tail want
+  [ -x "$sh" ] || sh=bash
+  for tail in "echo operate.sh \$HOME|{}" "echo operate.sh deploy \$HOME|deny"; do
+    want="${tail##*|}"
+    python3 -c 'import json, sys
+body = ("\x27\"\\x\\\"\x27 $V `d` " * 6000)[:65536]
+c = "cat <<\x27EOF\x27\n" + body + "\nEOF\n" + sys.argv[2]
+print(json.dumps({"tool_name": "Bash", "tool_input": {"command": c}, "session_id": "smoke", "tool_use_id": "t1", "hook_event_name": "PreToolUse", "cwd": sys.argv[1]}))' "$OY" "${tail%|*}" >"$WORK/y64.json"
+    [ "$(wc -c <"$WORK/y64.json")" -gt 65536 ] || fail "operate-deploy-deny: the timing payload is under 64 KB"
+    t0="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+    o="$(cd "$OY" && "$sh" "$PLUGIN_ROOT/hooks/pre-bash.sh" <"$WORK/y64.json" 2>/dev/null | one)"
+    t1="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+    [ "$o" = "$want" ] || fail "operate-deploy-deny: the 64 KB heredoc command gave $o, expected $want ($1)"
+    [ $((t1 - t0)) -lt 2000 ] || fail "operate-deploy-deny: pre-bash took $((t1 - t0)) ms on a 64 KB quote-heavy command under $sh ($1, $want; budget 2000 ms, the hook times out at 10 s and fails open)"
+    YT="$YT $1/$want:$((t1 - t0))ms"
+  done
+}
+NL='
+'
+y_denied() {  # y_denied STATE CMD... — each CMD is denied
+  local stage="$1" c; shift
+  for c in "$@"; do [ "$(ydec "$c")" = deny ] || fail "operate-deploy-deny: pre-bash allowed a deploy ($stage): $c"; done
+}
+y_allowed() {
+  local stage="$1" c; shift
+  for c in "$@"; do [ "$(ydec "$c")" = "{}" ] || fail "operate-deploy-deny: pre-bash denied ($stage): $c"; done
+}
+y_deploys() {
+  # every pre-attempt-2 deny case that names both words
+  y_denied "$1" 'bash operate.sh p deploy' "bash $EXS/operate.sh plans/p.md deploy" "$EXS/operate.sh plans/p.md deploy" './operate.sh p deploy' \
+    'script -q /dev/null bash operate.sh p deploy' 'script -q -c "bash operate.sh p deploy" /dev/null' "expect -c 'spawn bash operate.sh p deploy; interact'" \
+    'unbuffer bash operate.sh p deploy' "python3 -c 'import pty; pty.spawn([\"bash\", \"operate.sh\", \"p\", \"deploy\"])'" \
+    "perl -e 'system(\"bash operate.sh p deploy\")'" \
+    'bash -c "bash operate.sh p deploy"' 'eval "bash operate.sh p deploy"' 'echo $(bash operate.sh p deploy)' 'echo `bash operate.sh p deploy`' \
+    'env X=1 bash operate.sh p deploy' 'sudo bash operate.sh p deploy' 'nohup bash operate.sh p deploy' 'timeout 60 bash operate.sh p deploy' \
+    'nice -n 5 bash operate.sh p deploy' 'true && bash operate.sh p deploy' 'if true; then bash operate.sh p deploy; fi' \
+    'APEX_OPERATE_ACK=p@0123 bash operate.sh p deploy' 'source operate.sh p deploy' "bash op''erate.sh p dep''loy" 'S=deploy; bash operate.sh p $S' \
+    'bash operate.sh p status deploy' 'OP=operate.sh; bash $OP p deploy' "echo 'bash operate.sh p deploy' | bash" \
+    "bash <<'EOF'${NL}bash operate.sh p deploy${NL}EOF" 'git -c alias.d="!bash operate.sh p deploy" d' \
+    "bash \$'operate.sh' p deploy" 'bash "$(echo operate.sh)" p deploy' \
+    "git status --short   # note${NL}bash operate.sh p deploy" "git status # note${NL}bash operate.sh p deploy" "echo hi # x${NL}bash operate.sh p deploy" \
+    "ls # y${NL}bash operate.sh p deploy" "true # z${NL}bash operate.sh p deploy" "true # <<X${NL}bash operate.sh p deploy" \
+    "git status # note${NL}python3 -c 'import pty; pty.spawn([\"bash\", \"operate.sh\", \"p\", \"deploy\"])'" \
+    "bash operate.sh \\${NL}  p-plan.md deploy" "bash operate.sh p-plan.md \\${NL}  deploy" "echo \\\\${NL}bash operate.sh p deploy" \
+    "printf 'p deploy' | xargs bash operate.sh" 'xargs -a deploy.args bash operate.sh' 'echo `true #`; bash operate.sh p deploy' \
+    "read -r a <<<\"\$x\"${NL}bash operate.sh p deploy" "cat <<<'hi'${NL}bash operate.sh p deploy" "cat <<< word${NL}bash operate.sh p deploy" \
+    "echo \$((1<<2))${NL}bash operate.sh p deploy" "(( x <<= 1 ))${NL}bash operate.sh p deploy" "x=\$(( \$((1<<2)) << y ))${NL}bash operate.sh p deploy" \
+    "cat <<E\"OF\"${NL}hi${NL}EOF${NL}bash operate.sh p deploy" "cat <<2${NL}bash operate.sh p deploy" "cat <<\$x${NL}bash operate.sh p deploy"
+  # attempt 2: the round-3 bypasses (allowed on f69110b), a heredoc body, a backslash-newline inside either word, either
+  # case, and an allow-listed form joined to anything else
+  y_denied "$1" "for((i=0;i<1<<n;i++)); do :; done${NL}bash operate.sh p deploy" "if((m & 1<<b)); then :; fi${NL}bash operate.sh p deploy" \
+    'v=${line%% #*}; bash operate.sh p deploy' "cat <<EOF${NL}see operate.sh deploy${NL}EOF" \
+    "bash oper\\${NL}ate.sh p deploy" "bash operate.sh p dep\\${NL}loy" 'bash operate.sh p DEPLOY' 'bash OPERATE.SH p deploy' \
+    'bash operate.sh p status; bash operate.sh p deploy' 'bash operate.sh plans/deploy-x-plan.md status # x' \
+    'bash operate.sh plans/deploy-x-plan.md status && true' 'env bash operate.sh plans/deploy-x-plan.md status'
+  # the accepted false-deny cost of a text rule (allowed before attempt 2): mentions that name both words
+  y_denied "$1" 'echo operate.sh deploy' 'grep -n deploy operate.sh' 'git commit -m "operate.sh deploy: docs"' \
+    "cat <<'EOF'${NL}then run bash operate.sh p deploy by hand${NL}EOF${NL}git status" "cat <<EOF${NL}bash operate.sh p deploy${NL}EOF" \
+    "cat <<E\"OF\"${NL}bash operate.sh p deploy${NL}EOF${NL}ls" "echo \$((1<<2)); cat <<-EOF${NL}	bash operate.sh p deploy${NL}	EOF${NL}ls"
+}
+y_reads() {
+  # the allow-listed forms (absolute, relative and bare paths; a plan path containing "deploy"), then commands that do
+  # not name both words, whatever their structure
+  y_allowed "$1" 'bash operate.sh p status' 'operate.sh plans/p.md status' 'bash operate.sh --all status' "$EXS/operate.sh --all status" \
+    'bash operate.sh --all monitor' 'bash operate.sh --all monitor --ingest' 'bash operate.sh p monitor' 'bash operate.sh p ingest' \
+    "bash $EXS/operate.sh plans/deploy-x-plan.md status" "$EXS/operate.sh .claude/plans/deploy-x-plan.md monitor" \
+    'operate.sh plans/deploy-x-plan.md ingest' 'sh operate.sh plans/deploy-x-plan.md status' "  bash $EXS/operate.sh plans/deploy-x-plan.md status  " \
+    'bash operate.sh' 'bash operate.sh p' 'echo operate.sh' 'operate.sh p status; ls' 'cat operate.sh' 'bash -n operate.sh' 'echo deploy' \
+    "python3 -c 'import subprocess; subprocess.run([\"bash\", \"operate.sh\", \"p\", \"status\"])'" \
+    '[ -f deploy.yaml ]' '[ -d deployments ]' '[ "$1" = deploy ]' '[[ $ENV == deploy ]]' 'make deploy ENV=$X' 'git status' \
+    'if [ -f k8s/deployment.yaml ]; then kubectl diff -f k8s/deployment.yaml; fi' "ls *.sh # deploy notes${NL}git status" \
+    'echo "$HOME" deploy' 'bash "$ROOT/scripts/deploy.sh"' 'bash operate.sh p redeploy-notes'
+}
+# no ACTIVE lock (the hook prelude's {} path)
+[ ! -d "$OY/.dev-plan-state/ACTIVE" ] || fail "operate-deploy-deny: the fixture already holds a lock"
+y_deploys "no ACTIVE lock"; y_reads "no ACTIVE lock"; YT=""; ytime "no lock"
+O="$( (cd "$OY" && printf '%s' "$(pl bash "$OY" 'bash operate.sh p deploy')" | bash "$PLUGIN_ROOT/hooks/pre-bash.sh" 2>/dev/null) )"
+has 'operate.sh deploy must be run by a human in their own terminal' "$O" || fail "operate-deploy-deny: the deny does not say a human must run it in their own terminal: $O"
+has 'git commit -F FILE' "$O" || fail "operate-deploy-deny: the deny does not name the file workaround for text that names both words: $O"
+# cheap: with no lock, a command that never names operate.sh starts no python; one that does is judged
+mkdir -p "$WORK/pyspy" "$WORK/pybroken"; YREAL="$(command -v python3)"
+printf '#!/bin/sh\necho x >>"%s/pyspy.log"\nexec "%s" "$@"\n' "$WORK" "$YREAL" >"$WORK/pyspy/python3"; printf '#!/bin/sh\nexit 1\n' >"$WORK/pybroken/python3"
+chmod +x "$WORK/pyspy/python3" "$WORK/pybroken/python3"; : >"$WORK/pyspy.log"
+YPATH="$WORK/pyspy:$PATH" y_allowed "no lock, python3 spy" 'git status' 'echo deploy' 'ls -la src' 'make deploy ENV=$X' 'bash op*.sh --help' \
+  '[ -f deploy.yaml ]' 'bash "$ROOT/scripts/deploy.sh"'
+[ ! -s "$WORK/pyspy.log" ] || fail "operate-deploy-deny: with no lock an ordinary command started python ($(wc -l <"$WORK/pyspy.log") call(s)): the gate is not cheap"
+YPATH="$WORK/pyspy:$PATH" y_allowed "no lock, python3 spy" 'bash operate.sh p status'
+[ -s "$WORK/pyspy.log" ] || fail "operate-deploy-deny: a command naming operate.sh was not judged by hooks.py (the spy saw no python)"
+YPATH="$WORK/pybroken:$PATH" y_denied "no lock, a broken python3 (fail closed)" 'bash operate.sh p deploy' "cat <<EOF${NL}see operate.sh deploy${NL}EOF" \
+  "bash oper\\${NL}ate.sh p deploy" 'bash operate.sh p DEPLOY' 'bash operate.sh plans/deploy-x-plan.md status'
+YPATH="$WORK/pybroken:$PATH" y_allowed "no lock, a broken python3" 'cat operate.sh' 'git status' 'bash operate.sh p status' 'echo operate.sh'
+# a live lock (BUILD): the deny still holds; the reads pass
+O="$(cd "$OY" && bash "$ROUTE" plan plans/p.md --line 3 2>&1)"
+[ "$(val ROUTE_STATUS "$O")" = READY ] && [ -f "$OY/.dev-plan-state/ACTIVE/owner.json" ] || fail "operate-deploy-deny: the route took no ACTIVE lock: $O"
+y_deploys "live lock"; y_reads "live lock"; ytime "live lock"
+# APEX_DISPATCH_MODE=off turns every lock-scoped rule off (a plain git push passes); it does not lift the deploy deny
+[ "$(YMODE=off ydec 'export APEX_OPERATE_ACK=x@y')" = "{}" ] || fail "operate-deploy-deny: APEX_DISPATCH_MODE=off did not turn the lock-scoped rules off (the fixture does not reach the off state)"
+YMODE=off y_deploys "APEX_DISPATCH_MODE=off"; YMODE=off y_reads "APEX_DISPATCH_MODE=off"
+# a DONE owner, then a live-stage owner whose checkpoint is landed: hooks.py treats both as stale ({} for every
+# lock-scoped rule); the deploy deny must not be one of them. Each is paired with the live lock denying APEX_OPERATE_ACK
+# again, so the states are real and the deny is not an accident of the fixture.
+YOWN="$OY/.dev-plan-state/ACTIVE/owner.json"
+yst() { python3 -c 'import json, sys; o = json.load(open(sys.argv[1])); o.update(stage=sys.argv[2]); json.dump(o, open(sys.argv[1], "w"))' "$YOWN" "$1"; }
+yst DONE
+[ "$(ydec 'export APEX_OPERATE_ACK=x@y')" = "{}" ] || fail "operate-deploy-deny: a DONE owner is not stale (the fixture does not reach the post-run state)"
+y_deploys "DONE owner"; y_reads "DONE owner"
+yst BUILD
+[ "$(ydec 'export APEX_OPERATE_ACK=x@y')" = deny ] || fail "operate-deploy-deny: restoring BUILD did not restore the lock-scoped guard"
+YCP="$OY/.dev-plan-state/$(jget "$YOWN" id)/checkpoint.json"; mkdir -p "$(dirname "$YCP")"
+python3 -c 'import json, os, sys; p = sys.argv[1]; s = json.load(open(p)) if os.path.exists(p) else {}; s["landed"] = True; json.dump(s, open(p, "w"))' "$YCP"
+[ "$(ydec 'export APEX_OPERATE_ACK=x@y')" = "{}" ] || fail "operate-deploy-deny: a landed owner is not stale (the fixture does not reach the post-land state)"
+y_deploys "landed owner"; y_reads "landed owner"
+pass "operate-deploy-deny: pre-bash denies every command whose text names operate.sh and deploy (any line, heredoc body, comment or quoted string; either case; across a backslash-newline; wrapped in script, expect, unbuffer, a python pty, perl -e, bash -c, eval, \$( ), backticks, env, sudo, nohup, timeout, nice, && and if; piped or heredoc'd into bash; after an arithmetic for((…<<…)), if((…<<…)) or a \${v%% #*} line) unless the whole command is one allow-listed form (PLAN status|monitor|ingest, --all status|monitor [--ingest]; a plan path containing deploy passes), with no ACTIVE lock, under a live lock, with APEX_DISPATCH_MODE=off, with a DONE owner and with a landed owner; mentions naming both are denied (the accepted false-deny cost); commands that do not name both pass; with no lock an ordinary command starts no python, and a broken python3 still denies (fail closed); 64 KB quote-heavy commands took$YT under /bin/bash (< 2000 ms)"
+
+# 90. per-task-listing (aidlc-borrowings Phase 4.1; ADR-0002 R7): report.sh --per-task lists one entry per routed task
+#     (task, class, tier, spawns, tokens, delegated USD, review rounds, outcome) built from tasks_of(); the per-task USD
+#     values sum to the aggregate usd_estimated; unknown cost/tokens are null / n/a, never 0; malformed ledger lines
+#     are counted and make the figures n/a rather than being skipped into a smaller total
+PT="$WORK/ptstate"; mkdir -p "$PT"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$PT" <<'PY' || fail "per-task-listing: could not build the fixture ledger"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+st = sys.argv[2]
+def route(line, cls, tier):
+    rid = "r-0123456789ab-L%d-1" % line
+    ledger.append(st, "route", {"route_id": rid, "status": "READY", "origin": "plan", "line": line, "router": {"class": cls, "tier": tier}},
+                  "cli", route_id=rid, route_mode="table")
+    return rid
+def run(rid, **kw):
+    d = {"route_id": rid, "provider": "claude-session", "role": "builder", "exit_code": 0}; d.update(kw)
+    ledger.append(st, "worker_run", d, "shim", route_id=rid, route_mode="table")
+def verdict(rid, v, head):
+    ledger.append(st, "verdict", {"route_id": rid, "role": "reviewer", "verdict": v}, "hook", route_id=rid, route_mode="table", head_sha=head)
+a = route(3, "docs", "cheap")        # priced from usage x the sonnet price, one review round
+run(a, run_id="w1", usage={"input": 1000000, "output": 100000}, resolved_model="claude-sonnet-5-5")
+verdict(a, "APPROVE", "a" * 40)
+b = route(4, "feature", "mid")       # reported usd, two rounds, a second run
+run(b, run_id="w2", usage={"input": 10, "output": 5}, usd=0.25)
+run(b, run_id="w3", usage={"input": 20, "output": 5}, usd=0.125)
+verdict(b, "REQUEST_CHANGES", "a" * 40); verdict(b, "APPROVE", "b" * 40)
+c = route(5, "docs", "cheap")        # provider-default usage: tokens known, cost unknown
+run(c, run_id="w4", usage={"input": 500, "output": 50}, resolved_model="provider-default", provider="codex")
+verdict(c, "REQUEST_CHANGES", "c" * 40)
+route(6, "docs", "cheap")            # routed, nothing run yet: nothing measured
+PY
+OT="$(bash "$REPORT" --state "$PT" --per-task 2>&1)" || fail "per-task-listing: report.sh --per-task failed: $OT"
+OJ="$(bash "$REPORT" --state "$PT" --per-task --json 2>&1)" || fail "per-task-listing: report.sh --per-task --json failed: $OJ"
+[ "$(printf '%s\n' "$OT" | grep -c '^REPORT_TASK: ')" = 4 ] || fail "per-task-listing: text mode is not one REPORT_TASK line per task: $OT"
+has '^REPORT_TASK: task=L3 class=docs tier=cheap spawns=1 tokens=1100000 usd=4.5000 review_rounds=1 outcome=APPROVE orchestrator_tokens=n/a orchestrator_usd=n/a$' "$OT" \
+  && has '^REPORT_TASK: task=L4 class=feature tier=mid spawns=2 tokens=40 usd=0.3750 review_rounds=2 outcome=APPROVE orchestrator_tokens=n/a orchestrator_usd=n/a$' "$OT" \
+  && has '^REPORT_TASK: task=L5 class=docs tier=cheap spawns=1 tokens=550 usd=n/a review_rounds=1 outcome=REQUEST_CHANGES orchestrator_tokens=n/a orchestrator_usd=n/a$' "$OT" \
+  && has '^REPORT_TASK: task=L6 class=docs tier=cheap spawns=0 tokens=n/a usd=n/a review_rounds=0 outcome=no-verdict orchestrator_tokens=n/a orchestrator_usd=n/a$' "$OT" \
+  && has '^REPORT_CHAIN: OK' "$OT" || fail "per-task-listing: REPORT_TASK lines are wrong (unknown must print n/a, never 0): $OT"
+printf '%s' "$OJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); ts = d["tasks"]
+assert len(ts) == 4 and [t["task"] for t in ts] == [3, 4, 5, 6], [t["task"] for t in ts]
+by = {t["task"]: t for t in ts}
+assert by[5]["usd"] is None and by[6]["usd"] is None and by[6]["tokens"] is None and by[6]["tokens_total"] is None, by
+assert by[5]["tokens"] == {"input": 500, "output": 50, "cache_read": 0, "cache_write": 0} and by[5]["unpriced_rows"] == 1, by[5]
+assert by[3]["tokens_total"] == 1100000 and by[4]["review_rounds"] == 2 and by[4]["outcome"] == "APPROVE", by
+for t in ts:
+    assert set(t) >= {"task", "class", "tier", "spawns", "tokens", "usd", "review_rounds", "outcome"}, t
+# the priced tasks sum to the aggregate, in integer micro-dollars; the n/a tasks add nothing and are not 0
+micro = lambda x: int(round(x * 1e6))
+known = sum(micro(t["usd"]) for t in ts if t["usd"] is not None)
+assert known == micro(d["usd_estimated"]) == micro(4.875), (known, d["usd_estimated"])
+assert d["totals"]["usd_unknown_tasks"] == 2 and d["totals"]["usd_unrouted"] == 0 and d["malformed_rows"] == 0, d["totals"]
+# known tasks + the priced part of the n/a tasks + rows outside any task reconcile with the aggregate
+T = d["totals"]
+assert T["usd_partial_in_unknown_tasks"] == 0 and micro(T["usd"]) + micro(T["usd_partial_in_unknown_tasks"]) + micro(T["usd_unrouted"]) == micro(d["usd_estimated"]), T
+' || fail "per-task-listing: --per-task --json is wrong (one entry per task, USD sums to usd_estimated, unknown is null): $OJ"
+# the aggregate the tasks must match is the one report.sh prints without --per-task
+bash "$REPORT" --state "$PT" --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["usd_estimated"] == 4.875' || fail "per-task-listing: the aggregate usd_estimated moved"
+# text and JSON agree on the task count; --per-task cannot be combined with --compare
+[ "$(printf '%s' "$OJ" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["tasks"]))')" = "$(printf '%s\n' "$OT" | grep -c '^REPORT_TASK: ')" ] \
+  || fail "per-task-listing: text and --json disagree on the task count"
+[ "$(bash "$REPORT" --state "$PT" --per-task --compare >/dev/null 2>&1; echo $?)" = 2 ] || fail "per-task-listing: --per-task --compare is not a usage error"
+[ "$(bash "$REPORT" --state "$PT" --per-task --decision >/dev/null 2>&1; echo $?)" = 2 ] || fail "per-task-listing: --per-task --decision is not a usage error"
+# a malformed ledger line must not shrink the total silently: it is counted, warned, and every task's USD/tokens are n/a
+PTB="$WORK/ptbad"; rm -rf "$PTB"; cp -R "$PT" "$PTB"
+PTL="$(find "$PTB" -name ledger.jsonl | head -1)"; [ -n "$PTL" ] || fail "per-task-listing: no ledger.jsonl in the fixture"
+printf '{"event":"worker_run","route_id":"r-0123456789ab-L3-1","usage":{"input":9\n' >>"$PTL"
+OB="$(bash "$REPORT" --state "$PTB" --per-task 2>&1)"
+has '^REPORT_TASK_WARNING: 1 ledger line' "$OB" && [ "$(printf '%s\n' "$OB" | grep -c '^REPORT_TASK: .* usd=n/a ')" = 4 ] \
+  || fail "per-task-listing: a malformed ledger line was skipped silently: $OB"
+bash "$REPORT" --state "$PTB" --per-task --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["malformed_rows"] == 1 and all(t["usd"] is None and t["tokens"] is None for t in d["tasks"]), d
+assert d["totals"]["usd"] is None and d["totals"]["usd_unrouted"] is None, d["totals"]
+' || fail "per-task-listing: malformed-line JSON is wrong (usd_unrouted must be null, not a definite 0, when a line did not parse)"
+has 'of which n/a on rows outside any task' "$OB" || fail "per-task-listing: a malformed line still prints a definite usd_unrouted: $OB"
+# a line that is valid JSON but not an object is malformed too: counted, warned, n/a (not a crash)
+PTA="$WORK/ptarr"; rm -rf "$PTA"; cp -R "$PT" "$PTA"
+printf '[1]\n' >>"$(find "$PTA" -name ledger.jsonl | head -1)"
+OA="$(bash "$REPORT" --state "$PTA" --per-task 2>&1)" || fail "per-task-listing: a non-object JSON line crashed --per-task: $OA"
+has '^REPORT_TASK_WARNING: 1 ledger line' "$OA" && [ "$(printf '%s\n' "$OA" | grep -c '^REPORT_TASK: .* tokens=n/a usd=n/a ')" = 4 ] \
+  && has 'of which n/a on rows outside any task' "$OA" || fail "per-task-listing: a non-object JSON line was not counted as malformed: $OA"
+bash "$REPORT" --state "$PTA" --per-task --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["malformed_rows"] == 1 and d["totals"]["usd_unrouted"] is None and all(t["usd"] is None for t in d["tasks"]), d
+' || fail "per-task-listing: non-object-line JSON is wrong"
+# F-004: a background agent (spawn + post-agent "usage unverified" advisory, never a worker_run) makes its task n/a;
+# a foreground agent matched by agent_id to a priced worker_run keeps its task known; rows outside any task are summed exactly
+PG="$WORK/ptbg"; mkdir -p "$PG"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$PG" <<'PY' || fail "per-task-listing: could not build the background-agent fixture ledger"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+st = sys.argv[2]
+def route(line, cls, tier):
+    rid = "r-0123456789ab-L%d-1" % line
+    ledger.append(st, "route", {"route_id": rid, "status": "READY", "origin": "plan", "line": line, "router": {"class": cls, "tier": tier}},
+                  "cli", route_id=rid, route_mode="table")
+    return rid
+def spawn(rid, aid, role):
+    ledger.append(st, "spawn", {"route_id": rid, "agent_id": aid, "role": role}, "hook", route_id=rid, route_mode="table")
+def hrun(rid, aid, role, inp, out):
+    ledger.append(st, "worker_run", {"route_id": rid, "provider": "claude-session", "role": role, "exit_code": 0, "agent_id": aid,
+                                     "usage": {"input": inp, "output": out}, "resolved_model": "claude-sonnet-5-5"}, "hook", route_id=rid, route_mode="table")
+def bg(rid):
+    ledger.append(st, "hook_advisory", {"hook": "post-agent.sh", "tool_use_id": "tu-" + rid,
+                                        "advisory": "Agent apex-dispatch:builder returned status async_launched without resolvedModel or usage; usage unverified"},
+                  "hook", route_id=rid, route_mode="table")
+a = route(7, "docs", "cheap")        # background builder (never measured) + a priced foreground reviewer
+spawn(a, "agbuilder7", "builder"); bg(a)
+spawn(a, "agreviewer7", "reviewer"); hrun(a, "agreviewer7", "reviewer", 100000, 10000)       # 0.45
+ledger.append(st, "verdict", {"route_id": a, "role": "reviewer", "verdict": "APPROVE"}, "hook", route_id=a, route_mode="table", head_sha="a" * 40)
+b = route(8, "feature", "mid")       # one foreground builder, matched by agent_id: fully measured
+spawn(b, "agbuilder8", "builder"); hrun(b, "agbuilder8", "builder", 200000, 20000)          # 0.90
+c = route(9, "docs", "cheap")        # a background agent with no spawn row (only the advisory) + a priced shim run
+bg(c)
+ledger.append(st, "worker_run", {"route_id": c, "provider": "codex", "role": "docs", "exit_code": 0, "run_id": "w9",
+                                 "usage": {"input": 10, "output": 5}, "usd": 0.25}, "shim", route_id=c, route_mode="table")
+ledger.append(st, "worker_run", {"route_id": "unrouted", "provider": "codex", "role": "docs", "exit_code": 0, "run_id": "wu",
+                                 "usage": {"input": 1, "output": 1}, "usd": 0.125}, "shim", route_id="unrouted", route_mode="table")
+PY
+OG="$(bash "$REPORT" --state "$PG" --per-task 2>&1)" || fail "per-task-listing: --per-task failed on the background-agent fixture: $OG"
+has '^REPORT_TASK: task=L7 class=docs tier=cheap spawns=2 tokens=n/a usd=n/a review_rounds=1 outcome=APPROVE orchestrator_tokens=n/a orchestrator_usd=n/a$' "$OG" \
+  && has '^REPORT_TASK: task=L8 class=feature tier=mid spawns=1 tokens=220000 usd=0.9000 review_rounds=0 outcome=no-verdict orchestrator_tokens=n/a orchestrator_usd=n/a$' "$OG" \
+  && has '^REPORT_TASK: task=L9 class=docs tier=cheap spawns=1 tokens=n/a usd=n/a review_rounds=0 outcome=no-verdict orchestrator_tokens=n/a orchestrator_usd=n/a$' "$OG" \
+  && has '^REPORT_TASKS_TOTAL: 3 task(s); usd=0.9000 (2 n/a, 0.7000 priced in them); aggregate REPORT_USD_ESTIMATED 1.7250, of which 0.1250 on rows outside any task$' "$OG" \
+  || fail "per-task-listing: a task with an unmeasured background agent printed its partial cost as known: $OG"
+bash "$REPORT" --state "$PG" --per-task --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+micro = lambda x: int(round(x * 1e6))
+assert by[7]["usd"] is None and by[7]["tokens"] is None and by[7]["tokens_total"] is None and by[7]["spawns"] == 2, by[7]
+assert micro(by[7]["usd_priced_partial"]) == micro(0.45) and by[7]["unmeasured_agents"] == 1, by[7]
+assert micro(by[8]["usd"]) == micro(0.9) and by[8]["tokens_total"] == 220000 and by[8]["unmeasured_agents"] == 0, by[8]
+assert by[9]["usd"] is None and by[9]["tokens"] is None and micro(by[9]["usd_priced_partial"]) == micro(0.25), by[9]
+assert micro(T["usd"]) == micro(0.9) and micro(T["usd_partial_in_unknown_tasks"]) == micro(0.7) and micro(T["usd_unrouted"]) == micro(0.125), T
+assert micro(T["usd"]) + micro(T["usd_partial_in_unknown_tasks"]) + micro(T["usd_unrouted"]) == micro(d["usd_estimated"]) == micro(1.725), (T, d["usd_estimated"])
+' || fail "per-task-listing: background-agent JSON is wrong (unmeasured agent must make usd/tokens null; totals must reconcile)"
+pass "per-task-listing: report.sh --per-task prints one REPORT_TASK line and one tasks[] entry per routed task (task, class, tier, spawns, tokens, usd, review rounds, outcome) from tasks_of(); per-task USD sums to usd_estimated in integer micro-dollars; unpriced or unmeasured cost and tokens are n/a / null, never 0; a malformed or non-object ledger line is counted and makes every figure n/a, usd_unrouted included; a spawned agent with no usage-bearing worker_run (a background agent) or a post-agent usage-unverified advisory makes its task n/a, its priced part kept in usd_priced_partial; known + partial-in-n/a + unrouted reconciles with usd_estimated; text and --json agree on the task count; not combinable with --compare or --decision"
+
+# 91. orchestrator-cost (aidlc-borrowings Phase 4.2; ADR-0002 R7b, Q5): report.sh --per-task --transcript PATH attributes the
+#     main session's assistant turns (real usage, priced by message.model; 1-hour cache writes at 2x input) to the task whose
+#     route window (first route row ts .. last row ts, inclusive to the end of that second) holds the turn; turns in no
+#     single window (none, or two overlapping) go to `unattributed`; non-assistant and type-less lines are ignored; sidechain
+#     (subagent) turns are excluded as delegated; duplicate message ids (and the same file twice) count once. Never 0 or a
+#     partial figure for what was not seen: no transcript, a task session id no read transcript covers, a window with no
+#     main-session turn, a window holding an unusable dated turn, a transcript with no main-session turn, or a line with
+#     no usable timestamp make the affected figures null / n/a. Auto-locate: <config>/projects/*/<session_id>.jsonl in any
+#     project dir by the ledger's UUID session_ids; a non-UUID id is ignored; a missing or unreadable file is listed, not fatal.
+#     A turn with message.usage.iterations is computed from its iterations (every type, each priced by its own model and
+#     1h / 5m breakdown; an advisor call on an unpriced model gives usd null, tokens kept, orchestrator_advisor_turns); an
+#     unusable iteration makes its window n/a. A window with no main-session turn also nulls the unattributed bucket, and
+#     a sidechain line's sessionId covers no session.
+#     Failing-first on 3d7c344: the 1h price, L8's empty window, the realpath dedupe, cases B and D, F-004 (dated in a window,
+#     dated in no window, non-JSON, unparseable ts), the flipped missing-session case and the unreadable file all failed.
+#     Failing-first on 570dc1a (F-014 round 3): the iterations tokens / usd / advisor counts, each of the four unusable
+#     iterations, the B-149 unattributed null, the B-146 sidechain-sessionId (A) case, the lost/duplicate warning, and the
+#     new totals keys all failed.
+OCU1="0c0c0c0c-1111-4222-8333-444455556666"; OCU2="9f9f9f9f-aaaa-4bbb-8ccc-dddddddddddd"
+OC="$WORK/ocstate"; mkdir -p "$OC"
+python3 - "$PLUGIN_ROOT/scripts/lib" "$OC" "$OCU1" <<'PY' || fail "orchestrator-cost: could not build the fixture ledger"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+st, sid1 = sys.argv[2], sys.argv[3]
+def at(ts, *a, **k):
+    ledger.now = lambda: ts
+    return ledger.append(st, *a, **k)
+def route(line, ts):
+    rid = "r-0123456789ab-L%d-1" % line
+    at(ts, "route", {"route_id": rid, "status": "READY", "origin": "plan", "line": line, "router": {"class": "docs", "tier": "cheap"}},
+       "cli", route_id=rid, route_mode="table")
+    return rid
+def verdict(rid, ts, **kw):
+    at(ts, "verdict", dict({"route_id": rid, "role": "reviewer", "verdict": "APPROVE"}, **kw), "hook", route_id=rid,
+       route_mode="table", head_sha="a" * 40)
+a = route(3, "2026-10-14T10:00:00Z")
+at("2026-10-14T10:08:00Z", "worker_run", {"route_id": a, "provider": "claude-session", "role": "builder", "exit_code": 0, "run_id": "w1",
+                                          "usage": {"input": 10, "output": 5}, "usd": 0.25, "session_id": sid1}, "shim", route_id=a, route_mode="table")
+verdict(route(4, "2026-10-14T11:00:00Z"), "2026-10-14T11:05:00Z", session_id="sess-not-a-uuid")
+verdict(route(5, "2026-10-14T12:30:00Z"), "2026-10-14T12:40:00Z")      # holds the unpriced-model turn
+l6 = route(6, "2026-10-14T13:00:00Z")                                     # L6 13:00-13:20 and L7 13:10-13:30 overlap
+l7 = route(7, "2026-10-14T13:10:00Z")
+verdict(l6, "2026-10-14T13:20:00Z"); verdict(l7, "2026-10-14T13:30:00Z")
+verdict(route(8, "2026-10-14T14:00:00Z"), "2026-10-14T14:05:00Z")      # no main-session turn in its window
+PY
+OCT="$WORK/oc-transcript.jsonl"; OCB="$WORK/oc-b"; mkdir -p "$OCB"
+python3 - "$WORK" "$OCU1" "$OCU2" <<'PY'
+import json, os, sys
+w, s1, s2 = sys.argv[1:4]
+def turn(ts, mid, u, model="claude-sonnet-5-5", **kw):
+    d = {"type": "assistant", "timestamp": ts, "message": {"id": mid, "model": model, "usage": u}}; d.update(kw); return d
+M = [{"type": "user", "timestamp": "2026-10-14T10:00:01.000Z", "message": {"content": "hi"}},
+     {"type": "summary", "summary": "x"},
+     {"timestamp": "2026-10-14T10:01:00.000Z", "message": {"id": "m-notype", "usage": {"input_tokens": 777}}},   # no type: not a turn
+     turn("2026-10-14T10:05:00.250Z", "m1", {"input_tokens": 1000000, "output_tokens": 100000, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 20}),
+     turn("2026-10-14T10:05:00.250Z", "m1", {"input_tokens": 1000000, "output_tokens": 100000, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 20}),
+     turn("2026-10-14T10:06:00.000Z", "m-side", {"input_tokens": 999, "output_tokens": 999}, isSidechain=True),
+     turn("2026-10-14T11:05:00.500Z", "m2", {"input_tokens": 2000000, "output_tokens": 0}),
+     turn("2026-10-14T12:00:00.000Z", "m3", {"input_tokens": 500, "output_tokens": 50}),
+     turn("2026-10-14T12:35:00.000Z", "m5", {"input_tokens": 100, "output_tokens": 10}, model="mystery-9"),
+     turn("2026-10-14T13:05:00.000Z", "m6", {"input_tokens": 1000, "output_tokens": 0, "cache_creation_input_tokens": 1000000,
+                                             "cache_creation": {"ephemeral_1h_input_tokens": 600000, "ephemeral_5m_input_tokens": 300000}}),
+     turn("2026-10-14T13:15:00.000Z", "m7", {"input_tokens": 100, "output_tokens": 10}),
+     turn("2026-10-14T13:25:00.000Z", "m8", {"input_tokens": 1000, "output_tokens": 100}),
+     turn("2026-10-14T14:02:00.000Z", "m9", {"input_tokens": 1000, "output_tokens": 0})]          # L8's only turn
+def write(name, lines, sid=s1):
+    with open(os.path.join(w, name), "w") as f:
+        for d in lines:
+            if isinstance(d, dict) and sid and d.get("type") in ("user", "assistant"):
+                d = dict(d, sessionId=sid)
+            f.write((d if isinstance(d, str) else json.dumps(d)) + "\n")
+bad = lambda ts, mid: turn(ts, mid, {"input_tokens": "lots"})
+write("oc-transcript.jsonl", M)
+write("oc-b/%s.jsonl" % s1, M, sid=None)                         # covered by its basename alone
+write("oc-s2.jsonl", M, sid=s2)                                    # (B) only another session's transcript
+write("oc-wrong.jsonl", [M[0], M[5], dict(M[0], timestamp="2026-10-14T11:00:01.000Z")])   # (D) no main-session turn
+write("oc-f4a.jsonl", M[:7] + [bad("2026-10-14T10:07:00.000Z", "m-bad"), bad("2026-10-14T11:05:00.400Z", "m2")] + M[7:])
+write("oc-f4b.jsonl", M + [bad("2026-10-14T12:10:00.000Z", "m-bad2")])
+write("oc-f4c.jsonl", M + ["this line is not json {"])
+write("oc-f4d.jsonl", M + [turn("yesterday", "m-nots", {"input_tokens": 5})])
+write("oc-l8empty.jsonl", M[:-1])                                 # (B-149) L8's window holds no main-session turn
+# F-014: usage.iterations. The top-level usage sums the "message" iterations only, and its breakdown is not their sum.
+it = lambda typ, i, o, cr=0, cw=0, h1=0, m5=0, **kw: dict({"type": typ, "input_tokens": i, "output_tokens": o, "cache_read_input_tokens": cr,
+    "cache_creation_input_tokens": cw, "cache_creation": {"ephemeral_1h_input_tokens": h1, "ephemeral_5m_input_tokens": m5}}, **kw)
+def iturn(ts, mid, top, its, **kw):
+    return turn(ts, mid, dict(top, iterations=its), **kw)
+adv = iturn("2026-10-14T11:05:00.500Z", "m2", {"input_tokens": 2000000, "output_tokens": 0},       # L4: sonnet + a fable advisor call
+            [it("message", 2000000, 0), it("advisor_message", 536924, 23111, model="claude-fable-5-1")])
+two = iturn("2026-10-14T13:25:00.000Z", "m8", {"input_tokens": 1500, "output_tokens": 150, "cache_read_input_tokens": 1000000,
+            "cache_creation_input_tokens": 500000, "cache_creation": {"ephemeral_1h_input_tokens": 200000, "ephemeral_5m_input_tokens": 0}},
+            [it("message", 1000, 100, 0, 200000, 200000, 0), it("message", 500, 50, 1000000, 300000, 100000, 200000),
+             it("future_kind", 10, 0)])                                                                # L7; an unknown type still counts
+empty = dict(M[9], message=dict(M[9]["message"], usage=dict(M[9]["message"]["usage"], iterations=[])))   # L6: [] = top-level usage
+write("oc-it.jsonl", [adv if d.get("message", {}).get("id") == "m2" else two if d.get("message", {}).get("id") == "m8"
+                      else empty if d.get("message", {}).get("id") == "m6" else d for d in M])
+write("oc-itbad.jsonl", M + [
+    iturn("2026-10-14T10:07:00.000Z", "m-badit1", {"input_tokens": 5, "output_tokens": 5}, [it("message", 5, 5), it("message", -1, 0)]),
+    iturn("2026-10-14T11:05:00.600Z", "m-badit2", {"input_tokens": 5, "output_tokens": 5}, [it("advisor_message", 5, 5, model=5)]),
+    iturn("2026-10-14T13:26:00.000Z", "m-badit3", {"input_tokens": 5, "output_tokens": 5}, {"type": "message", "input_tokens": 5}),
+    iturn("2026-10-14T14:03:00.000Z", "m-badit4", {"input_tokens": 5, "output_tokens": 5}, [it("message", 5, 5, 0, 10, 8, 8)])])
+# (B-146) the auto-located copy also holds a sidechain line of another session: that is no evidence the session was read
+with open(os.path.join(w, "oc-side2.jsonl"), "w") as f:
+    for d in M:
+        f.write(json.dumps(dict(d, sessionId=s1) if d.get("type") in ("user", "assistant") else d) + "\n")
+    f.write(json.dumps(turn("2026-10-14T11:04:00.000Z", "m-side2", {"input_tokens": 9, "output_tokens": 9}, isSidechain=True, sessionId=s2)) + "\n")
+PY
+ocj() { env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-nohome" bash "$REPORT" --state "$OC" --per-task "$@" 2>&1; }
+mkdir -p "$WORK/oc-nohome"
+OCJ="$(ocj --json --transcript "$OCT" --transcript "$WORK/./oc-transcript.jsonl")" || fail "orchestrator-cost: report.sh --per-task --transcript failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+micro = lambda x: int(round(x * 1e6))
+a, b, c, l6, l7, l8 = by[3], by[4], by[5], by[6], by[7], by[8]
+assert a["orchestrator_tokens"] == {"input": 1000000, "output": 100000, "cache_read": 10, "cache_write": 20}, a
+assert a["orchestrator_tokens_total"] == 1100030 and a["orchestrator_turns"] == 1, a   # the duplicate m1 line counts once
+assert a["orchestrator_usd"] is not None and micro(a["orchestrator_usd"]) == 4500078 and a["orchestrator_na"] is None, a
+assert b["orchestrator_tokens_total"] == 2000000 and micro(b["orchestrator_usd"]) == 6000000 and b["orchestrator_turns"] == 1, b
+# unpriced model: usd null, tokens kept
+assert c["orchestrator_usd"] is None and c["orchestrator_tokens_total"] == 110 and c["orchestrator_unpriced_turns"] == 1, c
+# 1h cache writes: 600000 at 2x input (6.0/M), 300000 5m + 100000 remainder at cache_write (3.75/M), 1000 input at 3.0/M
+assert l6["orchestrator_tokens"]["cache_write"] == 1000000 and l6["orchestrator_turns"] == 1, l6
+assert l6["orchestrator_usd"] is not None and micro(l6["orchestrator_usd"]) == 3000 + 3600000 + 1500000, l6
+assert l7["orchestrator_usd"] is not None and micro(l7["orchestrator_usd"]) == 4500 and l7["orchestrator_turns"] == 1, l7
+assert l8["orchestrator_tokens_total"] == 1000 and micro(l8["orchestrator_usd"]) == 3000 and l8["orchestrator_turns"] == 1, l8
+# usd null with orchestrator_na null: tokens measured, price unknown (orchestrator_unpriced_turns says why)
+assert c["orchestrator_na"] is None and c["orchestrator_advisor_turns"] == 0 and a["orchestrator_advisor_turns"] == 0, (c, a)
+assert T["orchestrator_unpriced_turns"] == 1 and T["orchestrator_advisor_turns"] == 0 and T["transcript_skipped_lost"] == 0, T
+# unattributed: m3 (no window) and m7 (in the overlap of L6 and L7)
+assert T["orchestrator_unattributed_tokens"] == 660 and T["orchestrator_unattributed_turns"] == 2, T
+assert T["orchestrator_unattributed_usd"] is not None and micro(T["orchestrator_unattributed_usd"]) == 600 * 3 + 60 * 15, T
+assert T["transcript_skipped"] == 0 and T["transcript_skipped_undated"] == 0, T
+assert T["transcript_sidechain_turns"] == 1 and T["transcript_deduped"] == 1, T   # the same file twice is read once
+assert micro(T["orchestrator_usd"]) == 4500078 + 6000000 + 5103000 + 4500 + 3000 and T["orchestrator_usd_unknown_tasks"] == 1, T
+assert T["orchestrator_status"] == "measured" and T["transcript_sessions_missing"] == [] and T["transcript_unreadable"] == [], T
+assert len(T["transcripts"]) == 1 and T["transcripts"][0].endswith("oc-transcript.jsonl"), T
+# the delegated figures are untouched, and the ledger rows outside any task stay a separate figure
+assert a["usd"] == 0.25 and a["tokens_total"] == 15 and T["usd_unrouted"] == 0, (a, T)
+' || fail "orchestrator-cost: --transcript JSON is wrong (exact USD incl. 1h cache writes, unpriced model, overlap to unattributed, realpath dedupe): $OCJ"
+OCX="$(ocj --transcript "$OCT")"
+has '^REPORT_TASK: task=L3 .* usd=0.2500 review_rounds=0 outcome=no-verdict orchestrator_tokens=1100030 orchestrator_usd=4.5001$' "$OCX" \
+  && has '^REPORT_TASK: task=L4 .* orchestrator_tokens=2000000 orchestrator_usd=6.0000$' "$OCX" \
+  && has '^REPORT_TASK: task=L5 .* orchestrator_tokens=110 orchestrator_usd=n/a$' "$OCX" \
+  && has '^REPORT_TASK: task=L6 .* orchestrator_tokens=1001000 orchestrator_usd=5.1030$' "$OCX" \
+  && has '^REPORT_TASK: task=L8 .* orchestrator_tokens=1000 orchestrator_usd=0.0030$' "$OCX" \
+  && has '^REPORT_ORCHESTRATOR: usd=15.6106 (1 task(s) n/a; a lower bound: .*unattributed (.*) usd=0.0027 tokens=660 turns=2; skipped=0 line(s); sidechain turns excluded=1 .*deduped=1; turns with an unpriced model=1 (.*), with an advisor call=0;' "$OCX" \
+  && ! has '^REPORT_ORCHESTRATOR_WARNING' "$OCX" \
+  || fail "orchestrator-cost: text output is wrong: $OCX"
+# coverage by basename: <uuid>.jsonl with no sessionId on its lines covers that ledger session
+OCJ="$(ocj --json --transcript "$OCB/$OCU1.jsonl")" || fail "orchestrator-cost: basename-covered run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+assert by[3]["orchestrator_tokens_total"] == 1100030 and T["transcript_sessions_missing"] == [] and T["orchestrator_unattributed_tokens"] == 660, (by[3], T)
+' || fail "orchestrator-cost: a <session_id>.jsonl basename must cover that session: $OCJ"
+# (B) --transcript naming only another session: the ledger session is missing, its task and the unattributed bucket n/a
+OCJ="$(ocj --json --transcript "$WORK/oc-s2.jsonl")" || fail "orchestrator-cost: case B run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+assert T["transcript_sessions_missing"] == [sys.argv[1]] and T["orchestrator_status"] == "measured", T
+assert by[3]["orchestrator_usd"] is None and by[3]["orchestrator_tokens_total"] is None and sys.argv[1] in by[3]["orchestrator_na"], by[3]
+assert T["orchestrator_unattributed_usd"] is None and T["orchestrator_unattributed_tokens"] is None, T
+assert by[4]["orchestrator_tokens_total"] == 2000000, by[4]   # no UUID session on L4: still measured
+' "$OCU1" || fail "orchestrator-cost: an explicit transcript that does not cover a ledger session must make its task n/a: $OCJ"
+# (D) the wrong file: no main-session turn at all -> every figure null, a distinct status
+OCJ="$(ocj --json --transcript "$WORK/oc-wrong.jsonl")" || fail "orchestrator-cost: case D run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); T = d["totals"]
+assert T["orchestrator_status"] == "n/a (transcripts held no main-session turns)" and T["transcript_skipped"] == 0, T
+assert all(t["orchestrator_usd"] is None and t["orchestrator_tokens_total"] is None for t in d["tasks"]), d["tasks"]
+assert T["orchestrator_usd"] is None and T["orchestrator_unattributed_tokens"] is None, T
+' || fail "orchestrator-cost: a transcript with no main-session turn must give n/a, not 0: $OCJ"
+has '^REPORT_ORCHESTRATOR: n/a (transcripts held no main-session turns)' "$(ocj --transcript "$WORK/oc-wrong.jsonl")" \
+  || fail "orchestrator-cost: case D text must say n/a"
+# (B-149) a window with no main-session turn is n/a, not 0, and so is the unattributed bucket (an unseen session)
+OCJ="$(ocj --json --transcript "$WORK/oc-l8empty.jsonl")" || fail "orchestrator-cost: empty-window run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]; l8 = by[8]
+assert l8["orchestrator_usd"] is None and l8["orchestrator_tokens_total"] is None and l8["orchestrator_turns"] is None, l8
+assert l8["orchestrator_na"] == "no main-session turn in the window", l8
+assert T["orchestrator_unattributed_usd"] is None and T["orchestrator_unattributed_tokens"] is None and T["orchestrator_unattributed_turns"] is None, T
+assert by[3]["orchestrator_tokens_total"] == 1100030 and T["orchestrator_status"] == "measured" and T["orchestrator_usd_unknown_tasks"] == 2, (by[3], T)
+' || fail "orchestrator-cost: a window with no main-session turn must make the task and the unattributed bucket n/a: $OCJ"
+has '^REPORT_TASK: task=L8 .* orchestrator_tokens=n/a orchestrator_usd=n/a$' "$(ocj --transcript "$WORK/oc-l8empty.jsonl")" \
+  || fail "orchestrator-cost: an empty window must print n/a"
+# F-014: usage.iterations. L4 has a sonnet message plus a fable advisor call that the top-level usage omits: both
+# iterations' tokens, usd null (fable has no price tier), advisor turn counted. L7's turn is priced per iteration with
+# its own breakdown: 1000*3 + 100*15 + 200000 1h*6 = 1204500; 500*3 + 50*15 + 1000000*0.3 + 100000 1h*6 + 200000 5m*3.75
+# = 1652250; the unknown-type iteration 10*3 = 30 (the top-level breakdown, 1h 200000 + 5m 0, would give 2631750).
+# L6's iterations [] keep the top-level usage.
+OCJ="$(ocj --json --transcript "$WORK/oc-it.jsonl")" || fail "orchestrator-cost: iterations run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+micro = lambda x: int(round(x * 1e6))
+b, l6, l7 = by[4], by[6], by[7]
+assert b["orchestrator_tokens"] == {"input": 2536924, "output": 23111, "cache_read": 0, "cache_write": 0}, b
+assert b["orchestrator_tokens_total"] == 2560035 and b["orchestrator_turns"] == 1, b
+assert b["orchestrator_usd"] is None and b["orchestrator_na"] is None, b
+assert b["orchestrator_advisor_turns"] == 1 and b["orchestrator_unpriced_turns"] == 1, b
+assert l7["orchestrator_tokens"] == {"input": 1510, "output": 150, "cache_read": 1000000, "cache_write": 500000}, l7
+assert l7["orchestrator_usd"] is not None and micro(l7["orchestrator_usd"]) == 1204500 + 1652250 + 30, l7
+assert l7["orchestrator_advisor_turns"] == 0 and l7["orchestrator_unpriced_turns"] == 0, l7
+assert l6["orchestrator_usd"] is not None and micro(l6["orchestrator_usd"]) == 5103000 and l6["orchestrator_tokens_total"] == 1001000, l6
+assert T["orchestrator_advisor_turns"] == 1 and T["orchestrator_unpriced_turns"] == 2 and T["orchestrator_usd_unknown_tasks"] == 2, T
+assert micro(T["orchestrator_usd"]) == 4500078 + 5103000 + 1204500 + 1652250 + 30 + 3000 and T["transcript_skipped"] == 0, T
+' || fail "orchestrator-cost: usage.iterations must be counted and priced per iteration (advisor calls included, unpriced model usd null): $OCJ"
+OCIT="$(ocj --transcript "$WORK/oc-it.jsonl")"
+has '^REPORT_TASK: task=L4 .* orchestrator_tokens=2560035 orchestrator_usd=n/a$' "$OCIT" \
+  && has '^REPORT_ORCHESTRATOR: usd=.* turns with an unpriced model=2 (.*), with an advisor call=1;' "$OCIT" \
+  || fail "orchestrator-cost: iterations text output is wrong: $OCIT"
+# F-014: an unusable iteration (a negative count, a non-string model, iterations not a list, a breakdown above its total)
+# makes the turn a dated skip: its window is n/a
+OCJ="$(ocj --json --transcript "$WORK/oc-itbad.jsonl")" || fail "orchestrator-cost: invalid-iteration run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+for k in (3, 4, 7, 8):
+    assert by[k]["orchestrator_usd"] is None and by[k]["orchestrator_tokens_total"] is None, by[k]
+    assert by[k]["orchestrator_na"] == "1 unusable transcript turn(s) in the window", by[k]
+assert by[6]["orchestrator_tokens_total"] == 1001000 and by[5]["orchestrator_tokens_total"] == 110, (by[6], by[5])
+assert T["transcript_skipped"] == 4 and T["transcript_skipped_lost"] == 4 and T["transcript_skipped_undated"] == 0, T
+' || fail "orchestrator-cost: an unusable usage.iterations entry must make its window n/a: $OCJ"
+has '^REPORT_ORCHESTRATOR_WARNING: 4 transcript line(s) were not usable (.*): 4 lost (.*) and 0 duplicate(s)' "$(ocj --transcript "$WORK/oc-itbad.jsonl")" \
+  || fail "orchestrator-cost: the skipped-lines warning must count the lost lines"
+# F-004: a dated assistant turn with unusable usage makes its window n/a (one sharing a counted message.id does not)
+OCJ="$(ocj --json --transcript "$WORK/oc-f4a.jsonl")" || fail "orchestrator-cost: F-004 run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+assert by[3]["orchestrator_usd"] is None and by[3]["orchestrator_tokens_total"] is None, by[3]
+assert by[3]["orchestrator_na"] == "1 unusable transcript turn(s) in the window", by[3]
+assert by[4]["orchestrator_tokens_total"] == 2000000 and int(round(by[4]["orchestrator_usd"] * 1e6)) == 6000000, by[4]
+assert T["transcript_skipped"] == 2 and T["transcript_skipped_undated"] == 0 and T["orchestrator_unattributed_tokens"] == 660, T
+' || fail "orchestrator-cost: an unusable dated turn must make its window n/a: $OCJ"
+has '^REPORT_ORCHESTRATOR_WARNING: 2 transcript line(s) were not usable (.*): 1 lost (.*) and 1 duplicate(s) of a message.id counted' "$(ocj --transcript "$WORK/oc-f4a.jsonl")" \
+  || fail "orchestrator-cost: skipped transcript lines must be warned, lost lines apart from duplicates of a counted message"
+OCJ="$(ocj --json --transcript "$WORK/oc-f4b.jsonl")" || fail "orchestrator-cost: F-004 (no window) run failed: $OCJ"
+printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); by = {t["task"]: t for t in d["tasks"]}; T = d["totals"]
+assert T["orchestrator_unattributed_usd"] is None and T["orchestrator_unattributed_tokens"] is None, T
+assert by[3]["orchestrator_tokens_total"] == 1100030 and T["orchestrator_status"] == "measured", (by[3], T)
+' || fail "orchestrator-cost: an unusable dated turn in no window must make the unattributed bucket n/a: $OCJ"
+for f in oc-f4c oc-f4d; do
+  OCJ="$(ocj --json --transcript "$WORK/$f.jsonl")" || fail "orchestrator-cost: $f run failed: $OCJ"
+  printf '%s' "$OCJ" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); T = d["totals"]
+assert T["orchestrator_status"].startswith("n/a (1 transcript line(s) with no usable timestamp") and T["transcript_skipped_undated"] == 1, T
+assert all(t["orchestrator_usd"] is None and t["orchestrator_tokens_total"] is None for t in d["tasks"]), d["tasks"]
+assert T["orchestrator_usd"] is None and T["orchestrator_unattributed_usd"] is None and T["orchestrator_unattributed_tokens"] is None, T
+' || fail "orchestrator-cost: a skipped line with no usable timestamp ($f) must null every orchestrator figure: $OCJ"
+done
+# without --transcript and nothing to auto-locate (empty HOME, no config dir): n/a, never 0
+OCN="$(ocj --json)" || fail "orchestrator-cost: report.sh --per-task failed without a transcript: $OCN"
+printf '%s' "$OCN" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); T = d["totals"]
+for t in d["tasks"]:
+    assert t["orchestrator_usd"] is None and t["orchestrator_tokens"] is None and t["orchestrator_tokens_total"] is None, t
+for k in ("orchestrator_usd", "orchestrator_unattributed_usd", "orchestrator_unattributed_tokens", "transcript_skipped"):
+    assert T[k] is None, (k, T)
+assert T["transcripts"] == [] and T["orchestrator_status"].startswith("n/a (no transcript") and T["transcript_sessions_missing"] == [sys.argv[1]], T
+' "$OCU1" || fail "orchestrator-cost: no transcript must give null / n/a, not 0: $OCN"
+OCNT="$(ocj)"
+[ "$(printf '%s\n' "$OCNT" | grep -c '^REPORT_TASK: .* orchestrator_tokens=n/a orchestrator_usd=n/a$')" = 6 ] \
+  && has '^REPORT_ORCHESTRATOR: n/a (no transcript: .*<config>/projects (\$CLAUDE_CONFIG_DIR or ~/.claude))' "$OCNT" \
+  || fail "orchestrator-cost: text output without a transcript must print n/a: $OCNT"
+# auto-locate by session id: <config>/projects/*/<session_id>.jsonl in any project dir (here one unrelated to the cwd and
+# to the state's checkout), the UUID session_id taken from the ledger; another .jsonl in that project dir is not read
+OCR="$WORK/oc-repo"; mkdir -p "$OCR"
+OCP="$WORK/oc-home/.claude/projects/-some-other-checkout"; mkdir -p "$OCP"; cp "$WORK/oc-side2.jsonl" "$OCP/$OCU1.jsonl"; cp "$WORK/oc-f4c.jsonl" "$OCP/decoy.jsonl"
+oca() { (cd "$OCR" && env -u CLAUDE_CONFIG_DIR HOME="$WORK/oc-home" bash "$REPORT" --state "$OC" --per-task "$@" 2>&1); }
+OCA="$(oca --json)" || fail "orchestrator-cost: auto-locate run failed: $OCA"
+printf '%s' "$OCA" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); T = d["totals"]
+assert T["orchestrator_unattributed_tokens"] == 660 and T["orchestrator_status"] == "measured", T
+assert len(T["transcripts"]) == 1 and T["transcripts"][0].endswith("/-some-other-checkout/" + sys.argv[1] + ".jsonl"), T
+assert T["transcript_sessions_missing"] == [], T   # the non-UUID ledger id is ignored, not missing
+' "$OCU1" || fail "orchestrator-cost: the transcript was not auto-located by session id under another project dir: $OCA"
+# (A) a second ledger session id (on L4) with no transcript anywhere: listed missing, not fatal; L4 and the unattributed
+# bucket are n/a (that session's turns were never read), L3 (covered) is still measured. The located file holds a
+# sidechain line carrying that second session id (B-146): a subagent line does not cover a session
+python3 - "$PLUGIN_ROOT/scripts/lib" "$OC" "$OCU2" <<'PY' || fail "orchestrator-cost: could not append the second-session row"
+import sys
+sys.path.insert(0, sys.argv[1]); import ledger
+ledger.now = lambda: "2026-10-14T11:05:00Z"
+ledger.append(sys.argv[2], "verdict", {"role": "reviewer", "verdict": "APPROVE", "session_id": sys.argv[3]}, "hook",
+              route_id="r-0123456789ab-L4-1", route_mode="table", head_sha="a" * 40)
+PY
+OCM="$(oca --json)" || fail "orchestrator-cost: auto-locate run with a missing session failed: $OCM"
+printf '%s' "$OCM" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); T = d["totals"]; by = {t["task"]: t for t in d["tasks"]}
+assert T["transcript_sessions_missing"] == [sys.argv[2]], T
+assert len(T["transcripts"]) == 1 and T["transcripts"][0].endswith(sys.argv[1] + ".jsonl"), T
+assert T["orchestrator_status"] == "measured" and T["orchestrator_unattributed_tokens"] is None and T["orchestrator_unattributed_usd"] is None, T
+assert by[3]["orchestrator_tokens_total"] == 1100030, by[3]
+assert by[4]["orchestrator_tokens_total"] is None and by[4]["orchestrator_usd"] is None and sys.argv[2] in by[4]["orchestrator_na"], by[4]
+' "$OCU1" "$OCU2" || fail "orchestrator-cost: a task whose session has no transcript must be n/a, not measured, and the session listed: $OCM"
+OCMT="$(oca)"
+has "^REPORT_ORCHESTRATOR: usd=.*; sessions with no transcript=$OCU2\$" "$OCMT" \
+  && has '^REPORT_TASK: task=L4 .* orchestrator_tokens=n/a orchestrator_usd=n/a$' "$OCMT" \
+  || fail "orchestrator-cost: the REPORT_ORCHESTRATOR line must name the session ids with no transcript: $OCMT"
+# an auto-located transcript that cannot be opened is listed (unreadable, its session missing), not a traceback
+if [ "$(id -u)" != 0 ]; then
+  OCQ="$WORK/oc-home/.claude/projects/-third"; mkdir -p "$OCQ"; cp "$OCT" "$OCQ/$OCU2.jsonl"; chmod 000 "$OCQ/$OCU2.jsonl"
+  OCM="$(oca --json)" || { chmod 600 "$OCQ/$OCU2.jsonl"; fail "orchestrator-cost: an unreadable auto-located transcript is fatal: $OCM"; }
+  chmod 600 "$OCQ/$OCU2.jsonl"
+  printf '%s' "$OCM" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); T = d["totals"]; by = {t["task"]: t for t in d["tasks"]}
+assert T["transcript_unreadable"] == [sys.argv[1]] and T["transcript_sessions_missing"] == [sys.argv[2]], T
+assert by[4]["orchestrator_tokens_total"] is None and by[3]["orchestrator_tokens_total"] == 1100030, by
+' "$OCQ/$OCU2.jsonl" "$OCU2" || fail "orchestrator-cost: an unreadable transcript must be listed and its session missing: $OCM"
+  mv "$OCQ/$OCU2.jsonl" "$OCQ/was-unreadable.txt"
+fi
+# a missing --transcript file and --transcript without --per-task are usage errors
+[ "$(bash "$REPORT" --state "$OC" --per-task --transcript "$WORK/nope.jsonl" >/dev/null 2>&1; echo $?)" = 2 ] || fail "orchestrator-cost: a missing transcript file is not a usage error"
+[ "$(bash "$REPORT" --state "$OC" --transcript "$OCT" >/dev/null 2>&1; echo $?)" = 2 ] || fail "orchestrator-cost: --transcript without --per-task is not a usage error"
+pass "orchestrator-cost: report.sh --per-task --transcript PATH (repeatable, deduped by realpath) attributes main-session assistant turns to the task whose route window (first route ts .. last row ts, to the end of that second) holds them, exact USD by message.model (1-hour cache writes at 2x input, the rest of cache_creation at the cache_write rate; an unpriced model gives usd null with tokens kept); usage.iterations: tokens over every iteration (advisor calls the top-level usage omits, unknown types), USD per iteration by its own model and breakdown, an advisor call on an unpriced model gives usd null with tokens kept and orchestrator_advisor_turns, an unusable iteration makes its window n/a; turns in no window or in two overlapping windows go to unattributed; user/summary/type-less lines are ignored, sidechain turns excluded, a duplicate message id counts once; delegated usd / tokens unchanged. n/a, never 0 or partial: no transcript; a task whose ledger session id no read transcript covers (by <uuid>.jsonl basename or sessionId), with the unattributed bucket, in --transcript and auto-locate mode; a window with no main-session turn (with the unattributed bucket); transcripts with no main-session turn (distinct status); a sidechain line's sessionId covers no session; a dated turn with unusable usage (its window, or unattributed when in no window; not when its message.id is counted); a line with no usable timestamp (every figure). Auto-locate finds <config>/projects/*/<uuid>.jsonl in any project dir, ignores non-UUID ids, lists ids with no file or an unreadable file (transcript_unreadable), not fatal"
 
 echo ""
 echo "smoke passed: $N/$N checks"

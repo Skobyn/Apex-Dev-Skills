@@ -1,8 +1,40 @@
 # SCOPE interview — feedback prompt library
 
-Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (one per round) so the user can answer iteratively. Don't batch everything into one giant question — that loses signal.
+Use `AskUserQuestion` for each round. Send Round 0 (intent) and rounds 1–6 as separate questions (one per round) so the user can answer iteratively. The one exception is bugfix, which asks Rounds 1 and 3 as one combined question. Don't batch everything into one giant question — that loses signal.
+
+## Rounds per scope
+
+The plan's scope (`bugfix`, `poc` or `feature`, set with `start.sh --scope`) decides which rounds run. Each round heading below says which scopes run it. Round 0 (Intent) runs first and is not one of the numbered SCOPE rounds, so the counts below do not include it.
+
+| Scope | Round 0 (Intent, not counted) | Rounds asked |
+|---|---|---|
+| `bugfix` | only if the user asks | 2 rounds: Round 1 (scope) and Round 3 (done means), asked as one combined question, then Round 6 (gate) |
+| `poc` | yes | 4 rounds: Rounds 1, 2, 3 and 6 |
+| `feature` (default) | yes | 6 rounds: Rounds 1 to 6 |
+
+Skip the rounds a scope doesn't run. Don't ask them to fill the gap.
+
+## Round 0: Intent
+
+**Runs for**: poc, feature. Bugfix only if the user asks for it.
+
+**Counts toward the 2/4/6 rounds?** No. Intent is a round-0 step before Round 1; the round counts above are the SCOPE rounds only.
+
+**Question**: "In your own words: what is the problem, who is it for, why now, and what is this explicitly not trying to solve?"
+
+**Header**: `Intent`
+
+**Options** (free text; use "Other" for every answer, or one `AskUserQuestion` per heading below if the user prefers):
+1. **Problem** — "What hurts today? One or two short paragraphs, no solution yet."
+2. **Who it's for** — "Who feels it, and what do they do instead?"
+3. **Why now** — "What changed, or what breaks if this waits?"
+4. **Non-goals** — "What is out of bounds?"
+
+**After the answer**: write the answers to `.claude/tasks/<slug>-intent.md`, following [intent-template.md](intent-template.md) (headings `## Problem`, `## Who it's for`, `## Why now`, `## Non-goals`). Do this *before* running `start.sh`. `start.sh` copies the `## Problem` text into the ADR's "Why this matters" section and never overwrites an existing intent file.
 
 ## Round 1: Scope
+
+**Runs for**: bugfix, poc, feature
 
 **Question**: "What's the smallest version of this that's still useful? What's explicitly out-of-scope for v1?"
 
@@ -15,6 +47,8 @@ Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (o
 4. **Other** — user types their own framing
 
 ## Round 2: Constraints
+
+**Runs for**: poc, feature (not bugfix)
 
 **Question**: "What can't change? Things that are non-negotiable — existing data, partner contracts, auth boundaries, surface parity, perf budgets."
 
@@ -33,6 +67,8 @@ Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (o
 
 ## Round 3: Success criteria
 
+**Runs for**: bugfix (combined with Round 1), poc, feature
+
 **Question**: "How will we know this shipped correctly? Try to make each criterion runnable — a test, a metric, a curl command."
 
 **Header**: `Done means`
@@ -44,6 +80,8 @@ Use `AskUserQuestion` for each round. Send rounds 1–6 as separate questions (o
 4. **All of the above** — combine the structured criteria
 
 ## Round 4: Ownership
+
+**Runs for**: feature only
 
 **Question**: "Who needs to sign off, and who's implementing? Affects how we wire approval gates."
 
@@ -59,6 +97,8 @@ Follow-up if option 2 or 3: ask for reviewer email address(es).
 
 ## Round 5: Execution preference
 
+**Runs for**: feature only
+
 **Question**: "When the plan runs, how should each phase dispatch work?"
 
 **Header**: `Swarm mode`
@@ -72,6 +112,8 @@ Follow-up if option 2 or 3: ask for reviewer email address(es).
 The default flows to the plan's `Execution Strategy` section as the "no-override" behavior; individual phases can still override via the `Swarm:` line.
 
 ## Round 6: Gate preference
+
+**Runs for**: bugfix, poc, feature
 
 **Question**: "Between phases, should the system advance automatically or wait for me?"
 
@@ -99,7 +141,7 @@ If the user gives "Other" answers in their own words, paste their exact phrasing
 
 ## Anti-patterns
 
-- **Don't batch all 6 rounds into one question.** The user can't think clearly about scope and gates at the same time. One round per `AskUserQuestion` invocation.
+- **Don't batch all 6 rounds into one question.** The user can't think clearly about scope and gates at the same time. One round per `AskUserQuestion` invocation. The bugfix exception is the combined Rounds 1 and 3 question.
 - **Don't draft anything before round 6 completes.** Drafting too early signals "I've already decided" and disengages the user from the decision.
 - **Don't accept vague success criteria.** If they say "the feature works," push back with "what command would you run to prove that?" until you get a check.
 - **Don't skip round 4** even when the user is clearly solo. The act of saying "solo" out loud commits them to also being the reviewer, which informs gate-tag defaults.

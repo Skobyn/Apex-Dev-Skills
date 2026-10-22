@@ -66,6 +66,7 @@ function fmtCompact(v) {
 }
 function fmtUSD(v, d) {
   if (v === null || v === undefined) return '—';
+  if (d === undefined && v > 0 && v < 0.01) return '<$0.01';           // a known non-zero cost never reads as $0.00
   const digits = d ?? (Math.abs(v) >= 1000 ? 0 : 2);
   return '$' + nf(digits, digits).format(v);
 }
@@ -392,11 +393,12 @@ function confirmDialog({ title, lede, body, confirmLabel, kind = 'primary' }) {
 }
 
 // ------------------------------------------------------------- widgets --
-function seg(options, current, onPick, label) {
+function seg(options, current, onPick, label, opts = {}) {
   const g = h('div', { class: 'seg', role: 'group', 'aria-label': label });
   for (const o of options) {
     g.append(h('button', {
       type: 'button', text: o.label, 'aria-pressed': String(o.value === current),
+      'data-fkey': opts.fkey ? `${opts.fkey}-${o.value}` : null,
       onclick: () => onPick(o.value),
     }));
   }
@@ -436,9 +438,10 @@ function deltaEl(value, prev, goodWhenUp) {
     h('span', { class: 'sr-only', text: ` ${up ? 'up' : 'down'} vs previous window, ${good ? 'better' : 'worse'}` }));
 }
 function tableWrap(headers, rows, opts = {}) {
-  const thead = h('thead', null, h('tr', null, headers.map((c) => h('th', { scope: 'col', class: c.num ? 'num' : null, text: c.label ?? c }))));
+  const thead = h('thead', null, h('tr', null, headers.map((c) => h('th', { scope: 'col', class: c.num ? 'num' : null, title: c.title || null, text: c.label ?? c }))));
   const tbody = h('tbody', null, rows);
-  return h('div', { class: ['table-wrap', opts.class], tabindex: opts.focusable ? '0' : null, role: opts.focusable ? 'region' : null, 'aria-label': opts.label },
+  // opts.fkey: a stable key so the 5 s Progress poll can give focus and horizontal scroll back to the rebuilt region
+  return h('div', { class: ['table-wrap', opts.class], tabindex: opts.focusable ? '0' : null, role: opts.focusable ? 'region' : null, 'aria-label': opts.label, 'data-fkey': opts.fkey || null },
     h('table', null, opts.caption ? h('caption', { class: 'sr-only', text: opts.caption }) : null, thead, tbody));
 }
 function td(content, cls) { return h('td', { class: cls }, content); }
@@ -761,10 +764,12 @@ const TABS = [
   { id: 'overview', label: 'Overview', ico: '◎' },
   { id: 'metrics', label: 'Metrics', ico: '▤' },
   { id: 'progress', label: 'Progress', ico: '▸' },
+  { id: 'watched', label: 'Watched', ico: '◔' },
   { id: 'knobs', label: 'Knobs', ico: '⚙' },
   { id: 'keys', label: 'Keys', ico: '⚿' },
   { id: 'audit', label: 'Audit', ico: '☰' },
 ];
+const SCOPES = ['all', 'bugfix', 'poc', 'feature'];
 const ui = {
   tab: TABS.some((t) => t.id === store.get('tab')) ? store.get('tab') : 'overview',
   repo: store.get('repo', 'all'),
@@ -774,6 +779,9 @@ const ui = {
   metrics: null,
   metricsKey: null,
   expanded: new Set(),
+  intentOpen: new Set(),                 // `${r.id}:${p.hash}` of each intent <details> the user opened; survives the 5 s poll
+  scope: SCOPES.includes(store.get('scope')) ? store.get('scope') : 'all',
+  progress: null,
   auditFocus: null,
 };
 let renderToken = 0;
@@ -823,7 +831,7 @@ async function renderView() {
   view.setAttribute('aria-busy', 'true');
   clear(view);
   view.append(h('div', { class: 'loading', text: 'Loading…' }));
-  const views = { overview: viewOverview, metrics: viewMetrics, progress: viewProgress, knobs: viewKnobs, keys: viewKeys, audit: viewAudit };
+  const views = { overview: viewOverview, metrics: viewMetrics, progress: viewProgress, watched: viewWatched, knobs: viewKnobs, keys: viewKeys, audit: viewAudit };
   try {
     const nodes = await views[ui.tab]();
     if (token !== renderToken) return;
@@ -1070,9 +1078,40 @@ async function viewProgress() {
   const data = await apiGet('/api/progress');
   return progressNodes(data);
 }
+// Rebuild the Progress view in place (scope click, 5 s poll) without losing the reader's place: the page scroll,
+// the focused control (matched by data-fkey) and the horizontal scroll of every keyed region (wide tables).
+function redrawProgress(data) {
+  const view = document.getElementById('view');
+  const active = document.activeElement;
+  const fkey = active?.getAttribute?.('data-fkey');
+  const scrolled = new Map();
+  for (const n of view.querySelectorAll ? view.querySelectorAll('[data-fkey]') : []) {
+    if (n.scrollLeft) scrolled.set(n.getAttribute('data-fkey'), n.scrollLeft);
+  }
+  const y = window.scrollY;
+  clear(view);
+  append(view, [progressNodes(data)]);
+  window.scrollTo(0, y);
+  const find = (k) => view.querySelector(`[data-fkey="${CSS.escape(k)}"]`);
+  for (const [k, x] of scrolled) { const n = find(k); if (n) n.scrollLeft = x; }
+  // a scope change can hide the focused region: focus then falls back to the pressed scope button, never off the page
+  if (fkey) (find(fkey) || find(`scope-${ui.scope}`))?.focus({ preventScroll: true });
+}
+function rerenderProgress() { redrawProgress(ui.progress); }
+function scopeFilter() {
+  const opts = SCOPES.map((v) => ({ value: v, label: v === 'all' ? 'All scopes' : v }));
+  const g = seg(opts, ui.scope, (v) => { ui.scope = v; store.set('scope', v); rerenderProgress(); }, 'Filter plans by scope', { fkey: 'scope' });
+  return h('div', { class: 'field scope-filter' }, h('span', { class: 'eyebrow', text: 'Scope' }), g);
+}
+function scopeBadge(scope) {
+  const v = typeof scope === 'string' && scope ? scope : 'n/a';
+  return h('span', { class: ['chip', 'scope-badge', `scope-${v}`], 'aria-label': `Scope: ${v}`, title: `Plan scope: ${v}`, text: v });
+}
 function progressNodes(data) {
+  ui.progress = data;
   const out = [pageHead('Progress', 'Read-only view of every plan and task. The console never starts work; it can only stop and resume it.',
-    h('span', { class: 'muted small', text: 'Refreshes every 5 s while this tab is visible' }))];
+    h('span', { class: 'muted small', text: 'Refreshes every 5 s while this tab is visible' })),
+  h('div', { class: 'filters' }, scopeFilter())];
   if (!data.repos?.length) out.push(h('div', { class: 'card empty', text: 'No repos registered yet.' }));
   for (const r of data.repos || []) out.push(repoProgress(r));
   return out;
@@ -1093,8 +1132,10 @@ function repoProgress(r) {
       ? h('button', { class: 'btn', type: 'button', 'data-fkey': `halt-${r.id}`, text: 'Resume', onclick: () => resumeRepo(r) })
       : h('button', { class: 'btn btn-danger', type: 'button', 'data-fkey': `halt-${r.id}`, text: 'Stop all work', onclick: () => haltRepo(r) }));
   const card = h('section', { class: 'card', 'aria-label': r.name }, head);
+  const plans = (r.plans || []).filter((p) => ui.scope === 'all' || p.scope === ui.scope);
   if (!r.plans?.length) card.append(h('p', { class: 'plan empty', text: 'No plans in this repo yet.' }));
-  for (const p of r.plans || []) card.append(planEl(r, p, lock));
+  else if (!plans.length) card.append(h('p', { class: 'plan empty', text: `No ${ui.scope} plans in this repo.` }));
+  for (const p of plans) card.append(planEl(r, p, lock));
   if (r.adhoc?.length) {
     card.append(h('div', { class: 'plan' }, h('h3', { class: 'eyebrow', text: 'Ad-hoc routes' }),
       tableWrap(['Id', { label: 'Routes', num: true }, { label: 'Cost', num: true }, 'Last activity'],
@@ -1108,30 +1149,35 @@ function planEl(r, p, lock) {
   const open = ui.expanded.has(key);
   const pct = p.total ? p.done / p.total : 0;
   const listId = `tasks-${r.id}-${p.hash}`;
+  const costId = `cost-${r.id}-${p.hash}`;
   const bar = h('span');
   bar.style.width = `${Math.round(pct * 100)}%`;
   const toggle = h('button', {
-    class: 'btn btn-sm expander', type: 'button', 'aria-expanded': String(open), 'aria-controls': listId, 'data-fkey': `exp-${key}`,
+    class: 'btn btn-sm expander', type: 'button', 'aria-expanded': String(open), 'aria-controls': `${listId} ${costId}`, 'data-fkey': `exp-${key}`,
     text: open ? `Hide ${p.tasks?.length ?? 0} tasks` : `Show ${p.tasks?.length ?? 0} tasks`,
   });
   const running = lock && lock.id === p.hash ? lock.line : null;
+  // delegated cost lives in the cost table below (one place for every cost figure)
   const tasks = tableWrap(
-    [{ label: 'Line', num: true }, 'Task', 'Status', 'Tier', { label: 'Rounds', num: true }, { label: 'Attempts', num: true }, 'Completed', { label: 'Cost', num: true }],
+    [{ label: 'Line', num: true }, 'Task', 'Status', 'Tier', { label: 'Rounds', num: true }, { label: 'Attempts', num: true }, 'Completed'],
     (p.tasks || []).map((t) => h('tr', null,
       td(String(t.line), 'num'),
-      td(h('span', null, t.title, running === t.line ? h('span', { class: 'chip chip-accent', text: 'running' }) : null), 'task-title'),
+      td(h('span', null, plainTitle(t.title), running === t.line ? h('span', { class: 'chip chip-accent', text: 'running' }) : null), 'task-title'),
       td(taskStatusEl(t.status)),
       td(t.tier ? h('span', { class: `tier tier-${t.tier}`, text: t.tier, 'aria-label': `Tier ${t.tier}` }) : '—'),
       td(String(t.rounds ?? '—'), 'num'),
       td(String(t.attempts ?? '—'), 'num'),
-      td(t.completed_at ? timeEl(t.completed_at, 'abs') : '—'),
-      td(fmtUSD(t.usd), 'num'))),
+      td(t.completed_at ? timeEl(t.completed_at, 'abs') : '—'))),
     { caption: `Tasks in ${p.name}`, class: 'task-table', label: `Tasks in ${p.name}` });
   tasks.id = listId;
   tasks.hidden = !open;
+  const costTable = costTableEl(p, key);
+  costTable.id = costId;
+  costTable.hidden = !open;
   toggle.addEventListener('click', () => {
     const now = tasks.hidden;
     tasks.hidden = !now;
+    costTable.hidden = !now;
     toggle.setAttribute('aria-expanded', String(now));
     toggle.textContent = `${now ? 'Hide' : 'Show'} ${p.tasks?.length ?? 0} tasks`;
     if (now) ui.expanded.add(key); else ui.expanded.delete(key);
@@ -1142,6 +1188,7 @@ function planEl(r, p, lock) {
         h('div', { class: 'row' }, h('span', { class: 'plan-name', text: p.name }),
           p.enforced ? h('span', { class: 'chip chip-accent', title: 'Dispatch hooks enforce routing for this plan', text: 'enforced' }) : h('span', { class: 'chip', text: 'not enforced' }),
           p.halted ? statusEl('off', 'Halted') : null,
+          scopeBadge(p.scope),
           p.landed ? statusEl('good', 'Landed') : null),
         h('div', { class: 'plan-path', text: p.path })),
       h('span', { class: 'muted small' }, 'Last activity ', timeEl(p.last_activity))),
@@ -1149,10 +1196,214 @@ function planEl(r, p, lock) {
     h('div', { class: 'progress-label', text: `${p.done} of ${p.total} tasks done · ${fmtPct(pct)}` }),
     h('div', { class: 'plan-stats' },
       h('span', null, 'Phase ', h('span', { class: 'v', text: p.phase || '—' })),
-      h('span', null, 'Cost ', h('span', { class: 'v', text: fmtUSD(p.usd) })),
+      h('span', { title: 'Sum of the priced ledger rows of this plan. It can differ from the cost table’s Delegated total, which sums the per-task figures of report.sh --per-task.' },
+        'Cost (ledger rows) ', h('span', { class: 'v', text: p.usd === null || p.usd === undefined ? NA : fmtUSD(p.usd) })),
       h('span', null, 'Open findings ', h('span', { class: 'v', text: String(p.open_findings ?? '—') })),
       p.halt_reason ? h('span', null, 'Halt reason ', h('span', { class: 'v', text: p.halt_reason })) : null),
-    toggle, tasks);
+    intentEl(p, key),
+    p.landed ? operatePanel(p, key) : null,
+    toggle, tasks, costTable);
+}
+
+// ----------------------------------------------- scope, intent, operate, cost --
+// null / missing is `n/a` (or the word `unmeasured`), never 0 and never blank.
+const NA = 'n/a';
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+const sig3 = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 3 });
+function naText(v) { return v === null || v === undefined || v === '' ? NA : String(v); }
+function naInt(v) { return Number.isInteger(v) ? String(v) : NA; }
+// |v| < 1 keeps significant digits, so 0.001 and 0.0004 never read as 0
+function naVal(v) {
+  if (!isNum(v)) return NA;
+  if (v !== 0 && Math.abs(v) < 1) return sig3.format(v);
+  return fmtNum(v, Math.abs(v) < 10 && v % 1 ? 2 : 1);
+}
+function naUSD(v, why) {
+  const ok = isNum(v);
+  return h('span', { class: ok ? null : 'val-na', title: ok ? null : why, text: ok ? fmtUSD(v) : NA });
+}
+// Task titles come from plan markdown: show them as plain text, emphasis markers dropped (never rendered as HTML).
+function plainTitle(t) { return t === null || t === undefined || t === '' ? NA : String(t).replace(/\*\*|`/g, ''); }
+// at-close lists: an array is known (empty = none); anything else is unknown, n/a
+function atCloseList(a) { return Array.isArray(a) ? (a.length ? a.join(', ') : 'none') : NA; }
+function intentEl(p, key) {
+  const it = p.intent;
+  if (!it) return h('p', { class: 'small muted intent-none', text: 'Intent: n/a (no intent file for this plan).' });
+  // an intent file that exists but could not be read: say why, not four n/a rows
+  if (it.error) return h('p', { class: 'small muted intent-none', text: `Intent: n/a (${it.error})${it.file ? ` · ${it.file}` : ''}` });
+  const rows = [['Problem', it.problem], ['Who', it.who], ['Why now', it.why_now], ['Non-goals', it.non_goals]];
+  const d = h('details', { class: 'intent', 'aria-label': `Intent of ${p.name}`, open: ui.intentOpen.has(key) },
+    h('summary', { 'data-fkey': `intent-${key}` }, 'Intent', it.problem ? h('span', { class: 'muted', text: ` — ${String(it.problem).slice(0, 90)}` }) : null),
+    h('dl', null, rows.map(([k, v]) => [h('dt', { text: k }), h('dd', { text: naText(v) })])),
+    it.file ? h('p', { class: 'plan-path', text: it.file }) : null);
+  d.addEventListener('toggle', () => { if (d.open) ui.intentOpen.add(key); else ui.intentOpen.delete(key); });
+  return d;
+}
+// One cost cell: USD, an optional note, and the tokens as visible text. Both unknown reads as a single n/a;
+// tokens === false is a USD-only figure (usd_unrouted) with no token line at all. note follows the USD figure, tokNote the token one.
+function costCell(usd, tokens, why, note, tokNote) {
+  const okU = isNum(usd);
+  const okT = isNum(tokens);
+  return td(h('span', null,
+    h('span', { class: okU ? null : 'val-na', title: okU ? null : why, text: okU ? fmtUSD(usd) : NA }),
+    note ? h('span', { class: 'muted small', text: note }) : null,
+    tokens === false ? null : okT ? h('span', { class: 'cost-tokens', text: `${fmtCompact(tokens)} tokens${tokNote || ''}` })
+      : okU ? h('span', { class: 'cost-tokens val-na', text: `${NA} tokens` }) : null), 'num');
+}
+function costTableEl(p, key) {
+  const c = p.cost || {};
+  const ts = p.tasks || [];
+  const na = typeof c.status === 'string' && c.status !== 'measured' ? c.status : null;
+  const plural = (n) => ` (${n} task${n === 1 ? '' : 's'} ${NA})`;
+  const sum = (k) => { const v = ts.map((t) => t[k]).filter(isNum); return v.length ? v.reduce((a, b) => a + b, 0) : null; };
+  const orchWhy = (t) => t.orchestrator_na || (isNum(t.orchestrator_tokens) ? 'Tokens measured, price unknown' : 'Orchestrator cost not available');
+  const rows = ts.map((t) => h('tr', null,
+    td(h('span', { text: `${t.line}  ${plainTitle(t.title)}` }), 'task-title'),
+    costCell(t.usd, t.tokens, 'Delegated cost not recorded (background agents record no usage)'),
+    costCell(t.orchestrator_usd, t.orchestrator_tokens, orchWhy(t)),
+    td(h('span', { class: 'muted', title: 'Unattributed orchestrator turns are plan-level, see the total row', text: '—' }), 'num')));
+  // a total over the known figures says how many tasks it leaves out; a task never routed has no cost to leave out
+  const dUnknown = Number.isInteger(c.delegated_unknown_tasks) ? c.delegated_unknown_tasks : 0;
+  const oUnknown = ts.filter((t) => !isNum(t.orchestrator_usd) && t.orchestrator_na !== 'no routed task').length;
+  // token sums leave out their own unknowns, counted apart from the USD ones and shown whatever the USD total is
+  const tokUnknown = (k) => ts.filter((t) => !isNum(t[k]) && t.orchestrator_na !== 'no routed task').length;
+  const tokNote = (k) => { const n = tokUnknown(k); return n ? plural(n) : null; };
+  rows.push(h('tr', { class: 'total-row' },
+    td(h('strong', { text: 'Plan total' })),
+    costCell(c.delegated_usd, sum('tokens'), na || 'Delegated cost not available', isNum(c.delegated_usd) && dUnknown ? plural(dUnknown) : null, tokNote('tokens')),
+    costCell(c.orchestrator_usd, sum('orchestrator_tokens'), na || 'Orchestrator cost not available', isNum(c.orchestrator_usd) && oUnknown ? plural(oUnknown) : null, tokNote('orchestrator_tokens')),
+    costCell(c.orchestrator_unattributed_usd, c.orchestrator_unattributed_tokens,
+      na || (isNum(c.orchestrator_unattributed_tokens) ? 'Tokens measured, price unknown' : 'Not available: a session or turn could not be placed in a task window'))));
+  // usd_unrouted is delegated ledger spend outside every task, a different figure from the orchestrator's unattributed turns
+  if (p.cost && c.usd_unrouted !== 0 && c.usd_unrouted !== undefined) {
+    rows.push(h('tr', { class: 'unrouted-row' },
+      td(h('span', { title: 'Delegated ledger rows that belong to no task of this plan; not included in the Plan total' }, 'Delegated, outside any task')),
+      costCell(c.usd_unrouted, false, na || 'Not available'),
+      td('—', 'num'), td('—', 'num')));
+  }
+  return tableWrap(['Task', { label: 'Delegated', num: true }, { label: 'Orchestrator', num: true },
+    { label: 'Orchestrator, unattributed', num: true, title: 'Main-session turns inside no single task window (not the delegated spend outside any task)' }], rows,
+  { caption: `Cost per task in ${p.name}`, class: 'task-table cost-table', label: `Cost per task in ${p.name}`, focusable: true, fkey: `cost-${key}` });
+}
+function flagChip(text, why) { return h('span', { class: 'chip check-flag', title: why, text }); }
+function latestCell(c) {
+  if (c.unmeasured === true || c.last_status === 'unmeasured' || c.measured === false) {
+    const why = c.measured === false ? 'This check has never produced a reading'
+      : `The last probe produced no reading${c.last_reason ? `: ${c.last_reason}` : ''}${isNum(c.last_measured_value) ? `. Last good reading ${naVal(c.last_measured_value)}` : ''}`;
+    return h('span', { class: 'status st-watch', title: why }, 'unmeasured');
+  }
+  return h('span', { class: ['v', c.last_status === 'breach' ? 'st-off' : null] }, naVal(c.last_value), c.last_status ? h('span', { class: 'muted small', text: ` ${c.last_status}` }) : null);
+}
+function checksTable(checks, label, fkey) {
+  if (!Array.isArray(checks) || !checks.length) return h('p', { class: 'small muted', text: 'No checks declared.' });
+  return tableWrap(['Check', 'Metric', { label: 'Threshold', num: true }, 'Severity', { label: 'Latest', num: true }, { label: 'Breaches', num: true }, 'Flags'],
+    checks.map((c) => h('tr', null,
+      td(h('code', { text: c.id })),
+      td(naText(c.metric)),
+      td(`${c.op ?? ''} ${naVal(c.threshold)}`.trim(), 'num'),
+      td(naText(c.severity)),
+      td(latestCell(c), 'num'),
+      // a check that was measured keeps its breach count even when its last probe failed
+      td(c.measured === false ? 'unmeasured' : naInt(c.breaches), 'num'),
+      td(h('span', { class: 'flags' },
+        c.measured === false ? flagChip('unmeasured', 'Never produced a reading')
+          : c.unmeasured === true || c.last_status === 'unmeasured' ? flagChip('unmeasured', c.last_reason || 'The last probe produced no reading') : null,
+        c.open_at_close === true ? flagChip('open-at-close', 'Was in breach when the window closed') : null,
+        c.filed ? flagChip(`filed: ${c.filed}`, 'Where the first breach went') : null)))),
+    { caption: label, label, class: 'task-table', focusable: true, fkey });
+}
+function ingestedEl(ing, withLessons, level = 4) {
+  if (!ing) return h('p', { class: 'small muted', text: 'Ingested lessons / backlog: n/a.' });
+  const hn = `h${level}`;
+  const list = (items, kind) => Array.isArray(items) && items.length
+    ? h('ul', { class: 'ingested', 'aria-label': `Ingested ${kind}` }, items.map((i) => h('li', null,
+      h('code', { text: i.id }), ' ', plainTitle(i.title), i.done === true ? flagChip('done') : null)))
+    : h('p', { class: 'small muted', text: `No ${kind} ingested.` });
+  const cn = ing.counts || {};
+  return h('div', { class: 'ingested-box' },
+    withLessons ? [h(hn, { class: 'eyebrow', text: `Lessons (${naInt(cn.lessons)})` }), list(ing.lessons, 'lessons')] : null,
+    h(hn, { class: 'eyebrow', text: `Backlog (${naInt(cn.backlog)}, ${naInt(cn.backlog_open)} open)` }), list(ing.backlog, 'backlog items'));
+}
+function windowEl(w) {
+  if (!w) return h('p', { text: 'Watch window: n/a' });
+  let line;
+  if (w.state === 'open') line = `Watch window: day ${naInt(w.day)} of ${naInt(w.days)}`;
+  else if (w.state === 'closed') line = `Watch window closed: ${w.outcome || 'ended, not yet closed by a monitor run'}`;
+  else if (w.state === 'not-opened') line = 'Watch window: not opened (no deploy recorded)';
+  else line = `Watch window: ${naText(w.state)}`;
+  const extra = [];
+  if (w.state === 'open' || w.state === 'closed') {
+    // no measured run: a breach count of 0 would be a definite value for an unknown, open window or closed
+    const unm = w.measured_runs === 0;
+    extra.push(h('span', null, 'Measured runs ', h('span', { class: 'v', text: naInt(w.measured_runs) })));
+    extra.push(h('span', null, 'Breaches ', unm ? h('span', { class: 'v val-na', title: 'No monitor run produced a reading', text: 'unmeasured' })
+      : h('span', { class: 'v', text: naInt(w.breaches) })));
+    if (w.never_measured === true || unm) extra.push(flagChip('never measured', 'No monitor run produced a reading'));
+  }
+  // the at-close lists exist only once a monitor run has closed the window (outcome set); before that they are unknown
+  if (w.state === 'closed' && w.outcome) {
+    extra.push(h('span', null, 'Open at close ', h('span', { class: 'v', text: atCloseList(w.open_at_close) })));
+    extra.push(h('span', null, 'Unmeasured at close ', h('span', { class: 'v', text: atCloseList(w.unmeasured_at_close) })));
+  }
+  return h('div', null, h('p', { class: 'window-line', text: line }), extra.length ? h('div', { class: 'plan-stats' }, extra) : null);
+}
+function operatePanel(p, key) {
+  const o = p.operate;
+  const label = `Operate: ${p.slug || p.name}`;
+  if (!o) return h('section', { class: 'operate', 'aria-label': label }, h('h3', { text: 'Operate' }), h('p', { class: 'small muted', text: 'Operate state: n/a (not read).' }));
+  const deploys = Array.isArray(o.deploys) ? o.deploys : [];
+  const problems = Array.isArray(o.problems) ? o.problems : [];
+  const lc = o.last_closed_window;
+  return h('section', { class: 'operate', 'aria-label': label },
+    h('h3', null, 'Operate ', o.state === 'missing' ? flagChip('state missing', 'The checkpoint has no operate block') : null,
+      o.monitor ? h('span', { class: 'muted small', text: ` monitor: ${o.monitor}` }) : null),
+    o.state === 'missing' ? h('p', { class: 'small muted', text: 'No operate state recorded for this landed plan: nothing deployed or measured.' }) : null,
+    o.warning ? h('p', { class: 'small op-warning', role: 'note', text: String(o.warning) }) : null,
+    problems.length ? h('ul', { class: 'small', 'aria-label': 'Monitor problems' }, problems.map((x) => h('li', { text: String(x) }))) : null,
+    h('h4', { class: 'eyebrow', text: 'Deploy history' }),
+    deploys.length ? tableWrap(['Time', 'Commit', { label: 'Exit', num: true }],
+      deploys.map((d) => h('tr', null, td(timeEl(d.ts, 'abs')), td(h('code', { text: naText(d.sha).slice(0, 12) })), td(naInt(d.exit), 'num'))),
+      { caption: `Deploys of ${p.name}`, label: `Deploy history of ${p.name}`, class: 'task-table', focusable: true, fkey: `deploys-${key}` })
+      : h('p', { class: 'small muted', text: 'No deploys recorded.' }),
+    h('h4', { class: 'eyebrow', text: 'Watch window' }),
+    windowEl(o.window),
+    lc ? h('div', { class: 'small muted last-window' },
+      h('p', null, `Windows closed: ${naInt(o.windows_closed)}. Last closed window: ${naText(lc.outcome)} (by ${naText(lc.closed_by)}).`),
+      h('p', null, `Open at close: ${atCloseList(lc.open_at_close)}. Unmeasured at close: ${atCloseList(lc.unmeasured_at_close)}.`)) : null,
+    h('h4', { class: 'eyebrow', text: 'Checks' }),
+    checksTable(o.checks, `Operate checks of ${p.name}`, `checks-${key}`),
+    h('h4', { class: 'eyebrow', text: 'Ingested' }),
+    ingestedEl(o.ingested, true, 5));
+}
+
+// -------------------------------------------------------------- watched --
+async function viewWatched() {
+  const data = await apiGet('/api/progress');
+  return watchedNodes(data);
+}
+function watchedNodes(data) {
+  const out = [pageHead('Watched plans', 'Plans whose watch window is open, and each repo\'s own checks. Read-only: deploys, monitor runs and ingest happen in the CLI.',
+    h('button', { class: 'btn', type: 'button', text: 'Refresh', onclick: () => renderView() }))];
+  if (!data.repos?.length) out.push(h('div', { class: 'card empty', text: 'No repos registered yet.' }));
+  for (const r of data.repos || []) {
+    const w = r.watched || [];
+    const rc = r.repo_checks;
+    out.push(h('section', { class: 'card', 'aria-label': `Watched in ${r.name}` },
+      h('h2', { text: r.name }),
+      h('h3', { class: 'eyebrow', text: 'Open watch windows' }),
+      w.length ? tableWrap(['Plan', { label: 'Day', num: true }, 'Window ends'],
+        w.map((x) => h('tr', null, td(h('span', null, h('strong', { text: x.slug }), ' ', h('span', { class: 'plan-path', text: x.path }))),
+          td(`day ${naInt(x.day)} of ${naInt(x.days)}`, 'num'), td(x.end ? timeEl(x.end, 'abs') : NA))),
+        { caption: `Open watch windows in ${r.name}`, label: `Open watch windows in ${r.name}`, class: 'task-table', focusable: true, fkey: `watch-${r.id}` })
+        : h('p', { class: 'small muted', text: 'No plan has an open watch window.' }),
+      h('h3', { class: 'eyebrow', text: 'Repo-level checks' }),
+      !rc || rc.configured === false ? h('p', { class: 'small muted', text: 'No repo-level checks configured.' }) : [
+        h('p', { class: 'small muted' }, `State: ${naText(rc.state)}`),
+        Array.isArray(rc.problems) && rc.problems.length ? h('ul', { class: 'small', 'aria-label': 'Repo check problems' }, rc.problems.map((x) => h('li', { text: String(x) }))) : null,
+        checksTable(rc.checks, `Repo-level checks in ${r.name}`, `checks-repo-${r.id}`)],
+      rc?.ingested ? [h('h3', { class: 'eyebrow', text: 'Ingested' }), ingestedEl(rc.ingested, false, 4)] : null));
+  }
+  return out;
 }
 async function refreshProgress() {
   if (ui.tab !== 'progress' || document.hidden || document.querySelector('dialog[open]')) return;
@@ -1160,13 +1411,7 @@ async function refreshProgress() {
   try {
     const data = await apiGet('/api/progress');
     if (token !== renderToken || ui.tab !== 'progress') return;
-    const view = document.getElementById('view');
-    const fkey = document.activeElement?.getAttribute?.('data-fkey');
-    const y = window.scrollY;
-    clear(view);
-    append(view, [progressNodes(data)]);
-    window.scrollTo(0, y);
-    if (fkey) view.querySelector(`[data-fkey="${CSS.escape(fkey)}"]`)?.focus({ preventScroll: true });
+    redrawProgress(data);
   } catch { /* keep last good view; next tick retries */ }
 }
 function startPolling() { stopPolling(); pollTimer = setInterval(refreshProgress, 5000); }

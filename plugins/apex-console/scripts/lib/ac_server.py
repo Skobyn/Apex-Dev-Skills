@@ -160,7 +160,7 @@ def api_progress():
     out = []
     for s in snapshots():
         lk = s.get("lock")
-        plans = []
+        plans, watched = [], []
         for p in s["plans"]:
             cp = p["checkpoint"]
             done = {}
@@ -178,21 +178,42 @@ def api_progress():
                 if r.get("event") == "worker_run" and r.get("_usd") is not None:
                     ln = r.get("_line") if r.get("_line") is not None else r.get("line")
                     cost[ln] = cost.get(ln, 0.0) + r["_usd"]
+            cst = ac_collect.plan_cost(p["dir"], p["ledger"].get("dir"))
+            ct = cst["tasks"]
             tasks = []
             for t in p["tasks"]:
                 ln = t["line"]
+                rep = ct.get(ln)
                 rv = reviews.get(str(ln)) or {}
                 heads = {(x.get("attempt", 1), x.get("sha")) for x in rv.get("records") or [] if isinstance(x, dict)}
                 tasks.append({"line": ln, "title": t["title"], "tags": t["tags"],
                               "status": "done" if (t["checked"] or ln in done) else _task_status(ln, done, active_line, failed),
                               "tier": ((cp.get("tiers") or {}).get(str(ln)) or {}).get("tier"),
                               "rounds": len(heads) or None, "attempts": rv.get("attempt"),
-                              "completed_at": (done.get(ln) or {}).get("at"), "usd": round(cost[ln], 4) if ln in cost else None})
+                              "completed_at": (done.get(ln) or {}).get("at"), # delegated usd is report.per_task's (null = n/a, never a partial figure)
+                              "usd": rep["usd"] if rep else None,
+                              "tokens": rep["tokens_total"] if rep else None,
+                              "orchestrator_usd": rep["orchestrator_usd"] if rep else None,
+                              "orchestrator_tokens": rep["orchestrator_tokens_total"] if rep else None,
+                              "orchestrator_na": rep["orchestrator_na"] if rep else (cst["status"] if cst["status"] != "measured" else "no routed task")})
             lt = C.parse_ts(cp.get("last_iteration_at"))
             last = max([x for x in (last, lt) if x] or [0]) or None
             open_f = sum(1 for f in p["findings"] if f.get("status") == "open")
             usd = sum(v for v in cost.values())
-            plans.append({"hash": p["hash"], "path": p["plan_path"], "name": os.path.splitext(os.path.basename(p["plan_path"]))[0],
+            slug = ac_collect.plan_slug(p["plan_path"])
+            scope = ac_collect.plan_scope(p["plan_abs"])
+            operate = ac_collect.plan_operate(cp, p["plan_abs"], slug, scope, top=s["top"])
+            tot = cst["totals"] or {}
+            cost_blk = {"status": cst["status"], "delegated_usd": tot.get("usd"), "delegated_unknown_tasks": tot.get("usd_unknown_tasks"),
+                        "orchestrator_usd": tot.get("orchestrator_usd"),
+                        "orchestrator_unattributed_usd": tot.get("orchestrator_unattributed_usd"),
+                        "orchestrator_unattributed_tokens": tot.get("orchestrator_unattributed_tokens"),
+                        "usd_unrouted": tot.get("usd_unrouted")}
+            if operate and operate["window"].get("state") == "open":
+                watched.append({"hash": p["hash"], "slug": slug, "path": p["plan_path"], "day": operate["window"]["day"],
+                                "days": operate["window"]["days"], "end": operate["window"]["end"]})
+            plans.append({"hash": p["hash"], "slug": slug, "scope": scope, "intent": ac_collect.plan_intent(s["top"], slug),
+                          "operate": operate, "cost": cost_blk, "path": p["plan_path"], "name": os.path.splitext(os.path.basename(p["plan_path"]))[0],
                           "total": len(tasks) or cp.get("total_tasks"),
                           "done": sum(1 for t in tasks if t["status"] == "done") if tasks else cp.get("completed_tasks"),
                           "phase": cp.get("current_phase"), "halted": bool(cp.get("halted")), "halt_reason": cp.get("halt_reason"),
@@ -213,7 +234,11 @@ def api_progress():
                 continue
         out.append({"id": s["id"], "name": s["name"], "path": s["path"], "error": s.get("error"),
                     "halted": bool(s.get("halt_files")), "halt_reason": halt_reason, "lock": lk,
-                    "plans": plans, "adhoc": adhoc})
+                    "plans": plans, "watched": watched,
+                    "repo_checks": ac_collect.repo_checks(s["top"], s.get("state_base")) if s.get("top") and not s.get("error")
+                    else {"configured": False, "state": "none", "file": None, "checks": [], "problems": [],
+                         "ingested": {"backlog": [], "counts": {"backlog": 0, "backlog_open": 0}}},
+                    "adhoc": adhoc})
     return {"repos": out}
 
 

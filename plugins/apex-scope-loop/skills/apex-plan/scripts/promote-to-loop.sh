@@ -18,8 +18,11 @@
 #   5. ADR status is "Accepted"
 #   6. Plan has >= 1 unchecked phase task
 #   7. Every plan task has an Acceptance line
+#   6b. A `## Monitor` section, when present, is valid (monitorlib.py validate)
 #   8. Every gate task has a runnable Acceptance OR human-ack phrase
 #   9. apex-execute's init.sh exists and is executable
+#   Scope (7b, only when the ADR/plan declare `Scope: bugfix|poc|feature`): phase
+#   limit per scope; see the comment at 7b. No Scope line = no extra check.
 
 set -euo pipefail
 
@@ -84,6 +87,100 @@ if ! PLAN_ERRORS="$(python3 "$EXEC_SCRIPTS/planlib.py" validate "$PLAN_PATH" 2>&
 fi
 REMAINING="$(python3 "$EXEC_SCRIPTS/planlib.py" remaining "$PLAN_PATH")"
 [[ "$REMAINING" -gt 0 ]] || fail "Plan has no unchecked tasks (- [ ] ...). Either all tasks are checked or the plan is empty."
+
+# 6b. The optional `## Monitor` section (ADR R5b): monitorlib.py validates it
+#     (allow-list schema; a heading with a missing, doubled or malformed block is
+#     refused, never read as "not watched"). A plan with no such heading prints
+#     nothing and promotes exactly as before.
+if ! MON_ERRORS="$(python3 "$EXEC_SCRIPTS/monitorlib.py" validate "$PLAN_PATH" 2>&1)"; then
+  echo "Monitor section problems (monitorlib.py validate):" >&2
+  printf '%s\n' "$MON_ERRORS" | sed 's/^/  /' >&2
+  fail "the plan's ## Monitor section is invalid — fix the lines above"
+fi
+
+# 7b. Per-scope validation (ADR R2). Scope is read from the ADR header line
+#     `**Scope**: X` and the plan header line `> **Scope**: X` (start.sh --scope
+#     writes both). Rules:
+#       - neither file declares a Scope  -> nothing here runs: exactly the rules
+#         above and below, byte-for-byte (output included).
+#       - only one file declares it, the two disagree, a Scope-looking header line
+#         is malformed (wrong case, no colon, empty, {{SCOPE}} left in), the value
+#         is not bugfix|poc|feature, or a file has two Scope lines -> refuse. A
+#         malformed line never silently means feature.
+#       - bugfix allows at most 2 phases, poc at most 3, feature is unlimited.
+#     "Phase" here means a distinct major number N among the plan's `**Phase N.M**`
+#     task ids (planlib's ID_RE; checked or unchecked). That is the unit the rest of
+#     the plan dialect uses: headings `### Phase N` group exactly those tasks, and
+#     `Gate a→b` tasks are not phases.
+#     Required ADR sections: this script has never required the Pseudocode,
+#     Architecture, Data Model or API sections (checks 3-5 are the only ADR checks),
+#     so for every scope the required-section set is empty and a bugfix/poc ADR that
+#     keeps those sections still promotes. Nothing else changes with scope: gate
+#     checks, Acceptance checks, the Accepted status and the route dry-run below
+#     run identically. A `[tier:c]` task under bugfix/poc only prints a warning.
+#     Scope is read only from the header (before the first `---` or `## ` line).
+# (the program is held in a variable: a heredoc inside $( ) breaks old bash parsers)
+IFS= read -r -d '' SCOPE_PY <<'PY' || true
+import re, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1]); import planlib
+LIMITS = {"bugfix": 2, "poc": 3, "feature": None}
+STRICT = re.compile(r"^(?:>[ \t]?)?\*\*Scope\*\*:[ \t]*(.*?)[ \t]*$")
+LOOSE = re.compile(r"^(?:>[ \t]*)?\*\*[ \t]*scope\b", re.I)
+
+def declared(path, label):
+    vals = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip("\r\n")
+            if n > 1 and (line.strip() == "---" or line.startswith("## ")):
+                break
+            if not LOOSE.match(line):
+                continue
+            m = STRICT.match(line)
+            if not m:
+                print(f"malformed Scope line in {label} (line {n}): {line.strip()} -- expected exactly '{'> ' if label == 'plan' else ''}**Scope**: bugfix|poc|feature'")
+                sys.exit(1)
+            vals.append((n, m.group(1)))
+    if len(vals) > 1:
+        print(f"{label} declares Scope more than once (lines {', '.join(str(n) for n, _ in vals)})")
+        sys.exit(1)
+    return vals[0][1] if vals else None
+
+adr, plan = declared(sys.argv[2], "ADR"), declared(sys.argv[3], "plan")
+if adr is None and plan is None:
+    sys.exit(0)
+if adr is None or plan is None:
+    where, missing = ("plan", "ADR") if adr is None else ("ADR", "plan")
+    print(f"Scope is declared in the {where} but not in the {missing}; both need the same Scope line (start.sh --scope writes both)")
+    sys.exit(1)
+if adr != plan:
+    print(f"Scope disagrees: ADR says '{adr}', plan says '{plan}'; make them match")
+    sys.exit(1)
+scope = adr
+if scope not in LIMITS:
+    print(f"unknown Scope '{scope}' (allowed: bugfix, poc, feature)")
+    sys.exit(1)
+tasks = planlib.parse(sys.argv[3])
+phases = set()
+for t in tasks:
+    m = re.match(r"Phase\s+([0-9]+)", t["id"] or "")
+    if m:
+        phases.add(int(m.group(1)))
+limit = LIMITS[scope]
+if limit is not None and len(phases) > limit:
+    print(f"{scope} allows at most {limit} phases; this plan has {len(phases)}")
+    sys.exit(1)
+print(f"Scope: {scope}" + (f" ({len(phases)} of at most {limit} phases)" if limit is not None else ""))
+if scope != "feature":
+    for t in tasks:
+        if re.search(r"\[tier:c\b", re.sub(r"`[^`]*`", "", t["line"])):
+            print(f"WARNING: line {t['line_no']} is tagged [tier:c]; {scope} scope does not loosen enforcement: the green gate, independent review, risk tier and G12 apply as for feature")
+PY
+SCOPE_OUT="$(python3 -c "$SCOPE_PY" "$EXEC_SCRIPTS" "$ADR_PATH" "$PLAN_PATH")" || fail "$SCOPE_OUT"
+if [[ -n "$SCOPE_OUT" ]]; then
+  printf '%s\n' "$SCOPE_OUT"
+fi
 
 # 8. Every gate task has a clear approval mechanism
 # [gate:auto]   → Acceptance must look runnable (no "human-ack" or "approve" phrase)

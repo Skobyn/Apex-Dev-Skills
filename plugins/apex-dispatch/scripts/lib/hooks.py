@@ -73,6 +73,12 @@ TAMPER_ENV = {
     "APEX_DECIDE_JEV_BASE": None,
     "APEX_DECIDE_FRONTIER_BASE": None,                   # apex-decision-layer 0.2.0's frontier test override
     "APEX_DECISION_LAYER_ROOT": None,
+    # apex-scope-loop operate.sh (aidlc-borrowings ADR R5/R6): APEX_OPERATE_ACK is never read (operate.sh
+    # takes the ack from the controlling terminal only), so it is protected only as defence in depth; and the
+    # user-owned deploy and monitor commands.
+    "APEX_OPERATE_ACK": None,
+    "APEX_DEPLOY_CMD": None,
+    "APEX_MONITOR_CMD": None,
 }
 # Layer A bypass families: denied anywhere in a command.
 BYPASS_PREFIXES = ("--dangerously-", "--yolo", "--always-approve", "--full-auto")
@@ -82,7 +88,8 @@ RUNNER_NAME = "openai_sdk_runner.py"             # openai-sdk's runner (harnesse
 PROVIDER_PACKAGES = re.compile(r"(^|/|@)(claude-code|codex|grok|opencode(-ai)?|aider(-chat)?)(@|$)")
 INFO_ARGS = {"--version", "-V", "-v", "--help", "-h", "version", "help"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
-WRAPPERS = {"sudo", "doas", "command", "builtin", "exec", "nohup", "time", "nice", "ionice", "stdbuf", "chronic", "unbuffer"}
+WRAPPERS = {"sudo", "doas", "command", "builtin", "exec", "nohup", "time", "nice", "ionice", "stdbuf", "chronic", "unbuffer",
+            "spawn", "caffeinate"}
 ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
 
 # git: subcommands that never change the repository or the worktree.
@@ -828,7 +835,7 @@ class Cmd:
 
     def __init__(self, words, redirs):
         self.assigns, self.unsets, self.redirs = {}, set(), redirs
-        i, self.listed = 0, []
+        i, self.listed, self.wrapped = 0, [], []
         while i < len(words):
             t = words[i]
             if t in RESERVED:
@@ -865,6 +872,27 @@ class Cmd:
                 i += 1
                 while i < len(words) and words[i].startswith("-"):
                     i += 2 if words[i] in ("-n", "-u", "-g", "-o", "-i", "-e", "-c") and b in ("nice", "sudo", "stdbuf", "ionice") else 1
+                continue
+            if b == "script":                            # script(1): BSD `script [opts] [file [cmd ...]]`, util-linux `-c CMD`
+                i += 1
+                while i < len(words) and words[i].startswith("-") and words[i] != "-":
+                    w = words[i]
+                    if w in ("-c", "--command") and i + 1 < len(words):
+                        self.wrapped.append(words[i + 1])
+                        i += 2
+                        continue
+                    if w.startswith("--command="):
+                        self.wrapped.append(w.split("=", 1)[1])
+                    elif w.startswith("-c") and len(w) > 2 and not w.startswith("--"):
+                        self.wrapped.append(w[2:])
+                    elif (w in ("-T", "-I", "-O", "-B", "-E", "-o", "-m", "-F") or (w == "-t" and i + 1 < len(words)
+                                                                                    and words[i + 1].isdigit())) and i + 1 < len(words):
+                        i += 1
+                    i += 1
+                if self.wrapped:
+                    i = len(words)                        # util-linux: what follows is the typescript file
+                elif i < len(words):
+                    i += 1                                # BSD: the typescript file, then the command
                 continue
             if b == "timeout":
                 i += 1
@@ -903,6 +931,8 @@ class Cmd:
                     break
         elif b == "eval":
             out.append(" ".join(a))
+        elif b == "expect":                               # expect -c 'spawn CMD …': spawn is peeled like a wrapper
+            out += [a[k + 1] for k, w in enumerate(a) if w == "-c" and k + 1 < len(a)]
         elif b == "find":
             for k, w in enumerate(a):
                 if w in ("-exec", "-execdir", "-ok", "-okdir"):
@@ -916,6 +946,7 @@ class Cmd:
             g = GitCmd(self)
             if g.sub == "submodule" and g.args[:1] == ["foreach"]:
                 out.append(" ".join(x for x in g.args[1:] if not x.startswith("--")))
+        out += self.wrapped
         for w in self.words + self.listed:
             out += subst_strings(w)
         return out
@@ -1237,10 +1268,79 @@ def engine_entry(ctx, c, cwd, prefix):
     return None
 
 
+# --- operate deploy (aidlc-borrowings Phase 3.3; ADR-0001 "pre-bash enforces", Amendments 2026-10-20) ---
+# The deploy control: no agent Bash call may start apex-scope-loop's `operate.sh … deploy`, at any stage —
+# with or without an ACTIVE lock, a DONE or landed owner included (hook-common.bash runs this before the lock
+# test and before APEX_DISPATCH_MODE, hooks.py main before Ctx.stale). operate.sh's own /dev/tty ack is the
+# second layer: a terminal read alone is agent-satisfiable through a self-made pty.
+# A fail-closed text rule, not a parser (lesson L-001: three review rounds each found a construct that hid a
+# deploy line from a hand-written bash parser). The command text is normalised (backslash-newline joined, then
+# every ", ' and \ removed) and scanned whole: every line, heredoc bodies, comments, quoted strings. If it
+# names operate.sh and the word deploy (case-insensitive, both), it is denied, whatever the structure. The one
+# exception is a command that, trimmed, is exactly one allow-listed form with no shell metacharacter:
+# [bash |sh ]PATH/operate.sh PLAN status|monitor|ingest, or … --all status|monitor|monitor --ingest (PLAN is
+# one word of [A-Za-z0-9._/-], so a plan path that contains "deploy" still runs status). Accepted false denies:
+# `echo operate.sh deploy`, `grep deploy operate.sh`, a commit message or PR body naming both (use
+# `git commit -F FILE`, `gh pr create --body-file FILE`). Residual (out of model, ADR-0001): a script file or a
+# renamed copy run later, a script name or a deploy word hidden by expansion, glob or string construction, and
+# external-provider worker shims (their shell is not a Claude Code hook's).
+OPERATE_SCRIPT_RE = re.compile(r"operate\.sh", re.I)
+OPERATE_DEPLOY_RE = re.compile(r"(?<![A-Za-z0-9_])deploy(?![A-Za-z0-9_])", re.I)
+OPERATE_META_RE = re.compile(r"[;&|<>$`(){}\n*?\[#]")
+OPERATE_ALLOW_RE = re.compile(r"(?:(?:bash|sh)[ \t]+)?(?:[^\s\"'\\;&|<>$`(){}*?\[#]*/)?operate\.sh[ \t]+"
+                              r"(?:[A-Za-z0-9._/-]+[ \t]+(?:status|monitor|ingest)|--all[ \t]+(?:status|monitor(?:[ \t]+--ingest)?))")
+OPERATE_REASON = ("operate.sh deploy must be run by a human in their own terminal (operate.sh asks them to type "
+                  "<slug>@<landed sha> there); pre-bash denies every agent Bash call whose text names both operate.sh "
+                  "and deploy, at every stage. Agents may run exactly `operate.sh PLAN status|monitor|ingest` or "
+                  "`operate.sh --all status|monitor [--ingest]` as the whole command; to commit or file text that names "
+                  "both, write it to a file (git commit -F FILE, gh pr create --body-file FILE)")
+
+
+def operate_normalise(cmd):
+    """The command text as the operate rule reads it: backslash-newline joined, then every ", ' and \\ removed."""
+    return re.sub(r"[\"'\\]", "", cmd.replace("\\\n", ""))
+
+
+def operate_allowed_form(cmd):
+    """cmd, trimmed, is exactly one allow-listed operate.sh form with no shell metacharacter."""
+    c = cmd.strip()
+    return not OPERATE_META_RE.search(c) and OPERATE_ALLOW_RE.fullmatch(c) is not None
+
+
+def operate_deploy_reason(cmd):
+    """Why cmd may start operate.sh deploy (deny), or None. One linear pass over the whole text."""
+    norm = operate_normalise(cmd)
+    if not OPERATE_SCRIPT_RE.search(norm) or not OPERATE_DEPLOY_RE.search(norm):
+        return None
+    if operate_allowed_form(cmd):
+        return None
+    return OPERATE_REASON
+
+
+def operate_gate(raw):
+    """hooks.py operate-gate: the lock-independent deploy deny (hook-common.bash calls it before the lock test)."""
+    try:
+        p = json.loads(raw)
+        ti = p.get("tool_input") if isinstance(p, dict) and isinstance(p.get("tool_input"), dict) else {}
+        if p.get("tool_name") != "Bash":
+            return {}
+        cmd = ti.get("command")
+        if not isinstance(cmd, str):
+            return {}
+        r = operate_deploy_reason(cmd)
+    except Exception as e:                             # the payload named operate.sh: fail closed
+        r = "%s (the command could not be judged: %s)" % (OPERATE_REASON, type(e).__name__)
+    return deny(r) if r else {}
+
+
 def bash_rules(ctx, p, cmd, depth=0, prefix=""):
     """Raise Deny on the first rule a command string breaks. Recurses into nested command strings."""
     if depth > 4:
         return
+    if depth == 0:                                        # 0. operate deploy: the human-only step (every stage)
+        r = operate_deploy_reason(cmd)
+        if r:
+            raise Deny(r)
     for inner in re.findall(r"`([^`]*)`", cmd):          # backtick bodies, quoted or not
         bash_rules(ctx, p, inner, depth + 1, prefix)
     cmd = re.sub(r"`[^`]*`", " ", cmd)
@@ -1972,6 +2072,9 @@ PRE_KINDS = {"agent", "bash", "edit", "mcp"}
 
 
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "operate-gate":     # no state needed: runs with or without a lock
+        print(json.dumps(operate_gate(sys.stdin.read()), separators=(",", ":")))
+        return 0
     if len(argv) < 6 or argv[1] not in HANDLERS:
         print("{}")
         print("usage: hooks.py %s PLUGIN_ROOT STATE_BASE EXEC_SCRIPTS REPO_ROOT" % "|".join(HANDLERS), file=sys.stderr)
