@@ -207,7 +207,7 @@ Per the ADR amendment of 2026-10-18 (R5–R5d): each plan declares its own monit
   - Paths: plugins/apex-console/ui/demo.json, plugins/apex-console/ui/app.js, plugins/apex-console/README.md
   - Blocked-by: phase-4.4
 
-- [ ] **Gate 4→5** [gate:auto] Cost reporting and console UI green
+- [x] **Gate 4→5** [gate:auto] Cost reporting and console UI green
   - Acceptance: `bash plugins/apex-dispatch/scripts/smoke.sh && bash plugins/apex-console/scripts/smoke.sh`
   - Blocked-by: phase-4.5
 
@@ -215,10 +215,10 @@ Per the ADR amendment of 2026-10-18 (R5–R5d): each plan declares its own monit
 
 ### Phase 5 — Release
 
-- [ ] **Phase 5.1** [docs] Update READMEs, ADR-0001 status logs, and bump versions (apex-scope-loop 0.7.0, apex-dispatch 0.7.0, apex-console 0.3.0) with descriptions consistent across marketplace.json, plugin.json and README
+- [x] **Phase 5.1** [docs] Update READMEs, ADR-0001 status logs, and bump versions (apex-scope-loop 0.7.0, apex-dispatch 0.7.0, apex-console 0.3.0) with descriptions consistent across marketplace.json, plugin.json and README
   - Acceptance: `grep -q '"version": "0.7.0"' plugins/apex-scope-loop/.claude-plugin/plugin.json && grep -q '"version": "0.7.0"' plugins/apex-dispatch/.claude-plugin/plugin.json && grep -q '"version": "0.3.0"' plugins/apex-console/.claude-plugin/plugin.json && grep -q 'operate' plugins/apex-scope-loop/README.md && grep -q -- '--per-task' plugins/apex-dispatch/README.md && grep -q '0.7.0' plugins/apex-scope-loop/docs/adrs/0001-apex-scope-loop-contract.md && grep -q '0.7.0' plugins/apex-dispatch/docs/adrs/0001-apex-dispatch-contract.md && grep -q '0.3.0' plugins/apex-console/docs/adrs/0001-apex-console-contract.md && for p in apex-scope-loop apex-dispatch apex-console; do bash plugins/$p/scripts/smoke.sh || exit 1; done`
   - Swarm: single [docs]
-  - Paths: plugins/apex-scope-loop/README.md, plugins/apex-dispatch/README.md, plugins/apex-console/README.md, plugins/*/.claude-plugin/plugin.json, plugins/*/docs/adrs/0001-*.md, .claude-plugin/marketplace.json, README.md
+  - Paths: plugins/apex-scope-loop/README.md, plugins/apex-dispatch/README.md, plugins/apex-console/README.md, plugins/*/.claude-plugin/plugin.json, plugins/*/docs/adrs/0001-*.md, .claude-plugin/marketplace.json, README.md, plugins/apex-scope-loop/scripts/smoke.sh, plugins/apex-dispatch/scripts/smoke.sh, plugins/apex-dispatch/resources/compiled/**
   - Blocked-by: gate-4-5
 
 - [ ] **Phase 5.2** [docs] Flip the ADR to `Implemented`
