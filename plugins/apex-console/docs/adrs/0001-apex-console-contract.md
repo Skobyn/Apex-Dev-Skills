@@ -44,6 +44,7 @@ apex-console is an **admin layer, not an orchestration layer**. It is a local we
 | `<state-base>/knobs/scope-loop.json` | apex-scope-loop (ADR-0003, v0.5.0) | writes after `knobslib.py validate` |
 | `<state>/dispatch*/ledger.jsonl`, `doctor.json` | apex-dispatch | reads; verifies with `ledger.verify` |
 | `<repo>/.claude/apex-dispatch/policy.json` | apex-dispatch | writes after `compile.py --print-merged --overlay` |
+| `<config>/projects/*/<session_id>.jsonl` (`<config>` is `$CLAUDE_CONFIG_DIR` or `~/.claude`; only files named after a ledger session id) | Claude Code | reads, never writes, through apex-dispatch's `report.per_task` for the per-task cost table; only usage fields are parsed (`type`, `isSidechain`, `sessionId`, `timestamp`, `message.id`, `message.model`, usage and iteration counts), never message content, and nothing is shown or stored beyond token and USD figures and session ids |
 | `<state-base>/decisions/decisions.jsonl` | apex-decision-layer | reads |
 | `<repo>/.claude/apex-decision-layer/config.json` | apex-decision-layer | writes `egress`, `state_fields`, `primary`, `shadow` after `decide.load_config`; never `calibration_lock` |
 
@@ -119,8 +120,8 @@ Also: cost per 1,000 runs, runs per week, prompt cache hit rate (cache_read / (i
 
 ## Compatibility
 
-- apex-scope-loop ≥ 0.5.0 for the knobs file and ≥ 0.6.0 for the tier simulator (older versions: progress and metrics only; the scope-loop knobs show as unavailable).
-- apex-dispatch ≥ 0.6.0, whose `report.row_usd`, `ledger.verify` and `compile.py --print-merged --overlay` the console calls.
+- apex-scope-loop ≥ 0.5.0 for the knobs file, ≥ 0.6.0 for the tier simulator, and ≥ 0.7.0 for scope, intent and the Operate and Watched panels (older versions: progress and metrics only; the scope-loop knobs show as unavailable).
+- apex-dispatch ≥ 0.6.0, whose `report.row_usd`, `ledger.verify` and `compile.py --print-merged --overlay` the console calls; ≥ 0.7.0 for the per-task cost table, through `report.per_task` and `locate_transcripts` (older versions: the cost cells read n/a, "apex-dispatch's report.per_task is not available").
 - apex-decision-layer ≥ 0.6.0.
 - python3 ≥ 3.8 and git. bash only for apex-scope-loop's `apex_state_base`.
 
@@ -136,7 +137,10 @@ apex-console claims `<config-dir>/console.json`, `console-audit.jsonl`, `keys.en
 - the server's token, Host and header checks;
 - that no route returns a key value;
 - refusals by each plugin's validator;
-- the audit and undo round trip, and the kill switch.
+- the audit and undo round trip, and the kill switch;
+- check 11, the tier simulator: a proposed exemption moves the fixture's agent-prompt task from C to A, nothing is written, and a bad proposal is refused;
+- check 12, console-plans-payload: the plans API carries scope, intent, operate state and per-task cost, read-only;
+- check 13, console-ui-borrowings: the page's own `app.js` renders scope, intent, the Operate panel, Watched plans and per-task cost under node (without node, a static scan of `app.js` with a warning).
 
 ## Status log
 

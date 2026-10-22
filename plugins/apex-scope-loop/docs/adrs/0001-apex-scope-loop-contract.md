@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-05-22
 - **Author:** solutions@getapexinsights.com
-- **Plugin:** apex-scope-loop v0.1.0
+- **Plugin:** apex-scope-loop v0.7.0 (contract introduced in v0.1.0; the Gibson harness and the `gibson-reviewer` agent (ADR-0002) in v0.2.0; portability, ruflo optional and apex-dispatch as a consumer (ADR-0003) in v0.3.0; review-loop calibration (ADR-0004) in v0.4.0; bash 3.2 (macOS) compatibility in v0.4.4; the knobs file in v0.5.0; the `risk-tier.sh` replay flags in v0.6.0; scope sizing, the intent round, the per-scope phase limit and the operate phase with `/apex-scope-loop:operate` in v0.7.0)
 - **Note:** Amended by ADR-0003 (portability).
 
 ## Context
@@ -24,9 +24,11 @@ plugins/apex-scope-loop/
 │   └── apex-execute/SKILL.md           # /loop iteration over phased plans
 ├── commands/
 │   ├── start.md                         # /apex-scope-loop:start <slug>
-│   └── iterate.md                       # /apex-scope-loop:iterate <plan>
+│   ├── iterate.md                       # /apex-scope-loop:iterate <plan>
+│   └── operate.md                       # /apex-scope-loop:operate (landed plans; v0.7.0)
 ├── agents/
-│   └── plan-author.md                   # Sonnet subagent for SCOPE/COMPOSE/OPTIMIZE
+│   ├── plan-author.md                   # Sonnet subagent for SCOPE/COMPOSE/OPTIMIZE
+│   └── gibson-reviewer.md               # Opus independent reviewer (ADR-0002)
 ├── scripts/smoke.sh                     # structural contract checks
 ├── docs/adrs/0001-apex-scope-loop-contract.md
 └── README.md
@@ -40,7 +42,7 @@ Both SKILL.md files use lowercase kebab-case `name:` matching their directory (`
 
 - **2 skills** — auto-discovered from `skills/` subtree, not enumerated in plugin.json
 - **3 slash commands** — `/apex-scope-loop:start`, `/apex-scope-loop:iterate`, `/apex-scope-loop:operate`
-- **1 agent** — `plan-author` (Sonnet, single-purpose, delegated from main thread)
+- **2 agents** — `plan-author` (Sonnet, single-purpose, delegated from main thread) and `gibson-reviewer` (Opus, the independent reviewer added by ADR-0002)
 
 ### Worktree-bound execution
 
@@ -56,7 +58,7 @@ The execution stage (`apex-execute`) is **worktree-bound by contract**. `init.sh
 
 - Claude Code: 2.0+
 - `@claude-flow/cli` (ruflo) is optional and never declared in plugin.json. If a user opts in, it is used only as a memory seed through `APEX_MEMORY_CMD`, or for advisory `Swarm:` directives; the loop itself runs on plain Claude Code subagents.
-- Python 3.11+ (matches apex repo's overall toolchain — `apex-plan` `start.sh` and `promote-to-loop.sh` shell out to scripts that may invoke `uv run` in apex contexts).
+- bash 3.2+ (the macOS default `/bin/bash` included) and python3 3.8+, stdlib only: the scripts are bash with Python helpers (`planlib.py`, `monitorlib.py`, `knobslib.py`, `inventory.py` and inline `python3` blocks). (This line said Python 3.11+ until v0.7.0; nothing in the plugin needs more than 3.8. The green gate runs the target project's own tests through `uv run` when that project has a `uv.lock`, which is the project's toolchain, not the plugin's.)
 
 ### Namespace coordination
 

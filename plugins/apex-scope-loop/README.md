@@ -32,7 +32,7 @@ The result is a system that **thinks alongside you**: it watches reality, persis
 | Requirement | Why |
 |---|---|
 | **Claude Code 2.0+** *(required)* | Needs `/loop`, `/schedule`, `AskUserQuestion`, `ScheduleWakeup`, and `Agent`. |
-| Python 3.11+ *(optional)* | Matches the surrounding apex toolchain; plugin scripts themselves are bash. |
+| **bash 3.2+ and python3 3.8+** *(required)* | The scripts are bash with stdlib-only Python helpers (`planlib.py`, `monitorlib.py`, `knobslib.py`, `inventory.py`). The macOS default `/bin/bash` is enough. |
 | A memory store *(optional, via `APEX_MEMORY_CMD`)* | Seeds a plan record into the `apex-scope-loop` namespace. Unset means the seed is skipped quietly. |
 
 The loop runs on plain Claude Code subagents. Nothing else needs installing.
@@ -165,7 +165,7 @@ Full mapping, and what was deliberately left out (cross-vendor routing, GitHub c
 `risk-tier.sh PLAN LINE --no-record --since <base> --head <sha> [--knobs <file>]` classifies a completed task's committed diff, `<base>..<sha>`, without touching the current head or anything uncommitted. With `--knobs`, it classifies the diff under a proposed knobs file instead of the one in force. That file is validated the same way, and an invalid one exits 3. Both flags need `--no-record` and refuse `--raise` and `--classify`, so a replay never changes a recorded tier. apex-console's tier simulator uses them to show what a tier-definition change would have done to your past tasks before you apply it.
 ## Scope, intent and operate (v0.7.0)
 
-**Scope sizing.** `start.sh` takes `--scope bugfix|poc|feature` and picks a template to match. `bugfix` and `poc` get lean templates with fewer required sections; `feature` gets the full SPARC-shaped set. The scope is written into the plan header, and `status.sh` and apex-console show it. A plan without one reads `feature`.
+**Scope sizing.** `start.sh` takes `--scope bugfix|poc|feature` and picks a template to match. `bugfix` and `poc` get lean templates with fewer required sections; `feature` gets the full SPARC-shaped set. The scope is written into the plan header, and `status.sh` and apex-console show it. A plan without one reads `feature`. `promote-to-loop.sh` enforces a phase limit per scope: a `bugfix` plan may have at most 2 phases and a `poc` plan at most 3 (a phase is a distinct major number N among the `**Phase N.M**` task ids); `feature` is unlimited. A plan over its limit is refused at promotion.
 
 **Intent round.** Before the ADR is composed, the start flow asks a short intent round (problem, who it is for, why now, non-goals) and writes it to `.claude/tasks/<slug>-intent.md`. `status.sh` prints the Scope and Intent lines for the plan. It is a summary for the reader and does not change the gates.
 
@@ -183,7 +183,7 @@ Or run `/apex-scope-loop:operate`. Operate only runs on landed plans.
 - **Repo-level checks.** `.claude/apex-scope-loop/monitor.json` holds checks that belong to the whole repository, not to one plan. `operate.sh --all monitor` runs them with the plans.
 - **Watch windows.** A successful deploy opens a window of `window_days`. A deploy that exits non-zero opens none. A later successful deploy closes the window still open (`redeploy`) and opens a new one. A window closes as `operated-clean` or `closed-with-breaches`. Checks still in breach, or never measured, at close are flagged **open-at-close**. An unmeasured probe is recorded as unmeasured, never as a zero.
 - **Breaches are filed once.** `ingest` files each breach as a lesson or a backlog item, tagged `operate:<slug>`. Repeat runs do not file it again.
-- **Deploy is human-only.** `operate.sh PLAN deploy` asks you to type `<slug>@<landed sha>` at your terminal. apex-dispatch's pre-bash hook denies any agent command that names both `operate.sh` and `deploy`, so an agent cannot run it. An agent can run `status`, `monitor` and `ingest`.
+- **Deploy is human-only.** `operate.sh PLAN deploy` asks you to type `<slug>@<landed sha>` at your terminal. apex-dispatch's pre-bash hook denies any agent command that names both `operate.sh` and `deploy`, so with apex-dispatch 0.7.0+ installed an agent cannot run it through Claude Code's Bash tool (the residual gaps, such as a script file written to disk or an external-provider worker shim, are listed in apex-dispatch ADR-0001). An agent can run `status`, `monitor` and `ingest`.
 
 Each deploy, check breach and closed window is written to the ledger as an `operate_*` event (see apex-dispatch). Apex-console shows the operate state read-only and never runs these commands.
 
@@ -217,7 +217,7 @@ Any future plugin that wants to read/write these keys must claim a non-overlappi
 bash plugins/apex-scope-loop/scripts/smoke.sh
 ```
 
-The smoke script runs 73 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, the review-loop calibration of ADR-0004, and the knobs file). It exits non-zero on the first failing check and names what's wrong.
+The smoke script runs 73 checks: the structural contract (frontmatter, namespace declaration, ADR status, script executability, README sections) plus behavioural fixtures for the harness (plan dialect, checkpoint provenance, risk tiers, the chain, land, the clean-worktree inventory, the review-loop calibration of ADR-0004, the knobs file, the `risk-tier.sh` replay flags (63), and scope, intent, the `## Monitor` section and operate (64-71)). It exits non-zero on the first failing check and names what's wrong.
 
 ## Architecture Decisions
 

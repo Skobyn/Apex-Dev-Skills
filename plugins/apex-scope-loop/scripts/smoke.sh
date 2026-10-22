@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # apex-scope-loop structural smoke test
-# Verifies the plugin contract from ADR-0001 (checks 1-10), ADR-0002 (11-13), ADR-0003 (14-43), ADR-0004 (44-61) and the knobs file (62). Exits non-zero on first failure.
+# Verifies the plugin contract from ADR-0001 (checks 1-10), ADR-0002 (11-13), ADR-0003 (14-43), ADR-0004 (44-61), the knobs file (62), the replay flags (63) and scope, intent, monitor and operate (64-71). Exits non-zero on first failure.
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
