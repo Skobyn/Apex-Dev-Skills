@@ -1,6 +1,6 @@
 # ADR-0002: Borrow from AI-DLC: scope sizing, ideation, operation phase, per-task cost
 
-**Status**: Accepted
+**Status**: Implemented
 **Date**: 2026-10-14
 **Slug**: `aidlc-borrowings`
 **Author**: skobyn@gmail.com
