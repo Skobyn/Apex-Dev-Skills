@@ -201,7 +201,7 @@ Per the ADR amendment of 2026-10-18 (R5–R5d): each plan declares its own monit
   - Paths: plugins/apex-console/ui/app.js, plugins/apex-console/ui/app.css, plugins/apex-console/ui/index.html, plugins/apex-console/scripts/smoke.sh
   - Blocked-by: phase-4.3
 
-- [ ] **Phase 4.5** [frontend][docs] Update `ui/demo.json` and the demo-mode mock so demo mode shows every new view; document the new panels in the console README
+- [x] **Phase 4.5** [frontend][docs] Update `ui/demo.json` and the demo-mode mock so demo mode shows every new view; document the new panels in the console README
   - Acceptance: `bash plugins/apex-console/scripts/smoke.sh && python3 -c "import json;d=json.load(open('plugins/apex-console/ui/demo.json'));s=json.dumps(d);assert all(k in s for k in ('\"scope\"','\"operate\"','orchestrator_usd'))" && grep -qi 'operate' plugins/apex-console/README.md`
   - Swarm: single [docs]
   - Paths: plugins/apex-console/ui/demo.json, plugins/apex-console/ui/app.js, plugins/apex-console/README.md
