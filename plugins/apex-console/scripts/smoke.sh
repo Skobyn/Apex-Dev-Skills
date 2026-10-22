@@ -553,6 +553,9 @@ vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx, { filename: 'app.
   // intent summary: shown, null fields n/a
   const intent = all(prog, (n) => n.tag === 'details' && /intent/.test(n.attrs.class || ''))[0];
   assert.ok(intent && /Why\s*now\s*n\/a/.test(txt(intent)) && txt(intent).includes('finance'), txt(intent || prog));
+  // an intent file that could not be read shows why, not four n/a rows
+  const ierr = txt(html(run('intentEl')({ name: 'e-plan', intent: { file: '.claude/tasks/e-intent.md', error: 'unreadable: Permission denied' } }, 'r1:e')));
+  assert.ok(ierr.includes('unreadable: Permission denied') && !/Why now|Problem/.test(ierr), 'intent error: ' + ierr);
   // cost table: delegated / orchestrator / unattributed, aria-labelled; null orchestrator renders n/a with the reason as title
   const costs = all(prog, (n) => /cost-table/.test(n.attrs.class || ''));
   assert.strictEqual(costs.length, 3);
@@ -570,6 +573,23 @@ vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx, { filename: 'app.
   // F-007: a total over the known figures says how many tasks it leaves out, Orchestrator as well as Delegated
   assert.ok(txt(tot.childNodes[1]).includes('$1.50 (1 task n/a)'), 'delegated total: ' + txt(tot.childNodes[1]));
   assert.ok(txt(tot.childNodes[2]).includes('$2.50 (1 task n/a)'), 'orchestrator total: ' + txt(tot.childNodes[2]));
+  // F-011: a token sum says how many tasks' tokens it leaves out, apart from the USD note and whatever the USD total is
+  const tokLine = (cell) => all(cell, (n) => /\bcost-tokens\b/.test(n.attrs.class || '')).map(txt).join('|');
+  assert.strictEqual(tokLine(tot.childNodes[1]), '100 tokens (1 task n/a)', 'USD known, one task\'s tokens null: ' + txt(tot.childNodes[1]));
+  assert.strictEqual(tokLine(tot.childNodes[2]), '900 tokens (1 task n/a)', 'USD known, one task\'s orchestrator tokens null: ' + txt(tot.childNodes[2]));
+  const adv = { name: 'adv-plan', tasks: [mkTask(3, 'Known tokens', { usd: null, tokens: 50000, orchestrator_usd: null, orchestrator_tokens: 410000, orchestrator_na: null }),
+    mkTask(5, 'Unknown tokens', { usd: null, tokens: null, orchestrator_usd: null, orchestrator_tokens: null, orchestrator_na: 'no main-session turn in the window' })],
+    cost: { status: 'measured', delegated_usd: null, delegated_unknown_tasks: 2, orchestrator_usd: null, orchestrator_unattributed_usd: null, orchestrator_unattributed_tokens: null, usd_unrouted: 0 } };
+  const atot = all(html(run('costTableEl')(adv, 'r1:adv')), (n) => /total-row/.test(n.attrs.class || ''))[0];
+  assert.strictEqual(tokLine(atot.childNodes[1]), '50k tokens (1 task n/a)', 'USD n/a, delegated tokens partly unknown: ' + txt(atot.childNodes[1]));
+  assert.strictEqual(tokLine(atot.childNodes[2]), '410k tokens (1 task n/a)', 'USD n/a, orchestrator tokens partly unknown: ' + txt(atot.childNodes[2]));
+  assert.ok(!/\$0(?![.\d])|\b0 tokens/.test(txt(atot)), 'unknown shown as zero: ' + txt(atot));
+  // every task's tokens unknown: the token figure is n/a, never 0 (and with USD n/a too, one n/a for the cell)
+  const nulTok = (o) => ({ name: 'nt-plan', tasks: [mkTask(1, 'a', { usd: 1, ...o }), mkTask(2, 'b', { usd: 2, ...o })],
+    cost: { status: 'measured', delegated_usd: 3, delegated_unknown_tasks: 0, orchestrator_usd: null, orchestrator_unattributed_usd: null, orchestrator_unattributed_tokens: null, usd_unrouted: 0 } });
+  const ntot = all(html(run('costTableEl')(nulTok({ orchestrator_na: 'no main-session turn in the window' }), 'r1:nt')), (n) => /total-row/.test(n.attrs.class || ''))[0];
+  assert.strictEqual(tokLine(ntot.childNodes[1]), 'n/a tokens', 'all tokens null, USD known: ' + txt(ntot.childNodes[1]));
+  assert.strictEqual(txt(ntot.childNodes[2]), 'n/a', 'all tokens and USD null: ' + txt(ntot.childNodes[2]));
   // R9(d): tokens are visible text, not only a tooltip
   assert.ok(txt(crow[1].childNodes[1]).includes('100 tokens') && txt(crow[1].childNodes[2]).includes('900 tokens'), 'tokens not shown: ' + txt(crow[1]));
   const cp = { name: 'x-plan', tasks: [mkTask(1, '**Bold** `code` title', { usd: 0.0004, tokens: 1234567, orchestrator_usd: 1, orchestrator_tokens: 5000, orchestrator_na: null }),
@@ -597,6 +617,17 @@ vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx, { filename: 'app.
   const wnull = txt(html(run('windowEl')({ state: 'closed', outcome: null, closed_by: null, open_at_close: null, unmeasured_at_close: null, measured_runs: 1, breaches: 0, never_measured: false })));
   assert.ok(!/\bnone\b/.test(wnull), 'unknown at-close shown as none: ' + wnull);
   assert.strictEqual(run('atCloseList')(null), 'n/a'); assert.strictEqual(run('atCloseList')([]), 'none');
+  // F-012: a window with no measured run has no breach count, open as well as closed: the word unmeasured and the never-measured chip
+  const wwin = (o) => html(run('windowEl')({ state: 'open', day: 3, days: 14, outcome: null, never_measured: false, ...o }));
+  const nmChip = (n) => all(n, (x) => /\bcheck-flag\b/.test(x.attrs.class || '') && txt(x) === 'never measured').length;
+  for (const st of ['open', 'closed']) {
+    const w0 = wwin({ state: st, measured_runs: 0, breaches: 0 }); const w0t = txt(w0);
+    assert.ok(!/Breaches 0/.test(w0t) && /Breaches unmeasured/.test(w0t) && nmChip(w0) === 1, st + ' window with no measured run: ' + w0t);
+  }
+  const w2 = wwin({ measured_runs: 2, breaches: 0 });
+  assert.ok(/Breaches 0/.test(txt(w2)) && !nmChip(w2), 'a measured open window: ' + txt(w2));
+  const wn = txt(wwin({ measured_runs: null, breaches: null }));
+  assert.ok(/Measured runs n\/a/.test(wn) && /Breaches n\/a/.test(wn), 'unknown measured runs: ' + wn);
   // operate.warning is shown; a non-array problems value does not throw
   const wop = txt(html(run('operatePanel')({ name: 'w-plan', slug: 'w', operate: { state: 'ok', monitor: 'none', warning: 'No ## Monitor section in the plan', problems: 'bad', deploys: null, window: null, checks: null, ingested: null } }, 'r1:w')));
   assert.ok(wop.includes('No ## Monitor section in the plan'), wop);
@@ -627,6 +658,12 @@ vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx, { filename: 'app.
   assert.ok(r1 && r1 !== r0, 'the poll did not rebuild the view');
   assert.strictEqual(ctx.document.activeElement, r1, 'focus fell off the cost region');
   assert.strictEqual(r1.scrollLeft, 40, 'scrollLeft reset by the poll');
+  // a scope change that hides the focused region gives focus to the pressed scope button
+  ctx.document.activeElement = r1;
+  view.querySelector('[data-fkey="scope-poc"]').listeners.click.forEach((f) => f({ type: 'click' }));
+  assert.ok(!view.querySelector('[data-fkey="cost-r1:aaa111"]'), 'the poc filter still shows the feature plan');
+  assert.strictEqual(ctx.document.activeElement, view.querySelector('[data-fkey="scope-poc"]'), 'focus lost when the scope filter hid the focused region');
+  run('ui').scope = 'all';
   ctx.document.activeElement = null;
   // the expander controls both the tasks table and the cost table
   const exp = all(prog, (n) => /expander/.test(n.attrs.class || ''))[0];
@@ -679,7 +716,7 @@ for needle in ("scope-badge", "`Scope: ", "Filter plans by scope", "'bugfix', 'p
 assert not re.search(r"(apiPost|fetch)\([^)]*(operate|deploy|ingest|monitor)", js, re.I), "operate action endpoint"
 assert "/api/operate" not in js
 PY
-pass "console-ui-borrowings: scope badge per plan and a bugfix/poc/feature filter, Operate panel only for landed plans (deploys, window day N of M, checks with unmeasured/open-at-close, ingested), Watched plans view (open windows, repo checks), unmeasured never a value, cost table with n/a orchestrator cells and aria labels, GET-only ($UIMODE; fixture is inline, demo.json is Phase 4.5's)"
+pass "console-ui-borrowings: scope badge per plan and a bugfix/poc/feature filter, Operate panel only for landed plans (deploys, window day N of M, checks with unmeasured/open-at-close, ingested), Watched plans view (open windows, repo checks), unmeasured never a value, cost table with n/a orchestrator cells and aria labels, plan-total token notes counted apart from USD (all unknown = n/a), a window with no measured run reads unmeasured, unreadable intent shows its error, poll re-render keeps focus and horizontal scroll (scope-hidden focus falls back to the scope button) and an opened intent, GET-only ($UIMODE; fixture is inline, demo.json is Phase 4.5's)"
 
 echo ""
 echo "smoke passed: $N/$N checks"

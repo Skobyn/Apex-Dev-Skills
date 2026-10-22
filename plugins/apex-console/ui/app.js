@@ -779,7 +779,7 @@ const ui = {
   metrics: null,
   metricsKey: null,
   expanded: new Set(),
-  intentOpen: new Set(),                 // `${repo}:${plan}` of each intent <details> the user opened; survives the 5 s poll
+  intentOpen: new Set(),                 // `${r.id}:${p.hash}` of each intent <details> the user opened; survives the 5 s poll
   scope: SCOPES.includes(store.get('scope')) ? store.get('scope') : 'all',
   progress: null,
   auditFocus: null,
@@ -1094,7 +1094,8 @@ function redrawProgress(data) {
   window.scrollTo(0, y);
   const find = (k) => view.querySelector(`[data-fkey="${CSS.escape(k)}"]`);
   for (const [k, x] of scrolled) { const n = find(k); if (n) n.scrollLeft = x; }
-  if (fkey) find(fkey)?.focus({ preventScroll: true });
+  // a scope change can hide the focused region: focus then falls back to the pressed scope button, never off the page
+  if (fkey) (find(fkey) || find(`scope-${ui.scope}`))?.focus({ preventScroll: true });
 }
 function rerenderProgress() { redrawProgress(ui.progress); }
 function scopeFilter() {
@@ -1228,6 +1229,8 @@ function atCloseList(a) { return Array.isArray(a) ? (a.length ? a.join(', ') : '
 function intentEl(p, key) {
   const it = p.intent;
   if (!it) return h('p', { class: 'small muted intent-none', text: 'Intent: n/a (no intent file for this plan).' });
+  // an intent file that exists but could not be read: say why, not four n/a rows
+  if (it.error) return h('p', { class: 'small muted intent-none', text: `Intent: n/a (${it.error})${it.file ? ` · ${it.file}` : ''}` });
   const rows = [['Problem', it.problem], ['Who', it.who], ['Why now', it.why_now], ['Non-goals', it.non_goals]];
   const d = h('details', { class: 'intent', 'aria-label': `Intent of ${p.name}`, open: ui.intentOpen.has(key) },
     h('summary', { 'data-fkey': `intent-${key}` }, 'Intent', it.problem ? h('span', { class: 'muted', text: ` — ${String(it.problem).slice(0, 90)}` }) : null),
@@ -1237,14 +1240,14 @@ function intentEl(p, key) {
   return d;
 }
 // One cost cell: USD, an optional note, and the tokens as visible text. Both unknown reads as a single n/a;
-// tokens === false is a USD-only figure (usd_unrouted) with no token line at all.
-function costCell(usd, tokens, why, note) {
+// tokens === false is a USD-only figure (usd_unrouted) with no token line at all. note follows the USD figure, tokNote the token one.
+function costCell(usd, tokens, why, note, tokNote) {
   const okU = isNum(usd);
   const okT = isNum(tokens);
   return td(h('span', null,
     h('span', { class: okU ? null : 'val-na', title: okU ? null : why, text: okU ? fmtUSD(usd) : NA }),
     note ? h('span', { class: 'muted small', text: note }) : null,
-    tokens === false ? null : okT ? h('span', { class: 'cost-tokens', text: `${fmtCompact(tokens)} tokens` })
+    tokens === false ? null : okT ? h('span', { class: 'cost-tokens', text: `${fmtCompact(tokens)} tokens${tokNote || ''}` })
       : okU ? h('span', { class: 'cost-tokens val-na', text: `${NA} tokens` }) : null), 'num');
 }
 function costTableEl(p, key) {
@@ -1262,10 +1265,13 @@ function costTableEl(p, key) {
   // a total over the known figures says how many tasks it leaves out; a task never routed has no cost to leave out
   const dUnknown = Number.isInteger(c.delegated_unknown_tasks) ? c.delegated_unknown_tasks : 0;
   const oUnknown = ts.filter((t) => !isNum(t.orchestrator_usd) && t.orchestrator_na !== 'no routed task').length;
+  // token sums leave out their own unknowns, counted apart from the USD ones and shown whatever the USD total is
+  const tokUnknown = (k) => ts.filter((t) => !isNum(t[k]) && t.orchestrator_na !== 'no routed task').length;
+  const tokNote = (k) => { const n = tokUnknown(k); return n ? plural(n) : null; };
   rows.push(h('tr', { class: 'total-row' },
     td(h('strong', { text: 'Plan total' })),
-    costCell(c.delegated_usd, sum('tokens'), na || 'Delegated cost not available', isNum(c.delegated_usd) && dUnknown ? plural(dUnknown) : null),
-    costCell(c.orchestrator_usd, sum('orchestrator_tokens'), na || 'Orchestrator cost not available', isNum(c.orchestrator_usd) && oUnknown ? plural(oUnknown) : null),
+    costCell(c.delegated_usd, sum('tokens'), na || 'Delegated cost not available', isNum(c.delegated_usd) && dUnknown ? plural(dUnknown) : null, tokNote('tokens')),
+    costCell(c.orchestrator_usd, sum('orchestrator_tokens'), na || 'Orchestrator cost not available', isNum(c.orchestrator_usd) && oUnknown ? plural(oUnknown) : null, tokNote('orchestrator_tokens')),
     costCell(c.orchestrator_unattributed_usd, c.orchestrator_unattributed_tokens,
       na || (isNum(c.orchestrator_unattributed_tokens) ? 'Tokens measured, price unknown' : 'Not available: a session or turn could not be placed in a task window'))));
   // usd_unrouted is delegated ledger spend outside every task, a different figure from the orchestrator's unattributed turns
@@ -1327,9 +1333,12 @@ function windowEl(w) {
   else line = `Watch window: ${naText(w.state)}`;
   const extra = [];
   if (w.state === 'open' || w.state === 'closed') {
+    // no measured run: a breach count of 0 would be a definite value for an unknown, open window or closed
+    const unm = w.measured_runs === 0;
     extra.push(h('span', null, 'Measured runs ', h('span', { class: 'v', text: naInt(w.measured_runs) })));
-    extra.push(h('span', null, 'Breaches ', h('span', { class: 'v', text: naInt(w.breaches) })));
-    if (w.never_measured === true) extra.push(flagChip('never measured', 'No monitor run produced a reading'));
+    extra.push(h('span', null, 'Breaches ', unm ? h('span', { class: 'v val-na', title: 'No monitor run produced a reading', text: 'unmeasured' })
+      : h('span', { class: 'v', text: naInt(w.breaches) })));
+    if (w.never_measured === true || unm) extra.push(flagChip('never measured', 'No monitor run produced a reading'));
   }
   // the at-close lists exist only once a monitor run has closed the window (outcome set); before that they are unknown
   if (w.state === 'closed' && w.outcome) {
@@ -1338,7 +1347,7 @@ function windowEl(w) {
   }
   return h('div', null, h('p', { class: 'window-line', text: line }), extra.length ? h('div', { class: 'plan-stats' }, extra) : null);
 }
-function operatePanel(p, key = `${p.slug || p.name}`) {
+function operatePanel(p, key) {
   const o = p.operate;
   const label = `Operate: ${p.slug || p.name}`;
   if (!o) return h('section', { class: 'operate', 'aria-label': label }, h('h3', { text: 'Operate' }), h('p', { class: 'small muted', text: 'Operate state: n/a (not read).' }));
