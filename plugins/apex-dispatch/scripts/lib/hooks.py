@@ -174,6 +174,7 @@ class Ctx:
         wt = self.checkpoint.get("worktree_path")
         self.state_worktree = real(wt) if isinstance(wt, str) and wt and os.path.isdir(wt) else None
         self.worker_wt = self._worker_worktree()
+        self.foreign = False                              # main() sets it: a session that does not own the run
         self.notes = []
 
     def _worker_worktree(self):
@@ -198,6 +199,17 @@ class Ctx:
                     and isinstance(reg.get("worktree"), str) and real(reg["worktree"]) == path and os.path.isdir(path):
                 return path
         return None
+
+    def is_foreign(self, payload):
+        """True for a session other than the one that holds the ACTIVE lock. owner.json
+        records its session_id; in-process subagents carry the parent's id, so the
+        owner's own builders and reviewers are never foreign. A claude -p write worker
+        has its own id but is recognised by its registered worktree (worker_wt), and
+        an owner.json without a session_id (an old lock) is never foreign: fail closed."""
+        o_sid = (self.owner or {}).get("session_id") if self.owner_ok else None
+        p_sid = payload.get("session_id")
+        return bool(isinstance(o_sid, str) and o_sid and isinstance(p_sid, str) and p_sid
+                    and p_sid != o_sid and not self.worker_wt)
 
     def stale(self):
         """An owner whose stage is DONE or whose plan landed is reclaimable: no run."""
@@ -689,6 +701,8 @@ def pre_edit(ctx, p):
     why = protected_reason(ctx, path)
     if why:
         raise Deny("%s (%s)" % (why, target))
+    if ctx.foreign:
+        return {}                                         # another session's run: protected paths only
     if ctx.stage in LOCKED_STAGES:
         raise Deny("writes are refused during stage %s: the gate and the reviewers are bound to HEAD; re-route "
                    "(route.sh plan / iterate.sh) to return to BUILD before committing fixes" % ctx.stage)
@@ -1346,7 +1360,8 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
     cmd = re.sub(r"`[^`]*`", " ", cmd)
     cwd = p.get("cwd") if isinstance(p.get("cwd"), str) else os.getcwd()
     role = caller_role(p)
-    read_only = bool(role and (ctx.roles().get(role) or {}).get("read_only"))
+    read_only = bool(role and (ctx.roles().get(role) or {}).get("read_only")) and not ctx.foreign
+    locked = ctx.stage in LOCKED_STAGES and not ctx.foreign
     providers = {x.get("id"): x for x in ctx.policy.get("providers", []) if isinstance(x, dict)}
     bins = PROVIDER_BINS | {os.path.basename(x.get("binary")) for x in providers.values() if x.get("binary")}
     for words, redirs in segments(cmd):
@@ -1417,7 +1432,7 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
                 bad = [x for x in g.cfg if GIT_CFG_KEYS.match(x) and not GIT_CFG_HARMLESS.match(x)]
                 if bad:
                     raise Deny("git -c %s on a mutating command overrides core/filter/diff/merge configuration" % bad[0])
-                if ctx.stage in LOCKED_STAGES:
+                if locked:
                     raise Deny("git %s is refused during stage %s (the gate and reviewers are bound to HEAD); re-route "
                                "(route.sh plan / iterate.sh) to return to BUILD before committing fixes" % (g.sub, ctx.stage))
                 if read_only:
@@ -1443,11 +1458,11 @@ def bash_rules(ctx, p, cmd, depth=0, prefix=""):
             why = protected_reason(ctx, real(path), removal=t in removals)
             if why:
                 raise Deny("%s (%s %s)" % (why, b or "redirect", t))
-            if (ctx.stage in LOCKED_STAGES or read_only) and not path.startswith("/dev/"):
+            if (locked or read_only) and not path.startswith("/dev/"):
                 if "$" in t or "`" in t or in_checkout(ctx, real(path)):
                     raise Deny("write to %s refused %s" % (t, "during stage %s; re-route (route.sh plan / iterate.sh) to return to "
                                                                 "BUILD before committing fixes" % ctx.stage
-                                                           if ctx.stage in LOCKED_STAGES else "for read-only role " + role))
+                                                           if locked else "for read-only role " + role))
         # Nested command strings, then cd tracking for later segments.
         for inner in c.nested():
             bash_rules(ctx, p, inner, depth + 1, prefix)
@@ -2071,6 +2086,19 @@ HANDLERS = {"agent": ("pre-agent.sh", pre_agent), "bash": ("pre-bash.sh", pre_ba
 PRE_KINDS = {"agent", "bash", "edit", "mcp"}
 
 
+def note_foreign(ctx, hook, payload):
+    """One hook_advisory row per foreign session: the run's rules were not applied."""
+    sid = payload.get("session_id")
+    msg = "foreign session %s; run rules not applied" % sid
+    try:
+        seen = any(r.get("event") == "hook_advisory" and r.get("advisory") == msg
+                   for r in ledger.read_rows(ctx.state_dir)) if ctx.state_dir and os.path.isdir(ctx.state_dir) else True
+    except Exception:
+        seen = True
+    if not seen:
+        ctx.ledger_row("hook_advisory", {"hook": hook, "advisory": msg})
+
+
 def main(argv):
     if len(argv) >= 2 and argv[1] == "operate-gate":     # no state needed: runs with or without a lock
         print(json.dumps(operate_gate(sys.stdin.read()), separators=(",", ":")))
@@ -2096,6 +2124,15 @@ def main(argv):
         ctx.ledger_row("hook_error", {"hook": hook, "error": "unparseable stdin: %s" % e})
         print("{}")
         return 0
+    if ctx.is_foreign(payload):
+        ctx.foreign = True
+        note_foreign(ctx, hook, payload)
+        if argv[1] not in ("edit", "bash", "mcp"):
+            # agent/post-*/subagent-*/stop act on the owner's route, roster and
+            # registrations; another session has none of them and must not add to them.
+            # pre-mcp reads only the merged policy's allowlist, not run state: it still applies.
+            print("{}")
+            return 0
     rc = 0
     try:
         out = handler(ctx, payload)
