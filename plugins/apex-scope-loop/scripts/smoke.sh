@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # apex-scope-loop structural smoke test
-# Verifies the plugin contract from ADR-0001 (checks 1-10), ADR-0002 (11-13), ADR-0003 (14-43), ADR-0004 (44-61) and the knobs file (62). Exits non-zero on first failure.
+# Verifies the plugin contract from ADR-0001 (checks 1-10), ADR-0002 (11-13), ADR-0003 (14-43), ADR-0004 (44-61), the knobs file (62), the replay flags (63) and scope, intent, monitor and operate (64-71). Exits non-zero on first failure.
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1349,10 +1349,10 @@ touch -r "$GW/impl.txt" "$SMOKE_TMP/g1.ref"; echo GOOD >"$GW/impl.txt"; touch -r
 has "GATE: FAIL" "$(cd "$G1" && "$EX/green-gate.sh" plans/g-plan.md check 2>&1)" || fail "the gate passed a same-size edit hidden by core.trustctime=false"
 ok "land builds the reviewed tree (no -s ours revert, overlaps refused until refork, no merge drivers, submodules seen); refork resets reviews and G12; land re-runs finish; the gate binds to a clean head (submodules included) and allows ignored tool caches"
 
-# 42. Portability (ADR-0003): version 0.6.1, ADR-0003 and ADR-0004 present, reviewer cannot
+# 42. Portability (ADR-0003): version 0.7.0, ADR-0003 and ADR-0004 present, reviewer cannot
 #     edit, ruflo optional (no required ruflo/claude-flow reference outside
 #     docs/legacy/), apex-plan template profiles.
-grep -q '"version": "0.6.1"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.6.1"
+grep -q '"version": "0.7.0"' "$PLUGIN_ROOT/.claude-plugin/plugin.json" || fail "plugin.json is not version 0.7.0"
 ADR4="$PLUGIN_ROOT/docs/adrs/0004-review-loop-calibration.md"
 [ -f "$ADR4" ] && grep -qE "^- \*\*Status:\*\* Accepted" "$ADR4" && grep -q '^## What this loosens and why it is safe' "$ADR4" || fail "ADR-0004 missing, not Accepted, or without its loosening section"
 ADR3="$PLUGIN_ROOT/docs/adrs/0003-portability-and-dispatch-consumer.md"
@@ -1366,7 +1366,7 @@ for prof in generic apex; do for t in adr-template.md plan-template.md; do
   [ -f "$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles/$prof/$t" ] || fail "apex-plan profile $prof lacks $t"
 done; done
 ! grep -qi 'getapexinsights\|apex-app' "$PLUGIN_ROOT"/skills/apex-plan/resources/templates/profiles/generic/*.md || fail "the generic apex-plan profile carries Apex-specific vocabulary"
-ok "portability: version 0.6.1, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
+ok "portability: version 0.7.0, ADR-0003, ADR-0004, read-only reviewer edits, ruflo optional, apex-plan profiles"
 
 # 43. apex-dispatch Phase 3.2 consumers: green-gate.sh check PASS moves the ACTIVE
 #     lock BUILD -> GATE (only from BUILD; a FAIL leaves it); checkpoint.sh review
@@ -2096,6 +2096,1170 @@ RC63=0; O63="$(cd "$R63" && "$EX/risk-tier.sh" plans/v-plan.md 1 --no-record --s
 [ "$(cksum <"$CP63")" = "$SUM63" ] && [ ! -e "$SB63/knobs/scope-loop.json" ] || fail "a replay recorded a tier or wrote a knobs file"
 ok "replay: --no-record --since S --head H classifies exactly a past diff; --knobs replays it under a proposal; both need --no-record; an invalid proposal exits 3; nothing recorded"
 
+# 64. existing-plans-baseline (Phase 1.1): the two plans with no Scope line today,
+#     apex-dispatch-plan.md and novel-plugins-suite-plan.md, keep validating, counting
+#     and promoting exactly as recorded in scripts/fixtures/existing-plans/. Later
+#     phases add a Scope: line (bugfix/poc/feature); a change that alters these outputs
+#     turns this check red. "Promote dry-run" is defined here as: promote-to-loop.sh run
+#     for real inside a throwaway fixture repository under $SMOKE_TMP, built the way check
+#     29 builds its repository (git init, the fixture plan under .claude/plans/, a minimal
+#     ADR stub with **Status**: Accepted under .claude/tasks/). promote-to-loop.sh has no
+#     dry-run flag, so the throwaway repository is the sandbox; the real checkout's git
+#     status must be identical before and after. Output is normalised before comparison:
+#     temp and checkout paths, 12+ digit hex hashes, ISO timestamps, and the Route dry-run
+#     line (it depends on whether apex-dispatch is installed beside this plugin). Both
+#     plans are fully checked off today, so promote refuses them at the "no unchecked
+#     tasks" gate; that refusal (exit 1, recorded output) is the baseline.
+EB_EPD="$PLUGIN_ROOT/scripts/fixtures/existing-plans"
+EB_ROOT="$(git -C "$PLUGIN_ROOT" rev-parse --show-toplevel)"
+EB_STATUS="$(git -C "$EB_ROOT" status --porcelain)"
+# same_as_recorded FILE ACTUAL LABEL: ACTUAL must equal the recorded FILE byte for byte.
+same_as_recorded() {
+  local out
+  out="$(diff -u "$1" "$2" 2>&1)" || fail "existing-plans-baseline: $3 differs from $(basename "$1"): $(printf '%s' "$out" | head -30)"
+}
+for EB_NAME in apex-dispatch novel-plugins-suite; do
+  EB_PLAN="$EB_EPD/$EB_NAME-plan.md"; EB_REC="$EB_EPD/$EB_NAME"
+  [ -f "$EB_PLAN" ] || fail "existing-plans-baseline: fixture $EB_NAME-plan.md is missing"
+  EB_V="$(python3 "$EX/planlib.py" validate "$EB_PLAN" 2>&1)" || fail "existing-plans-baseline: $EB_NAME no longer validates: $EB_V"
+  [ -z "$EB_V" ] || fail "existing-plans-baseline: $EB_NAME validate printed output: $EB_V"
+  same_as_recorded "$EB_REC.validate.txt" /dev/null "validate output for $EB_NAME"
+  python3 "$EX/planlib.py" counts "$EB_PLAN" >"$SMOKE_TMP/$EB_NAME.counts" 2>&1 || fail "existing-plans-baseline: planlib counts failed on $EB_NAME"
+  same_as_recorded "$EB_REC.counts.txt" "$SMOKE_TMP/$EB_NAME.counts" "planlib counts for $EB_NAME"
+  python3 "$EX/planlib.py" remaining "$EB_PLAN" >"$SMOKE_TMP/$EB_NAME.remaining" 2>&1 || fail "existing-plans-baseline: planlib remaining failed on $EB_NAME"
+  same_as_recorded "$EB_REC.remaining.txt" "$SMOKE_TMP/$EB_NAME.remaining" "planlib remaining for $EB_NAME"
+  EB_PR="$SMOKE_TMP/existing-$EB_NAME"; mkdir -p "$EB_PR/.claude/tasks" "$EB_PR/.claude/plans"; git init -q -b main "$EB_PR"
+  printf '# ADR\n**Status**: Accepted\n' >"$EB_PR/.claude/tasks/$EB_NAME-adr.md"
+  cp "$EB_PLAN" "$EB_PR/.claude/plans/$EB_NAME-plan.md"
+  git -C "$EB_PR" add -A; git -C "$EB_PR" commit -qm "$EB_NAME baseline"
+  EB_RC=0; EB_OUT="$(cd "$EB_PR" && APEX_DISPATCH_MODE= APEX_GIBSON=0 APEX_MEMORY_CMD= "$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh" "$EB_NAME" 2>&1)" || EB_RC=$?
+  [ "$EB_RC" = 1 ] || fail "existing-plans-baseline: promote-to-loop.sh exited $EB_RC for $EB_NAME (baseline is 1): $EB_OUT"
+  EB_REAL_PR="$(cd "$EB_PR" && pwd -P)"
+  printf '%s\n' "$EB_OUT" | sed -e "s#$EB_REAL_PR#<FIXTURE>#g" -e "s#$EB_PR#<FIXTURE>#g" -e "s#$EB_ROOT#<CHECKOUT>#g" -e "s#$SMOKE_TMP#<SMOKE_TMP>#g" \
+    -e 's/[0-9a-f]\{12,\}/<HASH>/g' -e 's/[0-9]\{4\}-[0-9][0-9]-[0-9][0-9][T ][0-9:.]*Z\{0,1\}/<TIMESTAMP>/g' \
+    -e 's/^Route dry-run: .*/Route dry-run: <ROUTE>/' >"$SMOKE_TMP/$EB_NAME.promote-dry-run.txt"
+  same_as_recorded "$EB_REC.promote-dry-run.txt" "$SMOKE_TMP/$EB_NAME.promote-dry-run.txt" "promote dry-run output for $EB_NAME"
+  [ -z "$(git -C "$EB_PR" status --porcelain)" ] && [ ! -e "$EB_PR/.dev-plan-state" ] || fail "existing-plans-baseline: the promote dry-run wrote into its fixture repository ($EB_NAME)"
+done
+[ "$(git -C "$EB_ROOT" status --porcelain)" = "$EB_STATUS" ] || fail "existing-plans-baseline: the promote dry-runs changed the checkout's git status"
+ok "existing-plans-baseline: both plans without a Scope line validate, count and remain as recorded; promote-to-loop.sh refuses them today at the no-unchecked-tasks gate (exit 1, recorded output); the checkout is unchanged"
+
+# 65. scope-start: start.sh --scope bugfix|poc|feature writes the Scope lines and picks the matching template.
+#     No flag means feature (written explicitly). An unknown scope is rejected and writes nothing, in
+#     several argument orders (the adversarial neighbour: a bad value next to --force). The generic and
+#     apex lean templates have the same section headings, and every scaffolded plan passes planlib validate
+#     and promote-to-loop.sh's gate-shape check for its human and partner gates (its check 8, extracted
+#     and run as is: a gate that promote would refuse is a scaffold nobody can promote).
+SS="$PLUGIN_ROOT/skills/apex-plan/scripts/start.sh"; SS_TMP="$SMOKE_TMP/scope-start"; SS_TPL="$PLUGIN_ROOT/skills/apex-plan/resources/templates/profiles"
+mkdir -p "$SS_TMP" || fail "scope-start: cannot create the temp dir"
+# promote-to-loop.sh check 8 is the python block between its "<<'PY'" line and the closing PY; run it unchanged
+SS_PROMOTE="$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh"
+SS_GATE_PY="$(sed -n "/<<'PY' || fail \"Gate task/,/^PY\$/p" "$SS_PROMOTE" | sed '1d;$d')"
+[[ "$SS_GATE_PY" == *"should require approval phrase"* ]] || fail "scope-start: cannot extract promote-to-loop.sh's gate-shape check"
+for SS_PROF in generic apex; do
+  SS_R="$SS_TMP/$SS_PROF"; mkdir -p "$SS_R" && git -C "$SS_R" init -q -b main || fail "scope-start: cannot init the temp repo"
+  for SS_SC in bugfix poc feature; do
+    (cd "$SS_R" && APEX_PLAN_PROFILE="$SS_PROF" bash "$SS" "s-$SS_SC" "T" --scope "$SS_SC" >/dev/null) || fail "scope-start: $SS_PROF --scope $SS_SC failed"
+    grep -qx "\*\*Scope\*\*: $SS_SC" "$SS_R/.claude/tasks/s-$SS_SC-adr.md" || fail "scope-start: $SS_PROF $SS_SC ADR has no **Scope**: line"
+    grep -qx "> \*\*Scope\*\*: $SS_SC" "$SS_R/.claude/plans/s-$SS_SC-plan.md" || fail "scope-start: $SS_PROF $SS_SC plan has no > **Scope**: line"
+    # the full ADR template carries a literal {{algorithm_name}} sample today; only the known placeholders must be gone
+    ! grep -qE '\{\{(SLUG|TITLE|SCOPE|DATE|NNNN|[A-Z_]*EMAIL|TARGET_DATE|GOAL_ONE_SENTENCE|BOUNDED_CONTEXTS)\}\}' "$SS_R/.claude/tasks/s-$SS_SC-adr.md" "$SS_R/.claude/plans/s-$SS_SC-plan.md" || fail "scope-start: $SS_PROF $SS_SC left an unsubstituted placeholder"
+    python3 "$EX/planlib.py" validate "$SS_R/.claude/plans/s-$SS_SC-plan.md" >/dev/null 2>&1 || fail "scope-start: $SS_PROF $SS_SC plan does not pass planlib validate"
+    # [gate:auto] lines are left out: the lean "{test command}" and the full template's prose Gate 4->5 are
+    # placeholders the author replaces before promoting; the human and partner gates must pass untouched
+    SS_GOUT="$(python3 -c "$SS_GATE_PY" "$EX" "$SS_R/.claude/plans/s-$SS_SC-plan.md" 2>&1 || true)"
+    SS_GBAD="$(grep '^  line ' <<<"$SS_GOUT" | grep -v '\[gate:auto\]' || true)"
+    [ -z "$SS_GBAD" ] || fail "scope-start: $SS_PROF $SS_SC plan has a gate promote-to-loop.sh would refuse: $SS_GBAD"
+    # and the human ship gate itself, stated directly (here-string, not a pipe into grep -q: L-003)
+    SS_SHIP="$(grep -A1 '\[gate:human\]' "$SS_R/.claude/plans/s-$SS_SC-plan.md" | grep 'Acceptance:')"
+    [ -n "$SS_SHIP" ] || fail "scope-start: $SS_PROF $SS_SC plan has no [gate:human] Acceptance"
+    while IFS= read -r SS_LINE; do
+      grep -qiE 'approve|user types' <<<"$SS_LINE" || fail "scope-start: $SS_PROF $SS_SC [gate:human] Acceptance has neither 'approve' nor 'user types': $SS_LINE"
+    done <<<"$SS_SHIP"
+  done
+  # lean means lean: no Pseudocode, Architecture, Data Model or API sections; feature keeps them
+  SS_L="$(cat "$SS_R/.claude/tasks/s-bugfix-adr.md" "$SS_R/.claude/tasks/s-poc-adr.md")"
+  ! grep -qE '^#+ (Pseudocode|Architecture|Data Model|API Surface)' <<<"$SS_L" || fail "scope-start: $SS_PROF lean ADR still has a full-template section"
+  grep -qE '^### Pseudocode' "$SS_R/.claude/tasks/s-feature-adr.md" || fail "scope-start: $SS_PROF feature ADR lost its Pseudocode section"
+  [ "$(grep -c '^- \[ \] \*\*Phase' "$SS_R/.claude/plans/s-bugfix-plan.md")" -le 2 ] || fail "scope-start: $SS_PROF lean plan scaffolds more than 2 phase tasks"
+  # no flag = feature: identical to --scope feature apart from the slug and the ADR number on line 1
+  (cd "$SS_R" && APEX_PLAN_PROFILE="$SS_PROF" bash "$SS" "s-none" "T" >/dev/null) || fail "scope-start: $SS_PROF start.sh without --scope failed"
+  [ "$(sed 's/s-none/s-feature/g;1d' "$SS_R/.claude/tasks/s-none-adr.md")" = "$(sed 1d "$SS_R/.claude/tasks/s-feature-adr.md")" ] || fail "scope-start: $SS_PROF no-flag ADR differs from --scope feature"
+  [ "$(sed 's/s-none/s-feature/g' "$SS_R/.claude/plans/s-none-plan.md")" = "$(cat "$SS_R/.claude/plans/s-feature-plan.md")" ] || fail "scope-start: $SS_PROF no-flag plan differs from --scope feature"
+  grep -qx '\*\*Scope\*\*: feature' "$SS_R/.claude/tasks/s-none-adr.md" && grep -qx '> \*\*Scope\*\*: feature' "$SS_R/.claude/plans/s-none-plan.md" || fail "scope-start: $SS_PROF no flag did not write Scope: feature"
+  # unknown scope: non-zero, a clear message, nothing written
+  for SS_BAD in "--scope epic" "--force --scope epic" "--scope epic --force" "--scope="; do
+    SS_B="$SS_TMP/bad-$SS_PROF"; rm -rf "${SS_B:?}"; mkdir -p "$SS_B" && git -C "$SS_B" init -q -b main || fail "scope-start: cannot init the bad-scope repo"
+    # shellcheck disable=SC2086
+    SS_OUT="$(cd "$SS_B" && APEX_PLAN_PROFILE="$SS_PROF" bash "$SS" s-bad "T" $SS_BAD 2>&1)" && fail "scope-start: '$SS_BAD' was accepted"
+    has 'unknown scope' "$SS_OUT" || fail "scope-start: '$SS_BAD' gave no clear message: $SS_OUT"
+    [ -z "$(find "$SS_B" -path "$SS_B/.git" -prune -o -type f -print)" ] || fail "scope-start: '$SS_BAD' wrote files"
+  done
+done
+SS_G="$(grep -h '^#' "$SS_TPL/generic/adr-template-lean.md" "$SS_TPL/generic/plan-template-lean.md")"
+SS_A="$(grep -h '^#' "$SS_TPL/apex/adr-template-lean.md" "$SS_TPL/apex/plan-template-lean.md")"
+[ -n "$SS_G" ] && [ "$SS_G" = "$SS_A" ] || fail "scope-start: generic and apex lean templates have different section headings"
+ok "scope-start: --scope bugfix|poc|feature writes **Scope**: and > **Scope**: lines and picks the lean or full template in both profiles; no flag is feature; an unknown scope (alone, with --force, empty) is refused and writes nothing; lean headings match across profiles; every scaffolded plan validates and its human and partner gates pass promote's gate-shape check"
+
+# 66. scope-promote (Phase 1.3): promote-to-loop.sh applies per-scope validation (ADR R2).
+#     Fixtures are built with start.sh --scope in throwaway repositories under $SMOKE_TMP (as checks 29
+#     and 64 do) with the ADR's TODOs filled and its status Accepted; a promote that succeeds runs
+#     init.sh inside the fixture, so its worktree and state stay under $SMOKE_TMP (asserted below).
+#     Definition of phase: a distinct major N among the plan's "Phase N.M" task ids. Expectations:
+#       2-phase bugfix -> promotes (exit 0, "Scope: bugfix")         3-phase bugfix -> exit 1, "bugfix allows at most 2 phases; this plan has 3"
+#       3-phase poc -> promotes; 4-phase poc -> exit 1               bugfix with a [tier:c] task -> promotes AND prints a WARNING that scope does not loosen enforcement
+#       no Scope line anywhere -> byte-identical to the previous promote-to-loop.sh (git show 210da67), success and refusal
+#     Adversarial neighbours, each exit 1 naming the problem, nothing initialised:
+#       Scope only in the plan, or only in the ADR -> "declared in the ... but not in the ..."
+#       ADR bugfix / plan poc -> "Scope disagrees"            unknown value, empty value, leftover {{SCOPE}}, wrong case -> unknown/malformed (never silently feature)
+#       Scope declared twice -> refused
+#     A bugfix ADR that still has Pseudocode/Architecture/Data Model/API sections promotes (promote never required them,
+#     so no scope forbids them); a feature plan with 5 phases promotes (no limit).
+#     Enforcement is not loosened: a bugfix plan with an ambiguous gate Acceptance, a Proposed ADR, a leftover TODO
+#     and a task with no Acceptance are refused exactly as for feature.
+SP_START="$PLUGIN_ROOT/skills/apex-plan/scripts/start.sh"; SP_PROMOTE="$PLUGIN_ROOT/skills/apex-plan/scripts/promote-to-loop.sh"
+SP_TMP="$SMOKE_TMP/scope-promote"; mkdir -p "$SP_TMP" || fail "scope-promote: cannot create the temp dir"
+SP_OLD="$SP_TMP/promote-to-loop.210da67.sh"
+git -C "$EB_ROOT" show "210da67:plugins/apex-scope-loop/skills/apex-plan/scripts/promote-to-loop.sh" >"$SP_OLD" || fail "scope-promote: cannot read promote-to-loop.sh at 210da67"
+[ -s "$SP_OLD" ] || fail "scope-promote: the 210da67 promote-to-loop.sh is empty"
+# sp_ed FILE SED-ARGS...: edit a fixture file in place (portable -i) and fail if the file is not there
+sp_ed() { local f="$1"; shift; [ -f "$f" ] || fail "scope-promote: no such fixture file $f"; sed -i.bak "$@" "$f" && rm -f "$f.bak"; }
+# sp_fx NAME SCOPE [EXTRA_PHASES]: a committed repo with a filled-in, Accepted ADR and a plan from start.sh --scope SCOPE
+# (SCOPE "none" = no Scope line in either file, like a plan from before Phase 1.2); EXTRA_PHASES adds Phase 3.1, 4.1, ...
+sp_fx() {
+  local d="$SP_TMP/$1" n
+  [ -n "$1" ] && rm -rf "${d:?}"; mkdir -p "$d" && git -C "$d" init -q -b main || fail "scope-promote: cannot init $1"
+  # feature and none are built from the lean (bugfix) scaffold and then re-labelled: the full feature template carries
+  # placeholder Acceptance lines that promote's gate check rightly refuses, which is not what this check is about
+  local lean="$2"; case "$2" in feature|none) lean=bugfix;; esac
+  (cd "$d" && bash "$SP_START" fx T --scope "$lean" >/dev/null) || fail "scope-promote: start.sh failed for $1"
+  sp_ed "$d/.claude/tasks/fx-adr.md" -e 's/\[ TODO[^]]*\]/filled/g' -e 's/_(filled in during refinement)_/keep it small/' -e 's/^\*\*Status\*\*: Proposed/**Status**: Accepted/'
+  sp_ed "$d/.claude/plans/fx-plan.md" -e 's/{test command}/bash -c true/g'
+  if [ "$2" = none ]; then sp_ed "$d/.claude/tasks/fx-adr.md" -e '/^\*\*Scope\*\*:/d'; sp_ed "$d/.claude/plans/fx-plan.md" -e '/^> \*\*Scope\*\*:/d'; fi
+  if [ "$2" = feature ]; then sp_ed "$d/.claude/tasks/fx-adr.md" -e 's/^\*\*Scope\*\*: bugfix/**Scope**: feature/'; sp_ed "$d/.claude/plans/fx-plan.md" -e 's/^> \*\*Scope\*\*: bugfix/> **Scope**: feature/'; fi
+  n=3; while [ "$n" -le $((2 + ${3:-0})) ]; do printf '\n- [ ] **Phase %s.1** [docs] extra phase %s\n  - Acceptance: true\n' "$n" "$n" >>"$d/.claude/plans/fx-plan.md"; n=$((n + 1)); done
+  # SP_DATE (optional) pins the commit's author and committer date, so a caller can give two otherwise identical fixtures different commit ids
+  ( [ -z "${SP_DATE:-}" ] || export GIT_AUTHOR_DATE="$SP_DATE" GIT_COMMITTER_DATE="$SP_DATE"; git -C "$d" add -A && git -C "$d" commit -qm fx ) || fail "scope-promote: cannot commit $1"
+}
+# sp_run SCRIPT DIR: run a promote in DIR; sets SP_RC and SP_OUT (stdout+stderr)
+sp_run() { SP_RC=0; SP_OUT="$(cd "$2" && APEX_EXECUTE_SCRIPTS="$EX" APEX_DISPATCH_MODE= APEX_GIBSON=0 APEX_MEMORY_CMD= bash "$1" fx 2>&1)" || SP_RC=$?; }
+# sp_refused NAME DIR PATTERN: exit 1, output matches PATTERN, no state or worktree was created
+sp_refused() {
+  sp_run "$SP_PROMOTE" "$2"
+  [ "$SP_RC" = 1 ] || fail "scope-promote: $1 exited $SP_RC, expected 1: $SP_OUT"
+  grep -qE -- "$3" <<<"$SP_OUT" || fail "scope-promote: $1 did not say '$3': $SP_OUT"
+  [ ! -e "$2/.dev-plan-state" ] || fail "scope-promote: $1 left state behind"
+}
+sp_promoted() {
+  sp_run "$SP_PROMOTE" "$2"
+  [ "$SP_RC" = 0 ] || fail "scope-promote: $1 exited $SP_RC, expected 0: $SP_OUT"
+  grep -qF -- "Validation passed." <<<"$SP_OUT" || fail "scope-promote: $1 did not report 'Validation passed.': $SP_OUT"
+  [ -d "$2/.dev-plan-state" ] || fail "scope-promote: $1 promoted but wrote no state in its fixture"
+}
+# sp_edc NAME FILE SED-ARGS...: edit one fixture file of NAME and commit it
+sp_edc() { local n="$1" f="$2"; shift 2; sp_ed "$SP_TMP/$n/$f" "$@"; git -C "$SP_TMP/$n" commit -qam edit || fail "scope-promote: cannot commit the edit to $n"; }
+SP_ADR=.claude/tasks/fx-adr.md; SP_PLAN=.claude/plans/fx-plan.md
+# (a) 2-phase bugfix promotes; poc with 3 phases promotes
+sp_fx bf2 bugfix; sp_promoted "a 2-phase bugfix" "$SP_TMP/bf2"
+grep -qF -- "Scope: bugfix (2 of at most 2 phases)" <<<"$SP_OUT" || fail "scope-promote: the 2-phase bugfix did not report its scope: $SP_OUT"
+! grep -qF -- "WARNING" <<<"$SP_OUT" || fail "scope-promote: a bugfix without a [tier:c] task printed a warning: $SP_OUT"
+sp_fx poc3 poc 1; sp_promoted "a 3-phase poc" "$SP_TMP/poc3"
+# (b) 3-phase bugfix: exit 1, names the limit
+sp_fx bf3 bugfix 1; sp_refused "a 3-phase bugfix" "$SP_TMP/bf3" "bugfix allows at most 2 phases; this plan has 3"
+# (c) 4-phase poc
+sp_fx poc4 poc 2; sp_refused "a 4-phase poc" "$SP_TMP/poc4" "poc allows at most 3 phases; this plan has 4"
+# feature has no limit
+sp_fx ft5 feature 3; sp_promoted "a 5-phase feature" "$SP_TMP/ft5"
+# (d) [tier:c] under bugfix and poc still promotes and warns; under feature there is no warning
+for SP_SC in bugfix poc; do
+  sp_fx "tc-$SP_SC" "$SP_SC"; sp_edc "tc-$SP_SC" "$SP_PLAN" 's/^- \[ \] \*\*Phase 1\.1\*\* /&[tier:c] /'
+  grep -qF '[tier:c]' "$SP_TMP/tc-$SP_SC/$SP_PLAN" || fail "scope-promote: could not tag the $SP_SC fixture [tier:c]"
+  sp_promoted "a $SP_SC plan with a [tier:c] task" "$SP_TMP/tc-$SP_SC"
+  grep -qF "WARNING: line" <<<"$SP_OUT" && grep -qF "does not loosen enforcement" <<<"$SP_OUT" || fail "scope-promote: $SP_SC with [tier:c] printed no warning that scope does not loosen enforcement: $SP_OUT"
+done
+sp_fx tc-ft feature; sp_edc tc-ft "$SP_PLAN" 's/^- \[ \] \*\*Phase 1\.1\*\* /&[tier:c] /'
+sp_promoted "a feature plan with a [tier:c] task" "$SP_TMP/tc-ft"; ! grep -qF "WARNING" <<<"$SP_OUT" || fail "scope-promote: feature printed a [tier:c] warning: $SP_OUT"
+# (e) no Scope line anywhere: identical to the previous script, on success and on refusal
+# sp_norm DIR: hide what legitimately differs between two fixtures: paths, timestamps, 12+ hex runs, and the short commit id git
+# prints (7+ hex) in "HEAD is now at <sha> fx" (init.sh's worktree) and in "[branch <sha>] msg"; anchored on those git phrases so
+# that ordinary words and numbers are never blanked. (BSD sed: no \b, no \|.)
+sp_norm() { local d; d="$(cd "$1" && pwd -P)"; sed -e "s#$d#<F>#g" -e "s#$1#<F>#g" -e "s#$SMOKE_TMP#<T>#g" \
+  -e 's/\(HEAD is now at \)[0-9a-f]\{7,\}/\1<H>/' -e 's/^\(\[[^]]* \)[0-9a-f]\{7,\}\]/\1<H>]/' \
+  -e 's/[0-9a-f]\{12,\}/<H>/g' -e 's/[0-9]\{4\}-[0-9][0-9]-[0-9][0-9][T ][0-9:.]*Z\{0,1\}/<TS>/g'; }
+# The two fixtures have the same tree, author and committer, so their commit ids are equal only when both commits land in the same
+# second; init.sh prints a short id ("HEAD is now at <sha> fx"), so without a pinned date this comparison would pass or fail by
+# timing. Pin different dates so the ids always differ: sp_norm must then hide them, every run, or this check goes red.
+SP_DATE="2001-01-01T00:00:00Z" sp_fx old-a none 4; SP_DATE="2002-02-02T00:00:00Z" sp_fx new-a none 4
+[ "$(git -C "$SP_TMP/old-a" rev-parse --short HEAD)" != "$(git -C "$SP_TMP/new-a" rev-parse --short HEAD)" ] || fail "scope-promote: the old-a and new-a fixtures have the same commit id; the pinned dates did not take"
+sp_run "$SP_OLD" "$SP_TMP/old-a"; SP_O_RC="$SP_RC"; SP_O_OUT="$(printf '%s\n' "$SP_OUT" | sp_norm "$SP_TMP/old-a")"
+sp_run "$SP_PROMOTE" "$SP_TMP/new-a"; SP_N_RC="$SP_RC"; SP_N_OUT="$(printf '%s\n' "$SP_OUT" | sp_norm "$SP_TMP/new-a")"
+# sp_norm hides a short commit id in git's phrases and nothing else: ordinary words and numbers of 7 or more hex-looking characters survive
+[ "$(printf 'HEAD is now at 4027dca fx\n[main (root-commit) 10e081c] fx\n' | sp_norm "$SP_TMP/old-a")" = "$(printf 'HEAD is now at <H> fx\n[main (root-commit) <H>] fx\n')" ] \
+  && [ "$(printf 'a decade ago, acceded 1234567 times at 2024\n' | sp_norm "$SP_TMP/old-a")" = 'a decade ago, acceded 1234567 times at 2024' ] || fail "scope-promote: sp_norm does not hide exactly the short commit ids"
+[ "$SP_O_RC" = 0 ] && [ "$SP_N_RC" = 0 ] || fail "scope-promote: a 6-phase scope-less plan did not promote (old rc=$SP_O_RC, new rc=$SP_N_RC): $SP_N_OUT"
+[ "$SP_O_OUT" = "$SP_N_OUT" ] || fail "scope-promote: a scope-less plan's promote output changed since 210da67: $(diff <(printf '%s\n' "$SP_O_OUT") <(printf '%s\n' "$SP_N_OUT") | head -20)"
+grep -qF "Validation passed." <<<"$SP_N_OUT" && ! grep -qF "Scope:" <<<"$SP_N_OUT" || fail "scope-promote: a scope-less promote printed scope output: $SP_N_OUT"
+# ... and the refusal of a scope-less plan (Proposed ADR) is word for word what 210da67 printed
+SP_DATE="2001-01-01T00:00:00Z" sp_fx old-b none; SP_DATE="2002-02-02T00:00:00Z" sp_fx new-b none
+sp_edc old-b "$SP_ADR" 's/^\*\*Status\*\*: Accepted/**Status**: Proposed/'; sp_edc new-b "$SP_ADR" 's/^\*\*Status\*\*: Accepted/**Status**: Proposed/'
+sp_run "$SP_OLD" "$SP_TMP/old-b"; SP_O_RC="$SP_RC"; SP_O_OUT="$(printf '%s\n' "$SP_OUT" | sp_norm "$SP_TMP/old-b")"; sp_run "$SP_PROMOTE" "$SP_TMP/new-b"; SP_N_OUT="$(printf '%s\n' "$SP_OUT" | sp_norm "$SP_TMP/new-b")"
+[ "$SP_O_RC" = 1 ] && [ "$SP_RC" = 1 ] && [ "$SP_O_OUT" = "$SP_N_OUT" ] && grep -qF "ADR status is not 'Accepted'" <<<"$SP_OUT" || fail "scope-promote: the scope-less refusal differs from 210da67 (old rc=$SP_O_RC new rc=$SP_RC): $SP_OUT"
+# (f) adversarial neighbours: each refused with a clear message, nothing initialised
+sp_fx n-plan-only bugfix; sp_edc n-plan-only "$SP_ADR" '/^\*\*Scope\*\*:/d'
+sp_refused "Scope in the plan only" "$SP_TMP/n-plan-only" "Scope is declared in the plan but not in the ADR"
+sp_fx n-adr-only bugfix; sp_edc n-adr-only "$SP_PLAN" '/^> \*\*Scope\*\*:/d'
+sp_refused "Scope in the ADR only" "$SP_TMP/n-adr-only" "Scope is declared in the ADR but not in the plan"
+sp_fx n-disagree bugfix; sp_edc n-disagree "$SP_PLAN" 's/^> \*\*Scope\*\*: bugfix/> **Scope**: poc/'
+sp_refused "ADR bugfix with plan poc" "$SP_TMP/n-disagree" "Scope disagrees: ADR says 'bugfix', plan says 'poc'"
+for SP_BAD in "huge:unknown Scope 'huge'" ":unknown Scope ''" "{{SCOPE}}:unknown Scope '.*SCOPE.*'" "Bugfix:unknown Scope 'Bugfix'" "bugfix extra:unknown Scope 'bugfix extra'"; do
+  SP_VAL="${SP_BAD%%:*}"; SP_MSG="${SP_BAD#*:}"; SP_N="n-bad-$(printf '%s' "$SP_VAL" | tr -c 'a-z' '_')"
+  sp_fx "$SP_N" bugfix
+  sp_ed "$SP_TMP/$SP_N/$SP_ADR" "s/^\*\*Scope\*\*: bugfix/**Scope**: $SP_VAL/"
+  sp_edc "$SP_N" "$SP_PLAN" "s/^> \*\*Scope\*\*: bugfix/> **Scope**: $SP_VAL/"
+  sp_refused "an unknown Scope value '$SP_VAL'" "$SP_TMP/$SP_N" "$SP_MSG"
+done
+for SP_BAD in "**scope**: bugfix" "**Scope** bugfix" "**Scope**:bugfix-ish"; do
+  sp_fx n-mal bugfix; sp_edc n-mal "$SP_ADR" "s/^\*\*Scope\*\*: bugfix/$SP_BAD/"
+  sp_refused "a malformed Scope line '$SP_BAD'" "$SP_TMP/n-mal" "malformed Scope line in ADR|unknown Scope|Scope disagrees"
+done
+sp_fx n-twice bugfix; sp_edc n-twice "$SP_ADR" 's/^\*\*Scope\*\*: bugfix/&\
+**Scope**: feature/'
+sp_refused "a Scope declared twice" "$SP_TMP/n-twice" "ADR declares Scope more than once"
+# a bugfix ADR that keeps the optional sections still promotes
+sp_fx opt bugfix; printf '\n## Pseudocode\n\nx\n\n## Architecture\n\nx\n\n## Data Model\n\nx\n\n## API Surface\n\nx\n' >>"$SP_TMP/opt/$SP_ADR"; git -C "$SP_TMP/opt" commit -qam opt
+sp_promoted "a bugfix ADR that keeps the optional sections" "$SP_TMP/opt"
+# enforcement is not loosened: every other refusal is unchanged under bugfix
+sp_fx e-gate bugfix; sp_edc e-gate "$SP_PLAN" 's/^  - Acceptance: user types `approve ship`/  - Acceptance: looks fine/'
+sp_refused "a bugfix plan with a gate Acceptance that has no approval phrase" "$SP_TMP/e-gate" "Gate task has ambiguous Acceptance|should require approval phrase"
+sp_fx e-status bugfix; sp_edc e-status "$SP_ADR" 's/^\*\*Status\*\*: Accepted/**Status**: Proposed/'
+sp_refused "a bugfix with a Proposed ADR" "$SP_TMP/e-status" "ADR status is not 'Accepted'"
+sp_fx e-todo bugfix; printf '\n[ TODO left over ]\n' >>"$SP_TMP/e-todo/$SP_ADR"; git -C "$SP_TMP/e-todo" commit -qam t
+sp_refused "a bugfix ADR with a leftover TODO" "$SP_TMP/e-todo" "unresolved \[ TODO \]"
+sp_fx e-acc bugfix; sp_edc e-acc "$SP_PLAN" '/Implement the change/{n;d;}'
+sp_refused "a bugfix plan with a task that has no Acceptance" "$SP_TMP/e-acc" "plan is invalid"
+# nothing escaped the fixtures: no worktree, branch or state outside $SMOKE_TMP, and the checkout is unchanged
+[ "$(git -C "$EB_ROOT" status --porcelain)" = "$EB_STATUS" ] || fail "scope-promote: the checkout's git status changed"
+ok "scope-promote: 2-phase bugfix and 3-phase poc promote; 3-phase bugfix and 4-phase poc are refused naming the limit; [tier:c] under bugfix/poc promotes with a warning; a scope-less plan's output is byte-identical to 210da67 (promote and refusal); Scope in one file only, disagreeing, unknown, empty, placeholder, wrong-case, malformed and doubled values are refused; a bugfix ADR with the optional sections promotes; gate, status, TODO and Acceptance checks are unchanged under bugfix"
+
+# 67. intent-seed (Phase 2.1): start.sh seeds an intent file's Problem into the ADR's "Why this matters"
+#     (full and lean ADR, both profiles); never overwrites the intent file; scaffolds one for poc/feature only.
+IS_TMP="$SMOKE_TMP/intent-seed"; mkdir -p "$IS_TMP" || fail "intent-seed: cannot create the temp dir"
+IS_PROBLEM_FILE="$IS_TMP/problem.txt"
+printf '%s\n' 'Checkout costs $HOME users a `retry` and {{SLUG}} loses orders.' '' 'Second paragraph: still the problem.' >"$IS_PROBLEM_FILE"
+is_repo() { local d="$IS_TMP/$1"; rm -rf "${d:?}"; mkdir -p "$d/.claude/tasks" && git -C "$d" init -q -b main || fail "intent-seed: cannot init $1"; }
+is_why() { sed -n '/^### Why this matters$/,/^### Requirements$/p' "$1"; }  # the section, ending at the next heading
+is_intent() { { printf '# Intent\n\n## Problem\n\n'; cat "$IS_PROBLEM_FILE"; printf '\n## Who it'"'"'s for\n\nops\n\n## Non-goals\n\nnone\n'; } >"$1"; }
+for IS_PROF in generic apex; do
+  IS_RUN() { (cd "$IS_D" && APEX_PLAN_PROFILE="$IS_PROF" bash "$SS" "$@" 2>&1); }
+  # (a) an intent file present: Problem seeded in the lean and the full ADR; other sections unchanged
+  for IS_SC in bugfix poc feature; do
+    is_repo "a-$IS_PROF-$IS_SC"; IS_D="$IS_TMP/a-$IS_PROF-$IS_SC"
+    is_intent "$IS_D/.claude/tasks/x-intent.md"; cp "$IS_D/.claude/tasks/x-intent.md" "$IS_D/before.md"
+    IS_OUT="$(IS_RUN x T --scope "$IS_SC")" || fail "intent-seed: $IS_PROF $IS_SC with an intent file failed: $IS_OUT"
+    IS_W="$(is_why "$IS_D/.claude/tasks/x-adr.md")"
+    grep -qF -- 'Checkout costs $HOME users a `retry` and {{SLUG}} loses orders.' <<<"$IS_W" || fail "intent-seed: $IS_PROF $IS_SC ADR 'Why this matters' lacks the Problem text: $IS_W"
+    grep -qF -- 'Second paragraph: still the problem.' <<<"$IS_W" || fail "intent-seed: $IS_PROF $IS_SC lost the second paragraph: $IS_W"
+    ! grep -qF -- '[ TODO ]' <<<"$IS_W" || fail "intent-seed: $IS_PROF $IS_SC kept the placeholder after seeding: $IS_W"
+    ! grep -qF -- 'Concrete pain points' <<<"$IS_W" && ! grep -qF -- 'One paragraph.' <<<"$IS_W" || fail "intent-seed: $IS_PROF $IS_SC kept the placeholder guidance: $IS_W"
+    [ "$(grep -c '^### Why this matters$' "$IS_D/.claude/tasks/x-adr.md")" = 1 ] || fail "intent-seed: $IS_PROF $IS_SC ADR does not have exactly one 'Why this matters' heading"
+    grep -qF '### Requirements' "$IS_D/.claude/tasks/x-adr.md" && grep -qF '### Constraints' "$IS_D/.claude/tasks/x-adr.md" || fail "intent-seed: $IS_PROF $IS_SC seeding damaged the next sections"
+    cmp -s "$IS_D/before.md" "$IS_D/.claude/tasks/x-intent.md" || fail "intent-seed: $IS_PROF $IS_SC changed the intent file"
+    python3 "$EX/planlib.py" validate "$IS_D/.claude/plans/x-plan.md" >/dev/null 2>&1 || fail "intent-seed: $IS_PROF $IS_SC plan no longer validates"
+    # the seeded ADR equals an unseeded one everywhere outside that section
+    is_repo "n-$IS_PROF-$IS_SC"; IS_N="$IS_TMP/n-$IS_PROF-$IS_SC"
+    (cd "$IS_N" && APEX_PLAN_PROFILE="$IS_PROF" bash "$SS" x T --scope "$IS_SC" >/dev/null 2>&1) || fail "intent-seed: $IS_PROF $IS_SC control run failed"
+    diff <(sed '/^### Why this matters$/,/^### Requirements$/d' "$IS_D/.claude/tasks/x-adr.md") <(sed '/^### Why this matters$/,/^### Requirements$/d' "$IS_N/.claude/tasks/x-adr.md") >/dev/null || fail "intent-seed: $IS_PROF $IS_SC seeding changed a section other than 'Why this matters'"
+  done
+  # (b) none + bugfix: succeeds, no intent file, nothing printed about intent
+  is_repo "b-$IS_PROF"; IS_D="$IS_TMP/b-$IS_PROF"
+  IS_OUT="$(IS_RUN x T --scope bugfix)" || fail "intent-seed: $IS_PROF bugfix without an intent file failed: $IS_OUT"
+  [ ! -e "$IS_D/.claude/tasks/x-intent.md" ] || fail "intent-seed: $IS_PROF bugfix created an intent file"
+  ! grep -qE '^Intent|WARNING' <<<"$IS_OUT" || fail "intent-seed: $IS_PROF bugfix printed about intent: $IS_OUT"
+  grep -qF -- '[ TODO ]' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF bugfix lost the placeholder"
+  # (c) none + poc|feature: reminder, exit 0, intent file from the template with all four headings
+  for IS_SC in poc feature; do
+    is_repo "c-$IS_PROF-$IS_SC"; IS_D="$IS_TMP/c-$IS_PROF-$IS_SC"
+    IS_OUT="$(IS_RUN x T --scope "$IS_SC")" || fail "intent-seed: $IS_PROF $IS_SC without an intent file did not exit 0: $IS_OUT"
+    grep -qF -- 'Intent: scaffolded' <<<"$IS_OUT" && grep -qF -- 'Fill in its Problem section' <<<"$IS_OUT" || fail "intent-seed: $IS_PROF $IS_SC printed no intent reminder: $IS_OUT"
+    [ -s "$IS_D/.claude/tasks/x-intent.md" ] || fail "intent-seed: $IS_PROF $IS_SC created no intent file"
+    for IS_H in '## Problem' '## Who it'"'"'s for' '## Why now' '## Non-goals'; do
+      grep -qxF -- "$IS_H" "$IS_D/.claude/tasks/x-intent.md" || fail "intent-seed: $IS_PROF $IS_SC intent file lacks '$IS_H'"
+      grep -qxF -- "$IS_H" "$SS_TPL/$IS_PROF/intent-template.md" || fail "intent-seed: $IS_PROF intent-template.md lacks '$IS_H'"
+    done
+    grep -qF -- '[ TODO ]' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF $IS_SC seeded an unfilled template into the ADR"
+    # re-running with --force while the scaffold is still unfilled warns and keeps the placeholder
+    IS_OUT="$(IS_RUN x T --scope "$IS_SC" --force)" || fail "intent-seed: $IS_PROF $IS_SC --force over an unfilled scaffold failed: $IS_OUT"
+    grep -qF -- 'WARNING' <<<"$IS_OUT" && grep -qF -- 'still [ TODO ]' <<<"$IS_OUT" || fail "intent-seed: $IS_PROF $IS_SC unfilled scaffold gave no warning: $IS_OUT"
+  done
+  # (d) a user-written intent file survives --force, and re-running after filling in the scaffold seeds it
+  is_repo "d-$IS_PROF"; IS_D="$IS_TMP/d-$IS_PROF"
+  (cd "$IS_D" && APEX_PLAN_PROFILE="$IS_PROF" bash "$SS" x T --scope feature >/dev/null 2>&1) || fail "intent-seed: $IS_PROF scaffold run failed"
+  is_intent "$IS_D/.claude/tasks/x-intent.md"; cp "$IS_D/.claude/tasks/x-intent.md" "$IS_D/before.md"
+  IS_OUT="$(IS_RUN x T --scope feature --force)" || fail "intent-seed: $IS_PROF --force over a user-written intent file failed: $IS_OUT"
+  cmp -s "$IS_D/before.md" "$IS_D/.claude/tasks/x-intent.md" || fail "intent-seed: $IS_PROF --force clobbered the user-written intent file"
+  grep -qF -- 'Second paragraph: still the problem.' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF --force did not seed the user-written Problem"
+  # (e) malformed intent files warn, keep the placeholder, still succeed
+  for IS_BAD in nosection empty todo; do
+    is_repo "e-$IS_PROF-$IS_BAD"; IS_D="$IS_TMP/e-$IS_PROF-$IS_BAD"
+    case "$IS_BAD" in
+      nosection) printf '# Intent\n\n## Who it'"'"'s for\n\nops\n' >"$IS_D/.claude/tasks/x-intent.md" ;;
+      empty)     printf '# Intent\n\n## Problem\n\n   \n## Why now\n\nnow\n' >"$IS_D/.claude/tasks/x-intent.md" ;;
+      todo)      printf '# Intent\n\n## Problem\n\n[ TODO ]\n\n## Why now\n\nnow\n' >"$IS_D/.claude/tasks/x-intent.md" ;;
+    esac
+    cp "$IS_D/.claude/tasks/x-intent.md" "$IS_D/before.md"
+    IS_OUT="$(IS_RUN x T --scope poc)" || fail "intent-seed: $IS_PROF $IS_BAD intent file made start.sh fail: $IS_OUT"
+    grep -qF -- 'WARNING: ' <<<"$IS_OUT" || fail "intent-seed: $IS_PROF $IS_BAD intent file gave no warning: $IS_OUT"
+    grep -qF -- '[ TODO ]' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF $IS_BAD intent file lost the placeholder"
+    cmp -s "$IS_D/before.md" "$IS_D/.claude/tasks/x-intent.md" || fail "intent-seed: $IS_PROF $IS_BAD intent file was modified"
+  done
+  # a Problem section followed by a heading inside a fenced block keeps the fence content
+  is_repo "f-$IS_PROF"; IS_D="$IS_TMP/f-$IS_PROF"
+  printf '# Intent\n\n## Problem\n\nSee:\n\n```\n## not a heading\n```\n\nafter fence\n\n## Why now\n\nnow\n' >"$IS_D/.claude/tasks/x-intent.md"
+  IS_RUN x T --scope poc >/dev/null || fail "intent-seed: $IS_PROF fenced intent file made start.sh fail"
+  grep -qF -- 'after fence' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF a fenced '## ' line cut the Problem short"
+  ! grep -qF -- 'now' <(is_why "$IS_D/.claude/tasks/x-adr.md") || fail "intent-seed: $IS_PROF the Why now body leaked into 'Why this matters'"
+done
+ok "intent-seed: an intent file's Problem (with \$, backtick, {{ and two paragraphs) replaces 'Why this matters' in the lean and full ADR of both profiles and nothing else changes; bugfix with no intent file writes none and says nothing; poc/feature scaffold one from the template with a reminder and exit 0; a user-written intent file survives --force; a missing, empty or [ TODO ] Problem warns and keeps the placeholder"
+
+# 68. status-scope (Phase 2.2): status.sh prints Scope (header-region rule of promote-to-loop.sh 7b) and the intent
+#     file's state; a report only, so a disagreeing, partial or malformed Scope is reported and exit stays 0.
+ST="$PLUGIN_ROOT/skills/apex-plan/scripts/status.sh"; ST_TMP="$SMOKE_TMP/status-scope"
+rm -rf "${ST_TMP:?}"; mkdir -p "$ST_TMP" || fail "status-scope: cannot create the temp dir"
+git -C "$ST_TMP" init -q -b main || fail "status-scope: cannot init the temp repo"
+st_run() { ST_OUT="$(cd "$ST_TMP" && bash "$ST" "$1" 2>&1)" || fail "status-scope: status.sh $1 exited non-zero: $ST_OUT"; }
+st_line() { grep -E "^  $1:" <<<"$ST_OUT" | head -1 | sed -E 's/^  [A-Za-z]+: +//'; }
+st_new() { (cd "$ST_TMP" && bash "$SS" "$1" T --scope "$2" >/dev/null 2>&1) || fail "status-scope: start.sh $1 --scope $2 failed"; }
+ST_ADR() { echo "$ST_TMP/.claude/tasks/$1-adr.md"; }; ST_PLAN() { echo "$ST_TMP/.claude/plans/$1-plan.md"; }
+st_new sb bugfix; st_run sb
+[ "$(st_line Scope)" = "bugfix" ] || fail "status-scope: bugfix scaffold did not show Scope bugfix: $ST_OUT"
+[ "$(st_line Intent)" = "none" ] || fail "status-scope: bugfix scaffold did not show Intent none: $ST_OUT"
+st_new sf feature; st_run sf
+[ "$(st_line Scope)" = "feature" ] || fail "status-scope: feature scaffold did not show Scope feature: $ST_OUT"
+grep -qF -- "sf-intent.md (Problem not filled)" <<<"$ST_OUT" || fail "status-scope: scaffolded intent not shown as unfilled: $ST_OUT"
+printf '# Intent\n\n## Problem\n\nOrders are lost at checkout.\n\n## Non-goals\n\nnone\n' >"$ST_TMP/.claude/tasks/sf-intent.md"; st_run sf
+grep -qF -- "sf-intent.md (Problem filled)" <<<"$ST_OUT" || fail "status-scope: a filled Problem not shown as filled: $ST_OUT"
+printf '# Intent\n\n## Problem\n\n## Non-goals\n\nnone\n' >"$ST_TMP/.claude/tasks/sf-intent.md"; st_run sf
+grep -qF -- "(Problem not filled)" <<<"$ST_OUT" || fail "status-scope: an empty Problem not shown as unfilled: $ST_OUT"
+# scope-less pair
+st_new sn feature; sed -i.bak '/^\*\*Scope\*\*:/d' "$(ST_ADR sn)"; sed -i.bak '/^> \*\*Scope\*\*:/d' "$(ST_PLAN sn)"
+! grep -q 'Scope\*\*' "$(ST_ADR sn)" "$(ST_PLAN sn)" || fail "status-scope: fixture still has Scope lines"
+st_run sn; [ "$(st_line Scope)" = "feature (no Scope line)" ] || fail "status-scope: scope-less pair not shown as 'feature (no Scope line)': $ST_OUT"
+# a Scope line below the header (after a ## heading) does not count
+st_new sh feature; sed -i.bak '/^\*\*Scope\*\*:/d' "$(ST_ADR sh)"; sed -i.bak '/^> \*\*Scope\*\*:/d' "$(ST_PLAN sh)"
+printf '\n## Notes\n\n**Scope**: bugfix\n' >>"$(ST_ADR sh)"; st_run sh
+[ "$(st_line Scope)" = "feature (no Scope line)" ] || fail "status-scope: a body Scope line was read as the header Scope: $ST_OUT"
+# mismatch, and one-sided: reported, exit 0
+st_new sm bugfix; sed -i.bak 's/^> \*\*Scope\*\*: bugfix/> **Scope**: feature/' "$(ST_PLAN sm)"; st_run sm
+grep -qF 'mismatch' <<<"$(st_line Scope)" && grep -qF 'bugfix' <<<"$(st_line Scope)" && grep -qF 'feature' <<<"$(st_line Scope)" || fail "status-scope: disagreeing pair not reported as mismatch with both values: $ST_OUT"
+st_new so poc; sed -i.bak '/^> \*\*Scope\*\*:/d' "$(ST_PLAN so)"; st_run so
+grep -qF 'mismatch' <<<"$(st_line Scope)" && grep -qF 'poc' <<<"$(st_line Scope)" || fail "status-scope: a one-sided Scope not reported as mismatch: $ST_OUT"
+# malformed Scope lines are reported as malformed, never shown as feature (threat: silent skip)
+ST_N=0
+for ST_BAD in '**scope**: bugfix' '**Scope** bugfix' '**Scope**:' '**Scope**: {{SCOPE}}x' ; do
+  ST_N=$((ST_N + 1)); st_new sx$ST_N bugfix; sed -i.bak "s/^\*\*Scope\*\*: bugfix/$ST_BAD/" "$(ST_ADR sx$ST_N)"
+  grep -qF -- "$ST_BAD" "$(ST_ADR sx$ST_N)" || fail "status-scope: fixture lacks the malformed line '$ST_BAD'"
+  st_run sx$ST_N
+  case "$ST_BAD" in '**Scope**: {{SCOPE}}x') grep -qF 'ADR: {{SCOPE}}x' <<<"$ST_OUT" || fail "status-scope: '$ST_BAD' not reported verbatim: $ST_OUT";;
+    *) grep -qF 'malformed' <<<"$(st_line Scope)" || fail "status-scope: malformed '$ST_BAD' not reported as malformed: $ST_OUT";; esac
+  ! grep -qE '^feature' <<<"$(st_line Scope)" || fail "status-scope: malformed '$ST_BAD' shown as feature: $ST_OUT"
+done
+st_new sd bugfix; awk '{print} /^\*\*Scope\*\*: bugfix/{print "**Scope**: poc"}' "$(ST_ADR sd)" >"$(ST_ADR sd).new" && mv "$(ST_ADR sd).new" "$(ST_ADR sd)"; st_run sd
+grep -qF 'malformed' <<<"$(st_line Scope)" || fail "status-scope: a doubled Scope line not reported: $ST_OUT"
+# missing ADR and plan: still exit 0
+(cd "$ST_TMP" && bash "$ST" nothing >/dev/null 2>&1) || fail "status-scope: status.sh on a missing slug exited non-zero"
+ok "status-scope: status.sh prints Scope (bugfix, feature, 'feature (no Scope line)', mismatch for disagreeing or one-sided, malformed/doubled reported, body lines ignored) and Intent (none, not filled, filled), always exit 0"
+
+# 69. monitor-section (Phase 3.2): the plan `## Monitor` section and monitorlib.py (ADR R5b, R5d).
+#     A valid section passes; each malformed one is refused with the problem named (allow-list schema, fail closed:
+#     a heading whose block is missing, doubled or not JSON is refused, never "not watched"); validate-file accepts a
+#     repo-level file and refuses window_days there; no section and `checks: []` both promote; a bad section stops
+#     promote; every plan in this checkout and every scaffold passes planlib and monitorlib; the fence handling is planlib's.
+ML="$EX/monitorlib.py"; MN_TMP="$SMOKE_TMP/monitor-section"; rm -rf "${MN_TMP:?}"; mkdir -p "$MN_TMP" || fail "monitor-section: cannot create the temp dir"
+# mn_plan NAME JSON: a plan with a ## Monitor section holding JSON in one json fence
+mn_plan() { printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n%s\n```\n' "$2" >"$MN_TMP/$1.md"; }
+MN_HTTP='{"kind": "http", "url": "https://x.example/health", "measure": "latency_ms", "expect_status": 200}'
+mn_chk() { printf '{"id": "%s", "metric": "%s", "op": "%s", "threshold": 800, "severity": "high", "probe": %s}' "$1" "$2" "$3" "$4"; }
+MN_OK="$(mn_chk p95 latency.p95 '>' "$MN_HTTP"), $(mn_chk exit0 job:exit '==' '{"kind": "cmd", "command": "true", "value": "exit"}'), $(mn_chk rn m-1 '>=' '{"kind": "runner", "metrics": ["m-1"]}')"
+# mn_ok NAME: valid. mn_bad NAME PATTERN: exit 1, the output names the problem.
+mn_ok() { local o rc=0; o="$(python3 "$ML" validate "$MN_TMP/$1.md" 2>&1)" || rc=$?; [ "$rc" = 0 ] && [ -z "$o" ] || fail "monitor-section: $1 should be valid (exit $rc): $o"; }
+mn_bad() { local o rc=0; o="$(python3 "$ML" validate "$MN_TMP/$1.md" 2>&1)" || rc=$?; [ "$rc" = 1 ] || fail "monitor-section: $1 exited $rc, expected 1: $o"; grep -qE -- "$2" <<<"$o" || fail "monitor-section: $1 did not say '$2': $o"; }
+mn_plan ok "{\"window_days\": 90, \"checks\": [$MN_OK]}"; mn_ok ok
+mn_plan ok1 "{\"window_days\": 1, \"checks\": []}"; mn_ok ok1
+mn_plan okdef "{\"checks\": [$(mn_chk a a '<=' "$MN_HTTP")]}"; mn_ok okdef
+for MN_OP in '<' '<=' '>' '>=' '=='; do mn_plan op "{\"checks\": [$(mn_chk a a "$MN_OP" "$MN_HTTP")]}"; mn_ok op; done
+# op is the expected (healthy) condition and the allow-list is the ADR's set exactly: != is refused, with the problem named
+mn_plan opne "{\"checks\": [$(mn_chk c1 m '!=' "$MN_HTTP")]}"; mn_bad opne "c1.*unknown op \"!=\" \(allowed: < <= > >= ==\)"
+mn_plan s1 '{"window_days": 14, "checks": [{"metric": "m", "op": ">", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "true"}}]}'; mn_bad s1 "checks\[0\].*missing 'id'"
+mn_plan s2 "{\"checks\": [$(mn_chk c1 m '=>' "$MN_HTTP")]}"; mn_bad s2 "c1.*unknown op"
+# a runner probe with a metrics list must list the check's own metric
+mn_plan rm1 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "runner", "metrics": ["other"]}')]}"; mn_bad rm1 "c1.*check's metric 'm' is not in the probe's metrics"
+mn_plan rm2 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "runner", "metrics": ["other", "m"]}'), $(mn_chk c2 m '>' '{"kind": "runner"}')]}"; mn_ok rm2
+mn_plan s3 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "ping", "host": "x"}')]}"; mn_bad s3 "c1.*unknown probe.kind 'ping'"
+# F-019: latency_ms without expect_status is refused by name (a fast 503 would count as a healthy latency)
+mn_plan lat1 "{\"checks\": [$(mn_chk c1 m '<' '{"kind": "http", "url": "https://x.example/", "measure": "latency_ms"}')]}"; mn_bad lat1 "c1.*measure latency_ms needs expect_status"
+# F-017: a cmd probe's value rule is stdout (the default) or exit, nothing else
+mn_plan cv1 "{\"checks\": [$(mn_chk c1 m '<' '{"kind": "cmd", "command": "echo 1", "value": "stdout"}'), $(mn_chk c2 m '==' '{"kind": "cmd", "command": "true", "value": "exit"}')]}"; mn_ok cv1
+mn_plan cv2 "{\"checks\": [$(mn_chk c1 m '<' '{"kind": "cmd", "command": "true", "value": "rc"}')]}"; mn_bad cv2 "c1.*value must be one of stdout, exit"
+mn_plan s4 '{"window_days": 0, "checks": []}'; mn_bad s4 "window_days must be an integer 1-90"
+mn_plan s5 '{"window_days": 91, "checks": []}'; mn_bad s5 "window_days must be an integer 1-90"
+mn_plan s5b '{"window_days": 14.5, "checks": []}'; mn_bad s5b "window_days must be an integer"
+mn_plan s5c '{"window_days": true, "checks": []}'; mn_bad s5c "window_days must be an integer"
+mn_plan s6 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "http", "url": "https://x.example/", "measure": "status", "headers": {}}')]}"; mn_bad s6 "c1.*unknown key 'headers'"
+mn_plan s6b "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "http", "url": "https://x.example/", "measure": "status", "headers": {"Authorization": "x"}}')]}"; mn_bad s6b "unknown key 'headers'"
+mn_plan s7 "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "http", "url": "https://x.example/", "measure": "status", "method": "POST"}')]}"; mn_bad s7 "c1.*GET only"
+mn_plan s7b "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "http", "url": "https://x.example/", "measure": "status", "method": "get"}')]}"; mn_bad s7b "GET only"
+mn_plan s7c "{\"checks\": [$(mn_chk c1 m '>' '{"kind": "http", "url": "https://x.example/", "measure": "status", "timeout": 600}')]}"; mn_bad s7c "unknown key 'timeout'.*fixed at 10"
+mn_plan s8 "{\"checks\": [$(mn_chk dup m1 '>' "$MN_HTTP"), $(mn_chk dup m2 '>' "$MN_HTTP")]}"; mn_bad s8 "duplicate check id 'dup'"
+mn_plan s11 "{\"checks\": [$(mn_chk 'bad id' m '>' "$MN_HTTP")]}"; mn_bad s11 "id must match"
+mn_plan s11b "{\"checks\": [$(mn_chk _lead m '>' "$MN_HTTP")]}"; mn_bad s11b "id must match"
+mn_plan s11c "{\"checks\": [$(mn_chk a 'm/x' '>' "$MN_HTTP")]}"; mn_bad s11c "metric must match"
+mn_plan s11d "{\"checks\": [$(mn_chk "$(printf 'a%.0s' $(seq 129))" m '>' "$MN_HTTP")]}"; mn_bad s11d "id must match"
+mn_plan s12 "{\"checks\": [], \"extra\": 1}"; mn_bad s12 "unknown key 'extra'"
+mn_plan s12b '{"checks": [{"id": "a", "metric": "m", "op": ">", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "true", "shell": "sh"}, "note": "x"}]}'; mn_bad s12b "unknown key 'note'"; mn_bad s12b "unknown key 'shell'"
+mn_plan s13 "{\"checks\": [$(mn_chk a m '>' '{"kind": "http", "url": "file:///etc/passwd", "measure": "status"}')]}"; mn_bad s13 "http:// or https://"
+mn_plan s13b "{\"checks\": [$(mn_chk a m '>' '{"kind": "http", "url": "https://u:p@x.example/", "measure": "status"}')]}"; mn_bad s13b "credentials"
+mn_plan s14 '{"checks": [{"id": "a", "metric": "m", "op": ">", "threshold": NaN, "severity": "low", "probe": {"kind": "cmd", "command": "true"}}]}'; mn_bad s14 "invalid JSON"
+mn_plan s14b '{"checks": [{"id": "a", "metric": "m", "op": ">", "threshold": "5", "severity": "low", "probe": {"kind": "cmd", "command": "true"}}]}'; mn_bad s14b "threshold must be a finite number"
+mn_plan s14c '{"checks": [{"id": "a", "metric": "m", "op": ">", "threshold": 1e999, "severity": "low", "probe": {"kind": "cmd", "command": "true"}}]}'; mn_bad s14c "threshold must be a finite number"
+mn_plan s15 "{\"checks\": [$(mn_chk a m '>' "$MN_HTTP" | sed 's/high/urgent/')]}"; mn_bad s15 "severity must be one of"
+mn_plan s16 '{"checks": [], "checks": []}'; mn_bad s16 "duplicate key 'checks'"
+mn_plan s17 '{"checks": "none"}'; mn_bad s17 "checks must be a list"
+mn_plan s18 '{"window_days": 14}'; mn_bad s18 "missing 'checks'"
+mn_plan s19 '[]'; mn_bad s19 "must be an object"
+# two json blocks, invalid JSON, a heading with no block, a non-json fence, an unclosed fence, a doubled or malformed heading
+mn_plan twob '{"checks": []}'; printf '\n```json\n{"checks": []}\n```\n' >>"$MN_TMP/twob.md"; mn_bad twob "2 fenced blocks"
+mn_plan badj '{"checks": [}'; mn_bad badj "invalid JSON"
+mn_plan emptyj ''; mn_bad emptyj "invalid JSON"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\nWe will watch it.\n' >"$MN_TMP/nob.md"; mn_bad nob "no fenced json block"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n{"checks": []}\n' >"$MN_TMP/open.md"; mn_bad open "never closed"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```yaml\nchecks: []\n```\n' >"$MN_TMP/yaml.md"; mn_bad yaml "only a fenced json block"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n{"checks": []}\n```\n\n## Monitor\n\n```json\n{"checks": []}\n```\n' >"$MN_TMP/twoh.md"; mn_bad twoh "more than one Monitor heading"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## monitor\n\n```json\n{"checks": []}\n```\n' >"$MN_TMP/lower.md"; mn_bad lower "exactly '## Monitor'"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\nMonitor\n-------\n\n```json\n{"checks": []}\n```\n' >"$MN_TMP/setext.md"; mn_bad setext "not an underlined title"
+# the section ends at the next heading: a later section's fenced block is not Monitor's, and a fenced example of the heading is not a heading
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n{"checks": []}\n```\n\n## Notes\n\n```json\n{"x": 1}\n```\n' >"$MN_TMP/later.md"; mn_ok later
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n```markdown\n## Monitor\n```\n' >"$MN_TMP/fenced-head.md"; mn_ok fenced-head
+# threat 2: a json block under ## Monitor is accepted by planlib validate, and a task line inside it is still refused by planlib
+python3 "$EX/planlib.py" validate "$MN_TMP/ok.md" >/dev/null 2>&1 || fail "monitor-section: planlib validate refuses a plan with a ## Monitor json block"
+python3 "$EX/planlib.py" validate "$MN_TMP/ok1.md" >/dev/null 2>&1 || fail "monitor-section: planlib validate refuses the stub section"
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## Monitor\n\n```json\n{"checks": []}\n- [ ] **Phase 9.9** [docs] hidden\n```\n' >"$MN_TMP/hide.md"
+! python3 "$EX/planlib.py" validate "$MN_TMP/hide.md" >/dev/null 2>&1 || fail "monitor-section: planlib accepts a task line hidden inside the Monitor block"
+mn_bad hide "task line sits inside the code fence"
+# validate-file: repo-level file, same shape, no window_days
+printf '{"checks": [%s]}\n' "$MN_OK" >"$MN_TMP/repo.json"; python3 "$ML" validate-file "$MN_TMP/repo.json" >/dev/null || fail "monitor-section: validate-file refuses a valid repo-level file"
+printf '{"checks": []}\n' >"$MN_TMP/repo-empty.json"; python3 "$ML" validate-file "$MN_TMP/repo-empty.json" >/dev/null || fail "monitor-section: validate-file refuses an empty repo-level file"
+printf '{"window_days": 14, "checks": []}\n' >"$MN_TMP/repo-w.json"; MN_O="$(python3 "$ML" validate-file "$MN_TMP/repo-w.json" 2>&1)" && fail "monitor-section: validate-file accepts window_days"
+grep -qF "unknown key 'window_days'" <<<"$MN_O" || fail "monitor-section: validate-file did not name window_days: $MN_O"
+printf '{nope' >"$MN_TMP/repo-bad.json"; ! python3 "$ML" validate-file "$MN_TMP/repo-bad.json" >/dev/null 2>&1 || fail "monitor-section: validate-file accepts invalid JSON"
+! python3 "$ML" validate-file "$MN_TMP/absent.json" >/dev/null 2>&1 || fail "monitor-section: validate-file accepts a missing file"
+# exit codes: usage errors are 2, a missing plan is 1
+MN_RC=0; python3 "$ML" >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 2 ] || fail "monitor-section: no arguments exited $MN_RC, expected 2"
+MN_RC=0; python3 "$ML" validate >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 2 ] || fail "monitor-section: validate with no plan exited $MN_RC, expected 2"
+MN_RC=0; python3 "$ML" frobnicate x >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 2 ] || fail "monitor-section: an unknown subcommand exited $MN_RC, expected 2"
+MN_RC=0; python3 "$ML" validate "$MN_TMP/absent.md" >/dev/null 2>&1 || MN_RC=$?; [ "$MN_RC" = 1 ] || fail "monitor-section: a missing plan exited $MN_RC, expected 1"
+# a near-miss level-2 heading is refused, never ignored as "not watched"
+for MN_H in 'Monitoring' 'Monitors' 'monitor checks' 'MONITOR' 'Monitor:'; do
+  printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n\n## %s\n\n```json\n{"checks": []}\n```\n' "$MN_H" >"$MN_TMP/near.md"; mn_bad near "use '## Monitor'"
+done
+# no section = not watched = valid
+printf '# P\n\n- [ ] **Phase 1.1** [docs] t\n  - Acceptance: true\n' >"$MN_TMP/none.md"; mn_ok none
+# every plan in this checkout, and every scaffold of every template, validates under planlib and monitorlib
+MN_N=0
+for MN_F in "$EB_ROOT"/.claude/plans/*.md; do
+  [ -f "$MN_F" ] || continue; MN_N=$((MN_N + 1))
+  python3 "$EX/planlib.py" validate "$MN_F" >/dev/null 2>&1 || fail "monitor-section: planlib validate refuses $MN_F"
+  MN_O="$(python3 "$ML" validate "$MN_F" 2>&1)" || fail "monitor-section: monitorlib validate refuses $MN_F: $MN_O"
+done
+[ "$MN_N" -ge 1 ] || fail "monitor-section: no plans found under $EB_ROOT/.claude/plans"
+for MN_PROF in generic apex; do
+  MN_R="$MN_TMP/scaf-$MN_PROF"; mkdir -p "$MN_R" && git -C "$MN_R" init -q -b main || fail "monitor-section: cannot init the scaffold repo"
+  for MN_SC in bugfix poc feature; do
+    (cd "$MN_R" && APEX_PLAN_PROFILE="$MN_PROF" bash "$SS" "m-$MN_SC" "T" --scope "$MN_SC" >/dev/null) || fail "monitor-section: $MN_PROF --scope $MN_SC scaffold failed"
+    MN_F="$MN_R/.claude/plans/m-$MN_SC-plan.md"
+    grep -qx '## Monitor' "$MN_F" && grep -qxF '{"window_days": 14, "checks": []}' "$MN_F" || fail "monitor-section: $MN_PROF $MN_SC scaffold has no Monitor stub"
+    python3 "$EX/planlib.py" validate "$MN_F" >/dev/null 2>&1 || fail "monitor-section: $MN_PROF $MN_SC scaffold fails planlib validate"
+    MN_O="$(python3 "$ML" validate "$MN_F" 2>&1)" || fail "monitor-section: $MN_PROF $MN_SC scaffold fails monitorlib validate: $MN_O"
+  done
+done
+# promote: a plan with the stub (the scaffold), a plan with no section, and one with a real check all promote; bad sections stop it
+sp_fx mnstub bugfix;  sp_promoted "monitor-section: a plan with the stub (checks: [])" "$SP_TMP/mnstub"
+grep -q '^## Monitor$' "$SP_TMP/mnstub/.claude/plans/fx-plan.md" || fail "monitor-section: the promote fixture lost its Monitor stub"
+! grep -qi 'monitor' <<<"$SP_OUT" || fail "monitor-section: a valid Monitor section changed promote's output: $SP_OUT"
+sp_fx mnnone bugfix; sp_edc mnnone .claude/plans/fx-plan.md '/^## Monitor$/,/^## Phases$/{/^## Phases$/!d;}'
+! grep -q '^## Monitor' "$SP_TMP/mnnone/.claude/plans/fx-plan.md" || fail "monitor-section: could not remove the Monitor section from the fixture"
+sp_promoted "monitor-section: a plan with no Monitor section" "$SP_TMP/mnnone"
+! grep -qi 'monitor' <<<"$SP_OUT" || fail "monitor-section: a plan without a section prints about Monitor: $SP_OUT"
+sp_fx mnreal bugfix; sp_edc mnreal .claude/plans/fx-plan.md 's|^{"window_days": 14, "checks": \[\]}$|{"window_days": 30, "checks": [{"id": "c1", "metric": "m1", "op": ">", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "echo 0"}}]}|'
+grep -qF '"c1"' "$SP_TMP/mnreal/.claude/plans/fx-plan.md" || fail "monitor-section: could not put a check in the fixture"
+sp_promoted "monitor-section: a plan with a valid check" "$SP_TMP/mnreal"
+sp_fx mnbad bugfix; sp_edc mnbad .claude/plans/fx-plan.md 's|^{"window_days": 14, "checks": \[\]}$|{"window_days": 0, "checks": [{"id": "c1", "metric": "m1", "op": "~", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "echo 0"}}]}|'
+sp_refused "monitor-section: a Monitor section with a bad window and op" "$SP_TMP/mnbad" 'window_days must be an integer 1-90'
+grep -qF 'unknown op' <<<"$SP_OUT" && grep -qF 'c1' <<<"$SP_OUT" || fail "monitor-section: promote did not name the op problem and the check id: $SP_OUT"
+sp_fx mnnoblk bugfix; sp_edc mnnoblk .claude/plans/fx-plan.md '/^```json$/,/^```$/d'
+sp_refused "monitor-section: a Monitor heading with no block" "$SP_TMP/mnnoblk" 'no fenced json block'
+sp_fx mntwo bugfix; sp_edc mntwo .claude/plans/fx-plan.md 's|^{"window_days": 14, "checks": \[\]}$|{"checks": []}\
+```\
+\
+```json\
+{"checks": []}|'
+sp_refused "monitor-section: two json blocks" "$SP_TMP/mntwo" '2 fenced blocks'
+# the op wording cannot drift back: op is the expected condition, a criterion maps onto a check, no "breached when value op threshold", no !=
+for MN_T in "$SS_TPL"/generic/plan-template.md "$SS_TPL"/generic/plan-template-lean.md "$SS_TPL"/apex/plan-template.md "$SS_TPL"/apex/plan-template-lean.md "$PLUGIN_ROOT/skills/apex-plan/SKILL.md"; do
+  grep -qF 'expected (healthy) condition' "$MN_T" || fail "monitor-section: $MN_T does not say op is the expected (healthy) condition"
+  grep -qF 'maps directly onto a check' "$MN_T" || fail "monitor-section: $MN_T does not say a success criterion maps directly onto a check"
+  grep -qF '"op": "<", "threshold": 2000' "$MN_T" || fail "monitor-section: $MN_T lost the p99 worked example"
+  ! grep -qiE 'breached when (the )?value op threshold|breach condition|`==` `!=`' "$MN_T" || fail "monitor-section: $MN_T has the inverted op wording or lists !="
+done
+grep -qF 'NOT (value op threshold)' "$ML" || fail "monitor-section: monitorlib.py does not state breach = NOT (value op threshold)"
+ok "monitor-section: monitorlib validates the plan's ## Monitor section as an allow-list (ledger id grammar, the ADR's five ops with op the expected condition and != refused, http/cmd/runner probes; a runner metrics list without the check's metric and a near-miss heading such as ## Monitoring are refused; the templates and SKILL.md carry the expected-condition wording; a missing id, unknown op or probe.kind, window_days 0 and 91, headers, a non-GET method, a duplicate id, two blocks, invalid JSON, a heading with no block, a bad id, unknown keys are each refused by name); validate-file takes a repo-level file and refuses window_days; no section and checks: [] promote, bad sections stop promote; $MN_N plan(s) here and all six scaffolds of both profiles validate"
+
+# 70. operate-deploy (aidlc-borrowings Phase 3.3, ADR R5, R5b, R6, R8): operate.sh PLAN deploy|status and --all status
+#     on a temp repo whose plans landed through the real init/land.sh. Refusals: unlanded → 3, APEX_DEPLOY_CMD unset
+#     → 2 naming it, HALT → 4; every deploy that is not fed through a pty runs fully detached (fork + setsid, stdin
+#     /dev/null, a timeout) so it can never read the operator's terminal. The ack is read from a pseudo-terminal
+#     driven by python's pty (no env var or file seam): a wrong sha (the previous landed commit, a short sha) or a
+#     wrong slug is refused and the stub never runs; no terminal is refused with the human-must-type wording even when
+#     APEX_OPERATE_ACK holds the right value. Threats (failing-first, mutant named in each fail message):
+#     1) an ack for one landed sha accepted for another  2) a failed deploy opening a watch window
+#     3) an agent acking its own deploy (here: no terminal / APEX_OPERATE_ACK; the hook deny is apex-dispatch check 89).
+OD_TMP="$SMOKE_TMP/operate"; rm -rf "${OD_TMP:?}"; mkdir -p "$OD_TMP" || fail "operate-deploy: cannot create the temp dir"
+OD="$OD_TMP/repo"; mkdir -p "$OD/plans" && git init -q -b main "$OD" || fail "operate-deploy: cannot init the repo"
+OD="$(cd "$OD" && pwd -P)"; OPS="$EX/operate.sh"
+[ -x "$OPS" ] || fail "operate-deploy: $OPS is missing or not executable"
+cat >"$OD_TMP/od-pty.py" <<'PY'
+# od-pty.py ACK TIMEOUT CMD... — run CMD on a fresh pseudo-terminal (its controlling terminal), type ACK once the
+# ack> prompt shows, print everything the terminal showed, exit with CMD's status (124 on timeout).
+import os, pty, select, signal, sys, time
+ack, limit, cmd = sys.argv[1], float(sys.argv[2]), sys.argv[3:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(cmd[0], cmd)
+out, sent, end = b"", False, time.time() + limit
+while True:
+    if time.time() > end:
+        os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+        sys.stdout.write(out.decode("utf-8", "replace") + "\n[od-pty.py: timeout]\n"); sys.exit(124)
+    r, _, _ = select.select([fd], [], [], 0.2)
+    if not r:
+        continue
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    out += data
+    if not sent and b"ack> " in out:
+        os.write(fd, ack.encode() + b"\n"); sent = True
+_, st = os.waitpid(pid, 0)
+sys.stdout.write(out.decode("utf-8", "replace"))
+sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 128 + os.WTERMSIG(st))
+PY
+cat >"$OD_TMP/od-detach.py" <<'PY'
+# od-detach.py OUT TIMEOUT CMD... — run CMD fully detached: a new session (os.setsid, so no controlling terminal),
+# stdin /dev/null, stdout+stderr to OUT; exit with CMD's status (124 on timeout). macOS has no setsid(1).
+import os, signal, sys, time
+out, limit, cmd = sys.argv[1], float(sys.argv[2]), sys.argv[3:]
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    nul = os.open(os.devnull, os.O_RDONLY); os.dup2(nul, 0)
+    o = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600); os.dup2(o, 1); os.dup2(o, 2)
+    os.execvp(cmd[0], cmd)
+end = time.time() + limit
+while True:
+    p, st = os.waitpid(pid, os.WNOHANG)
+    if p:
+        sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 128 + os.WTERMSIG(st))
+    if time.time() > end:
+        os.killpg(pid, signal.SIGKILL); os.waitpid(pid, 0); sys.exit(124)
+    time.sleep(0.05)
+PY
+printf '#!/usr/bin/env bash\nprintf "%%s %%s ack=%%s\\n" "$PLAN_SLUG" "$LANDED_SHA" "${APEX_OPERATE_ACK-unset}" >>"%s/deployed.log"\nexit "${1:-0}"\n' "$OD_TMP" >"$OD_TMP/deploy.sh"
+chmod +x "$OD_TMP/deploy.sh"; : >"$OD_TMP/deployed.log"
+OD_OK="bash '$OD_TMP/deploy.sh' 0"; OD_FAIL="bash '$OD_TMP/deploy.sh' 7"
+# od_land NAME BODY — commit plans/NAME-plan.md and land it through init → worktree commit → land.sh (APEX_GIBSON=0).
+od_land() {
+  printf '%b' "$2" >"$OD/plans/$1-plan.md"; git -C "$OD" add -A && git -C "$OD" commit -qm "plan $1" || fail "operate-deploy: cannot commit plan $1"
+  (cd "$OD" && APEX_GIBSON=0 "$EX/init.sh" "plans/$1-plan.md" >/dev/null 2>&1) || fail "operate-deploy: init of $1 failed"
+  local wt; wt="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worktree_path"])' "$(st "$OD" "plans/$1-plan.md")/checkpoint.json")"
+  echo "$1" >"$wt/$1.txt"; git -C "$wt" add -A && git -C "$wt" commit -qm "work $1" || fail "operate-deploy: cannot commit in the $1 worktree"
+  OD_LAST_STATE="$(st "$OD" "plans/$1-plan.md")"
+  (cd "$OD" && APEX_GIBSON=0 "$EX/land.sh" "plans/$1-plan.md" >"$OD_TMP/land-$1.log" 2>&1) || fail "operate-deploy: land.sh of $1 failed: $(tail -3 "$OD_TMP/land-$1.log")"
+}
+git -C "$OD" commit -q --allow-empty -m base
+OD_MON='## Monitor\n\n```json\n{"window_days": 7, "checks": [{"id": "c1", "metric": "m1", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "echo 3"}}]}\n```\n'
+od_land od "# OD\n\n- [x] **Phase 1.1** [docs] done\n  - Acceptance: true\n\n$OD_MON"
+OD_STATE="$OD_LAST_STATE"; OD_CP="$OD_STATE/checkpoint.json"
+OD_SHA="$(git -C "$OD" rev-parse main)"; OD_GOOD="od@$OD_SHA"     # od's landing commit
+git -C "$OD" log -1 --format=%s "$OD_SHA" | grep -q '^apex-scope-loop: merge apex-scope-loop/' || fail "operate-deploy: main is not od's landing commit"
+od_land feat "# Feat\n\n- [x] **Phase 1.1** [docs] done\n  - Acceptance: true\n"; OD_FEAT_STATE="$OD_LAST_STATE"
+OD_FEAT_SHA="$(git -C "$OD" rev-parse main)"                       # another plan's landing, newer than od's
+printf '# Un\n\n- [ ] **Phase 1.1** [docs] open\n  - Acceptance: true\n' >"$OD/plans/un-plan.md"; git -C "$OD" add -A; git -C "$OD" commit -qm un
+OD_TIP="$(git -C "$OD" rev-parse main)"; [ "$OD_TIP" != "$OD_FEAT_SHA" ] && [ "$OD_FEAT_SHA" != "$OD_SHA" ] || fail "operate-deploy: the fixture's commits did not move main"
+(cd "$OD" && APEX_GIBSON=0 "$EX/init.sh" plans/un-plan.md >/dev/null 2>&1) || fail "operate-deploy: init of the unlanded plan failed"
+printf '# Raw\n\n- [ ] **Phase 1.1** [docs] open\n  - Acceptance: true\n' >"$OD/plans/raw-plan.md"
+# od_split ARGS... — the index of the first "--" (the VAR=value words before it go to env, the rest to operate.sh).
+od_split() { local i=0; for a in "$@"; do [ "$a" = -- ] && { echo "$i"; return 0; }; i=$((i + 1)); done; fail "operate-deploy: no -- in $*"; }
+# odd LABEL WANT_RC PATTERN [ENV...] -- ARGS... — operate.sh ARGS run fully detached from $OD; exit WANT_RC, output has PATTERN.
+odd() {
+  local label="$1" want="$2" pat="$3" rc=0 k; shift 3
+  k="$(od_split "$@")"
+  (cd "$OD" && env "${@:1:$k}" python3 -I "$OD_TMP/od-detach.py" "$OD_TMP/det.out" 60 "$OPS" "${@:$((k + 2))}") || rc=$?
+  [ "$rc" = "$want" ] || fail "operate-deploy: $label exited $rc, expected $want: $(cat "$OD_TMP/det.out")"
+  grep -q -- "$pat" "$OD_TMP/det.out" || fail "operate-deploy: $label did not say '$pat': $(cat "$OD_TMP/det.out")"
+}
+# odp LABEL WANT_RC ACK [ENV...] -- ARGS... — operate.sh ARGS on a pty with ACK typed at the prompt; output in $OD_TMP/pty.out.
+odp() {
+  local label="$1" want="$2" ack="$3" rc=0 k; shift 3
+  k="$(od_split "$@")"
+  (cd "$OD" && env "${@:1:$k}" python3 -I "$OD_TMP/od-pty.py" "$ack" 60 "$OPS" "${@:$((k + 2))}" >"$OD_TMP/pty.out" 2>&1) || rc=$?
+  [ "$rc" = "$want" ] || fail "operate-deploy: $label exited $rc, expected $want: $(cat "$OD_TMP/pty.out")"
+}
+od_runs() { wc -l <"$OD_TMP/deployed.log" | tr -d ' '; }
+# od_cp EXPR — a smoke-written Python expression over od's checkpoint (s) and its operate key (o); fixture data only.
+od_cp() { python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"s": s, "o": s.get("operate") or {}}))' "$OD_CP" "$1"; }
+# R6 refusals, each before any terminal is touched
+odd "an unlanded plan" 3 "not landed" "APEX_DEPLOY_CMD=$OD_OK" -- plans/un-plan.md deploy
+odd "an unlanded plan's status" 3 "not landed" -- plans/un-plan.md status
+odd "a plan with no run state" 3 "not landed" "APEX_DEPLOY_CMD=$OD_OK" -- plans/raw-plan.md deploy
+odd "APEX_DEPLOY_CMD unset" 2 "APEX_DEPLOY_CMD is unset" -- plans/od-plan.md deploy
+odd "APEX_DEPLOY_CMD empty" 2 "APEX_DEPLOY_CMD is unset" "APEX_DEPLOY_CMD=" -- plans/od-plan.md deploy
+touch "$OD_STATE/HALT"; odd "HALT in the plan state" 4 "kill switch set" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odd "HALT on status" 4 "kill switch set" -- plans/od-plan.md status
+rm -f "$OD_STATE/HALT"; touch "$OD/.dev-plan-state/HALT"; odd "the shared HALT" 4 "kill switch set" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+rm -f "$OD/.dev-plan-state/HALT"; odd "APEX_HALT=1" 4 "APEX_HALT=1" "APEX_HALT=1" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odd "a bad step" 2 "usage" -- plans/od-plan.md frobnicate
+odd "--all deploy" 2 "status only" -- --all deploy
+odd "extra arguments" 2 "usage" -- plans/od-plan.md deploy now
+[ "$(od_runs)" = 0 ] || fail "operate-deploy: a refused precondition ran the deploy command: $(cat "$OD_TMP/deployed.log")"
+# An invalid Monitor section fails closed (status and deploy), the deploy command never runs
+cp "$OD/plans/od-plan.md" "$OD_TMP/od-plan.keep"
+sed 's/"window_days": 7/"window_days": 0/' "$OD_TMP/od-plan.keep" >"$OD/plans/od-plan.md"
+odd "an invalid Monitor section (deploy)" 2 "window_days must be an integer 1-90" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odd "an invalid Monitor section (status)" 2 "window_days must be an integer 1-90" -- plans/od-plan.md status
+cp "$OD_TMP/od-plan.keep" "$OD/plans/od-plan.md"
+# Threat 3 (operate.sh's layer): no terminal is refused even when APEX_OPERATE_ACK holds the right value; the refusal
+# says a human must type slug@sha at their own terminal and never mentions a tty (no pty workaround suggested).
+# Mutant "accept APEX_OPERATE_ACK when /dev/tty cannot be opened" turns this red.
+odd "no controlling terminal" 5 "type $OD_GOOD there" "APEX_DEPLOY_CMD=$OD_OK" "APEX_OPERATE_ACK=$OD_GOOD" -- plans/od-plan.md deploy
+grep -q 'A deploy needs a human: run operate.sh plans/od-plan.md deploy yourself, in your own terminal' "$OD_TMP/det.out" || fail "operate-deploy: the no-terminal refusal does not say a human must run it at their own terminal: $(cat "$OD_TMP/det.out")"
+! grep -qi 'tty' "$OD_TMP/det.out" || fail "operate-deploy: the no-terminal refusal mentions a tty (points at a pty workaround): $(cat "$OD_TMP/det.out")"
+grep -q '^== Ask Contract: deploy od ==$' "$OD_TMP/det.out" && grep -q '^What:' "$OD_TMP/det.out" && grep -q '^What it does:' "$OD_TMP/det.out" \
+  && grep -q '^Why:' "$OD_TMP/det.out" && grep -q '^Risks:' "$OD_TMP/det.out" || fail "operate-deploy: no Ask Contract (what / what it does / why / risks) before the ack: $(cat "$OD_TMP/det.out")"
+[ "$(od_runs)" = 0 ] || fail "operate-deploy: a deploy with no terminal ran the deploy command (mutant: APEX_OPERATE_ACK authorizes)"
+[ "$(od_cp 'len(o.get("deploys") or [])')" = 0 ] || fail "operate-deploy: a refused ack was recorded as a deploy"
+# Threat 1: an ack for another landed sha (feat's landing, main's tip), a short sha, a wrong slug, an empty line → refused.
+# Mutants "compare the slug only" / "accept a sha prefix" / "bind to the base tip" turn these red.
+odp "an ack with another plan's landed sha" 5 "od@$OD_FEAT_SHA" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+grep -q "not this plan's landed sha $OD_SHA" "$OD_TMP/pty.out" || fail "operate-deploy: the wrong-sha refusal is not named: $(cat "$OD_TMP/pty.out")"
+odp "an ack with the base tip" 5 "od@$OD_TIP" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+grep -q "not this plan's landed sha $OD_SHA" "$OD_TMP/pty.out" || fail "operate-deploy: the wrong-sha refusal is not named: $(cat "$OD_TMP/pty.out")"
+odp "an ack with a short sha" 5 "od@${OD_SHA:0:12}" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odp "an ack with the sha twice" 5 "od@$OD_SHA$OD_SHA" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odp "an ack naming another plan" 5 "feat@$OD_SHA" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+grep -q "names another plan ('feat')" "$OD_TMP/pty.out" || fail "operate-deploy: the wrong-slug refusal is not named: $(cat "$OD_TMP/pty.out")"
+odp "an empty ack" 5 "" "APEX_DEPLOY_CMD=$OD_OK" -- plans/od-plan.md deploy
+odp "od's ack for the other plan" 5 "$OD_GOOD" "APEX_DEPLOY_CMD=$OD_OK" -- plans/feat-plan.md deploy
+grep -q "To proceed, a human types exactly feat@$OD_FEAT_SHA at this terminal" "$OD_TMP/pty.out" || fail "operate-deploy: feat's Ask Contract does not bind feat's landing sha: $(cat "$OD_TMP/pty.out")"
+[ "$(od_runs)" = 0 ] || fail "operate-deploy: a refused ack ran the deploy command: $(cat "$OD_TMP/deployed.log")"
+# the ledger seam: with <state>/dispatch/ present, and a stale active-route.json there (B-046), every deploy appends
+# an operate_deploy row with route_id null
+LG="$PLUGIN_ROOT/../apex-dispatch/scripts/ledger.sh"; [ -x "$LG" ] || fail "operate-deploy: the sibling apex-dispatch ledger.sh is missing"
+mkdir -p "$OD_STATE/dispatch"; printf '{"route_id": "r-%s-L3-1", "route_mode": "baseline"}\n' "$(basename "$OD_STATE")" >"$OD_STATE/dispatch/active-route.json"
+# Threat 2: a failing deploy is recorded (ts, sha, exit, ack_source), exits 1 and opens no window.
+# Mutant "open the window whatever the exit" turns this red.
+odp "a failing deploy" 1 "$OD_GOOD" "APEX_DEPLOY_CMD=$OD_FAIL" -- plans/od-plan.md deploy
+grep -q 'deploy FAILED (exit 7)' "$OD_TMP/pty.out" || fail "operate-deploy: the failing deploy did not say so: $(cat "$OD_TMP/pty.out")"
+[ "$(od_runs)" = 1 ] || fail "operate-deploy: the failing deploy command did not run exactly once"
+[ "$(od_cp '[(d["sha"], d["exit"], d["ack_source"], bool(d.get("ts"))) for d in o["deploys"]]')" = "[('$OD_SHA', 7, 'tty', True)]" ] || fail "operate-deploy: the failing deploy was not recorded with ts, sha, exit and ack_source: $(od_cp 'o')"
+[ "$(od_cp '"window" in o')" = False ] || fail "operate-deploy: a failed deploy opened a watch window (threat 2): $(od_cp 'o')"
+odd "status after a failed deploy" 0 "window: not opened" -- plans/od-plan.md status
+# the positive ack, typed on the pty; APEX_OPERATE_ACK in the env neither helps nor reaches the deploy command
+odp "the correct ack" 0 "$OD_GOOD" "APEX_DEPLOY_CMD=$OD_OK" "APEX_OPERATE_ACK=$OD_GOOD" -- plans/od-plan.md deploy
+grep -q "deployed od at ${OD_SHA:0:12}; watch window open for 7 day(s)" "$OD_TMP/pty.out" || fail "operate-deploy: the deploy did not report success: $(cat "$OD_TMP/pty.out")"
+[ "$(tail -n 1 "$OD_TMP/deployed.log")" = "od $OD_SHA ack=unset" ] || fail "operate-deploy: the deploy command did not get PLAN_SLUG/LANDED_SHA, or saw APEX_OPERATE_ACK: $(tail -n 1 "$OD_TMP/deployed.log")"
+[ "$(od_cp '[(d["sha"], d["exit"], d["ack_source"]) for d in o["deploys"]]')" = "[('$OD_SHA', 7, 'tty'), ('$OD_SHA', 0, 'tty')]" ] || fail "operate-deploy: the deploy history is wrong: $(od_cp 'o')"
+OD_W="$(od_cp 'o["window"]["start"] + " " + str(o["window"]["days"]) + " " + str(o["window"]["start"] == o["deploys"][-1]["ts"])')"
+[ "$(od_cp '__import__("datetime").datetime.strptime(o["window"]["end"], "%Y-%m-%dT%H:%M:%SZ") - __import__("datetime").datetime.strptime(o["window"]["start"], "%Y-%m-%dT%H:%M:%SZ") == __import__("datetime").timedelta(days=7)')" = True ] \
+  && [ "${OD_W#* }" = "7 True" ] || fail "operate-deploy: the window is not the plan's 7 days from the deploy: $(od_cp 'o')"
+# a later failing deploy is recorded but leaves the open window alone (threat 2's neighbour)
+odp "a failing deploy after success" 1 "$OD_GOOD" "APEX_DEPLOY_CMD=$OD_FAIL" -- plans/od-plan.md deploy
+[ "$(od_cp 'o["window"]["start"] + " " + str(o["window"]["days"]) + " " + str(len(o["deploys"]))')" = "${OD_W% *} 3" ] || fail "operate-deploy: a failing deploy moved the open window: $(od_cp 'o')"
+# status and --all status: day N of M, the declared checks, the R5b warning for a landed feature plan with no section
+odd "status" 0 "window: day 1 of 7" -- plans/od-plan.md status
+grep -qF -- '- c1: m1 < 5 (severity high; probe cmd: echo 3)' "$OD_TMP/det.out" || fail "operate-deploy: status does not print the declared check: $(cat "$OD_TMP/det.out")"
+grep -qF "last deploy: " "$OD_TMP/det.out" && grep -q "exit 7 (ack: tty; 3 deploy(s))" "$OD_TMP/det.out" || fail "operate-deploy: status does not show the last deploy: $(cat "$OD_TMP/det.out")"
+odd "--all status" 0 "window: day 1 of 7" -- --all status
+grep -q '^plan od (' "$OD_TMP/det.out" && grep -q '^plan feat (' "$OD_TMP/det.out" && ! grep -q '^plan un (' "$OD_TMP/det.out" || fail "operate-deploy: --all status does not list exactly the landed plans: $(cat "$OD_TMP/det.out")"
+grep -q 'WARNING: feat is a landed feature plan with no ## Monitor section' "$OD_TMP/det.out" || fail "operate-deploy: --all status does not warn about the landed feature plan with no Monitor section: $(cat "$OD_TMP/det.out")"
+! grep -q 'WARNING: od ' "$OD_TMP/det.out" || fail "operate-deploy: --all status warns about a watched plan"
+python3 -c 'import datetime as d, json, sys; p = sys.argv[1]; s = json.load(open(p)); w = s["operate"]["window"]; f = "%Y-%m-%dT%H:%M:%SZ"; t = d.datetime.strptime(w["start"], f) - d.timedelta(days=3, hours=1); w["start"], w["end"] = t.strftime(f), (t + d.timedelta(days=7)).strftime(f); json.dump(s, open(p, "w"))' "$OD_CP"
+odd "status on day 4" 0 "window: day 4 of 7" -- plans/od-plan.md status
+python3 -c 'import datetime as d, json, sys; p = sys.argv[1]; s = json.load(open(p)); w = s["operate"]["window"]; f = "%Y-%m-%dT%H:%M:%SZ"; t = d.datetime.strptime(w["start"], f) - d.timedelta(days=5); w["start"], w["end"] = t.strftime(f), (t + d.timedelta(days=7)).strftime(f); json.dump(s, open(p, "w"))' "$OD_CP"
+odd "status after the window ended" 0 "window: closed (ended " -- plans/od-plan.md status
+odd "feat status (not opened)" 0 "window: not opened" -- plans/feat-plan.md status
+# the ledger: three operate_deploy rows, route_id and route_mode null despite the stale active route, ack_source tty; the chain verifies
+OD_L="$OD_STATE/dispatch/ledger.jsonl"; [ -f "$OD_L" ] || fail "operate-deploy: no ledger was written under $OD_STATE/dispatch"
+[ "$(python3 -c 'import json,sys; print([(r["event"], r["slug"], r["landed_sha"], r["exit_code"], r["ack_source"], r["route_id"], r["route_mode"]) for r in map(json.loads, open(sys.argv[1]))])' "$OD_L")" \
+  = "[('operate_deploy', 'od', '$OD_SHA', 7, 'tty', None, None), ('operate_deploy', 'od', '$OD_SHA', 0, 'tty', None, None), ('operate_deploy', 'od', '$OD_SHA', 7, 'tty', None, None)]" ] \
+  || fail "operate-deploy: the operate_deploy rows are wrong (route_id and route_mode must be null, never the stale active route: B-046): $(cat "$OD_L")"
+OD_V="$("$LG" verify --state "$OD_STATE" 2>&1)" || fail "operate-deploy: ledger.sh verify failed: $OD_V"
+[ -n "$OD_FEAT_STATE" ] && [ ! -d "$OD_FEAT_STATE/dispatch" ] || fail "operate-deploy: a dispatch dir appeared for a plan that never had one"
+# the deploy row records the caller's checkout HEAD (head), beside the landed sha
+[ "$(od_cp 'o["deploys"][1].get("head")')" = "$(git -C "$OD" rev-parse HEAD)" ] || fail "operate-deploy: the deploy row does not record the checkout HEAD: $(od_cp 'o["deploys"][1]')"
+# an interrupted deploy (TERM to operate.sh's process group, as a closed terminal or ^C would) is still recorded with
+# exit 128+15 and operate.sh exits 143 with no window change. Mutant "no INT/TERM/HUP trap around the deploy" leaves no row.
+OD_N="$(od_cp 'len(o["deploys"])')"; OD_WS="$(od_cp 'o["window"]["start"]')"
+odp "an interrupted deploy" 143 "$OD_GOOD" "APEX_DEPLOY_CMD=kill -TERM 0; sleep 5" -- plans/od-plan.md deploy
+grep -q 'deploy INTERRUPTED (signal 15, exit 143) — recorded' "$OD_TMP/pty.out" || fail "operate-deploy: the interrupted deploy did not say it was recorded: $(cat "$OD_TMP/pty.out")"
+[ "$(od_cp '(len(o["deploys"]), o["deploys"][-1]["exit"], o["window"]["start"])')" = "($((OD_N + 1)), 143, '$OD_WS')" ] || fail "operate-deploy: an interrupted deploy was not recorded with exit 143 (or it moved the window): $(od_cp 'o')"
+# a deploy that cannot be recorded (here the deploy command moves checkpoint.json away) says so, exits 6 and never
+# reports an open watch window. Mutant "warn and carry on" prints "watch window open" and exits 0.
+odp "an unrecordable deploy" 6 "$OD_GOOD" "APEX_DEPLOY_CMD=mv '$OD_CP' '$OD_CP.away'" -- plans/od-plan.md deploy
+mv "$OD_CP.away" "$OD_CP" || fail "operate-deploy: the unrecordable deploy fixture did not move the checkpoint"
+grep -q 'the deploy ran (exit 0) but could not be recorded' "$OD_TMP/pty.out" && ! grep -q 'watch window open' "$OD_TMP/pty.out" || fail "operate-deploy: an unrecorded deploy did not fail clearly, or claimed an open window: $(cat "$OD_TMP/pty.out")"
+ok "operate-deploy: operate.sh refuses an unlanded plan (3), an unset APEX_DEPLOY_CMD by name (2), HALT/APEX_HALT (4) and an invalid Monitor section (2); prints an Ask Contract and reads the ack only from the controlling terminal: detached (setsid) it refuses even with APEX_OPERATE_ACK set and says a human must type od@<sha> at their own terminal; an older landed sha, a short sha, a wrong slug or an empty ack are refused (threat 1); a failing deploy is recorded with ts/sha/exit/ack_source, exits 1 and opens no window or moves an open one (threat 2); the pty-typed ack deploys with PLAN_SLUG/LANDED_SHA and no APEX_OPERATE_ACK, opening the plan's 7-day window; status and --all status show day N of M, closed, the declared checks and the R5b warning; operate_deploy rows carry route_id null and ack_source tty and the ledger verifies; a deploy row records the checkout HEAD; an interrupted deploy is recorded with exit 143 and exits 143; an unrecordable deploy exits 6 and claims no window"
+
+# 71. operate-loop (aidlc-borrowings Phase 3.4, ADR R5, R5b, R5c, R5d, R6, R8): operate.sh PLAN monitor|ingest and
+#     --all monitor [--ingest] on a temp repo whose plans landed through the real init/land.sh and were deployed through
+#     the pty ack of check 70. Plan ol declares http checks against a stub server on 127.0.0.1 (ThreadingHTTPServer on a
+#     free port, killed by the EXIT trap), cmd checks and a runner check; plan ol2 reuses ol's check id c-high (the
+#     adversarial neighbour of threat 1); plan nomon has no Monitor section; monitor.json holds one repo-level check.
+#     Threats (failing-first, the mutant that turns each red is named in its fail message):
+#     1) a signal credited to the wrong plan  2) a failed probe read as healthy or as 0
+#     3) runner or note text written unescaped into LESSONS.md  4) an expired window still measured, or a live breach
+#     expiring silently. Requirements 1-9 of the Phase 3.4 brief are asserted below, each named.
+OL_TMP="$SMOKE_TMP/oploop"; rm -rf "${OL_TMP:?}"; mkdir -p "$OL_TMP" || fail "operate-loop: cannot create the temp dir"
+OL="$OL_TMP/repo"; mkdir -p "$OL/plans" "$OL/.claude/apex-scope-loop" && git init -q -b main "$OL" || fail "operate-loop: cannot init the repo"
+OL="$(cd "$OL" && pwd -P)"; OL_OPS="$EX/operate.sh"; OL_PTY="$OD_TMP/od-pty.py"; OL_DET="$OD_TMP/od-detach.py"
+[ -f "$OL_PTY" ] && [ -f "$OL_DET" ] || fail "operate-loop: check 70's pty/detach helpers are missing"
+cat >"$OL_TMP/stub.py" <<'PY'
+# stub.py PORTFILE HITS — a threaded HTTP stub on 127.0.0.1 (free port written to PORTFILE); every request is logged.
+import http.server, socketserver, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def _any(self):
+        with open(sys.argv[2], "a") as f:
+            f.write("%s %s %s\n" % (self.command, self.path, "|".join(sorted(k.lower() for k in self.headers.keys()))))
+        code = {"/ok": 200, "/err": 503, "/redir": 302}.get(self.path, 404)
+        self.send_response(code)
+        if code == 302:
+            self.send_header("Location", "file:///etc/hosts")
+        self.end_headers()
+        self.wfile.write(b"stub")
+    do_GET = do_POST = do_HEAD = _any
+    def log_message(self, *a):
+        pass
+class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+s = S(("127.0.0.1", 0), H)
+with open(sys.argv[1] + ".tmp", "w") as f:
+    f.write(str(s.server_address[1]))
+import os; os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+s.serve_forever()
+PY
+: >"$OL_TMP/hits.log"
+python3 -I "$OL_TMP/stub.py" "$OL_TMP/port" "$OL_TMP/hits.log" >/dev/null 2>&1 &
+OL_PID=$!
+# the stub dies with the smoke whatever happens (guarded: OL_PID may be unset or the process already gone)
+if [ -n "${SMOKE_KEEP:-}" ]; then
+  trap '{ [ -z "${OL_PID:-}" ] || kill "$OL_PID"; } >/dev/null 2>&1 || true' EXIT
+else
+  trap '{ [ -z "${OL_PID:-}" ] || kill "$OL_PID"; } >/dev/null 2>&1 || true; git -C "$SMOKE_TMP/repo" worktree prune >/dev/null 2>&1 || true; chmod -R u+w "$SMOKE_TMP" 2>/dev/null || true; rm -rf "$SMOKE_TMP"' EXIT
+fi
+for _ in $(seq 1 100); do [ -s "$OL_TMP/port" ] && break; sleep 0.1; done
+OL_PORT="$(cat "$OL_TMP/port" 2>/dev/null || true)"; [[ "$OL_PORT" =~ ^[0-9]+$ ]] || fail "operate-loop: the stub HTTP server did not start"
+OL_DEAD_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+cat >"$OL_TMP/runner.py" <<'PY'
+# runner.py METRIC... — the APEX_MONITOR_CMD stub; its reply is chosen by runner.mode beside it.
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+mode = open(os.path.join(here, "runner.mode")).read().strip()
+with open(os.path.join(here, "runner-args.log"), "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+ms = sys.argv[1:]
+if mode == "good":
+    # F-005: stderr is never a note; the opt-in note is the reply's per-metric {"value", "note"} object
+    sys.stderr.write("ok\n\ncontact ops@example.invalid token=hunter2-secret\n")
+    print(json.dumps({m: {"value": 0.5, "note": "## L-999 `boom` <b>pwned</b> | [x](y)"} for m in ms}))
+elif mode == "objx":
+    print('{"r_err": {"value": 0.001, "zz": 1}}')
+elif mode == "objnote":
+    print('{"r_err": {"value": 0.001, "note": 5}}')
+elif mode == "objnov":
+    print('{"r_err": {"note": "x"}}')
+elif mode == "bad":
+    print("`## L-999` not json\n## L-998")
+elif mode == "nan":
+    print('{"r_err": NaN}')
+elif mode == "extra":
+    print(json.dumps({"r_err": 0.001, "zz": 1}))
+elif mode == "missing":
+    print("{}")
+elif mode == "string":
+    print('{"r_err": "0.001"}')
+elif mode == "null":
+    print('{"r_err": null}')
+elif mode == "twice":
+    print('{"r_err": 0.001, "r_err": 0.002}')
+elif mode == "exit":
+    print('{"r_err": 0.001}'); sys.exit(3)
+PY
+echo good >"$OL_TMP/runner.mode"
+cat >"$OL_TMP/mkplan.py" <<'PY'
+# mkplan.py OUT TITLE WINDOW_DAYS|- CHECKS_JSON — a plan with one done task and (unless CHECKS_JSON is "-") a Monitor section.
+import json, sys
+out, title, wd, checks = sys.argv[1:5]
+body = "# %s\n\n- [x] **Phase 1.1** [docs] done\n  - Acceptance: true\n" % title
+if checks != "-":
+    cfg = {"checks": json.loads(checks)}
+    if wd != "-":
+        cfg["window_days"] = int(wd)
+    body += "\n## Monitor\n\n```json\n" + json.dumps(cfg) + "\n```\n"
+open(out, "w").write(body)
+PY
+# requirement 1's probe: the plan text verbatim as sh -c's only argument; it records $0, $#, PLAN_SLUG, a literal
+# {slug}{metric} (a str.format interpolation would replace it), the cwd and the whole environment
+OL_ARGCMD="printf '%s|%s|%s|%s\\n' \"\$0\" \"\$#\" \"\${PLAN_SLUG-unset}\" '{slug}{metric}' >'$OL_TMP/probe-args.txt'; pwd -P >>'$OL_TMP/probe-args.txt'; env >'$OL_TMP/probe-env.txt'; echo 7"
+OL_CHECKS="$(python3 - "$OL_PORT" "$OL_DEAD_PORT" "$OL_ARGCMD" <<'PY'
+import json, sys
+port, dead, argcmd = sys.argv[1:4]
+u = "http://127.0.0.1:%s" % port
+print(json.dumps([
+  {"id": "c-high", "metric": "m_high", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": argcmd}},
+  {"id": "c-slow", "metric": "m_slow", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "sleep 30; echo 1"}},
+  {"id": "c-word", "metric": "m_word", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "echo hello", "value": "stdout"}},
+  {"id": "c-exit", "metric": "m_exit", "op": "==", "threshold": 3, "severity": "medium", "probe": {"kind": "cmd", "command": "echo 9; exit 3", "value": "exit"}},
+  {"id": "c-pipe", "metric": "m_pipe", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "false | cat"}},
+  {"id": "c-grep", "metric": "m_grep", "op": "<", "threshold": 5, "severity": "high", "probe": {"kind": "cmd", "command": "grep -c x ./no-such.log"}},
+  {"id": "h-status", "metric": "m_status", "op": "==", "threshold": 200, "severity": "low", "probe": {"kind": "http", "url": u + "/err", "measure": "status"}},
+  {"id": "h-lat", "metric": "m_lat_err", "op": "<", "threshold": 5000, "severity": "high", "probe": {"kind": "http", "url": u + "/err", "measure": "latency_ms", "expect_status": 200}},
+  {"id": "h-ok", "metric": "m_lat", "op": "<", "threshold": 5000, "severity": "high", "probe": {"kind": "http", "url": u + "/ok", "measure": "latency_ms", "expect_status": 200}},
+  {"id": "h-redir", "metric": "m_redir", "op": "==", "threshold": 302, "severity": "high", "probe": {"kind": "http", "url": u + "/redir", "measure": "status"}},
+  {"id": "h-dead", "metric": "m_dead", "op": "==", "threshold": 200, "severity": "high", "probe": {"kind": "http", "url": "http://127.0.0.1:%s/ok" % dead, "measure": "status"}},
+  {"id": "r-run", "metric": "r_err", "op": "<", "threshold": 0.01, "severity": "high", "probe": {"kind": "runner"}}]))
+PY
+)" || fail "operate-loop: cannot build the fixture checks"
+OL_FAST="$(python3 -c 'import json, sys; print(json.dumps([c for c in json.loads(sys.argv[1]) if c["id"] != "c-slow"]))' "$OL_CHECKS")"
+# ol_land NAME TITLE WINDOW CHECKS — commit plans/NAME-plan.md and land it through init → worktree commit → land.sh.
+ol_land() {
+  python3 "$OL_TMP/mkplan.py" "$OL/plans/$1-plan.md" "$2" "$3" "$4" || fail "operate-loop: cannot write plan $1"
+  git -C "$OL" add -A && git -C "$OL" commit -qm "plan $1" || fail "operate-loop: cannot commit plan $1"
+  (cd "$OL" && APEX_GIBSON=0 "$EX/init.sh" "plans/$1-plan.md" >/dev/null 2>&1) || fail "operate-loop: init of $1 failed"
+  local wt; wt="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worktree_path"])' "$(st "$OL" "plans/$1-plan.md")/checkpoint.json")"
+  echo "$1" >"$wt/$1.txt"; git -C "$wt" add -A && git -C "$wt" commit -qm "work $1" || fail "operate-loop: cannot commit in the $1 worktree"
+  OL_LAST_STATE="$(st "$OL" "plans/$1-plan.md")"
+  (cd "$OL" && APEX_GIBSON=0 "$EX/land.sh" "plans/$1-plan.md" >"$OL_TMP/land-$1.log" 2>&1) || fail "operate-loop: land.sh of $1 failed: $(tail -3 "$OL_TMP/land-$1.log")"
+  OL_LAST_SHA="$(git -C "$OL" rev-parse main)"
+}
+# ol_ship NAME SHA — the human step, on a pty with the right ack (check 70's helper), opening the plan's window
+ol_ship() {
+  (cd "$OL" && env APEX_DEPLOY_CMD="bash '$OD_TMP/deploy.sh' 0" python3 -I "$OL_PTY" "$1@$2" 60 "$OL_OPS" "plans/$1-plan.md" deploy >"$OL_TMP/pty.out" 2>&1) \
+    || fail "operate-loop: the deploy of $1 failed: $(cat "$OL_TMP/pty.out")"
+}
+git -C "$OL" commit -q --allow-empty -m base
+ol_land ol OL 7 "$OL_CHECKS"; OL_ST="$OL_LAST_STATE"; OL_SHA="$OL_LAST_SHA"
+ol_land ol2 OL2 7 '[{"id": "c-high", "metric": "m2", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 9"}}]'; OL2_ST="$OL_LAST_STATE"; OL2_SHA="$OL_LAST_SHA"
+ol_land nomon NOMON - -; OL_NM_ST="$OL_LAST_STATE"
+printf '{"checks": [{"id": "r-disk", "metric": "disk_pct", "op": "<", "threshold": 50, "severity": "high", "probe": {"kind": "cmd", "command": "echo 99"}}]}\n' >"$OL/.claude/apex-scope-loop/monitor.json"
+OL_BASE="$(dirname "$OL_ST")"; OL_RD="$OL_BASE/operate-repo"
+mkdir -p "$OL_ST/dispatch" "$OL2_ST/dispatch" "$OL_RD/dispatch"
+ol_ship ol "$OL_SHA"; ol_ship ol2 "$OL2_SHA"
+OL_LES="$OL/.claude/apex-scope-loop/LESSONS.md"; OL_BL="$OL/.claude/apex-scope-loop/BACKLOG.md"
+# olr LABEL WANT_RC [ENV...] -- ARGS... — operate.sh ARGS detached from $OL with the runner set and the deploy/ack
+# variables present (they must never reach a probe); output in $OL_TMP/run.out.
+olr() {
+  local label="$1" want="$2" rc=0 k; shift 2
+  k="$(od_split "$@")"
+  (cd "$OL" && env -u APEX_LESSONS_FILE -u APEX_BACKLOG_FILE APEX_MONITOR_CMD="python3 -I '$OL_TMP/runner.py'" \
+     APEX_OPERATE_ACK="ol@$OL_SHA" APEX_DEPLOY_CMD="bash '$OD_TMP/deploy.sh' 0" "${@:1:$k}" \
+     python3 -I "$OL_DET" "$OL_TMP/run.out" 120 "$OL_OPS" "${@:$((k + 2))}") || rc=$?
+  [ "$rc" = "$want" ] || fail "operate-loop: $label exited $rc, expected $want: $(cat "$OL_TMP/run.out")"
+}
+# olq FILE EXPR — a smoke-written Python expression over a JSON file (j) and its operate key (o); fixture data only.
+olq() { python3 -c 'import json,sys; j=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"j": j, "o": (j.get("operate") or {}) if isinstance(j, dict) else {}}))' "$1" "$2"; }
+# olrows DIR — the ledger rows under DIR/dispatch as (event, owner, check_id, value, breach_count, sink) tuples
+olrows() { python3 -c 'import json,sys; print([(r["event"], r.get("slug", "repo" if r.get("repo") is True else None), r.get("check_id"), r.get("value"), r.get("breach_count"), r.get("sink")) for r in map(json.loads, open(sys.argv[1]))])' "$1/dispatch/ledger.jsonl"; }
+OL_CP="$OL_ST/checkpoint.json"; OL2_CP="$OL2_ST/checkpoint.json"
+# refusals: --all ingest and PLAN monitor --ingest are not forms; APEX_MONITOR_CMD unset with a runner check (R6)
+olr "--all ingest" 2 -- --all ingest; grep -q 'status only' "$OL_TMP/run.out" || fail "operate-loop: --all ingest was not refused by name"
+olr "PLAN monitor --ingest" 2 -- plans/ol-plan.md monitor --ingest; grep -q usage "$OL_TMP/run.out" || fail "operate-loop: PLAN monitor --ingest was not refused"
+olr "APEX_MONITOR_CMD unset" 2 APEX_MONITOR_CMD= -- --all monitor --ingest
+grep -q 'APEX_MONITOR_CMD is unset' "$OL_TMP/run.out" && [ "$(olq "$OL_CP" '"checks" in o')" = False ] || fail "operate-loop: an unset APEX_MONITOR_CMD was not refused before any probe (R6): $(cat "$OL_TMP/run.out")"
+olr "APEX_MONITOR_CMD naming operate.sh" 2 "APEX_MONITOR_CMD=sh $OL_OPS" -- plans/ol-plan.md monitor
+# the deny word is searched with quotes and backslashes removed (apex-dispatch pre-bash's normalisation)
+for OL_MC in "sh de''ploy.sh" 'sh de\ploy.sh' 'sh de""ploy.sh'; do
+  olr "APEX_MONITOR_CMD $OL_MC" 2 "APEX_MONITOR_CMD=$OL_MC" -- plans/ol-plan.md monitor
+  grep -q 'APEX_MONITOR_CMD must not name operate.sh' "$OL_TMP/run.out" && [ "$(olq "$OL_CP" '"checks" in o')" = False ] \
+    || fail "operate-loop: APEX_MONITOR_CMD '$OL_MC' was not refused before any probe (mutant: deny regex on the raw text): $(cat "$OL_TMP/run.out")"
+done
+# requirement 6: the per-run cap, in the real --all flow: four more landed plans (fabricated state) of 50 checks each,
+# open windows → 209 checks → refused naming the cap before any probe. Mutant "cap only in monitorlib" turns this red.
+python3 - "$OL_TMP" "$OL_BASE" <<'PY' || fail "operate-loop: cannot fabricate the cap plans"
+import datetime, json, os, sys
+tmp, base = sys.argv[1:3]
+f = "%Y-%m-%dT%H:%M:%SZ"; t = datetime.datetime.utcnow()
+checks = [{"id": "k%d" % i, "metric": "k", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}} for i in range(50)]
+for n in range(4):
+    p = os.path.join(tmp, "cap%d-plan.md" % n)
+    open(p, "w").write("# cap\n\n## Monitor\n\n```json\n" + json.dumps({"checks": checks}) + "\n```\n")
+    d = os.path.join(base, "cafe0000000%d" % n); os.makedirs(d)
+    json.dump({"landed": True, "plan_path": p, "operate": {"window": {"start": t.strftime(f), "end": (t + datetime.timedelta(days=3)).strftime(f), "days": 3}}}, open(os.path.join(d, "checkpoint.json"), "w"))
+PY
+olr "the probe cap" 2 -- --all monitor --ingest
+grep -q 'the probe cap is 200 per run' "$OL_TMP/run.out" && [ "$(olq "$OL_CP" '"checks" in o')" = False ] && [ ! -s "$OL_TMP/runner-args.log" ] \
+  || fail "operate-loop: 209 checks in one run were not refused before any probe (mutant: no per-run cap in the --all flow): $(cat "$OL_TMP/run.out")"
+rm -rf "$OL_BASE"/cafe0000000? "$OL_TMP"/cap?-plan.md
+# requirement 8: --all status and --all monitor walk the checkpoints in one python pass (a python3 shim counts -c starts)
+mkdir -p "$OL_TMP/shim"; OL_PY3="$(command -v python3)"
+printf '#!/bin/sh\n[ "$1" = -c ] && echo c >>"%s/py-starts.log"\nexec "%s" "$@"\n' "$OL_TMP" "$OL_PY3" >"$OL_TMP/shim/python3"; chmod +x "$OL_TMP/shim/python3"
+: >"$OL_TMP/py-starts.log"; (cd "$OL" && PATH="$OL_TMP/shim:$PATH" "$OL_OPS" --all status >"$OL_TMP/status.out" 2>&1) || fail "operate-loop: --all status failed: $(cat "$OL_TMP/status.out")"
+[ "$(wc -l <"$OL_TMP/py-starts.log" | tr -d ' ')" -le 1 ] || fail "operate-loop: --all status started python -c $(wc -l <"$OL_TMP/py-starts.log") times for 3 landed plans (requirement 8: one pass)"
+grep -q 'WARNING: nomon is a landed feature plan with no ## Monitor section' "$OL_TMP/status.out" || fail "operate-loop: status does not warn about the landed feature plan with no Monitor section: $(cat "$OL_TMP/status.out")"
+
+# --- run 1: --all monitor --ingest --------------------------------------------------------------------------------------
+OL_T0="$(date +%s)"
+olr "run 1" 0 -- --all monitor --ingest
+OL_T1="$(date +%s)"; cp "$OL_TMP/run.out" "$OL_TMP/run1.out"
+[ $((OL_T1 - OL_T0)) -lt 40 ] || fail "operate-loop: run 1 took $((OL_T1 - OL_T0)) s: the 10 s probe timeout did not kill the slow command's process group"
+grep -q 'plan nomon: no ## Monitor section; skipped' "$OL_TMP/run1.out" && grep -q 'WARNING: nomon is a landed feature plan' "$OL_TMP/run1.out" \
+  || fail "operate-loop: the plan with no Monitor section was not skipped with the R5b warning: $(cat "$OL_TMP/run1.out")"
+# threat 2: the timed-out probe, a non-number line, the failed GET and the expect_status mismatch are unmeasured (null,
+# never 0 and never a pass). Mutants "value 0 on timeout" / "unmeasured counts as ok" turn this red.
+OL_UN="$(olq "$OL_CP" '[(i, o["checks"][i]["last_value"], o["checks"][i]["last_status"]) for i in ("c-slow", "c-word", "h-lat", "h-dead", "c-pipe", "c-grep")]')"
+[ "$OL_UN" = "[('c-slow', None, 'unmeasured'), ('c-word', None, 'unmeasured'), ('h-lat', None, 'unmeasured'), ('h-dead', None, 'unmeasured'), ('c-pipe', None, 'unmeasured'), ('c-grep', None, 'unmeasured')]" ] \
+  || fail "operate-loop: a failed probe was read as a value or a pass (threat 2): $OL_UN"
+# F-017: in stdout mode (the default) an empty-stdout pipeline (false | cat exits 0) and grep -c on a missing log
+# (exit 2) are unmeasured, never their exit code. Mutant "exit code when stdout is empty" turns this red (0 ok, 2 ok).
+olq "$OL_CP" 'o["checks"]["c-pipe"]["last_reason"]' | grep -q 'printed nothing on stdout' && olq "$OL_CP" 'o["checks"]["c-grep"]["last_reason"]' | grep -q 'exited 2' \
+  || fail "operate-loop: F-017: the stdout-mode reasons are wrong: $(olq "$OL_CP" '(o["checks"]["c-pipe"], o["checks"]["c-grep"])')"
+olq "$OL_CP" 'o["checks"]["c-slow"]["last_reason"]' | grep -q 'timed out after 10 s' || fail "operate-loop: the timed-out probe has no timeout reason: $(olq "$OL_CP" 'o["checks"]["c-slow"]')"
+olq "$OL_CP" 'o["checks"]["h-lat"]["last_reason"]' | grep -q 'status 503 is not the expected 200' || fail "operate-loop: requirement 4: latency_ms under an expect_status mismatch is not unmeasured with its reason"
+# requirement 1 (cmd value rule): value exit → the exit code, stdout ignored (echo 9; exit 3 → 3, a pass of == 3);
+# value stdout → the last number line
+[ "$(olq "$OL_CP" '(o["checks"]["c-exit"]["last_value"], o["checks"]["c-exit"]["last_status"], o["checks"]["c-high"]["last_value"], o["checks"]["c-high"]["last_status"])')" = "(3, 'ok', 7, 'breach')" ] \
+  || fail "operate-loop: the cmd value rule (exit: the exit code, stdout ignored; stdout: the last number line) is wrong: $(olq "$OL_CP" 'o["checks"]')"
+# requirement 1: verbatim sh -c, no positional args, no slug/metric interpolation, cwd = the repo root, no APEX_* in env.
+# Mutants "str.format the command" / "pass the slug as \$1" / "inherit the environment" turn this red.
+[ "$(head -n 1 "$OL_TMP/probe-args.txt")" = "/bin/sh|0|unset|{slug}{metric}" ] && [ "$(sed -n 2p "$OL_TMP/probe-args.txt")" = "$OL" ] \
+  || fail "operate-loop: requirement 1: the cmd probe did not run verbatim as sh -c's only argument in the repo root: $(cat "$OL_TMP/probe-args.txt")"
+! grep -qE '^APEX_(OPERATE_ACK|DEPLOY_CMD|MONITOR_CMD)=' "$OL_TMP/probe-env.txt" && grep -q '^PATH=' "$OL_TMP/probe-env.txt" \
+  || fail "operate-loop: requirement 1: a probe saw APEX_OPERATE_ACK / APEX_DEPLOY_CMD / APEX_MONITOR_CMD"
+# requirement 4: http is GET only with no added headers or credentials, a 3xx is measured (never followed to file:)
+[ "$(olq "$OL_CP" '(o["checks"]["h-redir"]["last_value"], o["checks"]["h-status"]["last_value"], o["checks"]["h-ok"]["last_status"], type(o["checks"]["h-ok"]["last_value"]).__name__)')" = "(302, 503, 'ok', 'float')" ] \
+  || fail "operate-loop: requirement 4: http status/latency are wrong (302 measured, 503 measured, latency a number): $(olq "$OL_CP" 'o["checks"]')"
+OL_HDR="$(awk '{print $1, $3}' "$OL_TMP/hits.log" | sort -u)"
+[ "$OL_HDR" = "GET accept-encoding|connection|host" ] || fail "operate-loop: requirement 4: a probe sent a non-GET or an added header: $OL_HDR"
+[ "$(awk '{print $2}' "$OL_TMP/hits.log" | sort -u | tr '\n' ' ')" = "/err /ok /redir " ] || fail "operate-loop: the probes hit unexpected paths: $(cat "$OL_TMP/hits.log")"
+# requirement 3: the runner got the metric as its argv (no interpolation)
+[ "$(cat "$OL_TMP/runner-args.log")" = "r_err" ] || fail "operate-loop: the runner was not called as APEX_MONITOR_CMD r_err: $(cat "$OL_TMP/runner-args.log")"
+# ingest: the high breaches (c-high, r-run) are lessons tagged operate:{slug},{metric}; the low one (h-status) is a
+# plan-level backlog item; ol2's breach of its own c-high (same id, low) is credited to ol2; the repo breach (high!)
+# goes only to the backlog under operate:repo.
+[ "$(grep -c '^## L-' "$OL_LES")" = 2 ] || fail "operate-loop: run 1 did not file exactly the two high breaches as lessons: $(cat "$OL_LES")"
+grep -qF '**Tags:** #operate:ol #m_high' "$OL_LES" && grep -qF '**Tags:** #operate:ol #r_err' "$OL_LES" || fail "operate-loop: the lessons are not tagged operate:{slug},{metric}: $(cat "$OL_LES")"
+# threat 3 / requirement 5: the runner's hostile stderr note reaches the lesson only sanitised: no ## L-999 heading,
+# no backtick, no HTML, one line. Mutant "pass the runner note to lessons.sh unsanitised" turns this red.
+grep -q 'runner note: L-999 _boom_' "$OL_LES" && ! grep -q '^## L-99' "$OL_LES" && ! grep -q '`' "$OL_LES" && ! grep -q '<b>' "$OL_LES" \
+  || fail "operate-loop: threat 3: runner text reached LESSONS.md unescaped (or the reply's note is missing): $(cat "$OL_LES")"
+# F-005: the runner's stderr (an email and a key=value) never becomes a note: no trace in LESSONS.md, BACKLOG.md, the
+# checkpoint or a signal file. Mutant "the last stderr line is the note" turns this red.
+! grep -rqE 'hunter2|example\.invalid' "$OL_LES" "$OL_BL" "$OL_CP" "$OL_ST/operate" \
+  || fail "operate-loop: F-005: the runner's stderr reached a note: $(grep -rE 'hunter2|example\.invalid' "$OL_LES" "$OL_BL" "$OL_CP" "$OL_ST/operate")"
+! grep -qE 'disk_pct|operate:repo' "$OL_LES" || fail "operate-loop: R5d: a repo-level breach was filed as a lesson"
+python3 - "$OL_BL" <<'PY' || fail "operate-loop: the backlog sections are wrong (threat 1 / R5d): $(cat "$OL_BL")"
+import re, sys
+secs, cur = {}, None
+for l in open(sys.argv[1]).read().split("\n"):
+    if l.startswith("## "):
+        cur = l; secs[cur] = []
+    elif cur and l.startswith("- [ ] B-"):
+        secs[cur].append(l)
+want = {"## Plan: plans/ol-plan.md": ["[operate:ol] m_status 503"], "## Plan: plans/ol2-plan.md": ["[operate:ol2] m2 9"],
+        "## Repo: operate checks (monitor.json)": ["[operate:repo] disk_pct 99"]}
+assert set(secs) == set(want), secs
+for k, ws in want.items():
+    assert len(secs[k]) == len(ws) and all(w in i and "from operate" in i for w, i in zip(ws, secs[k])), (k, secs[k])
+    assert all(("plan-level" if "Plan" in k else "repo-level") in i for i in secs[k]), (k, secs[k])
+PY
+# threat 1: every row carries its own plan's slug (ol2's c-high is ol2's, value 9; ol's is 7); repo rows carry repo: true
+[ "$(olq "$OL2_CP" '(sorted(o["checks"]), o["checks"]["c-high"]["last_value"], o["checks"]["c-high"]["filed"])')" = "(['c-high'], 9, 'backlog')" ] \
+  && [ "$(olq "$OL_CP" '(o["checks"]["c-high"]["last_value"], o["checks"]["c-high"]["filed"], o["checks"]["h-status"]["filed"], o["checks"]["r-run"]["filed"])')" = "(7, 'lessons', 'backlog', 'lessons')" ] \
+  || fail "operate-loop: threat 1: a signal was credited to the wrong plan (mutant: a stale target in the --all loop): ol=$(olq "$OL_CP" 'o["checks"]["c-high"]') ol2=$(olq "$OL2_CP" 'o["checks"]')"
+python3 - "$OL_ST" "$OL2_ST" "$OL_RD" <<'PY' || fail "operate-loop: threat 1: a signal row does not carry its own owner"
+import glob, json, sys
+for d, want in zip(sys.argv[1:4], ({"slug": "ol"}, {"slug": "ol2"}, {"repo": True})):
+    fs = glob.glob(d + "/operate/signals-*.json"); assert fs, d
+    for f in fs:
+        for r in json.load(open(f)):
+            assert {k: r[k] for k in ("slug", "repo") if k in r} == want, (f, r)
+    for r in map(json.loads, open(d + "/dispatch/ledger.jsonl")):
+        assert {k: r[k] for k in ("slug", "repo") if k in r} == want and r["route_id"] is None, (d, r)
+PY
+# requirement 9 / threat 2: unmeasured signals are null in the ledger (never 0); sinks as filed
+OL_R1="$(olrows "$OL_ST")"
+for want in "('operate_signal', 'ol', 'c-high', 7, 1, 'lessons')" "('operate_signal', 'ol', 'r-run', 0.5, 1, 'lessons')" "('operate_signal', 'ol', 'h-status', 503, 1, 'backlog')" \
+            "('operate_signal', 'ol', 'c-slow', None, 0, 'counted')" "('operate_signal', 'ol', 'h-lat', None, 0, 'counted')"; do
+  case "$OL_R1" in *"$want"*) ;; *) fail "operate-loop: the ol ledger lacks $want (requirement 9: null, never 0): $OL_R1" ;; esac
+done
+[ "$(olrows "$OL_RD")" = "[('operate_signal', 'repo', 'r-disk', 99, 1, 'backlog')]" ] || fail "operate-loop: the repo ledger row is wrong: $(olrows "$OL_RD")"
+(cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || fail "operate-loop: status failed: $(cat "$OL_TMP/status.out")"
+grep -q 'last: unmeasured (unmeasured: the command timed out after 10 s)' "$OL_TMP/status.out" && ! grep -qE 'c-slow.*last: 0' "$OL_TMP/status.out" \
+  || fail "operate-loop: requirement 9: status does not show the timed-out check as unmeasured: $(cat "$OL_TMP/status.out")"
+
+# --- run 2: the slow check removed (it cost 10 s), the runner reply malformed ------------------------------------------
+python3 "$OL_TMP/mkplan.py" "$OL/plans/ol-plan.md" OL 7 "$OL_FAST"
+echo bad >"$OL_TMP/runner.mode"
+olr "run 2" 0 -- --all monitor --ingest; cp "$OL_TMP/run.out" "$OL_TMP/run2.out"
+[ "$(grep -c '^## L-' "$OL_LES")" = 2 ] && [ "$(grep -c '^- \[ \] B-' "$OL_BL")" = 3 ] || fail "operate-loop: a repeat breach was re-filed instead of counted: $(cat "$OL_LES" "$OL_BL")"
+[ "$(olq "$OL_CP" '(o["checks"]["c-high"]["breaches"], o["checks"]["c-high"]["filed"], o["checks"]["c-high"].get("counted"))')" = "(2, 'lessons', 1)" ] \
+  || fail "operate-loop: the repeat of c-high was not counted: $(olq "$OL_CP" 'o["checks"]["c-high"]')"
+case "$(olrows "$OL_ST")" in *"('operate_signal', 'ol', 'c-high', 7, 2, 'counted')"*) ;; *) fail "operate-loop: the repeat's ledger row is not sink counted, breach_count 2: $(olrows "$OL_ST")" ;; esac
+# requirement 3 / threat 2: the malformed runner reply fails closed; requirement 5: its text is stored sanitised
+[ "$(olq "$OL_CP" '(o["checks"]["r-run"]["last_value"], o["checks"]["r-run"]["last_status"])')" = "(None, 'unmeasured')" ] || fail "operate-loop: a malformed runner reply was not unmeasured: $(olq "$OL_CP" 'o["checks"]["r-run"]')"
+OL_RS="$(olq "$OL_CP" 'o["checks"]["r-run"]["last_reason"]')"
+case "$OL_RS" in *'not valid JSON'*) ;; *) fail "operate-loop: the malformed reply's reason is not recorded: $OL_RS" ;; esac
+case "$OL_RS" in *'`'*|*'#'*) fail "operate-loop: requirement 5: the runner's reply text was stored unsanitised: $OL_RS" ;; esac
+(cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || true
+! grep -q '^## L-99' "$OL_TMP/status.out" && ! grep -q '`' "$OL_TMP/status.out" || fail "operate-loop: status printed the runner's hostile text unsanitised: $(cat "$OL_TMP/status.out")"
+for m in nan extra missing string null twice exit objx objnote objnov; do
+  echo "$m" >"$OL_TMP/runner.mode"
+  olr "runner reply $m" 0 -- plans/ol-plan.md monitor
+  [ "$(olq "$OL_CP" '(o["checks"]["r-run"]["last_value"], o["checks"]["r-run"]["last_status"])')" = "(None, 'unmeasured')" ] \
+    || fail "operate-loop: requirement 3: the runner reply '$m' did not fail closed: $(olq "$OL_CP" 'o["checks"]["r-run"]')"
+done
+# F-018(b): r-run breached on run 1 and is unmeasured on every run since: status names it as still breaching
+(cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || true
+grep -q 'still breaching at their last measurement (unmeasured since): .*r-run' "$OL_TMP/status.out" \
+  || fail "operate-loop: F-018: status does not show r-run as still breaching at its last measurement: $(cat "$OL_TMP/status.out")"
+olr "PLAN ingest" 0 -- plans/ol-plan.md ingest
+[ "$(olq "$OL_CP" 'len(o["pending"])')" = 0 ] && [ "$(grep -c '^## L-' "$OL_LES")" = 2 ] || fail "operate-loop: PLAN ingest left pending signals or re-filed"
+echo good >"$OL_TMP/runner.mode"
+
+# --- threat 4: ol's window moved past its end closes, with open-at-close, and is never measured again ------------------
+python3 -c 'import datetime as d, json, sys; p = sys.argv[1]; s = json.load(open(p)); w = s["operate"]["window"]; f = "%Y-%m-%dT%H:%M:%SZ"; t = d.datetime.strptime(w["start"], f) - d.timedelta(days=8); w["start"], w["end"] = t.strftime(f), (t + d.timedelta(days=7)).strftime(f); json.dump(s, open(p, "w"))' "$OL_CP"
+OL_LT="$(olq "$OL_CP" 'o["checks"]["c-high"]["last_ts"]')"; OL_NSIG="$(ls "$OL_ST/operate" | wc -l | tr -d ' ')"
+sleep 1
+olr "the closing run" 0 -- --all monitor --ingest; cp "$OL_TMP/run.out" "$OL_TMP/run3.out"
+grep -q 'plan ol: watch window ended .*closed closed-with-breaches; open-at-close: .*c-high' "$OL_TMP/run3.out" || fail "operate-loop: threat 4: the ended window was not closed with open-at-close: $(cat "$OL_TMP/run3.out")"
+[ "$(olq "$OL_CP" '(o["window"]["outcome"], "c-high" in o["window"]["open_at_close"], "h-status" in o["window"]["open_at_close"], o["checks"]["c-high"]["last_ts"], len(o["windows_closed"]))')" = "('closed-with-breaches', True, True, '$OL_LT', 1)" ] \
+  || fail "operate-loop: threat 4: the window close is wrong, or the expired plan was measured again (mutants: no end check / open_at_close = []): $(olq "$OL_CP" 'o["window"]')"
+# F-018(b): breach (run 1), then unmeasured (every run since), then close → r-run is open at close. Mutant
+# "open_at_close = the last run's breaching list" turns this red.
+# F-018(a) (operator decision: keep the two outcomes, fail closed): c-word, never measured in the window, is open at
+# close and unmeasured at close; r-run, unmeasured on the last run, is unmeasured at close; c-slow, no longer declared,
+# is neither. measured_runs = the window's runs that measured something (c-high measures on every run, so every signal
+# file). Mutants "a never-measured check is not open" / "measured_runs = every run" / "unmeasured_at_close = never
+# measured only" turn this red.
+[ "$(olq "$OL_CP" '("r-run" in o["window"]["open_at_close"], "r-run" in o["window"]["breaching"], "c-word" in o["window"]["open_at_close"])')" = "(True, False, True)" ] \
+  || fail "operate-loop: F-018: a check whose last measured status was breach, or a never-measured check, is missing from open_at_close: $(olq "$OL_CP" 'o["window"]')"
+[ "$(olq "$OL_CP" '(o["window"]["unmeasured_at_close"], o["window"]["measured_runs"], o["windows_closed"][-1]["measured_runs"], o["windows_closed"][-1]["unmeasured_at_close"] == o["window"]["unmeasured_at_close"], "c-slow" in o["window"]["open_at_close"])')" \
+  = "(['c-word', 'c-pipe', 'c-grep', 'h-lat', 'h-dead', 'r-run'], $OL_NSIG, $OL_NSIG, True, False)" ] \
+  || fail "operate-loop: F-018(a): unmeasured_at_close / measured_runs ($OL_NSIG runs measured something) are wrong: $(olq "$OL_CP" 'o["window"]')"
+case "$(python3 -c 'import json,sys; print([(r["outcome"], r["open_at_close"], r["breaches"] > 0, r["measured_runs"], r["unmeasured_at_close"]) for r in map(json.loads, open(sys.argv[1])) if r["event"] == "operate_window_closed"])' "$OL_ST/dispatch/ledger.jsonl")" in
+  "[('closed-with-breaches', ["*"'c-high'"*"'c-word'"*"], True, $OL_NSIG, ['c-word', "*"'r-run'])]") ;; *) fail "operate-loop: threat 4 / F-018(a): no operate_window_closed row with open_at_close, measured_runs and unmeasured_at_close: $(cat "$OL_ST/dispatch/ledger.jsonl")" ;; esac
+grep -q 'plan ol2: measured 1 check' "$OL_TMP/run3.out" || fail "operate-loop: the open plan ol2 was not measured beside the closing one"
+olr "after the close" 0 -- --all monitor --ingest
+grep -q 'plan ol: watch window closed (closed-with-breaches); not measured' "$OL_TMP/run.out" && [ "$(ls "$OL_ST/operate" | wc -l | tr -d ' ')" = "$OL_NSIG" ] \
+  && [ "$(olq "$OL_CP" 'o["checks"]["c-high"]["last_ts"]')" = "$OL_LT" ] || fail "operate-loop: threat 4: a closed window was measured again: $(cat "$OL_TMP/run.out")"
+(cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || true
+grep -q 'window: closed (ended .*, closed-with-breaches, open-at-close: .*c-high' "$OL_TMP/status.out" || fail "operate-loop: status does not flag open-at-close: $(cat "$OL_TMP/status.out")"
+# requirement 7: a redeploy keeps the closed window's outcome (windows_closed) and status shows it; a redeploy over an
+# open window (ol2) closes it first (closed_by redeploy). Mutant "record overwrites operate.window" turns this red.
+# F-018(a): ol2's plan gains c-new before its redeploy; never measured in the closing window, it is open at close
+python3 "$OL_TMP/mkplan.py" "$OL/plans/ol2-plan.md" OL2 7 '[{"id": "c-high", "metric": "m2", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 9"}}, {"id": "c-new", "metric": "m3", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}}]'
+ol_ship ol "$OL_SHA"; ol_ship ol2 "$OL2_SHA"
+[ "$(olq "$OL_CP" '(len(o["windows_closed"]), o["windows_closed"][-1]["outcome"], "outcome" in o["window"])')" = "(1, 'closed-with-breaches', False)" ] \
+  && [ "$(olq "$OL2_CP" '(len(o["windows_closed"]), o["windows_closed"][-1]["outcome"], o["windows_closed"][-1]["closed_by"])')" = "(1, 'closed-with-breaches', 'redeploy')" ] \
+  || fail "operate-loop: requirement 7: a redeploy erased a window's outcome: ol=$(olq "$OL_CP" 'o.get("windows_closed")') ol2=$(olq "$OL2_CP" 'o.get("windows_closed")')"
+(cd "$OL" && "$OL_OPS" plans/ol-plan.md status >"$OL_TMP/status.out" 2>&1) || true
+grep -q 'last closed window: closed-with-breaches' "$OL_TMP/status.out" || fail "operate-loop: requirement 7: status does not show the last closed window: $(cat "$OL_TMP/status.out")"
+grep -q "last closed window: closed-with-breaches .*unmeasured-at-close: c-word, .*measured runs: $OL_NSIG;" "$OL_TMP/status.out" \
+  || fail "operate-loop: F-018(a): status does not print the closed window's unmeasured-at-close and measured runs: $(cat "$OL_TMP/status.out")"
+# F-018(a) on the redeploy close (record reads the plan's declared checks): c-high, measured on every run, is open as
+# a breach; c-new, declared just before the redeploy and never measured, is open and unmeasured at close. Mutant "the
+# redeploy close gets no declared checks" turns this red.
+[ "$(olq "$OL2_CP" '(o["windows_closed"][-1]["unmeasured_at_close"], o["windows_closed"][-1]["measured_runs"] > 0, o["windows_closed"][-1]["open_at_close"])')" = "(['c-new'], True, ['c-high', 'c-new'])" ] \
+  || fail "operate-loop: F-018(a): the redeploy close lacks unmeasured_at_close / measured_runs: $(olq "$OL2_CP" 'o["windows_closed"]')"
+# F-018(a): three more landed plans (fabricated state, each with its own dispatch/ ledger), closed by --all monitor:
+# fz-dead — one http check against a dead port, measured (unmeasured) once in its window, then moved past its end;
+# fz-norun — its window ended before any monitor run; fz-clean — one cmd check measured ok, then moved past its end.
+# A never-measured window is not operated-clean: fz-dead and fz-norun close closed-with-breaches with every check open
+# and unmeasured at close and measured_runs 0, and status says so; fz-clean closes operated-clean with nothing open.
+# Mutant "outcome from the breach count only" turns fz-dead / fz-norun red; "every window closed-with-breaches" fz-clean.
+python3 - "$OL_TMP" "$OL_BASE" "$OL_DEAD_PORT" <<'PY' || fail "operate-loop: cannot fabricate the F-018(a) plans"
+import datetime, json, os, sys
+tmp, base, dead = sys.argv[1:4]
+f = "%Y-%m-%dT%H:%M:%SZ"; t = datetime.datetime.utcnow()
+plans = {"fa0000000001": ("fz-dead", [{"id": "h-gone", "metric": "m_gone", "op": "==", "threshold": 200, "severity": "high", "probe": {"kind": "http", "url": "http://127.0.0.1:%s/ok" % dead, "measure": "status"}}], 3),
+         "fa0000000002": ("fz-norun", [{"id": "n-one", "metric": "n1", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}},
+                                      {"id": "n-two", "metric": "n2", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 2"}}], -1),
+         "fa0000000003": ("fz-clean", [{"id": "k-ok", "metric": "k_ok", "op": "<", "threshold": 5, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}}], 3)}
+for d, (slug, checks, end) in plans.items():
+    p = os.path.join(tmp, slug + "-plan.md")
+    open(p, "w").write("# %s\n\n## Monitor\n\n```json\n%s\n```\n" % (slug, json.dumps({"checks": checks, "window_days": 3})))
+    sd = os.path.join(base, d); os.makedirs(os.path.join(sd, "dispatch"))
+    start = t - datetime.timedelta(days=4 if end < 0 else 0)
+    json.dump({"landed": True, "plan_path": p, "operate": {"window": {"start": start.strftime(f), "end": (t + datetime.timedelta(days=end)).strftime(f), "days": 3}}},
+              open(os.path.join(sd, "checkpoint.json"), "w"))
+PY
+OL_FZD="$OL_BASE/fa0000000001"; OL_FZN="$OL_BASE/fa0000000002"; OL_FZC="$OL_BASE/fa0000000003"
+olr "F-018(a) run A" 0 -- --all monitor; cp "$OL_TMP/run.out" "$OL_TMP/runA.out"
+grep -q 'plan fz-dead: measured 1 check' "$OL_TMP/runA.out" && grep -q 'plan fz-clean: measured 1 check' "$OL_TMP/runA.out" \
+  && grep -qF 'closed closed-with-breaches; open-at-close: n-one, n-two; unmeasured-at-close: n-one, n-two; 0 measured run(s) (never measured)' "$OL_TMP/runA.out" \
+  || fail "operate-loop: F-018(a): run A did not measure fz-dead / fz-clean or close the never-run fz-norun closed-with-breaches: $(cat "$OL_TMP/runA.out")"
+[ "$(olq "$OL_FZD/checkpoint.json" '(o["checks"]["h-gone"]["last_status"], o["window"]["measured_runs"], o["window"]["last_unmeasured"])')" = "('unmeasured', 0, ['h-gone'])" ] \
+  || fail "operate-loop: F-018(a): the dead-port check was not unmeasured with measured_runs 0: $(olq "$OL_FZD/checkpoint.json" 'o')"
+for OL_FZ in "$OL_FZD" "$OL_FZC"; do
+  python3 -c 'import datetime as d, json, sys; p = sys.argv[1]; s = json.load(open(p)); w = s["operate"]["window"]; f = "%Y-%m-%dT%H:%M:%SZ"; t = d.datetime.strptime(w["start"], f) - d.timedelta(days=4); w["start"], w["end"] = t.strftime(f), (t + d.timedelta(days=3)).strftime(f); json.dump(s, open(p, "w"))' "$OL_FZ/checkpoint.json"
+done
+olr "F-018(a) run B" 0 -- --all monitor; cp "$OL_TMP/run.out" "$OL_TMP/runB.out"
+[ "$(olq "$OL_FZD/checkpoint.json" '(o["window"]["outcome"], o["window"]["open_at_close"], o["window"]["unmeasured_at_close"], o["window"]["measured_runs"], o["windows_closed"][-1]["measured_runs"], o["windows_closed"][-1]["unmeasured_at_close"])')" \
+  = "('closed-with-breaches', ['h-gone'], ['h-gone'], 0, 0, ['h-gone'])" ] \
+  || fail "operate-loop: F-018(a): a window whose every run was unmeasured closed clean or without the check open (mutant: outcome from the breach count only): $(olq "$OL_FZD/checkpoint.json" 'o["window"]')"
+[ "$(olq "$OL_FZN/checkpoint.json" '(o["window"]["outcome"], o["window"]["open_at_close"], o["window"]["unmeasured_at_close"], o["window"]["measured_runs"], o["window"]["breaches"])')" \
+  = "('closed-with-breaches', ['n-one', 'n-two'], ['n-one', 'n-two'], 0, 0)" ] \
+  || fail "operate-loop: F-018(a): a window with no monitor run closed clean or without its checks open: $(olq "$OL_FZN/checkpoint.json" 'o["window"]')"
+[ "$(olq "$OL_FZC/checkpoint.json" '(o["window"]["outcome"], o["window"]["open_at_close"], o["window"]["unmeasured_at_close"], o["window"]["measured_runs"])')" = "('operated-clean', [], [], 1)" ] \
+  || fail "operate-loop: F-018(a): a window whose every check was measured ok did not close operated-clean (mutant: every window closed-with-breaches): $(olq "$OL_FZC/checkpoint.json" 'o["window"]')"
+OL_FZR="$(for OL_FZ in "$OL_FZD" "$OL_FZN" "$OL_FZC"; do python3 -c 'import json,sys; print([(r["slug"], r["outcome"], r["open_at_close"], r["measured_runs"], r["unmeasured_at_close"]) for r in map(json.loads, open(sys.argv[1])) if r["event"] == "operate_window_closed"])' "$OL_FZ/dispatch/ledger.jsonl"; done)"
+[ "$OL_FZR" = "[('fz-dead', 'closed-with-breaches', ['h-gone'], 0, ['h-gone'])]
+[('fz-norun', 'closed-with-breaches', ['n-one', 'n-two'], 0, ['n-one', 'n-two'])]
+[('fz-clean', 'operated-clean', [], 1, [])]" ] || fail "operate-loop: F-018(a): the operate_window_closed rows lack measured_runs / unmeasured_at_close: $OL_FZR"
+for OL_FZ in "$OL_FZD" "$OL_FZN" "$OL_FZC"; do
+  OL_V="$("$LG" verify --state "$OL_FZ" 2>&1)" || fail "operate-loop: F-018(a): ledger.sh verify failed for $OL_FZ: $OL_V"
+done
+(cd "$OL" && "$OL_OPS" --all status >"$OL_TMP/status.out" 2>&1) || true
+awk '/^plan fz-dead /,/^$/' "$OL_TMP/status.out" | grep -q 'WARNING: fz-dead was never measured in this window (0 measured runs)' \
+  && awk '/^plan fz-dead /,/^$/' "$OL_TMP/status.out" | grep -qF 'closed-with-breaches, open-at-close: h-gone, unmeasured-at-close: h-gone, measured runs: 0)' \
+  && awk '/^plan fz-norun /,/^$/' "$OL_TMP/status.out" | grep -q 'WARNING: fz-norun was never measured in this window' \
+  && ! awk '/^plan fz-clean /,/^$/' "$OL_TMP/status.out" | grep -q 'never measured' \
+  || fail "operate-loop: F-018(a): status does not say plainly that a closed window was never measured: $(cat "$OL_TMP/status.out")"
+rm -rf "$OL_FZD" "$OL_FZN" "$OL_FZC" "$OL_TMP"/fz-*-plan.md
+# requirement 2: monitorlib refuses a cmd probe naming operate.sh, deploy or APEX_DEPLOY_CMD (any case), by name.
+# Mutant "no deny pattern in _probe" turns this red; a neighbour without the words still validates.
+for c in "sh $OL_OPS x status" "make DEPLOY" "echo \$apex_deploy_cmd" "./Operate.SH status" 'make de""ploy' 'make de\ploy' "./oper'a'te.sh x"; do
+  python3 "$OL_TMP/mkplan.py" "$OL_TMP/deny-plan.md" D 7 "$(python3 -c 'import json,sys; print(json.dumps([{"id": "d", "metric": "d", "op": "<", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": sys.argv[1]}}]))' "$c")"
+  OL_V="$(python3 "$EX/monitorlib.py" validate "$OL_TMP/deny-plan.md" 2>&1)" && fail "operate-loop: requirement 2: a cmd probe '$c' was accepted"
+  case "$OL_V" in *"must not name operate.sh, the word deploy or APEX_DEPLOY_CMD"*) ;; *) fail "operate-loop: requirement 2: '$c' was not refused by name: $OL_V" ;; esac
+done
+python3 "$OL_TMP/mkplan.py" "$OL_TMP/deny-plan.md" D 7 '[{"id": "d", "metric": "d", "op": "<", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "make status-check"}}]'
+python3 "$EX/monitorlib.py" validate "$OL_TMP/deny-plan.md" >/dev/null || fail "operate-loop: requirement 2: a harmless cmd probe was refused"
+# requirement 6: at most 50 checks per plan, refused by name
+python3 "$OL_TMP/mkplan.py" "$OL_TMP/deny-plan.md" D 7 "$(python3 -c 'import json; print(json.dumps([{"id": "k%d" % i, "metric": "k", "op": "<", "threshold": 1, "severity": "low", "probe": {"kind": "cmd", "command": "echo 1"}} for i in range(51)]))')"
+OL_V="$(python3 "$EX/monitorlib.py" validate "$OL_TMP/deny-plan.md" 2>&1)" && fail "operate-loop: requirement 6: a 51-check plan was accepted"
+case "$OL_V" in *"at most 50 checks"*) ;; *) fail "operate-loop: requirement 6: the 51-check plan was not refused by name: $OL_V" ;; esac
+# backlog.sh: line 0 needs --from operate
+(cd "$OL" && "$EX/backlog.sh" plans/ol-plan.md add 0 "x" >"$OL_TMP/bl.out" 2>&1) && fail "operate-loop: backlog.sh accepted line 0 without --from operate"
+grep -q 'needs --from operate' "$OL_TMP/bl.out" || fail "operate-loop: backlog.sh line 0 refusal is not named: $(cat "$OL_TMP/bl.out")"
+# the ledger chains verify (ol, ol2, the repo state)
+for d in "$OL_ST" "$OL2_ST" "$OL_RD"; do
+  OL_V="$("$LG" verify --state "$d" 2>&1)" || fail "operate-loop: ledger.sh verify failed for $d: $OL_V"
+done
+[ ! -d "$OL_NM_ST/operate" ] || fail "operate-loop: the plan with no Monitor section was measured"
+{ kill "$OL_PID"; wait "$OL_PID"; } >/dev/null 2>&1 || true; OL_PID=""
+ok "operate-loop: --all monitor --ingest measures http (stub on 127.0.0.1), cmd and runner checks only in open windows; run twice it files each high breach once as a lesson tagged operate:{slug},{metric} and counts the repeat, files the low breach as a plan-level backlog item, and files the repo-level breach only under operate:repo; a timed-out probe, a non-number, a failed GET, an expect_status mismatch and every malformed runner reply are unmeasured (null, never 0 or a pass); every signal and ledger row carries its plan's slug (ol2's same-id check credited to ol2) or repo; a window past its end closes closed-with-breaches with open-at-close (a check never measured in the window is open at close), writes operate_window_closed with measured_runs and unmeasured_at_close and is not measured again; a window never measured (every run unmeasured, or no run) closes closed-with-breaches and status says it was never measured, and one measured ok closes operated-clean; a redeploy keeps windows_closed; the no-Monitor plan is skipped and warned; cmd probes run verbatim under sh -c in the repo root without APEX_*; deploy-naming probes and 51-check plans are refused; the 200-check run cap and APEX_MONITOR_CMD are enforced before any probe; hostile runner text is sanitised; --all walks in one python pass; the ledgers verify"
+
 # bash 3.2 (macOS's /bin/bash): with set -u an empty array expansion is "unbound". Every array
 # expansion in a set -u script must be guarded (${A[@]+"${A[@]}"}), follow a ${#A[@]} test in the
 # lines just above, or name an array that is never empty.
@@ -2155,4 +3319,4 @@ grep -qF 'verdict_trace' "$PLUGIN_ROOT/skills/apex-execute/scripts/checkpoint.sh
 ok "bash 3.2 heredocs balanced; siblings by highest installed version (apex_dispatch_root, decision layer); iterate.md passes only the plan path; refused records print their verdict trace"
 
 echo ""
-echo "smoke passed: 65/65 checks"
+echo "smoke passed: 73/73 checks"

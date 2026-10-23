@@ -44,6 +44,7 @@ import datetime  # noqa: E402
 import fcntl  # noqa: E402
 import hashlib  # noqa: E402
 import json  # noqa: E402
+import math  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
@@ -379,15 +380,31 @@ def read_json(path, default=None):
 # ---------------------------------------------------------------- validate ----
 
 _TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "object": dict, "array": list}
+# Constrained types (resources/ledger-events.json "description"): a base type plus a pattern or bound.
+_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_CONSTRAINED = {
+    "count": lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
+    "sha": lambda v: isinstance(v, str) and bool(SHA_RE.fullmatch(v)),      # fullmatch: no trailing newline
+    "slug": lambda v: isinstance(v, str) and bool(_SLUG_RE.fullmatch(v)),
+    "id": lambda v: isinstance(v, str) and bool(_ID_RE.fullmatch(v)),
+}
+_EVENT_KEYS = {"provenance", "description", "required", "one_of", "enums", "items"}
 
 
 def _type_ok(value, spec):
     nullable = spec.endswith("|null")
     base = spec[:-5] if nullable else spec
+    if base not in _TYPES and base not in _CONSTRAINED:
+        raise LedgerError("ledger-events.json: unknown type %r" % spec)
     if value is None:
         return nullable
+    if base in _CONSTRAINED:
+        return _CONSTRAINED[base](value)
     if base in ("integer", "number") and isinstance(value, bool):
         return False
+    if base == "number" and isinstance(value, float) and not math.isfinite(value):
+        return False                       # NaN/Infinity: json.loads takes them, no other JSON reader does
     return isinstance(value, _TYPES[base])
 
 
@@ -396,6 +413,9 @@ def validate(event, data, source, root=None):
     ev = sch["events"].get(event)
     if ev is None:
         raise LedgerError("unknown event %r (known: %s)" % (event, ", ".join(sorted(sch["events"]))))
+    unknown = sorted(set(ev) - _EVENT_KEYS)
+    if unknown:                            # a misspelt rule must not silently validate nothing
+        raise LedgerError("ledger-events.json: event %s declares unknown key(s) %s" % (event, ", ".join(unknown)))
     if source not in sch["sources"]:
         raise LedgerError("source must be one of %s (got %r)" % ("|".join(sch["sources"]), source))
     if not isinstance(data, dict):
@@ -406,9 +426,23 @@ def validate(event, data, source, root=None):
             problems.append("%s: missing required field %s" % (event, field))
         elif not _type_ok(data[field], spec):
             problems.append("%s.%s: expected %s" % (event, field, spec))
+    for group in ev.get("one_of", []):
+        present = [f for f in group if f in data]
+        if len(present) != 1:
+            problems.append("%s: exactly one of %s is required (got %s)"
+                            % (event, "|".join(group), "|".join(present) if present else "none"))
+        for f in present:
+            if not _type_ok(data[f], group[f]):
+                problems.append("%s.%s: expected %s" % (event, f, group[f]))
+    for field, spec in ev.get("items", {}).items():
+        if isinstance(data.get(field), list):
+            for k, x in enumerate(data[field]):
+                if not _type_ok(x, spec):
+                    problems.append("%s.%s[%d]: expected %s" % (event, field, k, spec))
     for field, allowed in ev.get("enums", {}).items():
-        if field in data and data[field] not in allowed:
-            problems.append("%s.%s: %r is not one of %s" % (event, field, data[field], "|".join(allowed)))
+        # type-exact membership: 1 is not true, 0 is not false
+        if field in data and not any(type(data[field]) is type(a) and data[field] == a for a in allowed):
+            problems.append("%s.%s: %r is not one of %s" % (event, field, data[field], "|".join(json.dumps(a) if not isinstance(a, str) else a for a in allowed)))
     rm = data.get("route_mode")
     if rm is not None and rm not in sch["route_modes"]:
         problems.append("%s.route_mode: %r is not one of %s" % (event, rm, "|".join(sch["route_modes"])))

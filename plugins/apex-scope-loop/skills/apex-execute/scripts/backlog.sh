@@ -25,11 +25,32 @@
 #   ./backlog.sh PLAN.md reopen LINE         (checkpoint.sh fail / rewind)
 #   ./backlog.sh PLAN.md count
 #       The number of open items for this plan.
+#   ./backlog.sh PLAN.md add 0 "<finding>" --from operate
+#       A plan-level item (line 0: no task), filed by operate.sh ingest for a
+#       breach of one of the plan's monitor checks. Line 0 needs --from operate.
+#   ./backlog.sh --repo add 0 "<finding>" --from operate | --repo list [--all] | --repo count
+#       Repo-level items (operate.sh's .claude/apex-scope-loop/monitor.json checks,
+#       ADR R5d): the BACKLOG.md of the caller's repository, in its own section
+#       "## Repo: operate checks (monitor.json)", never under a plan's section.
 set -euo pipefail
 
 PLAN="${1:?usage: backlog.sh PLAN.md add|list|done|count|confirm|reopen ...}"
 ACTION="${2:?action: add|list|done|count|confirm|reopen}"
 shift 2
+REPO_MODE=0
+if [[ "$PLAN" == "--repo" ]]; then
+  REPO_MODE=1
+  # shellcheck source=_lib.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+  case "$ACTION" in add|list|count) ;; *) echo "ERROR: backlog.sh --repo supports add|list|count only" >&2; exit 2 ;; esac
+  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"; REPO_ROOT="$(cd "$REPO_ROOT" && pwd -P)"
+  STATE_BASE="$(apex_state_base "$REPO_ROOT")"
+  STATE_DIR="$STATE_BASE/operate-repo"; CHECKPOINT="$STATE_DIR/no-checkpoint.json"
+  PLAN_TOP="$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -n "${APEX_BACKLOG_FILE:-}" ]]; then BACKLOG_LEDGER="$APEX_BACKLOG_FILE"
+  else BACKLOG_LEDGER="$(dirname "$(apex_default_ledger "$PLAN_TOP")")/BACKLOG.md"; fi
+  PLAN_KEY="(repo)"; PLAN_ABS=""
+else
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"; PLAN="$(apex_locate_plan "$PLAN")"   # ADR-0004 H
 [[ -f "$PLAN" ]] || { echo "ERROR: plan not found: $PLAN" >&2; exit 2; }
 
@@ -38,6 +59,7 @@ APEX_RESOLVE_MODE=act  # this script acts: a repository mismatch is fatal (never
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 apex_resolve "$PLAN"
 PLAN_KEY="${PLAN_ABS#"${PLAN_TOP:-/nonexistent}"/}"
+fi
 
 FROM="reviewer"; ALL=0; ARGS=(); D_LINE=""; D_SHA=""; NOW_DONE=0
 while [[ $# -gt 0 ]]; do
@@ -54,10 +76,16 @@ done
 case "$ACTION" in
   add)
     LINE_NO="${ARGS[0]:?line required}"; TEXT="${ARGS[1]:?finding text required}"
+    if [[ "$LINE_NO" == 0 || "$REPO_MODE" == 1 ]]; then
+      # line 0: a plan-level (or repo-level) item, only from operate.sh ingest
+      [[ "$LINE_NO" == 0 && "$FROM" == operate ]] || { echo "ERROR: line 0 (a plan-level item) needs --from operate, and --repo items are line 0 (got line '$LINE_NO', from '$FROM')" >&2; exit 2; }
+      TID=""
+    else
     [[ "$LINE_NO" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "ERROR: LINE must be a plan line number, got '$LINE_NO'" >&2; exit 2; }
     python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN_ABS" "$LINE_NO" >/dev/null 2>&1 \
       || { echo "ERROR: line $LINE_NO is not a task in a valid plan $PLAN" >&2; exit 2; }
     TID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("id") or "")' "$(python3 "$APEX_EXECUTE_SCRIPTS/planlib.py" task "$PLAN_ABS" "$LINE_NO")")"
+    fi
     ;;
   done) ID="${ARGS[0]:?ID required (B-NNN)}"; [[ "$ID" =~ ^B-[0-9]{3,}$ ]] || { echo "ERROR: ID must look like B-001" >&2; exit 2; }
     if [[ "$NOW_DONE" != 1 ]]; then
@@ -72,7 +100,7 @@ case "$ACTION" in
 esac
 
 mkdir -p "$STATE_BASE"
-WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
+WT=""; [[ "$REPO_MODE" == 1 ]] || WT="$(read_field worktree_path)"; WT="${WT:-$REPO_ROOT}"
 python3 - "$BACKLOG_LEDGER" "$STATE_BASE/.backlog.lock" "$PLAN_KEY" "$ACTION" "$ALL" "${LINE_NO:-}" "${TID:-}" "${TEXT:-}" "$FROM" "${ID:-}" "$(date -u +%F)" \
   "$STATE_DIR/backlog-pending.json" "$D_LINE" "$D_SHA" "$NOW_DONE" "$WT" <<'PY'
 import fcntl, json, os, re, subprocess, sys
@@ -85,7 +113,7 @@ ITEM_RE = re.compile(r"^- \[( |x)\] (B-\d+) ")
 fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(fd, fcntl.LOCK_EX)
 lines = open(path, encoding="utf-8").read().split("\n") if os.path.isfile(path) else []
-head = "## Plan: " + plan
+head = "## Repo: operate checks (monitor.json)" if plan == "(repo)" else "## Plan: " + plan
 
 def section(ls):
     """(start, end) of this plan's section (end exclusive), or None."""
@@ -133,7 +161,8 @@ elif action == "add":
     src1 = " ".join(src.split())
     nums = [int(m.group(2)[2:]) for l in lines for m in [ITEM_RE.match(l)] if m]
     new_id = "B-%03d" % (max(nums, default=0) + 1)
-    entry = f"- [ ] {new_id} · {today} · line {line_no}{' (' + tid + ')' if tid else ''} · from {src1} — {one}"
+    where = ("repo-level" if plan == "(repo)" else "plan-level") if line_no == "0" else f"line {line_no}{' (' + tid + ')' if tid else ''}"
+    entry = f"- [ ] {new_id} · {today} · {where} · from {src1} — {one}"
     if not lines:
         lines = HEADER.rstrip("\n").split("\n")
     if sec is None:

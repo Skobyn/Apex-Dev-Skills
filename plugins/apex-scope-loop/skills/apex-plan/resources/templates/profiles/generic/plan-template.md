@@ -2,6 +2,7 @@
 
 > **ADR**: [`.claude/tasks/{{SLUG}}-adr.md`](../tasks/{{SLUG}}-adr.md)
 > **Goal**: {{GOAL_ONE_SENTENCE}}
+> **Scope**: {{SCOPE}}
 > **Owner**: {{AUTHOR_EMAIL}}
 > **Started**: {{DATE}}
 > **Target**: {{TARGET_DATE}}
@@ -55,6 +56,22 @@ If `Swarm:` is omitted, the orchestrator uses **hierarchical 6 [architect, coder
 | `[gate:partner:{email}]` | Orchestrator notifies `{email}` via `$APEX_PARTNER_NOTIFY_CMD` (gate JSON on stdin) and halts until approved; with no notify command it degrades to `[gate:human]` |
 
 Gates are checkbox tasks, just like phases. The line between Phase N and Phase N+1 is a Gate task that blocks Phase N+1 via `Blocked-by:`.
+
+---
+
+## Monitor
+
+> Optional. Draft checks here from the success criteria in the PLAN stage and agree them in OPTIMIZE.
+> One fenced json block, nothing else fenced. `checks: []` means this plan is not watched.
+> A check is `{"id", "metric", "op", "threshold", "severity", "probe"}`: `op` is one of `<` `<=` `>` `>=` `==` and is the
+> expected (healthy) condition: the check passes while `value op threshold` holds and is breached when it does not.
+> "p99 must stay under 2000 ms" is `"op": "<", "threshold": 2000`. A success criterion is a pass condition, so it
+> maps directly onto a check. `severity` is high, medium or low, and `probe` is
+> `{"kind": "http", "url", "measure": "status" or "latency_ms", "expect_status"}` (GET only; `latency_ms` requires `expect_status`, since a fast error page is not a healthy latency), `{"kind": "cmd", "command", "value": "stdout" or "exit"}` (`stdout` is the default: the number on the last stdout line, and empty stdout or a non-zero exit is `unmeasured`, never 0), or `{"kind": "runner", "metrics"}` (`$APEX_MONITOR_CMD` prints one JSON object keyed by metric, each value a number or `{"value": number, "note": "..."}`; `note` is optional and is the only runner text kept). `window_days` is 1-90 (default 14). Ids and metrics match `[A-Za-z0-9][A-Za-z0-9_.:-]*`.
+
+```json
+{"window_days": 14, "checks": []}
+```
 
 ---
 
@@ -208,7 +225,7 @@ Integration, deployment, monitoring, docs. The "make it real" phase.
   - Blocked-by: phase-5.1
 
 - [ ] **Phase 5.4** [docs] Flip ADR status to `Implemented`
-  - Acceptance: `grep -q '^**Status**: Implemented' .claude/tasks/{{SLUG}}-adr.md`
+  - Acceptance: `grep -qF '**Status**: Implemented' .claude/tasks/{{SLUG}}-adr.md`
   - Swarm: single [coder]
   - Blocked-by: phase-5.1, phase-5.2, phase-5.3
 

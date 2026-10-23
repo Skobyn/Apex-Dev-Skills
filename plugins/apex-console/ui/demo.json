@@ -7,10 +7,10 @@
    {
     "id": "r1",
     "name": "billing-service",
-    "path": "/Users/sk/src/billing-service",
+    "path": "/Users/demo/src/billing-service",
     "ok": true,
     "error": null,
-    "state_base": "/Users/sk/src/billing-service/.dev-plan-state",
+    "state_base": "/Users/demo/src/billing-service/.dev-plan-state",
     "plugins": {
      "apex-scope-loop": "0.5.0",
      "apex-dispatch": "0.6.1",
@@ -22,10 +22,10 @@
    {
     "id": "r2",
     "name": "field-app",
-    "path": "/Users/sk/src/field-app",
+    "path": "/Users/demo/src/field-app",
     "ok": true,
     "error": null,
-    "state_base": "/Users/sk/src/field-app/.dev-plan-state",
+    "state_base": "/Users/demo/src/field-app/.dev-plan-state",
     "plugins": {
      "apex-scope-loop": "0.5.0",
      "apex-dispatch": "0.6.1",
@@ -525,6 +525,8 @@
    {
     "id": "r1",
     "name": "billing-service",
+    "path": "/Users/demo/src/billing-service",
+    "error": null,
     "halted": false,
     "halt_reason": null,
     "lock": {
@@ -532,11 +534,32 @@
      "id": "a1b2c3d4e5f6",
      "line": 34,
      "stage": "REVIEW",
-     "since": "2026-10-12T13:41:00Z"
+     "since": "2026-10-12T13:41:00Z",
+     "updated": "2026-10-12T13:59:00Z",
+     "plan": ".claude/plans/billing-plan.md"
     },
     "plans": [
      {
       "hash": "a1b2c3d4e5f6",
+      "slug": "billing",
+      "scope": "feature",
+      "intent": {
+       "file": ".claude/tasks/billing-intent.md",
+       "problem": "Invoices are built by hand in a spreadsheet, so late payments go unnoticed until quarter close.",
+       "who": "Finance operations.",
+       "why_now": "Quarter close needs auditable invoices.",
+       "non_goals": "No change to the payment provider."
+      },
+      "operate": null,
+      "cost": {
+       "status": "measured",
+       "delegated_usd": 7.1802,
+       "delegated_unknown_tasks": 1,
+       "orchestrator_usd": 1.15005,
+       "orchestrator_unattributed_usd": 0.4239,
+       "orchestrator_unattributed_tokens": 752400,
+       "usd_unrouted": 0.678
+      },
       "path": ".claude/plans/billing-plan.md",
       "name": "billing-plan",
       "total": 12,
@@ -545,418 +568,1670 @@
       "halted": false,
       "halt_reason": null,
       "landed": false,
-      "last_activity": "2026-10-12T13:58:00Z",
-      "usd": 17.0,
+      "last_activity": "2026-10-12T13:59:00Z",
+      "usd": 7.8582,
       "open_findings": 2,
       "enforced": true,
+      "chain_ok": true,
       "tasks": [
        {
         "line": 12,
         "title": "Add invoice model",
+        "tags": [],
         "status": "done",
         "tier": "C",
         "rounds": 2,
         "attempts": 1,
-        "completed_at": "2026-09-16T10:12:00Z",
-        "usd": 3.1
+        "completed_at": "2026-09-16T16:03:00Z",
+        "usd": 2.13,
+        "tokens": 708000,
+        "orchestrator_usd": 0.16374,
+        "orchestrator_tokens": 329580,
+        "orchestrator_na": null
        },
        {
         "line": 15,
         "title": "Migrate legacy invoice rows",
+        "tags": [],
         "status": "done",
         "tier": "C",
         "rounds": 3,
         "attempts": 2,
-        "completed_at": "2026-09-18T15:40:00Z",
-        "usd": 4.2
+        "completed_at": "2026-09-18T17:03:00Z",
+        "usd": null,
+        "tokens": null,
+        "orchestrator_usd": 0.163875,
+        "orchestrator_tokens": 329625,
+        "orchestrator_na": null
        },
        {
         "line": 18,
         "title": "Invoice number sequence",
+        "tags": [],
         "status": "done",
         "tier": "B",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-09-22T09:05:00Z",
-        "usd": 1.2
+        "completed_at": "2026-09-22T15:03:00Z",
+        "usd": 0.573,
+        "tokens": 340000,
+        "orchestrator_usd": 0.16401,
+        "orchestrator_tokens": 329670,
+        "orchestrator_na": null
        },
        {
         "line": 21,
         "title": "Tax line calculation",
+        "tags": [],
         "status": "done",
         "tier": "B",
         "rounds": 2,
         "attempts": 1,
-        "completed_at": "2026-09-24T13:30:00Z",
-        "usd": 1.9
+        "completed_at": "2026-09-24T16:03:00Z",
+        "usd": 0.828,
+        "tokens": 464000,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": 332400,
+        "orchestrator_na": null
        },
        {
         "line": 24,
         "title": "PDF render endpoint",
+        "tags": [],
         "status": "done",
         "tier": "A",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-09-29T11:02:00Z",
-        "usd": 0.7
+        "completed_at": "2026-09-29T15:03:00Z",
+        "usd": 0.309,
+        "tokens": 170000,
+        "orchestrator_usd": 0.16428,
+        "orchestrator_tokens": 329760,
+        "orchestrator_na": null
        },
        {
         "line": 27,
         "title": "Email delivery of invoices",
+        "tags": [],
         "status": "done",
         "tier": "A",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-01T16:44:00Z",
-        "usd": 0.6
+        "completed_at": "2026-10-01T15:03:00Z",
+        "usd": 0.2742,
+        "tokens": 148800,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "1 unusable transcript turn(s) in the window"
        },
        {
         "line": 30,
         "title": "Stripe webhook for paid status",
+        "tags": [],
         "status": "done",
         "tier": "C",
         "rounds": 2,
         "attempts": 1,
-        "completed_at": "2026-10-06T10:20:00Z",
-        "usd": 2.8
+        "completed_at": "2026-10-06T16:03:00Z",
+        "usd": 1.905,
+        "tokens": 644000,
+        "orchestrator_usd": 0.16455,
+        "orchestrator_tokens": 329850,
+        "orchestrator_na": null
        },
        {
         "line": 34,
         "title": "Refund flow and credit notes",
+        "tags": [],
         "status": "active",
         "tier": "C",
         "rounds": 1,
         "attempts": 1,
         "completed_at": null,
-        "usd": 1.4
+        "usd": 0.681,
+        "tokens": 396000,
+        "orchestrator_usd": 0.16473,
+        "orchestrator_tokens": 329910,
+        "orchestrator_na": null
        },
        {
         "line": 37,
         "title": "Dunning schedule",
+        "tags": [],
         "status": "failed",
         "tier": "B",
-        "rounds": 3,
+        "rounds": 2,
         "attempts": 2,
         "completed_at": null,
-        "usd": 1.1
+        "usd": 0.48,
+        "tokens": 282000,
+        "orchestrator_usd": 0.164865,
+        "orchestrator_tokens": 329955,
+        "orchestrator_na": null
        },
        {
         "line": 40,
         "title": "Admin invoice search",
+        "tags": [],
         "status": "todo",
         "tier": "A",
-        "rounds": 0,
-        "attempts": 0,
+        "rounds": null,
+        "attempts": null,
         "completed_at": null,
-        "usd": null
+        "usd": null,
+        "tokens": null,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "no routed task"
        },
        {
         "line": 43,
         "title": "Invoice export CSV",
+        "tags": [],
         "status": "todo",
         "tier": "A",
-        "rounds": 0,
-        "attempts": 0,
+        "rounds": null,
+        "attempts": null,
         "completed_at": null,
-        "usd": null
+        "usd": null,
+        "tokens": null,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "no routed task"
        },
        {
         "line": 46,
         "title": "Billing settings page copy",
+        "tags": [],
         "status": "todo",
         "tier": "A",
-        "rounds": 0,
-        "attempts": 0,
+        "rounds": null,
+        "attempts": null,
         "completed_at": null,
-        "usd": null
+        "usd": null,
+        "tokens": null,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "no routed task"
+       }
+      ]
+     },
+     {
+      "hash": "a7b8c9d0e1f2",
+      "slug": "receipt-emails",
+      "scope": "bugfix",
+      "intent": null,
+      "operate": {
+       "slug": "receipt-emails",
+       "tag": "operate:receipt-emails",
+       "state": "ok",
+       "deploys": [
+        {
+         "ts": "2026-09-26T12:03:00Z",
+         "sha": "9d1b3f5a7c9e1d3b5f7a9c1e3d5b7f9a1c3e5d7b",
+         "exit": 0
+        }
+       ],
+       "last_deploy": {
+        "ts": "2026-09-26T12:03:00Z",
+        "sha": "9d1b3f5a7c9e1d3b5f7a9c1e3d5b7f9a1c3e5d7b",
+        "exit": 0
+       },
+       "window": {
+        "state": "closed",
+        "start": "2026-09-26T12:03:00Z",
+        "end": "2026-10-10T12:03:00Z",
+        "days": 14,
+        "day": null,
+        "outcome": null,
+        "closed_by": null,
+        "open_at_close": null,
+        "unmeasured_at_close": null,
+        "measured_runs": 3,
+        "breaches": 0,
+        "last_run": "2026-10-03T14:03:00Z",
+        "never_measured": false
+       },
+       "windows_closed": 0,
+       "last_closed_window": null,
+       "checks": [
+        {
+         "id": "bounce",
+         "metric": "email.bounce_rate",
+         "op": "<",
+         "threshold": 0.02,
+         "severity": "medium",
+         "declared": true,
+         "measured": true,
+         "last_value": 0.012,
+         "last_status": "ok",
+         "last_ts": "2026-10-03T14:03:00Z",
+         "last_reason": null,
+         "breaches": 0,
+         "unmeasured_runs": 0,
+         "filed": null,
+         "last_measured_value": 0.012,
+         "last_measured_status": "ok",
+         "last_measured_ts": "2026-10-03T14:03:00Z",
+         "unmeasured": false,
+         "open_at_close": false
+        }
+       ],
+       "monitor": "ok",
+       "problems": [],
+       "window_days": 14,
+       "scope": "bugfix",
+       "ingested": {
+        "lessons": [],
+        "backlog": [],
+        "counts": {
+         "lessons": 0,
+         "backlog": 0,
+         "backlog_open": 0
+        }
+       }
+      },
+      "cost": {
+       "status": "measured",
+       "delegated_usd": 0.459,
+       "delegated_unknown_tasks": 0,
+       "orchestrator_usd": 0.3087,
+       "orchestrator_unattributed_usd": 0.0,
+       "orchestrator_unattributed_tokens": 0,
+       "usd_unrouted": 0.0
+      },
+      "path": ".claude/plans/receipt-emails-plan.md",
+      "name": "receipt-emails-plan",
+      "total": 2,
+      "done": 2,
+      "phase": "Phase 1",
+      "halted": false,
+      "halt_reason": null,
+      "landed": true,
+      "last_activity": "2026-10-03T14:08:00Z",
+      "usd": 0.459,
+      "open_findings": 0,
+      "enforced": true,
+      "chain_ok": true,
+      "tasks": [
+       {
+        "line": 4,
+        "title": "Receipt template escape fix",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-23T16:03:00Z",
+        "usd": 0.2295,
+        "tokens": 118800,
+        "orchestrator_usd": 0.15435,
+        "orchestrator_tokens": 328250,
+        "orchestrator_na": null
+       },
+       {
+        "line": 7,
+        "title": "Resend on bounce",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-24T16:03:00Z",
+        "usd": 0.2295,
+        "tokens": 118800,
+        "orchestrator_usd": 0.15435,
+        "orchestrator_tokens": 328250,
+        "orchestrator_na": null
        }
       ]
      },
      {
       "hash": "b7c8d9e0f1a2",
+      "slug": "invoices-export",
+      "scope": "poc",
+      "intent": {
+       "file": ".claude/tasks/invoices-export-intent.md",
+       "error": "unreadable: Permission denied"
+      },
+      "operate": null,
+      "cost": {
+       "status": "n/a (transcripts held no main-session turns)",
+       "delegated_usd": 2.0067,
+       "delegated_unknown_tasks": 1,
+       "orchestrator_usd": null,
+       "orchestrator_unattributed_usd": null,
+       "orchestrator_unattributed_tokens": null,
+       "usd_unrouted": 0.0
+      },
       "path": ".claude/plans/invoices-export.md",
       "name": "invoices-export",
       "total": 6,
       "done": 5,
-      "phase": "Phase 3",
+      "phase": "Phase 1",
       "halted": false,
       "halt_reason": null,
       "landed": false,
-      "last_activity": "2026-10-09T11:30:00Z",
-      "usd": 4.5,
+      "last_activity": "2026-10-03T15:03:00Z",
+      "usd": 2.0067,
       "open_findings": 0,
       "enforced": true,
+      "chain_ok": true,
       "tasks": [
        {
         "line": 8,
         "title": "Export job queue",
+        "tags": [],
         "status": "done",
         "tier": "B",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-09-25T12:00:00Z",
-        "usd": 1.0
+        "completed_at": "2026-09-25T15:03:00Z",
+        "usd": 0.426,
+        "tokens": 236000,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "n/a (transcripts held no main-session turns)"
        },
        {
         "line": 11,
         "title": "S3 upload with signed URLs",
+        "tags": [],
         "status": "done",
         "tier": "C",
         "rounds": 2,
         "attempts": 1,
-        "completed_at": "2026-09-30T14:10:00Z",
-        "usd": 1.6
+        "completed_at": "2026-09-27T15:03:00Z",
+        "usd": 0.948,
+        "tokens": 524000,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "n/a (transcripts held no main-session turns)"
        },
        {
         "line": 14,
         "title": "Export status API",
+        "tags": [],
         "status": "done",
         "tier": "A",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-02T09:45:00Z",
-        "usd": 0.5
+        "completed_at": "2026-09-29T15:03:00Z",
+        "usd": null,
+        "tokens": null,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "n/a (transcripts held no main-session turns)"
        },
        {
         "line": 17,
         "title": "Retry and backoff",
+        "tags": [],
         "status": "done",
         "tier": "B",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-07T17:25:00Z",
-        "usd": 0.8
+        "completed_at": "2026-10-01T15:03:00Z",
+        "usd": 0.3597,
+        "tokens": 208000,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "n/a (transcripts held no main-session turns)"
        },
        {
         "line": 20,
         "title": "Export audit trail",
+        "tags": [],
         "status": "done",
         "tier": "A",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-09T11:30:00Z",
-        "usd": 0.6
+        "completed_at": "2026-10-03T15:03:00Z",
+        "usd": 0.273,
+        "tokens": 148000,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "n/a (transcripts held no main-session turns)"
        },
        {
         "line": 23,
         "title": "Docs for export API",
+        "tags": [],
         "status": "todo",
         "tier": "A",
-        "rounds": 0,
-        "attempts": 0,
+        "rounds": null,
+        "attempts": null,
         "completed_at": null,
-        "usd": null
+        "usd": null,
+        "tokens": null,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "n/a (transcripts held no main-session turns)"
+       }
+      ]
+     },
+     {
+      "hash": "b8c9d0e1f2a3",
+      "slug": "tax-rates-sync",
+      "scope": "bugfix",
+      "intent": null,
+      "operate": {
+       "slug": "tax-rates-sync",
+       "tag": "operate:tax-rates-sync",
+       "state": "ok",
+       "deploys": [
+        {
+         "ts": "2026-10-10T10:03:00Z",
+         "sha": "4c6e8a0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c",
+         "exit": 0
+        }
+       ],
+       "last_deploy": {
+        "ts": "2026-10-10T10:03:00Z",
+        "sha": "4c6e8a0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c",
+        "exit": 0
+       },
+       "window": {
+        "state": "open",
+        "start": "2026-10-10T10:03:00Z",
+        "end": "2026-10-24T10:03:00Z",
+        "days": 14,
+        "day": 3,
+        "outcome": null,
+        "closed_by": null,
+        "open_at_close": null,
+        "unmeasured_at_close": null,
+        "measured_runs": 0,
+        "breaches": 0,
+        "last_run": "2026-10-12T11:03:00Z",
+        "never_measured": false
+       },
+       "windows_closed": 0,
+       "last_closed_window": null,
+       "checks": [
+        {
+         "id": "sync-lag",
+         "metric": "tax.sync_lag_minutes",
+         "op": "<",
+         "threshold": 90,
+         "severity": "medium",
+         "declared": true,
+         "measured": true,
+         "last_value": null,
+         "last_status": "unmeasured",
+         "last_ts": "2026-10-12T11:03:00Z",
+         "last_reason": "the command printed nothing on stdout (set \"value\": \"exit\" to measure the exit code)",
+         "breaches": 0,
+         "unmeasured_runs": 2,
+         "filed": null,
+         "last_measured_value": null,
+         "last_measured_status": null,
+         "last_measured_ts": null,
+         "unmeasured": true,
+         "open_at_close": false
+        },
+        {
+         "id": "rate-errors",
+         "metric": "tax.rate_errors",
+         "op": "<",
+         "threshold": 1,
+         "severity": "high",
+         "declared": true,
+         "measured": true,
+         "last_value": null,
+         "last_status": "unmeasured",
+         "last_ts": "2026-10-12T11:03:00Z",
+         "last_reason": "the command printed nothing on stdout (set \"value\": \"exit\" to measure the exit code)",
+         "breaches": 0,
+         "unmeasured_runs": 2,
+         "filed": null,
+         "last_measured_value": null,
+         "last_measured_status": null,
+         "last_measured_ts": null,
+         "unmeasured": true,
+         "open_at_close": false
+        }
+       ],
+       "monitor": "ok",
+       "problems": [],
+       "window_days": 14,
+       "scope": "bugfix",
+       "ingested": {
+        "lessons": [],
+        "backlog": [],
+        "counts": {
+         "lessons": 0,
+         "backlog": 0,
+         "backlog_open": 0
+        }
+       }
+      },
+      "cost": {
+       "status": "measured",
+       "delegated_usd": 0.4152,
+       "delegated_unknown_tasks": 0,
+       "orchestrator_usd": 0.3042,
+       "orchestrator_unattributed_usd": 0.0,
+       "orchestrator_unattributed_tokens": 0,
+       "usd_unrouted": 0.0
+      },
+      "path": ".claude/plans/tax-rates-sync-plan.md",
+      "name": "tax-rates-sync-plan",
+      "total": 2,
+      "done": 2,
+      "phase": "Phase 1",
+      "halted": false,
+      "halt_reason": null,
+      "landed": true,
+      "last_activity": "2026-10-12T11:08:00Z",
+      "usd": 0.4152,
+      "open_findings": 0,
+      "enforced": true,
+      "chain_ok": true,
+      "tasks": [
+       {
+        "line": 4,
+        "title": "Nightly tax-rate pull",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-04T16:03:00Z",
+        "usd": 0.2076,
+        "tokens": 107600,
+        "orchestrator_usd": 0.1521,
+        "orchestrator_tokens": 328100,
+        "orchestrator_na": null
+       },
+       {
+        "line": 7,
+        "title": "Rate cache invalidation",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-05T16:03:00Z",
+        "usd": 0.2076,
+        "tokens": 107600,
+        "orchestrator_usd": 0.1521,
+        "orchestrator_tokens": 328100,
+        "orchestrator_na": null
+       }
+      ]
+     },
+     {
+      "hash": "c9d0e1f2a3b4",
+      "slug": "dunning-sms",
+      "scope": "feature",
+      "intent": null,
+      "operate": {
+       "slug": "dunning-sms",
+       "tag": "operate:dunning-sms",
+       "state": "ok",
+       "deploys": [
+        {
+         "ts": "2026-10-07T12:03:00Z",
+         "sha": "6e8a0c2b4d6f8a0e2c4b6d8f0a2e4c6b8d0f2a4e",
+         "exit": 0
+        }
+       ],
+       "last_deploy": {
+        "ts": "2026-10-07T12:03:00Z",
+        "sha": "6e8a0c2b4d6f8a0e2c4b6d8f0a2e4c6b8d0f2a4e",
+        "exit": 0
+       },
+       "window": {
+        "state": "open",
+        "start": "2026-10-07T12:03:00Z",
+        "end": "2026-10-21T12:03:00Z",
+        "days": 14,
+        "day": 6,
+        "outcome": null,
+        "closed_by": null,
+        "open_at_close": null,
+        "unmeasured_at_close": null,
+        "measured_runs": 1,
+        "breaches": 0,
+        "last_run": "2026-10-08T11:03:00Z",
+        "never_measured": false
+       },
+       "windows_closed": 0,
+       "last_closed_window": null,
+       "checks": [
+        {
+         "id": "sms-delivery",
+         "metric": null,
+         "op": null,
+         "threshold": null,
+         "severity": null,
+         "declared": false,
+         "measured": true,
+         "last_value": 0.97,
+         "last_status": "ok",
+         "last_ts": "2026-10-08T11:03:00Z",
+         "last_reason": null,
+         "breaches": 0,
+         "unmeasured_runs": 0,
+         "filed": null,
+         "last_measured_value": 0.97,
+         "last_measured_status": "ok",
+         "last_measured_ts": "2026-10-08T11:03:00Z",
+         "unmeasured": false,
+         "open_at_close": false
+        },
+        {
+         "id": "sms-p95",
+         "metric": null,
+         "op": null,
+         "threshold": null,
+         "severity": null,
+         "declared": false,
+         "measured": true,
+         "last_value": 840,
+         "last_status": "ok",
+         "last_ts": "2026-10-08T11:03:00Z",
+         "last_reason": null,
+         "breaches": 0,
+         "unmeasured_runs": 0,
+         "filed": null,
+         "last_measured_value": 840,
+         "last_measured_status": "ok",
+         "last_measured_ts": "2026-10-08T11:03:00Z",
+         "unmeasured": false,
+         "open_at_close": false
+        }
+       ],
+       "monitor": "invalid",
+       "problems": [
+        "checks[0] (id 'sms-delivery'): threshold must be a finite number"
+       ],
+       "window_days": null,
+       "scope": "feature",
+       "ingested": {
+        "lessons": [],
+        "backlog": [],
+        "counts": {
+         "lessons": 0,
+         "backlog": 0,
+         "backlog_open": 0
+        }
+       }
+      },
+      "cost": {
+       "status": "measured",
+       "delegated_usd": 0.6948,
+       "delegated_unknown_tasks": 0,
+       "orchestrator_usd": 0.3093,
+       "orchestrator_unattributed_usd": 0.0,
+       "orchestrator_unattributed_tokens": 0,
+       "usd_unrouted": 0.0
+      },
+      "path": ".claude/plans/dunning-sms-plan.md",
+      "name": "dunning-sms-plan",
+      "total": 2,
+      "done": 2,
+      "phase": "Phase 1",
+      "halted": false,
+      "halt_reason": null,
+      "landed": true,
+      "last_activity": "2026-10-08T11:08:00Z",
+      "usd": 0.6948,
+      "open_findings": 0,
+      "enforced": true,
+      "chain_ok": true,
+      "tasks": [
+       {
+        "line": 4,
+        "title": "SMS provider client",
+        "tags": [],
+        "status": "done",
+        "tier": "C",
+        "rounds": 2,
+        "attempts": 1,
+        "completed_at": "2026-10-02T16:03:00Z",
+        "usd": 0.3474,
+        "tokens": 188000,
+        "orchestrator_usd": 0.15465,
+        "orchestrator_tokens": 328350,
+        "orchestrator_na": null
+       },
+       {
+        "line": 7,
+        "title": "Dunning SMS step",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-10-03T16:03:00Z",
+        "usd": 0.3474,
+        "tokens": 188000,
+        "orchestrator_usd": 0.15465,
+        "orchestrator_tokens": 328350,
+        "orchestrator_na": null
        }
       ]
      },
      {
       "hash": "d4e5f6a7b8c9",
+      "slug": "agent-prompts",
+      "scope": "bugfix",
+      "intent": null,
+      "operate": {
+       "slug": "agent-prompts",
+       "tag": "operate:agent-prompts",
+       "state": "ok",
+       "deploys": [
+        {
+         "ts": "2026-09-30T11:03:00Z",
+         "sha": "1f3e5a7c9b2d4f6e8a0c1e3b5d7f9a2c4e6b8d0f",
+         "exit": 0
+        },
+        {
+         "ts": "2026-10-09T08:03:00Z",
+         "sha": "8c6a4e2f0d9b7a5c3e1f8d6b4a2c0e9f7d5b3a1c",
+         "exit": 1
+        },
+        {
+         "ts": "2026-10-10T09:03:00Z",
+         "sha": "2b4d6f8a0c1e3a5c7e9b1d3f5a7c9e0b2d4f6a8c",
+         "exit": 0
+        }
+       ],
+       "last_deploy": {
+        "ts": "2026-10-10T09:03:00Z",
+        "sha": "2b4d6f8a0c1e3a5c7e9b1d3f5a7c9e0b2d4f6a8c",
+        "exit": 0
+       },
+       "window": {
+        "state": "open",
+        "start": "2026-10-10T09:03:00Z",
+        "end": "2026-10-24T09:03:00Z",
+        "days": 14,
+        "day": 3,
+        "outcome": null,
+        "closed_by": null,
+        "open_at_close": null,
+        "unmeasured_at_close": null,
+        "measured_runs": 2,
+        "breaches": 2,
+        "last_run": "2026-10-12T11:03:00Z",
+        "never_measured": false
+       },
+       "windows_closed": 1,
+       "last_closed_window": {
+        "outcome": "closed-with-breaches",
+        "closed_by": "redeploy",
+        "closed_at": "2026-10-10T09:03:00Z",
+        "start": "2026-09-30T11:03:00Z",
+        "end": "2026-10-14T11:03:00Z",
+        "days": 14,
+        "open_at_close": [],
+        "unmeasured_at_close": [],
+        "measured_runs": 3,
+        "breaches": 1,
+        "never_measured": false
+       },
+       "checks": [
+        {
+         "id": "p95",
+         "metric": "latency.p95",
+         "op": "<",
+         "threshold": 800,
+         "severity": "high",
+         "declared": true,
+         "measured": true,
+         "last_value": 960,
+         "last_status": "breach",
+         "last_ts": "2026-10-12T11:03:00Z",
+         "last_reason": null,
+         "breaches": 2,
+         "unmeasured_runs": 0,
+         "filed": "lessons",
+         "last_measured_value": 960,
+         "last_measured_status": "breach",
+         "last_measured_ts": "2026-10-12T11:03:00Z",
+         "unmeasured": false,
+         "open_at_close": false
+        },
+        {
+         "id": "errors",
+         "metric": "errors.rate",
+         "op": "<",
+         "threshold": 5,
+         "severity": "medium",
+         "declared": true,
+         "measured": true,
+         "last_value": 4,
+         "last_status": "ok",
+         "last_ts": "2026-10-12T11:03:00Z",
+         "last_reason": null,
+         "breaches": 1,
+         "unmeasured_runs": 0,
+         "filed": "backlog",
+         "last_measured_value": 4,
+         "last_measured_status": "ok",
+         "last_measured_ts": "2026-10-12T11:03:00Z",
+         "unmeasured": false,
+         "open_at_close": false
+        },
+        {
+         "id": "queue",
+         "metric": "queue.depth",
+         "op": "<",
+         "threshold": 100,
+         "severity": "low",
+         "declared": true,
+         "measured": true,
+         "last_value": null,
+         "last_status": "unmeasured",
+         "last_ts": "2026-10-12T11:03:00Z",
+         "last_reason": "the command printed nothing on stdout (set \"value\": \"exit\" to measure the exit code)",
+         "breaches": 0,
+         "unmeasured_runs": 1,
+         "filed": null,
+         "last_measured_value": 40,
+         "last_measured_status": "ok",
+         "last_measured_ts": "2026-10-11T11:03:00Z",
+         "unmeasured": true,
+         "open_at_close": false
+        },
+        {
+         "id": "tokens",
+         "metric": "agent.tokens_per_call",
+         "op": "<",
+         "threshold": 4000,
+         "severity": "low",
+         "declared": true,
+         "measured": false,
+         "last_value": null,
+         "last_status": null,
+         "last_ts": null,
+         "last_reason": null,
+         "breaches": null,
+         "unmeasured_runs": null,
+         "filed": null,
+         "last_measured_value": null,
+         "last_measured_status": null,
+         "last_measured_ts": null,
+         "unmeasured": true,
+         "open_at_close": false
+        }
+       ],
+       "monitor": "ok",
+       "problems": [],
+       "window_days": 14,
+       "scope": "bugfix",
+       "ingested": {
+        "lessons": [
+         {
+          "id": "L-001",
+          "title": "operate-agent-prompts-p95-breach"
+         }
+        ],
+        "backlog": [
+         {
+          "id": "B-002",
+          "title": "errors.rate 9 breached the expected errors.rate < 5 (check errors, severity medium, 2026-10-01T12:0…",
+          "done": false
+         }
+        ],
+        "counts": {
+         "lessons": 1,
+         "backlog": 1,
+         "backlog_open": 1
+        }
+       }
+      },
+      "cost": {
+       "status": "measured",
+       "delegated_usd": 2.5296,
+       "delegated_unknown_tasks": 0,
+       "orchestrator_usd": 1.27728,
+       "orchestrator_unattributed_usd": 0.0663,
+       "orchestrator_unattributed_tokens": 163200,
+       "usd_unrouted": 0.0
+      },
       "path": ".claude/plans/agent-prompts-plan.md",
       "name": "agent-prompts-plan",
       "total": 8,
       "done": 8,
-      "phase": "Phase 2",
+      "phase": "Phase 1",
       "halted": false,
       "halt_reason": null,
       "landed": true,
-      "last_activity": "2026-10-11T15:20:00Z",
-      "usd": 7.4,
+      "last_activity": "2026-10-12T11:08:00Z",
+      "usd": 2.5296,
       "open_findings": 0,
       "enforced": true,
+      "chain_ok": true,
       "tasks": [
        {
         "line": 6,
         "title": "Invoice reviewer agent prompt",
+        "tags": [],
         "status": "done",
         "tier": "C",
         "rounds": 2,
         "attempts": 1,
-        "completed_at": "2026-10-03T10:05:00Z",
-        "usd": 0.9
+        "completed_at": "2026-09-18T16:03:00Z",
+        "usd": 0.3036,
+        "tokens": 162400,
+        "orchestrator_usd": 0.15945,
+        "orchestrator_tokens": 328750,
+        "orchestrator_na": null
        },
        {
         "line": 9,
         "title": "Refund triage agent",
+        "tags": [],
         "status": "done",
         "tier": "C",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-04T14:30:00Z",
-        "usd": 0.8
+        "completed_at": "2026-09-19T20:51:00Z",
+        "usd": 0.3072,
+        "tokens": 163600,
+        "orchestrator_usd": 0.15951,
+        "orchestrator_tokens": 328770,
+        "orchestrator_na": null
        },
        {
         "line": 12,
         "title": "Tax rules agent: VAT examples",
+        "tags": [],
         "status": "done",
         "tier": "C",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-05T09:40:00Z",
-        "usd": 0.7
+        "completed_at": "2026-09-21T01:39:00Z",
+        "usd": 0.3108,
+        "tokens": 164800,
+        "orchestrator_usd": 0.15957,
+        "orchestrator_tokens": 328790,
+        "orchestrator_na": null
        },
        {
         "line": 15,
         "title": "Shared tone section for all agents",
+        "tags": [],
         "status": "done",
         "tier": "C",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-07T11:15:00Z",
-        "usd": 1.1
+        "completed_at": "2026-09-22T06:27:00Z",
+        "usd": 0.3144,
+        "tokens": 166000,
+        "orchestrator_usd": 0.15963,
+        "orchestrator_tokens": 328810,
+        "orchestrator_na": null
        },
        {
         "line": 18,
         "title": "Dunning agent prompt",
+        "tags": [],
         "status": "done",
         "tier": "C",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-08T16:50:00Z",
-        "usd": 0.8
+        "completed_at": "2026-09-23T11:15:00Z",
+        "usd": 0.318,
+        "tokens": 167200,
+        "orchestrator_usd": 0.15969,
+        "orchestrator_tokens": 328830,
+        "orchestrator_na": null
        },
        {
         "line": 21,
         "title": "Agent eval fixtures",
+        "tags": [],
         "status": "done",
         "tier": "B",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-09T10:10:00Z",
-        "usd": 1.2
+        "completed_at": "2026-09-24T16:03:00Z",
+        "usd": 0.3216,
+        "tokens": 168400,
+        "orchestrator_usd": 0.15975,
+        "orchestrator_tokens": 328850,
+        "orchestrator_na": null
        },
        {
         "line": 24,
         "title": "Agent routing hook",
+        "tags": [],
         "status": "done",
         "tier": "C",
-        "rounds": 2,
+        "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-10T13:25:00Z",
-        "usd": 1.3
+        "completed_at": "2026-09-25T20:51:00Z",
+        "usd": 0.3252,
+        "tokens": 169600,
+        "orchestrator_usd": 0.15981,
+        "orchestrator_tokens": 328870,
+        "orchestrator_na": null
        },
        {
         "line": 27,
         "title": "Agent prompt docs",
+        "tags": [],
         "status": "done",
         "tier": "A",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-11T15:20:00Z",
-        "usd": 0.6
+        "completed_at": "2026-09-27T01:39:00Z",
+        "usd": 0.3288,
+        "tokens": 170800,
+        "orchestrator_usd": 0.15987,
+        "orchestrator_tokens": 328890,
+        "orchestrator_na": null
+       }
+      ]
+     },
+     {
+      "hash": "e6f7a8b9c0d1",
+      "slug": "card-retry",
+      "scope": "feature",
+      "intent": {
+       "file": ".claude/tasks/card-retry-intent.md",
+       "problem": "A declined card charge is never retried, so recoverable revenue is written off.",
+       "who": "Finance operations and support.",
+       "why_now": "Declines doubled after the card network change.",
+       "non_goals": "No dunning emails; no change to pricing."
+      },
+      "operate": {
+       "slug": "card-retry",
+       "tag": "operate:card-retry",
+       "state": "ok",
+       "deploys": [
+        {
+         "ts": "2026-09-21T10:03:00Z",
+         "sha": "5e7a9c1b3d5f7e9a1c3b5d7f9e1a3c5b7d9f1e3a",
+         "exit": 0
+        }
+       ],
+       "last_deploy": {
+        "ts": "2026-09-21T10:03:00Z",
+        "sha": "5e7a9c1b3d5f7e9a1c3b5d7f9e1a3c5b7d9f1e3a",
+        "exit": 0
+       },
+       "window": {
+        "state": "closed",
+        "start": "2026-09-21T10:03:00Z",
+        "end": "2026-10-05T10:03:00Z",
+        "days": 14,
+        "day": null,
+        "outcome": "closed-with-breaches",
+        "closed_by": "monitor",
+        "open_at_close": [
+         "dlq",
+         "retries"
+        ],
+        "unmeasured_at_close": [
+         "retries"
+        ],
+        "measured_runs": 4,
+        "breaches": 1,
+        "last_run": "2026-10-04T14:03:00Z",
+        "never_measured": false
+       },
+       "windows_closed": 1,
+       "last_closed_window": {
+        "outcome": "closed-with-breaches",
+        "closed_by": "monitor",
+        "closed_at": "2026-10-05T16:03:00Z",
+        "start": "2026-09-21T10:03:00Z",
+        "end": "2026-10-05T10:03:00Z",
+        "days": 14,
+        "open_at_close": [
+         "dlq",
+         "retries"
+        ],
+        "unmeasured_at_close": [
+         "retries"
+        ],
+        "measured_runs": 4,
+        "breaches": 1,
+        "never_measured": false
+       },
+       "checks": [
+        {
+         "id": "webhook-p95",
+         "metric": "latency.p95",
+         "op": "<",
+         "threshold": 600,
+         "severity": "high",
+         "declared": true,
+         "measured": true,
+         "last_value": 480,
+         "last_status": "ok",
+         "last_ts": "2026-10-04T14:03:00Z",
+         "last_reason": null,
+         "breaches": 0,
+         "unmeasured_runs": 0,
+         "filed": null,
+         "last_measured_value": 480,
+         "last_measured_status": "ok",
+         "last_measured_ts": "2026-10-04T14:03:00Z",
+         "unmeasured": false,
+         "open_at_close": false
+        },
+        {
+         "id": "dlq",
+         "metric": "dlq.depth",
+         "op": "<",
+         "threshold": 10,
+         "severity": "medium",
+         "declared": true,
+         "measured": true,
+         "last_value": 14,
+         "last_status": "breach",
+         "last_ts": "2026-10-04T14:03:00Z",
+         "last_reason": null,
+         "breaches": 1,
+         "unmeasured_runs": 0,
+         "filed": "backlog",
+         "last_measured_value": 14,
+         "last_measured_status": "breach",
+         "last_measured_ts": "2026-10-04T14:03:00Z",
+         "unmeasured": false,
+         "open_at_close": true
+        },
+        {
+         "id": "retries",
+         "metric": "retry.rate",
+         "op": "<",
+         "threshold": 0.05,
+         "severity": "low",
+         "declared": true,
+         "measured": true,
+         "last_value": null,
+         "last_status": "unmeasured",
+         "last_ts": "2026-10-04T14:03:00Z",
+         "last_reason": "the command exited 7 (value stdout needs exit 0)",
+         "breaches": 0,
+         "unmeasured_runs": 4,
+         "filed": null,
+         "last_measured_value": null,
+         "last_measured_status": null,
+         "last_measured_ts": null,
+         "unmeasured": true,
+         "open_at_close": true
+        }
+       ],
+       "monitor": "ok",
+       "problems": [],
+       "window_days": 14,
+       "scope": "feature",
+       "ingested": {
+        "lessons": [],
+        "backlog": [
+         {
+          "id": "B-003",
+          "title": "dlq.depth 14 breached the expected dlq.depth < 10 (check dlq, severity medium, 2026-10-04T14:03:00Z)",
+          "done": false
+         }
+        ],
+        "counts": {
+         "lessons": 0,
+         "backlog": 1,
+         "backlog_open": 1
+        }
+       }
+      },
+      "cost": {
+       "status": "measured",
+       "delegated_usd": 2.112,
+       "delegated_unknown_tasks": 0,
+       "orchestrator_usd": 0.6288,
+       "orchestrator_unattributed_usd": 0.264,
+       "orchestrator_unattributed_tokens": 652400,
+       "usd_unrouted": 0.0
+      },
+      "path": ".claude/plans/card-retry-plan.md",
+      "name": "card-retry-plan",
+      "total": 4,
+      "done": 4,
+      "phase": "Phase 1",
+      "halted": false,
+      "halt_reason": null,
+      "landed": true,
+      "last_activity": "2026-10-05T16:03:00Z",
+      "usd": 2.112,
+      "open_findings": 0,
+      "enforced": true,
+      "chain_ok": true,
+      "tasks": [
+       {
+        "line": 5,
+        "title": "Webhook signature check",
+        "tags": [],
+        "status": "done",
+        "tier": "C",
+        "rounds": 2,
+        "attempts": 1,
+        "completed_at": "2026-09-12T16:03:00Z",
+        "usd": 0.492,
+        "tokens": 286000,
+        "orchestrator_usd": 0.1572,
+        "orchestrator_tokens": 328600,
+        "orchestrator_na": null
+       },
+       {
+        "line": 8,
+        "title": "Retry scheduler",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-14T16:03:00Z",
+        "usd": 0.516,
+        "tokens": 294000,
+        "orchestrator_usd": 0.1572,
+        "orchestrator_tokens": 328600,
+        "orchestrator_na": null
+       },
+       {
+        "line": 11,
+        "title": "Dead-letter queue",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-16T16:03:00Z",
+        "usd": 0.54,
+        "tokens": 302000,
+        "orchestrator_usd": 0.1572,
+        "orchestrator_tokens": 328600,
+        "orchestrator_na": null
+       },
+       {
+        "line": 14,
+        "title": "Ops runbook",
+        "tags": [],
+        "status": "done",
+        "tier": "A",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-18T16:03:00Z",
+        "usd": 0.564,
+        "tokens": 310000,
+        "orchestrator_usd": 0.1572,
+        "orchestrator_tokens": 328600,
+        "orchestrator_na": null
+       }
+      ]
+     },
+     {
+      "hash": "f1a2b3c4d5e6",
+      "slug": "legacy-pdf-export",
+      "scope": "feature",
+      "intent": null,
+      "operate": {
+       "slug": "legacy-pdf-export",
+       "tag": "operate:legacy-pdf-export",
+       "state": "missing",
+       "deploys": [],
+       "last_deploy": null,
+       "window": {
+        "state": "not-opened"
+       },
+       "windows_closed": 0,
+       "last_closed_window": null,
+       "checks": [],
+       "monitor": "none",
+       "problems": [],
+       "window_days": null,
+       "scope": "feature",
+       "ingested": {
+        "lessons": [],
+        "backlog": [],
+        "counts": {
+         "lessons": 0,
+         "backlog": 0,
+         "backlog_open": 0
+        }
+       },
+       "warning": "no ## Monitor section: not watched; a landed feature plan should declare one"
+      },
+      "cost": {
+       "status": "measured",
+       "delegated_usd": 0.7794,
+       "delegated_unknown_tasks": 0,
+       "orchestrator_usd": 0.46395,
+       "orchestrator_unattributed_usd": 0.0,
+       "orchestrator_unattributed_tokens": 0,
+       "usd_unrouted": 0.0
+      },
+      "path": ".claude/plans/legacy-pdf-export-plan.md",
+      "name": "legacy-pdf-export-plan",
+      "total": 3,
+      "done": 3,
+      "phase": "Phase 1",
+      "halted": false,
+      "halt_reason": null,
+      "landed": true,
+      "last_activity": "2026-09-06T16:03:00Z",
+      "usd": 0.7794,
+      "open_findings": 0,
+      "enforced": true,
+      "chain_ok": true,
+      "tasks": [
+       {
+        "line": 4,
+        "title": "Render template port",
+        "tags": [],
+        "status": "done",
+        "tier": "B",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-02T16:03:00Z",
+        "usd": 0.2598,
+        "tokens": 140000,
+        "orchestrator_usd": 0.15465,
+        "orchestrator_tokens": 328350,
+        "orchestrator_na": null
+       },
+       {
+        "line": 7,
+        "title": "Font embedding",
+        "tags": [],
+        "status": "done",
+        "tier": "A",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-04T16:03:00Z",
+        "usd": 0.2598,
+        "tokens": 140000,
+        "orchestrator_usd": 0.15465,
+        "orchestrator_tokens": 328350,
+        "orchestrator_na": null
+       },
+       {
+        "line": 10,
+        "title": "Remove wkhtmltopdf",
+        "tags": [],
+        "status": "done",
+        "tier": "A",
+        "rounds": 1,
+        "attempts": 1,
+        "completed_at": "2026-09-06T16:03:00Z",
+        "usd": 0.2598,
+        "tokens": 140000,
+        "orchestrator_usd": 0.15465,
+        "orchestrator_tokens": 328350,
+        "orchestrator_na": null
        }
       ]
      }
     ],
-    "adhoc": [
+    "watched": [
      {
-      "id": "x9",
-      "routes": 2,
-      "usd": 0.8,
-      "last_activity": "2026-10-11T18:20:00Z"
+      "hash": "b8c9d0e1f2a3",
+      "slug": "tax-rates-sync",
+      "path": ".claude/plans/tax-rates-sync-plan.md",
+      "day": 3,
+      "days": 14,
+      "end": "2026-10-24T10:03:00Z"
      },
+     {
+      "hash": "c9d0e1f2a3b4",
+      "slug": "dunning-sms",
+      "path": ".claude/plans/dunning-sms-plan.md",
+      "day": 6,
+      "days": 14,
+      "end": "2026-10-21T12:03:00Z"
+     },
+     {
+      "hash": "d4e5f6a7b8c9",
+      "slug": "agent-prompts",
+      "path": ".claude/plans/agent-prompts-plan.md",
+      "day": 3,
+      "days": 14,
+      "end": "2026-10-24T09:03:00Z"
+     }
+    ],
+    "repo_checks": {
+     "configured": true,
+     "state": "ok",
+     "file": "/Users/demo/src/billing-service/.claude/apex-scope-loop/monitor.json",
+     "checks": [
+      {
+       "id": "site",
+       "metric": "latency.p95",
+       "op": "<",
+       "threshold": 500,
+       "severity": "high",
+       "declared": true,
+       "measured": true,
+       "last_value": 415,
+       "last_status": "ok",
+       "last_ts": "2026-10-12T11:03:00Z",
+       "last_reason": null,
+       "breaches": 1,
+       "unmeasured_runs": 0,
+       "filed": "backlog",
+       "last_measured_value": 415,
+       "last_measured_status": "ok",
+       "last_measured_ts": "2026-10-12T11:03:00Z",
+       "unmeasured": false
+      },
+      {
+       "id": "worker-backlog",
+       "metric": "jobs.pending",
+       "op": "<",
+       "threshold": 200,
+       "severity": "low",
+       "declared": true,
+       "measured": false,
+       "last_value": null,
+       "last_status": null,
+       "last_ts": null,
+       "last_reason": null,
+       "breaches": null,
+       "unmeasured_runs": null,
+       "filed": null,
+       "last_measured_value": null,
+       "last_measured_status": null,
+       "last_measured_ts": null,
+       "unmeasured": true
+      }
+     ],
+     "problems": [],
+     "ingested": {
+      "backlog": [
+       {
+        "id": "B-004",
+        "title": "latency.p95 640 breached the expected latency.p95 < 500 (check site, severity high, 2026-10-08T14:0…",
+        "done": false
+       }
+      ],
+      "counts": {
+       "backlog": 1,
+       "backlog_open": 1
+      }
+     }
+    },
+    "adhoc": [
      {
       "id": "x12",
       "routes": 1,
-      "usd": 0.3,
-      "last_activity": "2026-10-12T08:02:00Z"
+      "usd": 0.522,
+      "last_activity": "2026-10-12T08:12:00Z"
+     },
+     {
+      "id": "x9",
+      "routes": 2,
+      "usd": 1.044,
+      "last_activity": "2026-10-11T18:42:00Z"
      }
     ]
    },
    {
     "id": "r2",
     "name": "field-app",
+    "path": "/Users/demo/src/field-app",
+    "error": null,
     "halted": true,
     "halt_reason": "Pausing for review of auth changes",
     "lock": null,
     "plans": [
      {
       "hash": "c3d4e5f6a7b8",
+      "slug": "offline-sync",
+      "scope": "bugfix",
+      "intent": null,
+      "operate": null,
+      "cost": {
+       "status": "measured",
+       "delegated_usd": 3.0525,
+       "delegated_unknown_tasks": 0,
+       "orchestrator_usd": 0.63036,
+       "orchestrator_unattributed_usd": null,
+       "orchestrator_unattributed_tokens": null,
+       "usd_unrouted": 0.0
+      },
       "path": ".claude/plans/offline-sync.md",
       "name": "offline-sync",
       "total": 7,
       "done": 5,
       "phase": "Phase 2",
-      "halted": true,
-      "halt_reason": "Pausing for review of auth changes",
+      "halted": false,
+      "halt_reason": null,
       "landed": false,
-      "last_activity": "2026-10-10T09:12:00Z",
-      "usd": 10.6,
-      "open_findings": 1,
-      "enforced": false,
+      "last_activity": "2026-10-01T15:03:00Z",
+      "usd": 3.0525,
+      "open_findings": 0,
+      "enforced": true,
+      "chain_ok": true,
       "tasks": [
        {
         "line": 5,
         "title": "Local SQLite schema",
+        "tags": [],
         "status": "done",
         "tier": "B",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-09-17T08:50:00Z",
-        "usd": 1.3
+        "completed_at": "2026-09-21T16:03:00Z",
+        "usd": 0.3945,
+        "tokens": 226000,
+        "orchestrator_usd": 0.1575,
+        "orchestrator_tokens": 328700,
+        "orchestrator_na": null
        },
        {
         "line": 9,
         "title": "Sync queue with conflict log",
+        "tags": [],
         "status": "done",
         "tier": "C",
-        "rounds": 3,
+        "rounds": 2,
         "attempts": 1,
-        "completed_at": "2026-09-23T19:05:00Z",
-        "usd": 3.4
+        "completed_at": "2026-09-23T16:03:00Z",
+        "usd": 0.8505,
+        "tokens": 490000,
+        "orchestrator_usd": 0.157545,
+        "orchestrator_tokens": 328715,
+        "orchestrator_na": null
        },
        {
         "line": 13,
         "title": "Background sync worker",
+        "tags": [],
         "status": "done",
         "tier": "B",
-        "rounds": 2,
+        "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-09-30T10:35:00Z",
-        "usd": 1.5
+        "completed_at": "2026-09-25T16:03:00Z",
+        "usd": 0.4374,
+        "tokens": 244000,
+        "orchestrator_usd": 0.15759,
+        "orchestrator_tokens": 328730,
+        "orchestrator_na": null
        },
        {
         "line": 16,
         "title": "Conflict resolution UI",
+        "tags": [],
         "status": "done",
         "tier": "A",
         "rounds": 1,
         "attempts": 1,
-        "completed_at": "2026-10-03T15:00:00Z",
-        "usd": 0.9
+        "completed_at": "2026-09-27T16:03:00Z",
+        "usd": 0.228,
+        "tokens": 118400,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "no main-session turn in the window"
        },
        {
         "line": 19,
         "title": "Auth token refresh offline",
+        "tags": [],
         "status": "done",
         "tier": "C",
         "rounds": 2,
-        "attempts": 2,
-        "completed_at": "2026-10-08T12:15:00Z",
-        "usd": 2.6
+        "attempts": 1,
+        "completed_at": "2026-09-29T16:03:00Z",
+        "usd": 0.948,
+        "tokens": 524000,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "session(s) with no transcript read: 3d2c1b0a-9f8e-4d7c-8b6a-5f4e3d2c1b0a"
        },
        {
         "line": 22,
         "title": "Sync telemetry",
+        "tags": [],
         "status": "failed",
         "tier": "A",
         "rounds": 2,
-        "attempts": 3,
+        "attempts": 2,
         "completed_at": null,
-        "usd": 0.9
+        "usd": 0.1941,
+        "tokens": 104800,
+        "orchestrator_usd": 0.157725,
+        "orchestrator_tokens": 328775,
+        "orchestrator_na": null
        },
        {
         "line": 25,
         "title": "Field photo upload retry",
+        "tags": [],
         "status": "todo",
         "tier": "B",
-        "rounds": 0,
-        "attempts": 0,
+        "rounds": null,
+        "attempts": null,
         "completed_at": null,
-        "usd": null
+        "usd": null,
+        "tokens": null,
+        "orchestrator_usd": null,
+        "orchestrator_tokens": null,
+        "orchestrator_na": "no routed task"
        }
       ]
      }
     ],
+    "watched": [],
+    "repo_checks": {
+     "configured": false,
+     "state": "none",
+     "file": null,
+     "checks": [],
+     "problems": [],
+     "ingested": {
+      "backlog": [],
+      "counts": {
+       "backlog": 0,
+       "backlog_open": 0
+      }
+     }
+    },
     "adhoc": []
    }
   ]
@@ -972,7 +2247,7 @@
   },
   "scope_loop": {
    "available": true,
-   "file": "/Users/sk/src/billing-service/.dev-plan-state/knobs/scope-loop.json",
+   "file": "/Users/demo/src/billing-service/.dev-plan-state/knobs/scope-loop.json",
    "sha": "9f2c41e0",
    "effective": {
     "review": {
@@ -1418,12 +2693,12 @@
     "at": "2026-09-14T10:00:00Z",
     "repo": "r2",
     "kind": "repos",
-    "summary": "Registered /Users/sk/src/field-app as r2",
+    "summary": "Registered /Users/demo/src/field-app as r2",
     "changes": [
      {
       "key": "repos.r2",
       "from": null,
-      "to": "/Users/sk/src/field-app"
+      "to": "/Users/demo/src/field-app"
      }
     ],
     "undoable": true,
@@ -1461,35 +2736,319 @@
    }
   ],
   "summary": {
-   "replayed": 19,
+   "replayed": 32,
    "errors": 1,
-   "changed": 6,
+   "changed": 7,
    "looser": 5,
-   "stricter": 1,
+   "stricter": 2,
    "moves": {
+    "A→B": 2,
     "C→A": 4,
-    "C→B": 1,
-    "A→B": 1
+    "C→B": 1
    },
    "mix_current": {
-    "A": 6,
-    "B": 4,
-    "C": 9
+    "A": 9,
+    "B": 12,
+    "C": 11
    },
    "mix_proposed": {
-    "A": 9,
-    "B": 6,
-    "C": 4
+    "A": 11,
+    "B": 15,
+    "C": 6
    },
    "note": "Replays the classifier only: reviewer raises and the decision layer are not replayed, so a recorded tier can be higher than the replayed one."
   },
   "tasks": [
    {
+    "plan": "a1b2c3d4e5f6",
+    "plan_path": ".claude/plans/billing-plan.md",
+    "line": 30,
+    "title": "Stripe webhook for paid status",
+    "completed_at": "2026-10-06T16:03:00Z",
+    "recorded": "C",
+    "current": "C",
+    "proposed": "C",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 118 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 118 lines > 100"
+    ],
+    "removed": [
+     "size: 118 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-c path (knobs): payments/webhooks/stripe.py",
+     "tier-c content: \"stripe_secret\" (knobs)",
+     "size: 118 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-c path (knobs): payments/webhooks/stripe.py",
+     "tier-c content: \"stripe_secret\" (knobs)",
+     "size: 118 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 118 lines > 100"
+    ]
+   },
+   {
+    "plan": "b8c9d0e1f2a3",
+    "plan_path": ".claude/plans/tax-rates-sync-plan.md",
+    "line": 7,
+    "title": "Rate cache invalidation",
+    "completed_at": "2026-10-05T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "b8c9d0e1f2a3",
+    "plan_path": ".claude/plans/tax-rates-sync-plan.md",
+    "line": 4,
+    "title": "Nightly tax-rate pull",
+    "completed_at": "2026-10-04T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 94 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 94 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 94 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 94 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "c9d0e1f2a3b4",
+    "plan_path": ".claude/plans/dunning-sms-plan.md",
+    "line": 7,
+    "title": "Dunning SMS step",
+    "completed_at": "2026-10-03T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 72 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 72 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir billing/dunning/steps.py",
+     "size: 72 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir billing/dunning/steps.py",
+     "size: 72 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "b7c8d9e0f1a2",
+    "plan_path": ".claude/plans/invoices-export.md",
+    "line": 20,
+    "title": "Export audit trail",
+    "completed_at": "2026-10-03T15:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "A",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "c9d0e1f2a3b4",
+    "plan_path": ".claude/plans/dunning-sms-plan.md",
+    "line": 4,
+    "title": "SMS provider client",
+    "completed_at": "2026-10-02T16:03:00Z",
+    "recorded": "C",
+    "current": "C",
+    "proposed": "C",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 86 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 86 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-c content: \"api_key\" in billing/sms/client.py",
+     "size: 86 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-c content: \"api_key\" in billing/sms/client.py",
+     "size: 86 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "a1b2c3d4e5f6",
+    "plan_path": ".claude/plans/billing-plan.md",
+    "line": 27,
+    "title": "Email delivery of invoices",
+    "completed_at": "2026-10-01T15:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "B",
+    "move": "A→B",
+    "error": null,
+    "added": [
+     "size: 124 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 124 lines > 100"
+    ],
+    "removed": [
+     "size: 124 lines, 4 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 124 lines, 4 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 124 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 124 lines > 100"
+    ]
+   },
+   {
+    "plan": "b7c8d9e0f1a2",
+    "plan_path": ".claude/plans/invoices-export.md",
+    "line": 17,
+    "title": "Retry and backoff",
+    "completed_at": "2026-10-01T15:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 98 lines, 7 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 98 lines, 7 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: 7 files > 6",
+     "size: 98 lines, 7 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: 7 files > 6",
+     "size: 98 lines, 7 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "a1b2c3d4e5f6",
+    "plan_path": ".claude/plans/billing-plan.md",
+    "line": 24,
+    "title": "PDF render endpoint",
+    "completed_at": "2026-09-29T15:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "A",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 96 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 96 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 96 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 96 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "b7c8d9e0f1a2",
+    "plan_path": ".claude/plans/invoices-export.md",
+    "line": 14,
+    "title": "Export status API",
+    "completed_at": "2026-09-29T15:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "A",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 70 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 70 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 70 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 70 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "b7c8d9e0f1a2",
+    "plan_path": ".claude/plans/invoices-export.md",
+    "line": 11,
+    "title": "S3 upload with signed URLs",
+    "completed_at": "2026-09-27T15:03:00Z",
+    "recorded": "C",
+    "current": "C",
+    "proposed": "C",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 84 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 84 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-c content: \"secret\" in exporter/s3.py",
+     "size: 84 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-c content: \"secret\" in exporter/s3.py",
+     "size: 84 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
     "plan": "d4e5f6a7b8c9",
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 27,
     "title": "Agent prompt docs",
-    "completed_at": "2026-10-11T15:20:00Z",
+    "completed_at": "2026-09-27T01:39:00Z",
     "recorded": "A",
     "current": "A",
     "proposed": "A",
@@ -1515,7 +3074,7 @@
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 24,
     "title": "Agent routing hook",
-    "completed_at": "2026-10-10T13:25:00Z",
+    "completed_at": "2026-09-25T20:51:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "C",
@@ -1539,25 +3098,81 @@
    {
     "plan": "b7c8d9e0f1a2",
     "plan_path": ".claude/plans/invoices-export.md",
-    "line": 20,
-    "title": "Export audit trail",
-    "completed_at": "2026-10-09T11:30:00Z",
-    "recorded": "A",
-    "current": "A",
-    "proposed": "A",
+    "line": 8,
+    "title": "Export job queue",
+    "completed_at": "2026-09-25T15:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
     "move": null,
     "error": null,
     "added": [
-     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+     "size: 92 lines, 3 files (Tier B above 100 lines or 6 files)"
     ],
     "removed": [
-     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+     "size: 92 lines, 3 files (Tier B above 150 lines or 6 files)"
     ],
     "reasons_current": [
-     "size: 58 lines, 2 files (Tier B above 150 lines or 6 files)"
+     "tier-b: shared dir core/queue.py",
+     "size: 92 lines, 3 files (Tier B above 150 lines or 6 files)"
     ],
     "reasons_proposed": [
-     "size: 58 lines, 2 files (Tier B above 100 lines or 6 files)"
+     "tier-b: shared dir core/queue.py",
+     "size: 92 lines, 3 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "a1b2c3d4e5f6",
+    "plan_path": ".claude/plans/billing-plan.md",
+    "line": 21,
+    "title": "Tax line calculation",
+    "completed_at": "2026-09-24T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 76 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 76 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 76 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/tax.py",
+     "size: 76 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "a7b8c9d0e1f2",
+    "plan_path": ".claude/plans/receipt-emails-plan.md",
+    "line": 7,
+    "title": "Resend on bounce",
+    "completed_at": "2026-09-24T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 132 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 132 lines > 100"
+    ],
+    "removed": [
+     "size: 132 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/email/sender.py",
+     "size: 132 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/email/sender.py",
+     "size: 132 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 132 lines > 100"
     ]
    },
    {
@@ -1565,7 +3180,7 @@
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 21,
     "title": "Agent eval fixtures",
-    "completed_at": "2026-10-09T10:10:00Z",
+    "completed_at": "2026-09-24T16:03:00Z",
     "recorded": "B",
     "current": "B",
     "proposed": "B",
@@ -1589,11 +3204,37 @@
     ]
    },
    {
+    "plan": "a7b8c9d0e1f2",
+    "plan_path": ".claude/plans/receipt-emails-plan.md",
+    "line": 4,
+    "title": "Receipt template escape fix",
+    "completed_at": "2026-09-23T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 46 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 46 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/email/templates.py",
+     "size: 46 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/email/templates.py",
+     "size: 46 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
     "plan": "d4e5f6a7b8c9",
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 18,
     "title": "Dunning agent prompt",
-    "completed_at": "2026-10-08T16:50:00Z",
+    "completed_at": "2026-09-23T11:15:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "A",
@@ -1617,29 +3258,27 @@
     ]
    },
    {
-    "plan": "b7c8d9e0f1a2",
-    "plan_path": ".claude/plans/invoices-export.md",
-    "line": 17,
-    "title": "Retry and backoff",
-    "completed_at": "2026-10-07T17:25:00Z",
+    "plan": "a1b2c3d4e5f6",
+    "plan_path": ".claude/plans/billing-plan.md",
+    "line": 18,
+    "title": "Invoice number sequence",
+    "completed_at": "2026-09-22T15:03:00Z",
     "recorded": "B",
-    "current": "B",
-    "proposed": "B",
+    "current": "A",
+    "proposed": "A",
     "move": null,
     "error": null,
     "added": [
-     "size: 98 lines, 7 files (Tier B above 100 lines or 6 files)"
+     "size: 88 lines, 3 files (Tier B above 100 lines or 6 files)"
     ],
     "removed": [
-     "size: 98 lines, 7 files (Tier B above 150 lines or 6 files)"
+     "size: 88 lines, 3 files (Tier B above 150 lines or 6 files)"
     ],
     "reasons_current": [
-     "tier-b: 7 files > 6",
-     "size: 98 lines, 7 files (Tier B above 150 lines or 6 files)"
+     "size: 88 lines, 3 files (Tier B above 150 lines or 6 files)"
     ],
     "reasons_proposed": [
-     "tier-b: 7 files > 6",
-     "size: 98 lines, 7 files (Tier B above 100 lines or 6 files)"
+     "size: 88 lines, 3 files (Tier B above 100 lines or 6 files)"
     ]
    },
    {
@@ -1647,7 +3286,7 @@
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 15,
     "title": "Shared tone section for all agents",
-    "completed_at": "2026-10-07T11:15:00Z",
+    "completed_at": "2026-09-22T06:27:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "B",
@@ -1673,41 +3312,11 @@
     ]
    },
    {
-    "plan": "a1b2c3d4e5f6",
-    "plan_path": ".claude/plans/billing-plan.md",
-    "line": 30,
-    "title": "Stripe webhook for paid status",
-    "completed_at": "2026-10-06T10:20:00Z",
-    "recorded": "C",
-    "current": "C",
-    "proposed": "C",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 118 lines, 3 files (Tier B above 100 lines or 6 files)",
-     "tier-b: 118 lines > 100"
-    ],
-    "removed": [
-     "size: 118 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "tier-c path (knobs): payments/webhooks/stripe.py",
-     "tier-c content: \"stripe_secret\" (knobs)",
-     "size: 118 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "tier-c path (knobs): payments/webhooks/stripe.py",
-     "tier-c content: \"stripe_secret\" (knobs)",
-     "size: 118 lines, 3 files (Tier B above 100 lines or 6 files)",
-     "tier-b: 118 lines > 100"
-    ]
-   },
-   {
     "plan": "d4e5f6a7b8c9",
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 12,
     "title": "Tax rules agent: VAT examples",
-    "completed_at": "2026-10-05T09:40:00Z",
+    "completed_at": "2026-09-21T01:39:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "A",
@@ -1735,7 +3344,7 @@
     "plan_path": ".claude/plans/agent-prompts-plan.md",
     "line": 9,
     "title": "Refund triage agent",
-    "completed_at": "2026-10-04T14:30:00Z",
+    "completed_at": "2026-09-19T20:51:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "A",
@@ -1756,210 +3365,6 @@
     "reasons_proposed": [
      "exempted by knobs: plugins/billing-bot/agents/refund-triage.md (plugins/*/agents/*.md: Agent prompts are text; no code runs from them)",
      "size: 48 lines, 1 file (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "d4e5f6a7b8c9",
-    "plan_path": ".claude/plans/agent-prompts-plan.md",
-    "line": 6,
-    "title": "Invoice reviewer agent prompt",
-    "completed_at": "2026-10-03T10:05:00Z",
-    "recorded": "C",
-    "current": "C",
-    "proposed": "A",
-    "move": "C→A",
-    "error": null,
-    "added": [
-     "exempted by knobs: plugins/billing-bot/agents/invoice-reviewer.md (plugins/*/agents/*.md: Agent prompts are text; no code runs from them)",
-     "size: 64 lines, 1 file (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "tier-c content: \"token\" in plugins/billing-bot/agents/invoice-reviewer.md",
-     "size: 64 lines, 1 file (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "tier-c content: \"token\" in plugins/billing-bot/agents/invoice-reviewer.md",
-     "size: 64 lines, 1 file (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "exempted by knobs: plugins/billing-bot/agents/invoice-reviewer.md (plugins/*/agents/*.md: Agent prompts are text; no code runs from them)",
-     "size: 64 lines, 1 file (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "b7c8d9e0f1a2",
-    "plan_path": ".claude/plans/invoices-export.md",
-    "line": 14,
-    "title": "Export status API",
-    "completed_at": "2026-10-02T09:45:00Z",
-    "recorded": "A",
-    "current": "A",
-    "proposed": "A",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 70 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 70 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "size: 70 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "size: 70 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "a1b2c3d4e5f6",
-    "plan_path": ".claude/plans/billing-plan.md",
-    "line": 27,
-    "title": "Email delivery of invoices",
-    "completed_at": "2026-10-01T16:44:00Z",
-    "recorded": "A",
-    "current": "A",
-    "proposed": "B",
-    "move": "A→B",
-    "error": null,
-    "added": [
-     "size: 124 lines, 4 files (Tier B above 100 lines or 6 files)",
-     "tier-b: 124 lines > 100"
-    ],
-    "removed": [
-     "size: 124 lines, 4 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "size: 124 lines, 4 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "size: 124 lines, 4 files (Tier B above 100 lines or 6 files)",
-     "tier-b: 124 lines > 100"
-    ]
-   },
-   {
-    "plan": "b7c8d9e0f1a2",
-    "plan_path": ".claude/plans/invoices-export.md",
-    "line": 11,
-    "title": "S3 upload with signed URLs",
-    "completed_at": "2026-09-30T14:10:00Z",
-    "recorded": "C",
-    "current": "C",
-    "proposed": "C",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 84 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 84 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "tier-c content: \"secret\" in exporter/s3.py",
-     "size: 84 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "tier-c content: \"secret\" in exporter/s3.py",
-     "size: 84 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "a1b2c3d4e5f6",
-    "plan_path": ".claude/plans/billing-plan.md",
-    "line": 24,
-    "title": "PDF render endpoint",
-    "completed_at": "2026-09-29T11:02:00Z",
-    "recorded": "A",
-    "current": "A",
-    "proposed": "A",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 96 lines, 3 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 96 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "size: 96 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "size: 96 lines, 3 files (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "b7c8d9e0f1a2",
-    "plan_path": ".claude/plans/invoices-export.md",
-    "line": 8,
-    "title": "Export job queue",
-    "completed_at": "2026-09-25T12:00:00Z",
-    "recorded": "B",
-    "current": "B",
-    "proposed": "B",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 92 lines, 3 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 92 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "tier-b: shared dir core/queue.py",
-     "size: 92 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "tier-b: shared dir core/queue.py",
-     "size: 92 lines, 3 files (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "a1b2c3d4e5f6",
-    "plan_path": ".claude/plans/billing-plan.md",
-    "line": 21,
-    "title": "Tax line calculation",
-    "completed_at": "2026-09-24T13:30:00Z",
-    "recorded": "B",
-    "current": "B",
-    "proposed": "B",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 76 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 76 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "tier-b: shared dir lib/tax.py",
-     "size: 76 lines, 2 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "tier-b: shared dir lib/tax.py",
-     "size: 76 lines, 2 files (Tier B above 100 lines or 6 files)"
-    ]
-   },
-   {
-    "plan": "a1b2c3d4e5f6",
-    "plan_path": ".claude/plans/billing-plan.md",
-    "line": 18,
-    "title": "Invoice number sequence",
-    "completed_at": "2026-09-22T09:05:00Z",
-    "recorded": "B",
-    "current": "A",
-    "proposed": "A",
-    "move": null,
-    "error": null,
-    "added": [
-     "size: 88 lines, 3 files (Tier B above 100 lines or 6 files)"
-    ],
-    "removed": [
-     "size: 88 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_current": [
-     "size: 88 lines, 3 files (Tier B above 150 lines or 6 files)"
-    ],
-    "reasons_proposed": [
-     "size: 88 lines, 3 files (Tier B above 100 lines or 6 files)"
     ]
    },
    {
@@ -1967,8 +3372,8 @@
     "plan_path": ".claude/plans/billing-plan.md",
     "line": 15,
     "title": "Migrate legacy invoice rows",
-    "completed_at": "2026-09-18T15:40:00Z",
-    "recorded": null,
+    "completed_at": "2026-09-18T17:03:00Z",
+    "recorded": "C",
     "current": null,
     "proposed": null,
     "move": null,
@@ -1979,11 +3384,65 @@
     "reasons_proposed": []
    },
    {
+    "plan": "d4e5f6a7b8c9",
+    "plan_path": ".claude/plans/agent-prompts-plan.md",
+    "line": 6,
+    "title": "Invoice reviewer agent prompt",
+    "completed_at": "2026-09-18T16:03:00Z",
+    "recorded": "C",
+    "current": "C",
+    "proposed": "A",
+    "move": "C→A",
+    "error": null,
+    "added": [
+     "exempted by knobs: plugins/billing-bot/agents/invoice-reviewer.md (plugins/*/agents/*.md: Agent prompts are text; no code runs from them)",
+     "size: 64 lines, 1 file (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "tier-c content: \"token\" in plugins/billing-bot/agents/invoice-reviewer.md",
+     "size: 64 lines, 1 file (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-c content: \"token\" in plugins/billing-bot/agents/invoice-reviewer.md",
+     "size: 64 lines, 1 file (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "exempted by knobs: plugins/billing-bot/agents/invoice-reviewer.md (plugins/*/agents/*.md: Agent prompts are text; no code runs from them)",
+     "size: 64 lines, 1 file (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "e6f7a8b9c0d1",
+    "plan_path": ".claude/plans/card-retry-plan.md",
+    "line": 14,
+    "title": "Ops runbook",
+    "completed_at": "2026-09-18T16:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "A",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 52 lines, 1 file (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 52 lines, 1 file (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "exempted by knobs: docs/runbooks/card-retry.md (docs/**: Docs only; reviewed by humans in PR)",
+     "size: 52 lines, 1 file (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "exempted by knobs: docs/runbooks/card-retry.md (docs/**: Docs only; reviewed by humans in PR)",
+     "size: 52 lines, 1 file (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
     "plan": "a1b2c3d4e5f6",
     "plan_path": ".claude/plans/billing-plan.md",
     "line": 12,
     "title": "Add invoice model",
-    "completed_at": "2026-09-16T10:12:00Z",
+    "completed_at": "2026-09-16T16:03:00Z",
     "recorded": "C",
     "current": "C",
     "proposed": "C",
@@ -2002,6 +3461,168 @@
     "reasons_proposed": [
      "tier-c path: migrations/0042_invoice.sql",
      "size: 140 lines, 5 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "e6f7a8b9c0d1",
+    "plan_path": ".claude/plans/card-retry-plan.md",
+    "line": 11,
+    "title": "Dead-letter queue",
+    "completed_at": "2026-09-16T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 168 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 168 lines > 100"
+    ],
+    "removed": [
+     "size: 168 lines, 4 files (Tier B above 150 lines or 6 files)",
+     "tier-b: 168 lines > 150"
+    ],
+    "reasons_current": [
+     "size: 168 lines, 4 files (Tier B above 150 lines or 6 files)",
+     "tier-b: 168 lines > 150"
+    ],
+    "reasons_proposed": [
+     "size: 168 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 168 lines > 100"
+    ]
+   },
+   {
+    "plan": "e6f7a8b9c0d1",
+    "plan_path": ".claude/plans/card-retry-plan.md",
+    "line": 8,
+    "title": "Retry scheduler",
+    "completed_at": "2026-09-14T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 110 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 110 lines > 100"
+    ],
+    "removed": [
+     "size: 110 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir core/scheduler.py",
+     "size: 110 lines, 3 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir core/scheduler.py",
+     "size: 110 lines, 3 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 110 lines > 100"
+    ]
+   },
+   {
+    "plan": "e6f7a8b9c0d1",
+    "plan_path": ".claude/plans/card-retry-plan.md",
+    "line": 5,
+    "title": "Webhook signature check",
+    "completed_at": "2026-09-12T16:03:00Z",
+    "recorded": "C",
+    "current": "C",
+    "proposed": "C",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 64 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 64 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-c path (knobs): payments/webhooks/signature.py",
+     "tier-c content: \"stripe_secret\" (knobs)",
+     "size: 64 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-c path (knobs): payments/webhooks/signature.py",
+     "tier-c content: \"stripe_secret\" (knobs)",
+     "size: 64 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "f1a2b3c4d5e6",
+    "plan_path": ".claude/plans/legacy-pdf-export-plan.md",
+    "line": 10,
+    "title": "Remove wkhtmltopdf",
+    "completed_at": "2026-09-06T16:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "B",
+    "move": "A→B",
+    "error": null,
+    "added": [
+     "size: 120 lines, 5 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 120 lines > 100"
+    ],
+    "removed": [
+     "size: 120 lines, 5 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 120 lines, 5 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 120 lines, 5 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 120 lines > 100"
+    ]
+   },
+   {
+    "plan": "f1a2b3c4d5e6",
+    "plan_path": ".claude/plans/legacy-pdf-export-plan.md",
+    "line": 7,
+    "title": "Font embedding",
+    "completed_at": "2026-09-04T16:03:00Z",
+    "recorded": "A",
+    "current": "A",
+    "proposed": "A",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 60 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ],
+    "removed": [
+     "size: 60 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "size: 60 lines, 2 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "size: 60 lines, 2 files (Tier B above 100 lines or 6 files)"
+    ]
+   },
+   {
+    "plan": "f1a2b3c4d5e6",
+    "plan_path": ".claude/plans/legacy-pdf-export-plan.md",
+    "line": 4,
+    "title": "Render template port",
+    "completed_at": "2026-09-02T16:03:00Z",
+    "recorded": "B",
+    "current": "B",
+    "proposed": "B",
+    "move": null,
+    "error": null,
+    "added": [
+     "size: 140 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 140 lines > 100"
+    ],
+    "removed": [
+     "size: 140 lines, 4 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_current": [
+     "tier-b: shared dir lib/pdf/render.py",
+     "size: 140 lines, 4 files (Tier B above 150 lines or 6 files)"
+    ],
+    "reasons_proposed": [
+     "tier-b: shared dir lib/pdf/render.py",
+     "size: 140 lines, 4 files (Tier B above 100 lines or 6 files)",
+     "tier-b: 140 lines > 100"
     ]
    }
   ]

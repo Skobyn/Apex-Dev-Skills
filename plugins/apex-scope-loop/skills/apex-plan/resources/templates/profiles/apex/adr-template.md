@@ -3,6 +3,7 @@
 **Status**: Proposed
 **Date**: {{DATE}}
 **Slug**: `{{SLUG}}`
+**Scope**: {{SCOPE}}
 **Author**: {{AUTHOR_EMAIL}}
 **Reviewer**: {{REVIEWER_EMAIL}}
 **Implementor**: {{IMPLEMENTOR_EMAIL}}
