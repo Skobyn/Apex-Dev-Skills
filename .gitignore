@@ -18,3 +18,7 @@ ruvector.db
 # Python bytecode (planlib.py is imported by smoke tests)
 __pycache__/
 *.pyc
+
+# Hook-captured runtime ledgers (apex-agent-observability traces, apex-contracts-reliability ledger)
+.claude/traces/
+.claude/contracts-reliability/
